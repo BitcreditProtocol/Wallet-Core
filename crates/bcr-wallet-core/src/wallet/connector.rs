@@ -51,25 +51,6 @@ impl Default for RestClient {
     }
 }
 
-pub struct Service<T> {
-    base_url: String,
-    client: RestClient,
-    _marker: PhantomData<T>,
-}
-
-impl<T> Service<T> {
-    pub fn new(base_url: String) -> Self {
-        Self {
-            base_url,
-            client: RestClient::new(),
-            _marker: PhantomData,
-        }
-    }
-    fn url(&self, path: &str) -> Url {
-        Url::parse(&format!("{}/{}", self.base_url, path)).unwrap()
-    }
-}
-
 pub struct Connector<T: WalletType> {
     base_url: String,
     client: RestClient,
