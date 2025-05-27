@@ -39,21 +39,6 @@ pub fn get_amounts(mut targ: u64) -> Vec<u64> {
     coins
 }
 
-pub fn create_blinds(
-    id: cashu::Id,
-    amount: u64,
-) -> Vec<(
-    cashu::BlindedMessage,
-    cashu::secret::Secret,
-    cashu::SecretKey,
-)> {
-    let amounts = get_amounts(amount)
-        .iter()
-        .map(|a| cashu::Amount::from(*a))
-        .collect::<Vec<_>>();
-    generate_blinds(id, &amounts)
-}
-
 pub fn generate_blinds(
     keyset_id: cashu::Id,
     amounts: &[cashu::Amount],
