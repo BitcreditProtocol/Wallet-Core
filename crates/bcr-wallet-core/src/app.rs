@@ -1,35 +1,17 @@
-use anyhow::Result;
 use cashu::MintUrl;
-use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::RwLock;
-use tracing::{info, warn};
 
 use crate::db::{MemoryDatabase, WalletDatabase};
 use crate::wallet::CreditWallet;
 use crate::wallet::{Wallet, new_credit};
 
-type TEST_WALLET = Wallet<CreditWallet, MemoryDatabase>;
-
-// trait WalletTrait {
-//     fn get_mint_url(&self) -> &MintUrl;
-//     fn get_unit(&self) -> &CurrencyUnit;
-// }
-// impl<T: WalletType, DB: WalletDatabase> WalletTrait for Wallet<T, DB> {
-//     fn get_mint_url(&self) -> &MintUrl {
-//         &self.mint_url
-//     }
-//     fn get_unit(&self) -> &CurrencyUnit {
-//         &self.unit
-//     }
-// }
-// let wallets: Vec<Box<dyn WalletTrait>> = Vec::new();
-// let wallet_refs: Vec<&dyn WalletTrait> = Vec::new();
+type TestWallet = Wallet<CreditWallet, MemoryDatabase>;
 
 pub struct AppState {
     info: WalletInfo,
-    wallet: TEST_WALLET,
+    wallet: TestWallet,
 }
 
 #[derive(Debug, Clone)]
