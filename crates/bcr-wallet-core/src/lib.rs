@@ -1,9 +1,9 @@
 #![feature(type_changing_struct_update)]
 
 mod app;
-mod db;
+pub mod db;
 mod error;
-mod wallet;
+pub mod wallet;
 
 use tracing::info;
 use wasm_bindgen::prelude::*;

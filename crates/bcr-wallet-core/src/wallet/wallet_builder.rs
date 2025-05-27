@@ -42,8 +42,6 @@ pub fn new_credit<DB: WalletDatabase>() -> WalletBuilder<UnitSet, CreditWallet, 
     }
 }
 
-// impl<T: WalletType> WalletBuilder<Unconfigured, T> {}
-
 impl<T: WalletType, DB: WalletDatabase> WalletBuilder<UnitSet, T, DB> {
     pub fn set_mint_url(self, mint_url: cashu::MintUrl) -> WalletBuilder<MintSet, T, DB> {
         WalletBuilder {
@@ -102,15 +100,3 @@ where
         }
     }
 }
-
-// impl<DB: WalletDatabase> WalletBuilder<SeedSet, DebitWallet, DB> {
-//     pub fn build(self) -> Wallet<DebitWallet, DB> {
-//         Wallet {
-//             seed: self.seed.unwrap(),
-//             mint_url: self.mint_url.clone().unwrap(),
-//             unit: self.unit.unwrap(),
-//             connector: MintConnector::new(self.mint_url.unwrap().to_string()),
-//             db: self.database.unwrap(),
-//         }
-//     }
-// }
