@@ -1,0 +1,26 @@
+[package]
+name = "bcr-core-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+bcr-wdc-webapi = { git = "https://github.com/BitcreditProtocol/Wildcat", features = [
+    "test-utils",
+] }
+cashu = { version = "0.9", default-features = false }
+chrono = { version = "0.4" }
+reqwest = { version = "0.12" }
+thiserror = { version = "2" }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+uuid = { version = "1" }
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["serde"] }
+bitcoin = { version = "0.32" }
+bdk_wallet = { version = "1.1" }
+rand = { version = "0.8" }
+serde = { version = "1" }
+config = { version = "0.15" }
+anyhow = { version = "1" }
+borsh = { version = "1.5", features = ["derive"] }
+serde_json = { version = "1" }

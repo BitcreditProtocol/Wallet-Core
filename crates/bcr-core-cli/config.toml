@@ -1,0 +1,2 @@
+user_service = "http://localhost:4343"
+admin_service = "http://localhost:4242"
