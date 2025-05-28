@@ -11,7 +11,7 @@ async function run() {
     let token = prompt("Enter V3 token");
     await wasmModule.import_token(token);
     let balance = await wasmModule.get_balance();
-    document.getElementById("balance").innerHTML = String(balance) + " crsats";
+    document.getElementById("balance").innerHTML = String(balance) + " crsat";
 
     let proofs = await wasmModule.print_proofs();
     document.getElementById("output").innerHTML = proofs;
@@ -23,7 +23,7 @@ async function run() {
     let token = await wasmModule.send(BigInt(amount));
 
     let balance = await wasmModule.get_balance();
-    document.getElementById("balance").innerHTML = String(balance) + " crsats";
+    document.getElementById("balance").innerHTML = String(balance) + " crsat";
 
     let proofs = await wasmModule.print_proofs();
     document.getElementById("output").innerHTML = proofs + "\ntoken:\n" + token;
