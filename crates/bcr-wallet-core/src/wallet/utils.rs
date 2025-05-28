@@ -4,6 +4,7 @@ use std::collections::HashMap;
 // ----- local modules
 // ----- end imports
 
+// TODO, optimize by sorting proofs
 pub fn select_proofs_for_amount(
     proofs: &[cashu::Proof],
     send_amount: u64,
