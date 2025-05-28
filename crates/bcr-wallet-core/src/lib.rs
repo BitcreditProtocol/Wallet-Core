@@ -8,14 +8,10 @@ pub mod wallet;
 use tracing::info;
 use wasm_bindgen::prelude::*;
 
-pub type Result<T> = std::result::Result<T, error::Error>;
-
 #[wasm_bindgen]
-pub async fn initialize_api() -> Result<()> {
+pub async fn initialize_api() {
     tracing_wasm::set_as_global_default();
     info!("Tracing setup");
-
-    return Ok(());
 }
 
 #[wasm_bindgen]

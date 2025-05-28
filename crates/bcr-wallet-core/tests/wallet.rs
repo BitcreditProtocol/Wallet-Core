@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use bcr_wallet_core::db::{MemoryDatabase, WalletDatabase};
-use bcr_wallet_core::wallet::{DebitWallet, Wallet, new_debit};
+use bcr_wallet_core::wallet::new_debit;
 use cashu::MintUrl;
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -17,4 +17,9 @@ async fn test_debit() {
         .build();
     let proofs = wallet.db.get_proofs().await;
     assert!(proofs.len() == 0)
+}
+
+fn main() {
+    // does nothing
+    let _ = test_debit();
 }
