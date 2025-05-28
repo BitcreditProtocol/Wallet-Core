@@ -2,7 +2,7 @@
 // ----- extra library imports
 use anyhow::Result;
 use async_trait::async_trait;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 // ----- local modules
 use super::connector::{Connector, MintConnector};
 use super::utils;
@@ -42,10 +42,10 @@ where
         for a in &amounts {
             total_amounts += u64::from(*a);
         }
-        assert_eq!(
-            total_proofs, total_amounts,
-            "Proofs and amounts do not match"
-        );
+        if total_proofs != total_amounts {
+            error!("Proofs and amounts do not match");
+            return Err(anyhow::anyhow!("Proofs and amounts do not match"));
+        }
 
         let keyset_id = proofs[0].keyset_id;
 
