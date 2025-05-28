@@ -10,7 +10,7 @@ bcr-wdc-webapi = { git = "https://github.com/BitcreditProtocol/Wildcat", feature
 ] }
 cashu = { version = "0.9", default-features = false }
 chrono = { version = "0.4" }
-reqwest = { version = "0.12" }
+reqwest = { version = "0.12", features = ["json"] }
 thiserror = { version = "2" }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 uuid = { version = "1" }
