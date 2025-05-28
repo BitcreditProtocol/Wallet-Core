@@ -9,8 +9,6 @@ bcr-ebill-api = { git = "https://github.com/BitcreditProtocol/Bitcredit-Core.git
 bcr-wdc-webapi = { git = "https://github.com/BitcreditProtocol/Wildcat" }
 anyhow = { version = "1" }
 async-trait = { version = "0.1" }
-axum = { version = "0.8" }
-axum-test = { version = "17" }
 bdk_wallet = { version = "1.1" }
 bip39 = { version = "2" }
 bitcoin = { version = "0.32" }
@@ -29,15 +27,10 @@ secp256k1 = { version = "0.29" }
 serde = { version = "1" }
 serde_json = { version = "1" }
 serde_repr = { version = "0.1" }
-strum = { version = "0.27" }
-surrealdb = { version = "2.2" }
 thiserror = { version = "2" }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 tokio-util = { version = "0.7" }
 tracing = { version = "0.1" }
-tracing-log = { version = "0.2" }
 tracing-subscriber = { version = "0.3" }
-utoipa = { version = "5" }
-utoipa-swagger-ui = { version = "9" }
 uuid = { version = "1" }
 url = { version = "2.5.4" }
