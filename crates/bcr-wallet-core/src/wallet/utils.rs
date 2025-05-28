@@ -29,13 +29,17 @@ pub fn select_proofs_for_amount(
     dp.get(&send_amount).cloned()
 }
 
+/// Gets the binary representation of  targ and stores the constituents in a Vec
 pub fn get_amounts(mut targ: u64) -> Vec<u64> {
     let mut coins = Vec::new();
     let mut bit_position = 0;
+    // Iterate over targ to get the binary representation
     while targ > 0 {
         if (targ & 1) == 1 {
+            // The actual 2^i that we pick, no need to store if the right hand bit is 0 - unused
             coins.push(1 << bit_position);
         }
+        // We finished checking the right most bit
         targ >>= 1;
         bit_position += 1;
     }
