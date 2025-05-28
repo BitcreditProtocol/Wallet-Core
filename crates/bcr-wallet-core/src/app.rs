@@ -71,5 +71,9 @@ pub fn get_wallet_info() -> WalletInfo {
 pub async fn send_proofs_for(amount: u64) -> String {
     let mut state = get_state().write().unwrap();
     state.wallet.split(amount).await;
-    state.wallet.send_proofs_for(amount).await
+    state
+        .wallet
+        .send_proofs_for(amount)
+        .await
+        .unwrap_or("".into())
 }

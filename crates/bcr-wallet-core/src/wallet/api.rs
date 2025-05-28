@@ -123,7 +123,7 @@ where
             }
         }
     }
-    pub async fn send_proofs_for(&mut self, amount: u64) -> String {
+    pub async fn send_proofs_for(&mut self, amount: u64) -> anyhow::Result<String> {
         let proofs = self.db.get_proofs().await;
 
         if let Some(selected_proofs) = utils::select_proofs_for_amount(&proofs, amount) {
@@ -142,10 +142,9 @@ where
             proofs.retain(|p| !selected_cs.contains(&p.c));
             self.db.set_proofs(proofs).await;
 
-            return token.to_v3_string();
-        } else {
-            warn!("Could not select subset of proofs to send");
+            return Ok(token.to_v3_string());
         }
-        "".into()
+        warn!("Could not select subset of proofs to send");
+        Err(anyhow::anyhow!("Could not select subset of proofs to send"))
     }
 }
