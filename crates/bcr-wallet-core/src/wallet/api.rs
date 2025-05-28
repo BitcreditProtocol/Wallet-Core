@@ -1,7 +1,6 @@
 // ----- standard library imports
 // ----- extra library imports
 use anyhow::Result;
-use async_trait::async_trait;
 use tracing::{error, info, warn};
 // ----- local modules
 use super::connector::{Connector, MintConnector};
@@ -10,7 +9,7 @@ use super::wallet::*;
 use crate::db::WalletDatabase;
 // ----- end imports
 
-#[async_trait]
+// TODO async trait
 pub trait SwapProofs {
     async fn swap_proofs_amount(
         &self,
@@ -19,7 +18,6 @@ pub trait SwapProofs {
     ) -> Result<Vec<cashu::Proof>>;
 }
 
-#[async_trait]
 impl<DB: WalletDatabase> SwapProofs for Wallet<CreditWallet, DB>
 where
     Self: Send + Sync,
@@ -91,13 +89,10 @@ where
             warn!("Requested amount to split is more than balance, cancelling split");
             return;
         }
-        let base_amounts = utils::get_amounts(amount);
-        let change = utils::get_amounts(balance - amount);
-        let amounts: Vec<cashu::Amount> = base_amounts
-            .into_iter()
-            .chain(change.into_iter())
-            .map(|x| cashu::Amount::from(x))
-            .collect();
+        let base_amounts = cashu::Amount::from(amount).split();
+        let change = cashu::Amount::from(balance - amount).split();
+        let amounts: Vec<cashu::Amount> =
+            base_amounts.into_iter().chain(change.into_iter()).collect();
 
         let proofs = self.db.get_proofs().await;
 
