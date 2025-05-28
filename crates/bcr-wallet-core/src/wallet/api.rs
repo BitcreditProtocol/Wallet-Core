@@ -1,5 +1,4 @@
 // ----- standard library imports
-use std::str::FromStr;
 // ----- extra library imports
 use anyhow::Result;
 use async_trait::async_trait;
