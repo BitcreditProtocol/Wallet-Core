@@ -1,15 +1,15 @@
-use cashu::{CurrencyUnit, MintUrl};
-
 use crate::db::WalletDatabase;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use tracing::{info, warn};
 
 use super::connector::{Connector, MintConnector};
 use super::utils;
 use super::wallet::*;
 
+use async_trait::async_trait;
 use std::str::FromStr;
 
+#[async_trait]
 pub trait SwapProofs {
     async fn swap_proofs_amount(
         &self,
@@ -18,7 +18,11 @@ pub trait SwapProofs {
     ) -> Result<Vec<cashu::Proof>>;
 }
 
-impl<DB: WalletDatabase> SwapProofs for Wallet<CreditWallet, DB> {
+#[async_trait]
+impl<DB: WalletDatabase> SwapProofs for Wallet<CreditWallet, DB>
+where
+    Self: Send + Sync,
+{
     async fn swap_proofs_amount(
         &self,
         proofs: Vec<cashu::Proof>,

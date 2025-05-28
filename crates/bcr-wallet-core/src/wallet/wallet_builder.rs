@@ -1,9 +1,7 @@
-use cashu::MintUrl;
-
 use crate::db::WalletDatabase;
 use crate::wallet::{CreditWallet, DebitWallet, Wallet, WalletType};
 use std::marker::PhantomData;
-use std::str::FromStr;
+// use std::str::FromStr;
 
 use super::connector::{Connector, MintConnector};
 

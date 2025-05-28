@@ -1,4 +1,3 @@
-use cashu::Proof;
 use std::collections::HashMap;
 
 pub fn select_proofs_for_amount(

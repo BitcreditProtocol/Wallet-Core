@@ -1,4 +1,5 @@
 use crate::db::WalletDatabase;
+use async_trait::async_trait;
 use cashu::Proof;
 
 pub struct MemoryDatabase {
@@ -11,6 +12,7 @@ impl Default for MemoryDatabase {
     }
 }
 
+#[async_trait]
 impl WalletDatabase for MemoryDatabase {
     async fn get_proofs(&self) -> Vec<Proof> {
         self.proofs.clone()

@@ -1,7 +1,6 @@
 use cashu::{CurrencyUnit, MintUrl};
 
 use crate::db::WalletDatabase;
-use anyhow::{Result, anyhow};
 
 use super::connector::{Connector, MintConnector};
 
