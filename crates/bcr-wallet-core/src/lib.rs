@@ -31,9 +31,7 @@ pub async fn print_proofs() -> String {
     for proof in &proofs {
         let proof_str = format!(
             "amount={} C={} kid={}",
-            proof.amount,
-            proof.c.to_string(),
-            proof.keyset_id.to_string()
+            proof.amount, proof.c, proof.keyset_id
         );
         result.push_str(&proof_str);
         result.push('\n');

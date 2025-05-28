@@ -25,14 +25,14 @@ pub struct WalletInfo {
 impl Default for AppState {
     fn default() -> AppState {
         let db = MemoryDatabase::default();
-        let mint_url = MintUrl::from_str("http://127.0.0.1:4343".into()).unwrap();
+        let mint_url = MintUrl::from_str("http://127.0.0.1:4343").unwrap();
         let wallet = new_credit()
             .set_mint_url(mint_url)
             .set_database(db)
             .set_seed([0; 32])
             .build();
         AppState {
-            wallet: wallet,
+            wallet,
             info: WalletInfo {
                 name: "BitCredu".into(),
             },
