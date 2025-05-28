@@ -86,7 +86,6 @@ impl MintConnector for Connector<CreditWallet> {
         let url = self.url("v1/swap");
         self.client.post(url, &req).await
     }
-    /// GET v1/keys/{kid}
     async fn list_keys(&self, kid: cashu::Id) -> Result<cashu::KeysResponse> {
         let url = self.url(&format!("v1/keys/{kid}"));
         self.client.get(url).await

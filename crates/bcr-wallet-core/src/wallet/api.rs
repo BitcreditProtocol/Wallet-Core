@@ -137,13 +137,11 @@ where
             for p in &selected_proofs {
                 selected_cs.insert(p.c);
             }
-
-            let mint_url = cashu::MintUrl::from_str("http://example.com".into()).unwrap();
             let token = cashu::nut00::Token::new(
-                mint_url,
+                self.mint_url.clone(),
                 selected_proofs,
                 None,
-                cashu::CurrencyUnit::Custom("crsat".into()),
+                self.unit.clone(),
             );
 
             let mut proofs = proofs;
