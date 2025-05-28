@@ -19,11 +19,11 @@ pub fn select_proofs_for_amount(
             if new_sum > send_amount {
                 continue;
             }
-            if !dp.contains_key(&new_sum) {
+            dp.entry(new_sum).or_insert_with(|| {
                 let mut new_subset = subset.clone();
                 new_subset.push(proof.clone());
-                dp.insert(new_sum, new_subset);
-            }
+                new_subset
+            });
         }
     }
 
