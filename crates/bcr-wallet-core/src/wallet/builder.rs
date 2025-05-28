@@ -7,8 +7,6 @@ use crate::db::WalletDatabase;
 use crate::wallet::{CreditWallet, DebitWallet, Wallet, WalletType};
 // ----- end imports
 
-#[derive(Debug)]
-
 pub struct Unconfigured;
 pub struct MintSet;
 pub struct UnitSet;
