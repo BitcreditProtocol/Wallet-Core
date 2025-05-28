@@ -1,5 +1,10 @@
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
 [workspace]
-resolver = "2"
+resolver = "3"
 
 members = ["crates/bcr-wallet-core"]
 
