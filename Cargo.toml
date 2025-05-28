@@ -9,29 +9,16 @@ resolver = "3"
 members = ["crates/bcr-wallet-core"]
 
 [workspace.dependencies]
-bcr-ebill-core = { git = "https://github.com/BitcreditProtocol/Bitcredit-Core.git", tag = "v0.3.11" }
-bcr-ebill-api = { git = "https://github.com/BitcreditProtocol/Bitcredit-Core.git", tag = "v0.3.11" }
-bcr-wdc-webapi = { git = "https://github.com/BitcreditProtocol/Wildcat" }
 anyhow = { version = "1" }
 async-trait = { version = "0.1" }
-bdk_wallet = { version = "1.1" }
-bip39 = { version = "2" }
 bitcoin = { version = "0.32" }
-borsh = { version = "1.5" }
 cashu = { version = "0.9", default-features = false }
-cdk = { version = "0.9" }
 chrono = { version = "0.4" }
-config = { version = "0.15" }
-futures = { version = "0.3" }
-itertools = { version = "0.14" }
-mockall = { version = "0.13" }
 rand = { version = "0.8" }
 reqwest = { version = "0.12" }
-rust_decimal = { version = "1" }
 secp256k1 = { version = "0.29" }
 serde = { version = "1" }
 serde_json = { version = "1" }
-serde_repr = { version = "0.1" }
 thiserror = { version = "2" }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 tokio-util = { version = "0.7" }
