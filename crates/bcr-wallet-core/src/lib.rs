@@ -1,4 +1,6 @@
 #![feature(type_changing_struct_update)]
+// TODO use async trait
+#![allow(async_fn_in_trait)]
 
 mod app;
 pub mod db;
