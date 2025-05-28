@@ -94,7 +94,6 @@ where
         }
         let base_amounts = utils::get_amounts(amount);
         let change = utils::get_amounts(balance - amount);
-        // merge two vecs into one
         let amounts: Vec<cashu::Amount> = base_amounts
             .into_iter()
             .chain(change.into_iter())
