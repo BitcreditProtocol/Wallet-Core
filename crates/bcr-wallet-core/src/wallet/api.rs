@@ -50,7 +50,6 @@ where
 
         let keyset_id = proofs[0].keyset_id;
 
-        // let mint = mint::Service::<mint::MintUserService>::new("http://localhost:4343".into());
         let keys = wdc.list_keys(keyset_id).await?;
 
         let keys = keys
