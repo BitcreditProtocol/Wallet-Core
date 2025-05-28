@@ -44,10 +44,8 @@ impl<T: WalletType, DB: WalletDatabase> WalletBuilder<UnitSet, T, DB> {
     pub fn set_mint_url(self, mint_url: cashu::MintUrl) -> WalletBuilder<MintSet, T, DB> {
         WalletBuilder {
             mint_url: Some(mint_url),
-            unit: self.unit,
-            database: self.database,
-            seed: self.seed,
             _marker: PhantomData,
+            ..self
         }
     }
 }
@@ -76,10 +74,8 @@ impl<T: WalletType, DB: WalletDatabase> WalletBuilder<DatabaseSet, T, DB> {
     pub fn set_seed(self, seed: [u8; 32]) -> WalletBuilder<SeedSet, T, DB> {
         WalletBuilder {
             seed: Some(seed),
-            database: self.database,
-            mint_url: self.mint_url,
-            unit: self.unit,
             _marker: PhantomData,
+            ..self
         }
     }
 }
