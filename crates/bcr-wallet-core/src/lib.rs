@@ -2,11 +2,14 @@
 
 mod app;
 pub mod db;
-mod error;
 pub mod wallet;
 
+// ----- standard library imports
+// ----- extra library imports
 use tracing::info;
 use wasm_bindgen::prelude::*;
+// ----- local modules
+// ----- end imports
 
 #[wasm_bindgen]
 pub async fn initialize_api() {

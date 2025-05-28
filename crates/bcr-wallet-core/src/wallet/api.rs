@@ -1,13 +1,15 @@
-use crate::db::WalletDatabase;
+// ----- standard library imports
+use std::str::FromStr;
+// ----- extra library imports
 use anyhow::Result;
+use async_trait::async_trait;
 use tracing::{info, warn};
-
+// ----- local modules
 use super::connector::{Connector, MintConnector};
 use super::utils;
 use super::wallet::*;
-
-use async_trait::async_trait;
-use std::str::FromStr;
+use crate::db::WalletDatabase;
+// ----- end imports
 
 #[async_trait]
 pub trait SwapProofs {

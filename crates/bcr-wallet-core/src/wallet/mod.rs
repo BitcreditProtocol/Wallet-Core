@@ -1,8 +1,8 @@
 mod api;
+mod builder;
 mod connector;
 mod utils;
 mod wallet;
-mod wallet_builder;
 
+pub use builder::*;
 pub use wallet::*;
-pub use wallet_builder::*;

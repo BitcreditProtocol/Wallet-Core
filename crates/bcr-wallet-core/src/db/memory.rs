@@ -1,6 +1,10 @@
-use crate::db::WalletDatabase;
+// ----- standard library imports
+// ----- extra library imports
 use async_trait::async_trait;
 use cashu::Proof;
+// ----- local modules
+use crate::db::WalletDatabase;
+// ----- end imports
 
 pub struct MemoryDatabase {
     proofs: Vec<Proof>,

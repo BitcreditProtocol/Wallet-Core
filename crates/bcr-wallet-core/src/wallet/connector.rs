@@ -8,10 +8,9 @@ use reqwest::Client as HttpClient;
 use reqwest::Url;
 use serde::{Serialize, de::DeserializeOwned};
 // ----- local modules
-use crate::wallet::CreditWallet;
-
 use super::DebitWallet;
 use super::WalletType;
+use crate::wallet::CreditWallet;
 // ----- end imports
 
 pub struct RestClient {

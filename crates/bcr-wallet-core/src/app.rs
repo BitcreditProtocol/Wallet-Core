@@ -1,11 +1,14 @@
-use cashu::MintUrl;
+// ----- standard library imports
 use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::RwLock;
-
+// ----- extra library imports
+use cashu::MintUrl;
+// ----- local modules
 use crate::db::{MemoryDatabase, WalletDatabase};
 use crate::wallet::CreditWallet;
 use crate::wallet::{Wallet, new_credit};
+// ----- end imports
 
 type TestWallet = Wallet<CreditWallet, MemoryDatabase>;
 

@@ -1,4 +1,8 @@
+// ----- standard library imports
 use std::collections::HashMap;
+// ----- extra library imports
+// ----- local modules
+// ----- end imports
 
 pub fn select_proofs_for_amount(
     proofs: &[cashu::Proof],

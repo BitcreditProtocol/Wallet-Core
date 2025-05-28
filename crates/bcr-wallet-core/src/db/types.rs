@@ -1,5 +1,9 @@
+// ----- standard library imports
+// ----- extra library imports
 use async_trait::async_trait;
 use cashu::Proof;
+// ----- local modules
+// ----- end imports
 
 #[async_trait]
 pub trait WalletDatabase {
