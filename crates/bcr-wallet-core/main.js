@@ -1,5 +1,3 @@
-// import * as wasm from "./pkg/index.js";
-
 async function run() {
   const wasmModule = await import("./pkg/bcr_wallet_core.js");
   await wasmModule.default();
@@ -10,9 +8,8 @@ async function run() {
   document.getElementById("walletname").innerHTML = wallet_name;
 
   document.getElementById("importbtn").addEventListener("click", async () => {
-    // get string from input popup
     let token = prompt("Enter V3 token");
-    let result = await wasmModule.import_token(token);
+    await wasmModule.import_token(token);
     let balance = await wasmModule.get_balance();
     document.getElementById("balance").innerHTML = String(balance) + " crsats";
 
@@ -25,9 +22,6 @@ async function run() {
 
     let token = await wasmModule.send(BigInt(amount));
 
-    alert(token);
-
-    // Update state
     let balance = await wasmModule.get_balance();
     document.getElementById("balance").innerHTML = String(balance) + " crsats";
 
