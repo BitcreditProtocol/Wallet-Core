@@ -2,8 +2,8 @@
 use std::marker::PhantomData;
 // ----- extra library imports
 // ----- local modules
-use super::connector::{Connector, MintConnector};
 use crate::db::WalletDatabase;
+use crate::mint::{Connector, MintConnector};
 use crate::wallet::{CreditWallet, DebitWallet, Wallet, WalletType};
 // ----- end imports
 

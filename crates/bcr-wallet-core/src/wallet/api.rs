@@ -3,10 +3,10 @@
 use anyhow::Result;
 use tracing::{error, info, warn};
 // ----- local modules
-use super::connector::{Connector, MintConnector};
 use super::utils;
 use super::wallet::*;
 use crate::db::WalletDatabase;
+use crate::mint::{Connector, MintConnector};
 // ----- end imports
 
 // TODO async trait

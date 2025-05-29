@@ -1,6 +1,5 @@
 mod api;
 mod builder;
-mod connector;
 mod utils;
 mod wallet;
 
