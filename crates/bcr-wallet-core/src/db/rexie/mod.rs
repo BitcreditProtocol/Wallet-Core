@@ -33,11 +33,13 @@ impl From<rexie::Error> for DatabaseError {
 }
 
 pub fn to_js<T: Serialize>(value: &T) -> Result<JsValue, DatabaseError> {
-    to_value(value).map_err(|e| DatabaseError::SerializationError("Cannot convert into JS".into()))
+    to_value(value)
+        .map_err(|e| DatabaseError::SerializationError(format!("Cannot convert into JS: {:?}", e)))
 }
 
 pub fn from_js<T: DeserializeOwned>(js: JsValue) -> Result<T, DatabaseError> {
-    from_value(js).map_err(|e| DatabaseError::SerializationError("Cannot convert from JS".into()))
+    from_value(js)
+        .map_err(|e| DatabaseError::SerializationError(format!("Cannot convert from JS: {:?}", e)))
 }
 
 impl WalletDatabase for RexieWalletDatabase {

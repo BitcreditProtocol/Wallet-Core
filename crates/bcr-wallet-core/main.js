@@ -39,7 +39,7 @@ async function run() {
       console.log("Selected wallet:", idx);
 
       document.getElementById("walletname").innerHTML =
-        "Bitcredu " + selectedWallet;
+        wallet_name + " " + selectedWallet;
 
       document.getElementById("balance").innerHTML = "0 crsat";
       document.getElementById("output").innerHTML = "";

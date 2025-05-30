@@ -1,17 +1,13 @@
 // ----- standard library imports
 
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::str::FromStr;
-use std::sync::OnceLock;
-use std::sync::RwLock;
 // ----- extra library imports
 use crate::db;
 use crate::db::rexie::RexieWalletDatabase;
-use async_trait::async_trait;
 use cashu::MintUrl;
 // ----- local modules
-use crate::db::{MemoryDatabase, WalletDatabase};
+use crate::db::WalletDatabase;
 use crate::wallet::CreditWallet;
 use crate::wallet::{Wallet, new_credit};
 // ----- end imports
@@ -21,11 +17,6 @@ pub struct AppState {
     info: WalletInfo,
     wallets: Vec<TestWallet>,
     db_manager: db::Manager,
-}
-impl AppState {
-    pub fn get_wallet(&self) -> TestWallet {
-        self.db_manager.get_wallet("wallet_0".into())
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,7 +47,7 @@ pub async fn initialize() {
         db_manager: manager,
         wallets: wallets,
         info: WalletInfo {
-            name: "BitCredu".into(),
+            name: "BitCredit".into(),
         },
     };
     APP_STATE.with(|context| {
@@ -74,7 +65,7 @@ fn get_state() -> &'static AppState {
 
 pub async fn import_token_v3(token: String, idx: usize) {
     let state = get_state();
-    state.wallets[idx].import_token_v3(token).await;
+    state.wallets[idx].import_token_v3(token).await.unwrap();
 }
 
 pub async fn get_proofs(idx: usize) -> Vec<cashu::Proof> {
@@ -98,7 +89,9 @@ pub fn get_wallet_info() -> WalletInfo {
 
 pub async fn send_proofs_for(amount: u64, idx: usize) -> String {
     let state = get_state();
-    state.wallets[idx].split(amount).await;
+
+    // Ensures we always have the right powers of 2 to send amount
+    let _ = state.wallets[idx].split(amount).await;
     state.wallets[idx]
         .send_proofs_for(amount)
         .await
