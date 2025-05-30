@@ -36,7 +36,7 @@ pub async fn initialize() {
     let mut wallets = Vec::new();
     for i in 0..10 {
         let rexie_wallet = RexieWalletDatabase::new(format!("wallet_{}", i), manager.get_db());
-        let mint_url = MintUrl::from_str("http://127.0.0.1:4343").unwrap();
+        let mint_url = MintUrl::from_str("https://wildcat-dev-docker.minibill.tech").unwrap();
         let wallet = new_credit()
             .set_mint_url(mint_url)
             .set_database(rexie_wallet)
@@ -68,6 +68,11 @@ fn get_state() -> &'static AppState {
 pub async fn import_token_v3(token: String, idx: usize) {
     let state = get_state();
     state.wallets[idx].import_token_v3(token).await.unwrap();
+}
+
+pub async fn get_mint_url(idx: usize) -> String {
+    let state = get_state();
+    state.wallets[idx].mint_url.to_string()
 }
 
 pub async fn get_proofs(idx: usize) -> Vec<cashu::Proof> {

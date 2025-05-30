@@ -38,8 +38,9 @@ async function run() {
 
       console.log("Selected wallet:", idx);
 
+      let wallet_url = await wasmModule.get_wallet_url(idx);
       document.getElementById("walletname").innerHTML =
-        wallet_name + " " + selectedWallet;
+        "[" + wallet_name + "] " + selectedWallet + " @ " + wallet_url + "  ";
 
       document.getElementById("balance").innerHTML = "0 crsat";
       document.getElementById("output").innerHTML = "";

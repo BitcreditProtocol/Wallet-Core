@@ -28,6 +28,11 @@ pub async fn import_token(token: String, idx: usize) {
 }
 
 #[wasm_bindgen]
+pub async fn get_wallet_url(idx: usize) -> String {
+    app::get_mint_url(idx).await
+}
+
+#[wasm_bindgen]
 pub async fn print_proofs(idx: usize) -> String {
     let proofs = app::get_proofs(idx).await;
     let mut result = String::new();
