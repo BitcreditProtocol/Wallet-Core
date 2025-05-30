@@ -1,7 +1,7 @@
 // ----- standard library imports
 // ----- extra library imports
 use anyhow::Result;
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 // ----- local modules
 use super::utils;
 use super::wallet::*;
@@ -113,7 +113,6 @@ where
                 .map(|x| x.amount)
                 .collect::<Vec<cashu::Amount>>();
 
-            info!(amounts = ?amounts, "Swapping for new proofs");
             if let Ok(new_proofs) = self.swap_proofs_amount(token.proofs(), amounts).await {
                 for p in new_proofs {
                     self.db.add_proof(p).await?;

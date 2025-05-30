@@ -8,7 +8,6 @@ use rexie::TransactionMode;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_wasm_bindgen::{from_value, to_value};
-use tracing::info;
 use wasm_bindgen::JsValue;
 // ----- local modules
 use crate::db::WalletDatabase;
@@ -51,8 +50,6 @@ impl WalletDatabase for RexieWalletDatabase {
         let store = tx.store(&self.store_name)?;
         let all = store.get_all(None, None).await?;
 
-        info!(all=?all,"fetching proofs");
-
         let proofs = all
             .into_iter()
             .map(from_js)
@@ -64,8 +61,6 @@ impl WalletDatabase for RexieWalletDatabase {
             .map(|p| p.proof)
             .collect::<Vec<Proof>>();
 
-        info!(unspent=?unspent,"fetching proofs");
-
         Ok(unspent)
     }
 
@@ -75,18 +70,14 @@ impl WalletDatabase for RexieWalletDatabase {
             .transaction(&[self.store_name.clone()], TransactionMode::ReadWrite)?;
         let store = tx.store(&self.store_name.clone())?;
 
-        info!(y = ?proof.y().unwrap(), "inactivate proof");
-
         let key = proof.y().unwrap();
         let key = to_js(&key)?;
         if let Ok(Some(wp)) = store.get(key).await {
-            info!(wp = ?wp, "found existing");
             let mut wp: WalletProof = from_js(wp)?;
             wp.status = ProofStatus::Spent;
 
             let wp = to_js(&wp)?;
             store.put(&wp, None).await?;
-            info!(wp = ?wp, "set status successfully");
         }
         Ok(())
     }
@@ -97,8 +88,6 @@ impl WalletDatabase for RexieWalletDatabase {
             .transaction(&[self.store_name.clone()], TransactionMode::ReadWrite)?;
         let store = tx.store(&self.store_name.clone())?;
 
-        info!("got store");
-
         let wallet_proof = WalletProof {
             proof: proof.clone(),
             status: ProofStatus::Unspent,
@@ -107,13 +96,9 @@ impl WalletDatabase for RexieWalletDatabase {
 
         let value = to_js(&wallet_proof)?;
 
-        info!("add wallet proof");
-
         store.add(&value, None).await?;
 
         tx.done().await?;
-
-        info!("sucessfully added wallet proof");
 
         Ok(())
     }
