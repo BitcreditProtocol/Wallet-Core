@@ -1,13 +1,20 @@
 // ----- standard library imports
 // ----- extra library imports
-use async_trait::async_trait;
 use cashu::Proof;
+use thiserror::Error;
 // ----- local modules
 // ----- end imports
 
-#[async_trait]
+#[derive(Debug, Error)]
+pub enum DatabaseError {
+    #[error("Database operation failed: {0}")]
+    DatabaseError(String),
+    #[error("Serialization failed: {0}")]
+    SerializationError(String),
+}
+
 pub trait WalletDatabase {
-    async fn get_proofs(&self) -> Vec<Proof>;
-    async fn set_proofs(&mut self, proofs: Vec<Proof>);
-    async fn add_proof(&mut self, proof: Proof);
+    async fn get_proofs(&self) -> Result<Vec<Proof>, DatabaseError>;
+    async fn set_proofs(&self, proofs: Vec<Proof>) -> Result<(), DatabaseError>;
+    async fn add_proof(&self, proof: Proof) -> Result<(), DatabaseError>;
 }

@@ -18,10 +18,7 @@ pub trait SwapProofs {
     ) -> Result<Vec<cashu::Proof>>;
 }
 
-impl<DB: WalletDatabase> SwapProofs for Wallet<CreditWallet, DB>
-where
-    Self: Send + Sync,
-{
+impl<DB: WalletDatabase> SwapProofs for Wallet<CreditWallet, DB> {
     async fn swap_proofs_amount(
         &self,
         proofs: Vec<cashu::Proof>,
@@ -73,17 +70,20 @@ where
     Connector<T>: MintConnector,
     Wallet<T, DB>: SwapProofs,
 {
+    // TODO add Error Result
     pub async fn get_balance(&self) -> u64 {
-        let proofs = self.db.get_proofs().await;
-
-        let mut sum = 0_u64;
-        for p in &proofs {
-            sum += u64::from(p.amount);
+        if let Ok(proofs) = self.db.get_proofs().await {
+            let mut sum = 0_u64;
+            for p in &proofs {
+                sum += u64::from(p.amount);
+            }
+            return sum;
         }
-        sum
+        0
     }
 
-    pub async fn split(&mut self, amount: u64) {
+    // TODO add Error Result
+    pub async fn split(&self, amount: u64) {
         let balance = self.get_balance().await;
         if amount > balance {
             warn!("Requested amount to split is more than balance, cancelling split");
@@ -94,20 +94,20 @@ where
         let amounts: Vec<cashu::Amount> =
             base_amounts.into_iter().chain(change.into_iter()).collect();
 
-        let proofs = self.db.get_proofs().await;
+        if let Ok(proofs) = self.db.get_proofs().await {
+            if let Ok(new_proofs) = self.swap_proofs_amount(proofs, amounts).await {
+                self.db.set_proofs(Vec::new()).await; // clear
 
-        if let Ok(new_proofs) = self.swap_proofs_amount(proofs, amounts).await {
-            self.db.set_proofs(Vec::new()).await; // clear
-
-            for p in new_proofs {
-                self.db.add_proof(p).await;
+                for p in new_proofs {
+                    self.db.add_proof(p).await;
+                }
+            } else {
+                warn!("Error ocurred when splitting");
             }
-        } else {
-            warn!("Error ocurred when splitting");
         }
     }
 
-    pub async fn import_token_v3(&mut self, token: String) {
+    pub async fn import_token_v3(&self, token: String) {
         if let Ok(token) = token.parse::<cashu::nut00::TokenV3>() {
             let amounts = token
                 .proofs()
@@ -123,8 +123,8 @@ where
             }
         }
     }
-    pub async fn send_proofs_for(&mut self, amount: u64) -> anyhow::Result<String> {
-        let proofs = self.db.get_proofs().await;
+    pub async fn send_proofs_for(&self, amount: u64) -> anyhow::Result<String> {
+        let proofs = self.db.get_proofs().await?;
 
         if let Some(selected_proofs) = utils::select_proofs_for_amount(&proofs, amount) {
             let mut selected_cs = std::collections::HashSet::new();

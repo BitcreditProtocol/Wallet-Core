@@ -18,16 +18,18 @@ use wasm_bindgen::prelude::*;
 pub async fn initialize_api() {
     tracing_wasm::set_as_global_default();
     info!("Tracing setup");
+
+    app::initialize().await;
 }
 
 #[wasm_bindgen]
-pub async fn import_token(token: String) {
-    app::import_token_v3(token).await;
+pub async fn import_token(token: String, idx: usize) {
+    app::import_token_v3(token, idx).await;
 }
 
 #[wasm_bindgen]
-pub async fn print_proofs() -> String {
-    let proofs = app::get_proofs().await;
+pub async fn print_proofs(idx: usize) -> String {
+    let proofs = app::get_proofs(idx).await;
     let mut result = String::new();
     for proof in &proofs {
         let proof_str = format!(
@@ -41,13 +43,13 @@ pub async fn print_proofs() -> String {
 }
 
 #[wasm_bindgen]
-pub async fn get_balance() -> u64 {
-    app::get_balance().await
+pub async fn get_balance(idx: usize) -> u64 {
+    app::get_balance(idx).await
 }
 
 #[wasm_bindgen]
-pub async fn send(amount: u64) -> String {
-    app::send_proofs_for(amount).await
+pub async fn send(amount: u64, idx: usize) -> String {
+    app::send_proofs_for(amount, idx).await
 }
 
 #[wasm_bindgen]
