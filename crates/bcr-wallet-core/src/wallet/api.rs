@@ -72,7 +72,7 @@ where
 {
     // TODO add Error Result
     pub async fn get_balance(&self) -> u64 {
-        if let Ok(proofs) = self.db.get_proofs().await {
+        if let Ok(proofs) = self.db.get_active_proofs().await {
             let mut sum = 0_u64;
             for p in &proofs {
                 sum += u64::from(p.amount);
@@ -82,29 +82,33 @@ where
         0
     }
 
-    // TODO add Error Result
-    pub async fn split(&self, amount: u64) {
+    // This is currently inefficient as we always swap, which is okay for WDC as there are no fees
+    pub async fn split(&self, amount: u64) -> anyhow::Result<()> {
         let balance = self.get_balance().await;
         if amount > balance {
             warn!("Requested amount to split is more than balance, cancelling split");
-            return;
+            anyhow::bail!("Requested amount to split is more than balance");
         }
         let base_amounts = cashu::Amount::from(amount).split();
         let change = cashu::Amount::from(balance - amount).split();
         let amounts: Vec<cashu::Amount> =
             base_amounts.into_iter().chain(change.into_iter()).collect();
 
-        if let Ok(proofs) = self.db.get_proofs().await {
-            if let Ok(new_proofs) = self.swap_proofs_amount(proofs, amounts).await {
-                self.db.set_proofs(Vec::new()).await; // clear
+        if let Ok(proofs) = self.db.get_active_proofs().await {
+            if let Ok(new_proofs) = self.swap_proofs_amount(proofs.clone(), amounts).await {
+                // set old proofs as spent
+                for p in &proofs {
+                    self.db.inactivate_proof(p.clone()).await?;
+                }
 
                 for p in new_proofs {
-                    self.db.add_proof(p).await;
+                    self.db.add_proof(p).await?;
                 }
             } else {
                 warn!("Error ocurred when splitting");
             }
         }
+        Ok(())
     }
 
     pub async fn import_token_v3(&self, token: String) {
@@ -124,7 +128,7 @@ where
         }
     }
     pub async fn send_proofs_for(&self, amount: u64) -> anyhow::Result<String> {
-        let proofs = self.db.get_proofs().await?;
+        let proofs = self.db.get_active_proofs().await?;
 
         if let Some(selected_proofs) = utils::select_proofs_for_amount(&proofs, amount) {
             let mut selected_cs = std::collections::HashSet::new();
@@ -133,14 +137,15 @@ where
             }
             let token = cashu::nut00::Token::new(
                 self.mint_url.clone(),
-                selected_proofs,
+                selected_proofs.clone(),
                 None,
                 self.unit.clone(),
             );
 
-            let mut proofs = proofs;
-            proofs.retain(|p| !selected_cs.contains(&p.c));
-            self.db.set_proofs(proofs).await;
+            // Mark the proofs we send as a token as spent
+            for p in &selected_proofs {
+                self.db.inactivate_proof(p.clone()).await?;
+            }
 
             return Ok(token.to_v3_string());
         }

@@ -12,7 +12,7 @@ use tracing::info;
 use wasm_bindgen::JsValue;
 // ----- local modules
 use crate::db::WalletDatabase;
-use crate::db::types::DatabaseError;
+use crate::db::types::{DatabaseError, ProofStatus, WalletProof};
 // ----- end imports
 
 pub struct RexieWalletDatabase {
@@ -41,7 +41,7 @@ pub fn from_js<T: DeserializeOwned>(js: JsValue) -> Result<T, DatabaseError> {
 }
 
 impl WalletDatabase for RexieWalletDatabase {
-    async fn get_proofs(&self) -> Result<Vec<Proof>, DatabaseError> {
+    async fn get_active_proofs(&self) -> Result<Vec<Proof>, DatabaseError> {
         let tx = self
             .db
             .transaction(&[&self.store_name], TransactionMode::ReadOnly)?;
@@ -49,53 +49,69 @@ impl WalletDatabase for RexieWalletDatabase {
         let store = tx.store(&self.store_name)?;
         let all = store.get_all(None, None).await?;
 
-        info!(all=?all,"Rexie get all");
+        info!(all=?all,"fetching proofs");
 
         let proofs = all
             .into_iter()
             .map(from_js)
-            .collect::<Result<Vec<Proof>, DatabaseError>>()?;
+            .collect::<Result<Vec<WalletProof>, DatabaseError>>()?;
 
-        Ok(proofs)
+        let unspent = proofs
+            .into_iter()
+            .filter(|p| p.status == ProofStatus::Unspent)
+            .map(|p| p.proof)
+            .collect::<Vec<Proof>>();
+
+        info!(unspent=?unspent,"fetching proofs");
+
+        Ok(unspent)
     }
 
-    // TODO inefficient
-    async fn set_proofs(&self, proofs: Vec<Proof>) -> Result<(), DatabaseError> {
+    async fn inactivate_proof(&self, proof: Proof) -> Result<(), DatabaseError> {
         let tx = self
             .db
             .transaction(&[self.store_name.clone()], TransactionMode::ReadWrite)?;
         let store = tx.store(&self.store_name.clone())?;
-        store.clear().await?;
 
-        for p in &proofs {
-            self.add_proof(p.clone()).await?
+        info!(y = ?proof.y().unwrap(), "inactivate proof");
+
+        let key = proof.y().unwrap();
+        let key = to_js(&key)?;
+        if let Ok(Some(wp)) = store.get(key).await {
+            info!(wp = ?wp, "found existing");
+            let mut wp: WalletProof = from_js(wp)?;
+            wp.status = ProofStatus::Spent;
+
+            let wp = to_js(&wp)?;
+            store.put(&wp, None).await?;
+            info!(wp = ?wp, "set status successfully");
         }
         Ok(())
     }
 
     async fn add_proof(&self, proof: Proof) -> Result<(), DatabaseError> {
-        info!(name=?self.store_name,"Rexie add");
         let tx = self
             .db
             .transaction(&[self.store_name.clone()], TransactionMode::ReadWrite)?;
         let store = tx.store(&self.store_name.clone())?;
-        info!("Rexie add got store");
 
-        let key = to_js(&proof.c.to_string())?;
-        let value = to_js(&proof)?;
+        info!("got store");
 
-        info!(key=?key,value=?value,"tryint to store");
+        let wallet_proof = WalletProof {
+            proof: proof.clone(),
+            status: ProofStatus::Unspent,
+            id: proof.y().unwrap(),
+        };
 
-        match store.add(&value, None).await {
-            Ok(_) => {}
-            Err(e) => {
-                info!(err=?e,"Error");
-            }
-        }
-        info!("rexie added kv");
+        let value = to_js(&wallet_proof)?;
+
+        info!("add wallet proof");
+
+        store.add(&value, None).await?;
 
         tx.done().await?;
-        info!("rexie add done");
+
+        info!("sucessfully added wallet proof");
 
         Ok(())
     }

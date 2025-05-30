@@ -1,6 +1,7 @@
 // ----- standard library imports
 // ----- extra library imports
-use cashu::Proof;
+use cashu::{Proof, PublicKey};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 // ----- local modules
 // ----- end imports
@@ -13,8 +14,22 @@ pub enum DatabaseError {
     SerializationError(String),
 }
 
+#[derive(Debug, Serialize, PartialEq, Eq, Deserialize)]
+pub enum ProofStatus {
+    Unspent,
+    Spent,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct WalletProof {
+    pub(crate) proof: Proof,
+    pub(crate) status: ProofStatus,
+    pub(crate) id: PublicKey, // This might change
+}
+
 pub trait WalletDatabase {
-    async fn get_proofs(&self) -> Result<Vec<Proof>, DatabaseError>;
-    async fn set_proofs(&self, proofs: Vec<Proof>) -> Result<(), DatabaseError>;
+    async fn get_active_proofs(&self) -> Result<Vec<Proof>, DatabaseError>;
+    async fn inactivate_proof(&self, proof: Proof) -> Result<(), DatabaseError>;
+    // async fn set_proofs(&self, proofs: Vec<Proof>) -> Result<(), DatabaseError>;
     async fn add_proof(&self, proof: Proof) -> Result<(), DatabaseError>;
 }

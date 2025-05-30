@@ -81,7 +81,7 @@ pub async fn get_proofs(idx: usize) -> Vec<cashu::Proof> {
     let state = get_state();
     state.wallets[idx]
         .db
-        .get_proofs()
+        .get_active_proofs()
         .await
         .unwrap_or(Vec::new())
 }

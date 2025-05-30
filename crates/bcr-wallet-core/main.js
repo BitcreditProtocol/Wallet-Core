@@ -50,6 +50,9 @@ async function run() {
       let proofs = await wasmModule.print_proofs(idx);
       document.getElementById("output").innerHTML = proofs;
     });
+
+  document.getElementById("walletlist").selectedIndex = 0;
+  document.getElementById("walletlist").dispatchEvent(new Event("change"));
 }
 
 run().catch(console.error);
