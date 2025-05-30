@@ -70,21 +70,15 @@ where
     Connector<T>: MintConnector,
     Wallet<T, DB>: SwapProofs,
 {
-    // TODO add Error Result
-    pub async fn get_balance(&self) -> u64 {
-        if let Ok(proofs) = self.db.get_active_proofs().await {
-            let mut sum = 0_u64;
-            for p in &proofs {
-                sum += u64::from(p.amount);
-            }
-            return sum;
-        }
-        0
+    pub async fn get_balance(&self) -> anyhow::Result<u64> {
+        let proofs = self.db.get_active_proofs().await?;
+        let sum = proofs.iter().map(|p| u64::from(p.amount)).sum();
+        return Ok(sum);
     }
 
     // This is currently inefficient as we always swap, which is okay for WDC as there are no fees
     pub async fn split(&self, amount: u64) -> anyhow::Result<()> {
-        let balance = self.get_balance().await;
+        let balance = self.get_balance().await?;
         if amount > balance {
             warn!("Requested amount to split is more than balance, cancelling split");
             anyhow::bail!("Requested amount to split is more than balance");

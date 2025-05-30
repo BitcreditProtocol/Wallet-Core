@@ -12,6 +12,8 @@ use crate::wallet::CreditWallet;
 use crate::wallet::{Wallet, new_credit};
 // ----- end imports
 
+// Experimental, no error handling
+
 type TestWallet = Wallet<CreditWallet, RexieWalletDatabase>;
 pub struct AppState {
     info: WalletInfo,
@@ -79,7 +81,7 @@ pub async fn get_proofs(idx: usize) -> Vec<cashu::Proof> {
 
 pub async fn get_balance(idx: usize) -> u64 {
     let state = get_state();
-    state.wallets[idx].get_balance().await
+    state.wallets[idx].get_balance().await.unwrap()
 }
 
 pub fn get_wallet_info() -> WalletInfo {
