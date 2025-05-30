@@ -16,13 +16,13 @@ pub struct Manager {
 }
 
 fn proof_store(id: &str) -> ObjectStore {
-    ObjectStore::new(&id).key_path("id")
+    ObjectStore::new(id).key_path("id")
 }
 
 impl Manager {
     pub async fn new() -> Option<Manager> {
         // TODO use macro up to 99
-        let rexie = Rexie::builder("wallets_db")
+        let rexie = Rexie::builder("wallets_db___________")
             .version(1)
             .add_object_store(proof_store("wallet_0"))
             .add_object_store(proof_store("wallet_1"))

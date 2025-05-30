@@ -18,7 +18,7 @@ type TestWallet = Wallet<CreditWallet, RexieWalletDatabase>;
 pub struct AppState {
     info: WalletInfo,
     wallets: Vec<TestWallet>,
-    db_manager: db::Manager,
+    _db_manager: db::Manager,
 }
 
 #[derive(Debug, Clone)]
@@ -46,11 +46,11 @@ pub async fn initialize() {
     }
 
     let state = AppState {
-        db_manager: manager,
-        wallets: wallets,
+        _db_manager: manager,
         info: WalletInfo {
             name: "BitCredit".into(),
         },
+        wallets,
     };
     APP_STATE.with(|context| {
         let mut context_ref = context.borrow_mut();

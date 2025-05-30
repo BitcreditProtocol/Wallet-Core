@@ -73,7 +73,7 @@ where
     pub async fn get_balance(&self) -> anyhow::Result<u64> {
         let proofs = self.db.get_active_proofs().await?;
         let sum = proofs.iter().map(|p| u64::from(p.amount)).sum();
-        return Ok(sum);
+        Ok(sum)
     }
 
     // This is currently inefficient as we always swap, which is okay for WDC as there are no fees
