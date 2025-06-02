@@ -7,9 +7,7 @@ use reqwest::Client as HttpClient;
 use reqwest::Url;
 use serde::{Serialize, de::DeserializeOwned};
 // ----- local modules
-use super::DebitWallet;
-use super::WalletType;
-use crate::wallet::CreditWallet;
+use crate::wallet::WalletType;
 // ----- end imports
 
 pub struct RestClient {
@@ -50,8 +48,8 @@ impl Default for RestClient {
 }
 
 pub struct Connector<T: WalletType> {
-    base_url: String,
-    client: RestClient,
+    pub(crate) base_url: String,
+    pub(crate) client: RestClient,
     _marker: PhantomData<T>,
 }
 
@@ -63,7 +61,7 @@ impl<T: WalletType> Connector<T> {
             _marker: PhantomData,
         }
     }
-    fn url(&self, path: &str) -> Url {
+    pub(crate) fn url(&self, path: &str) -> Url {
         Url::parse(&format!("{}/{}", self.base_url, path)).unwrap()
     }
 }
@@ -73,31 +71,4 @@ pub trait MintConnector {
     async fn list_keysets(&self) -> Result<cdk02::KeysetResponse>;
     async fn swap(&self, req: cashu::SwapRequest) -> Result<cashu::SwapResponse>;
     async fn list_keys(&self, kid: cashu::Id) -> Result<cashu::KeysResponse>;
-}
-
-impl MintConnector for Connector<CreditWallet> {
-    async fn list_keysets(&self) -> Result<cdk02::KeysetResponse> {
-        let url = self.url("v1/keysets");
-        self.client.get(url).await
-    }
-    async fn swap(&self, req: cashu::SwapRequest) -> Result<cashu::SwapResponse> {
-        let url = self.url("v1/swap");
-        self.client.post(url, &req).await
-    }
-    async fn list_keys(&self, kid: cashu::Id) -> Result<cashu::KeysResponse> {
-        let url = self.url(&format!("v1/keys/{kid}"));
-        self.client.get(url).await
-    }
-}
-
-impl MintConnector for Connector<DebitWallet> {
-    async fn list_keysets(&self) -> Result<cdk02::KeysetResponse> {
-        todo!()
-    }
-    async fn swap(&self, req: cashu::SwapRequest) -> Result<cashu::SwapResponse> {
-        todo!("{:?}", req);
-    }
-    async fn list_keys(&self, kid: cashu::Id) -> Result<cashu::KeysResponse> {
-        todo!("{:?}", kid);
-    }
 }

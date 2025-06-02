@@ -2,8 +2,8 @@
 // ----- extra library imports
 use cashu::{CurrencyUnit, MintUrl};
 // ----- local modules
-use super::connector::{Connector, MintConnector};
 use crate::db::WalletDatabase;
+use crate::mint::{Connector, MintConnector};
 // ----- end imports
 
 pub trait WalletType {}

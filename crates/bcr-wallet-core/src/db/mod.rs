@@ -1,5 +1,6 @@
-mod memory;
+mod manager;
+pub mod rexie;
 mod types;
 
-pub use memory::*;
+pub use manager::Manager;
 pub use types::*;
