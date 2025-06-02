@@ -1,7 +1,6 @@
 // ----- standard library im
 use std::rc::Rc;
 // ----- extra library imports
-// use anyhow::Result;
 use cashu::Proof;
 use rexie::Rexie;
 use rexie::TransactionMode;
