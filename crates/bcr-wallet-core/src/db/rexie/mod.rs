@@ -65,9 +65,10 @@ impl WalletDatabase for RexieWalletDatabase {
     }
 
     async fn inactivate_proof(&self, proof: Proof) -> Result<(), DatabaseError> {
-        let tx = self
-            .db
-            .transaction(std::slice::from_ref(&self.store_name), TransactionMode::ReadWrite)?;
+        let tx = self.db.transaction(
+            std::slice::from_ref(&self.store_name),
+            TransactionMode::ReadWrite,
+        )?;
         let store = tx.store(&self.store_name.clone())?;
 
         let key = proof.y().unwrap();
@@ -83,9 +84,10 @@ impl WalletDatabase for RexieWalletDatabase {
     }
 
     async fn add_proof(&self, proof: Proof) -> Result<(), DatabaseError> {
-        let tx = self
-            .db
-            .transaction(std::slice::from_ref(&self.store_name), TransactionMode::ReadWrite)?;
+        let tx = self.db.transaction(
+            std::slice::from_ref(&self.store_name),
+            TransactionMode::ReadWrite,
+        )?;
         let store = tx.store(&self.store_name.clone())?;
 
         let wallet_proof = WalletProof {
