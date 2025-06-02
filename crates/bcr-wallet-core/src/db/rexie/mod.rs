@@ -63,7 +63,7 @@ impl WalletDatabase for RexieWalletDatabase {
         Ok(unspent)
     }
 
-    async fn inactivate_proof(&self, proof: Proof) -> Result<(), DatabaseError> {
+    async fn deactivate_proof(&self, proof: Proof) -> Result<(), DatabaseError> {
         let tx = self.db.transaction(
             std::slice::from_ref(&self.store_name),
             TransactionMode::ReadWrite,

@@ -92,7 +92,7 @@ where
             if let Ok(new_proofs) = self.swap_proofs_amount(proofs.clone(), amounts).await {
                 // set old proofs as spent
                 for p in &proofs {
-                    self.db.inactivate_proof(p.clone()).await?;
+                    self.db.deactivate_proof(p.clone()).await?;
                 }
 
                 for p in new_proofs {
@@ -138,7 +138,7 @@ where
 
             // Mark the proofs we send as a token as spent
             for p in &selected_proofs {
-                self.db.inactivate_proof(p.clone()).await?;
+                self.db.deactivate_proof(p.clone()).await?;
             }
 
             return Ok(token.to_v3_string());

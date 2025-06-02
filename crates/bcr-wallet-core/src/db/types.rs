@@ -29,6 +29,7 @@ pub(crate) struct WalletProof {
 
 pub trait WalletDatabase {
     async fn get_active_proofs(&self) -> Result<Vec<Proof>, DatabaseError>;
-    async fn inactivate_proof(&self, proof: Proof) -> Result<(), DatabaseError>;
+    /// Mark a proof as spent so it won't get used by subsequent transfers
+    async fn deactivate_proof(&self, proof: Proof) -> Result<(), DatabaseError>;
     async fn add_proof(&self, proof: Proof) -> Result<(), DatabaseError>;
 }
