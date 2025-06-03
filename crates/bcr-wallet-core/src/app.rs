@@ -18,7 +18,7 @@ type TestWallet = Wallet<CreditWallet, RexieWalletDatabase>;
 pub struct AppState {
     info: WalletInfo,
     wallets: Vec<TestWallet>,
-    _db_manager: db::Manager,
+    _db_manager: db::rexie::Manager,
 }
 
 #[derive(Debug, Clone)]
@@ -31,7 +31,7 @@ thread_local! {
 }
 
 pub async fn initialize() {
-    let manager = db::Manager::new().await.unwrap();
+    let manager = db::rexie::Manager::new().await.unwrap();
 
     let mut wallets = Vec::new();
     for i in 0..10 {

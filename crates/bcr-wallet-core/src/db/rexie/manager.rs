@@ -5,7 +5,7 @@ use std::str::FromStr;
 use cashu::MintUrl;
 use rexie::{ObjectStore, Rexie};
 // ----- local modules
-use super::rexie::RexieWalletDatabase;
+use super::RexieWalletDatabase;
 use crate::wallet::new_credit;
 use crate::wallet::{CreditWallet, Wallet};
 
