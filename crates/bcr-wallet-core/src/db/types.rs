@@ -37,6 +37,6 @@ pub trait WalletDatabase {
 }
 
 pub trait KeysetDatabase {
-    async fn get_count(&self, keyset_id: Id) -> Result<u64, DatabaseError>;
-    async fn increase_count(&self, keyset_id: Id, addition: u64) -> Result<u64, DatabaseError>;
+    async fn get_count(&self, keyset_id: Id) -> Result<u32, DatabaseError>;
+    async fn increase_count(&self, keyset_id: Id, addition: u32) -> Result<u32, DatabaseError>;
 }

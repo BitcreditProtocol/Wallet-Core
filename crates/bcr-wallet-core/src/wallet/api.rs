@@ -1,10 +1,12 @@
 // ----- standard library imports
 // ----- extra library imports
 use anyhow::Result;
+use cashu::{Amount, amount};
 use tracing::{error, warn};
 // ----- local modules
 use super::utils;
 use super::wallet::*;
+use crate::db::KeysetDatabase;
 use crate::db::WalletDatabase;
 use crate::mint::{Connector, MintConnector};
 // ----- end imports
@@ -18,7 +20,7 @@ pub trait SwapProofs {
     ) -> Result<Vec<cashu::Proof>>;
 }
 
-impl<DB: WalletDatabase> SwapProofs for Wallet<CreditWallet, DB> {
+impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB> {
     async fn swap_proofs_amount(
         &self,
         proofs: Vec<cashu::Proof>,
@@ -51,21 +53,47 @@ impl<DB: WalletDatabase> SwapProofs for Wallet<CreditWallet, DB> {
             .first()
             .ok_or(anyhow::anyhow!("No keys found"))?;
 
-        let new_blinds = utils::generate_blinds(keyset_id, &amounts);
-        let bs = new_blinds.iter().map(|b| b.0.clone()).collect::<Vec<_>>();
+        let counter = self.db.get_count(keyset_id).await?;
+        let target = amount::SplitTarget::Values(amounts);
+        let premint_secrets = cashu::PreMintSecrets::from_xpriv(
+            keyset_id,
+            counter,
+            self.xpriv,
+            Amount::from(total_proofs),
+            &target,
+        )?
+        .secrets;
+
+        // premint_secrets[0].
+
+        let bs = premint_secrets
+            .iter()
+            .map(|b| b.blinded_message.clone())
+            .collect::<Vec<_>>();
         let swap_request = cashu::nut03::SwapRequest::new(proofs, bs);
 
         let response = wdc.swap(swap_request).await?;
 
-        let secrets = new_blinds.iter().map(|b| b.1.clone()).collect::<Vec<_>>();
-        let rs = new_blinds.iter().map(|b| b.2.clone()).collect::<Vec<_>>();
+        let secrets = premint_secrets
+            .iter()
+            .map(|b| b.secret.clone())
+            .collect::<Vec<_>>();
+        let rs = premint_secrets
+            .iter()
+            .map(|b| b.r.clone())
+            .collect::<Vec<_>>();
         let proofs = cashu::dhke::construct_proofs(response.signatures, rs, secrets, &keys.keys)?;
+
+        let _ = self
+            .db
+            .increase_count(keyset_id, proofs.len() as u32)
+            .await?;
 
         Ok(proofs)
     }
 }
 
-impl<T: WalletType, DB: WalletDatabase> Wallet<T, DB>
+impl<T: WalletType, DB: WalletDatabase + KeysetDatabase> Wallet<T, DB>
 where
     Connector<T>: MintConnector,
     Wallet<T, DB>: SwapProofs,

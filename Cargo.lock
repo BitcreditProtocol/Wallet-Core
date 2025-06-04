@@ -110,6 +110,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bitcoin",
  "cashu",
  "getrandom 0.2.16",
  "js-sys",

@@ -106,7 +106,7 @@ impl WalletDatabase for RexieWalletDatabase {
 }
 
 impl KeysetDatabase for RexieWalletDatabase {
-    async fn get_count(&self, id: Id) -> Result<u64, DatabaseError> {
+    async fn get_count(&self, id: Id) -> Result<u32, DatabaseError> {
         let tx = self.db.transaction(
             std::slice::from_ref(&super::constants::KEYSET_COUNTER),
             TransactionMode::ReadOnly,
@@ -116,14 +116,14 @@ impl KeysetDatabase for RexieWalletDatabase {
 
         let key = to_js(&id)?;
         if let Ok(Some(count)) = store.get(key).await {
-            let count: u64 = from_js(count)?;
+            let count: u32 = from_js(count)?;
             return Ok(count);
         }
         // Raise error
         Err(DatabaseError::KeysetNotFound)
     }
 
-    async fn increase_count(&self, keyset_id: Id, addition: u64) -> Result<u64, DatabaseError> {
+    async fn increase_count(&self, keyset_id: Id, addition: u32) -> Result<u32, DatabaseError> {
         let tx = self.db.transaction(
             std::slice::from_ref(&super::constants::KEYSET_COUNTER),
             TransactionMode::ReadWrite,
@@ -133,7 +133,7 @@ impl KeysetDatabase for RexieWalletDatabase {
         let key = keyset_id;
         let key = to_js(&key)?;
         if let Ok(Some(wp)) = store.get(key).await {
-            let mut count: u64 = from_js(wp)?;
+            let mut count: u32 = from_js(wp)?;
             count += addition;
 
             let _ = store.put(&to_js(&count)?, None).await?;

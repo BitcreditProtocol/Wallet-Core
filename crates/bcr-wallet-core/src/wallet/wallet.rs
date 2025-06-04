@@ -21,5 +21,5 @@ where
     pub connector: Connector<T>,
     pub unit: CurrencyUnit,
     pub db: DB,
-    pub seed: [u8; 32],
+    pub xpriv: bitcoin::bip32::Xpriv,
 }
