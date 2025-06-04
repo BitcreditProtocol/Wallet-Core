@@ -1,5 +1,6 @@
 // ----- standard library imports
 // ----- extra library imports
+use cashu::{CheckStateRequest, ProofsMethods};
 use tracing::warn;
 // ----- local modules
 use super::types::SwapProofs;
@@ -47,6 +48,106 @@ where
                 }
             } else {
                 warn!("Error ocurred when splitting");
+            }
+        }
+        Ok(())
+    }
+
+    /// Scan the wallet database, and update whether proofs are spent or not by asking the mint
+    pub async fn recheck(&self) -> anyhow::Result<()> {
+        let proofs = self.db.get_active_proofs().await?;
+        let ys: Vec<cashu::PublicKey> = proofs.iter().map(|p| p.y().unwrap()).collect();
+        let states = self
+            .connector
+            .checkstate(CheckStateRequest { ys })
+            .await?
+            .states;
+
+        for (state, proof) in states.iter().zip(proofs.iter()) {
+            if state.state != cashu::nut07::State::Unspent {
+                let _ = self.db.deactivate_proof(proof.clone()).await;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn restore(&self, keyset_ids: Vec<cashu::Id>) -> anyhow::Result<()> {
+        let mut restored_value = cashu::Amount::ZERO;
+
+        for kid in keyset_ids {
+            let resp = self.connector.list_keys(kid).await?;
+            let keys = resp.keysets.first();
+            if keys.is_none() {
+                warn!("No keys found for keyset {}", kid);
+                continue;
+            }
+            let keys = keys.unwrap().keys.clone();
+            let mut fruitless_attempts = 0;
+            let mut key_counter = 0;
+
+            while fruitless_attempts < 3 {
+                let premint_secrets = cashu::PreMintSecrets::restore_batch(
+                    kid,
+                    self.xpriv,
+                    key_counter,
+                    key_counter + 100,
+                )?;
+
+                let restore_request = cashu::RestoreRequest {
+                    outputs: premint_secrets.blinded_messages(),
+                };
+
+                let response = self.connector.restore(restore_request).await?;
+
+                tracing::info!(sigs=?response.signatures,"Restored signatures");
+
+                if response.signatures.is_empty() {
+                    fruitless_attempts += 1;
+                    key_counter += 100;
+                    continue;
+                }
+
+                let premint_secrets: Vec<&cashu::PreMint> = premint_secrets
+                    .secrets
+                    .iter()
+                    .filter(|p| response.outputs.contains(&p.blinded_message))
+                    .collect();
+
+                assert_eq!(response.outputs.len(), premint_secrets.len());
+
+                let proofs = cashu::dhke::construct_proofs(
+                    response.signatures,
+                    premint_secrets.iter().map(|p| p.r.clone()).collect(),
+                    premint_secrets.iter().map(|p| p.secret.clone()).collect(),
+                    &keys,
+                )?;
+
+                self.db.increase_count(kid, proofs.len() as u32).await?;
+
+                let ys: Vec<cashu::PublicKey> = proofs.iter().map(|p| p.y().unwrap()).collect();
+                let states = self
+                    .connector
+                    .checkstate(CheckStateRequest { ys: ys.clone() })
+                    .await?
+                    .states;
+
+                let unspent_proofs: Vec<cashu::Proof> = proofs
+                    .iter()
+                    .zip(states)
+                    .filter(|(_, state)| !state.state.eq(&cashu::State::Spent))
+                    .map(|(p, _)| p)
+                    .cloned()
+                    .collect();
+
+                for p in unspent_proofs.iter() {
+                    let _ = self.db.add_proof(p.clone()).await;
+                }
+
+                restored_value += unspent_proofs.total_amount()?;
+
+                fruitless_attempts = 0;
+                key_counter += 100;
             }
         }
         Ok(())

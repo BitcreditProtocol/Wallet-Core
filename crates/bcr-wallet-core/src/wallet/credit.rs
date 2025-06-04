@@ -45,9 +45,7 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB
             .first()
             .ok_or(anyhow::anyhow!("No keys found"))?;
 
-        info!("Pre counter");
         let counter = self.db.get_count(keyset_id).await.unwrap_or(0);
-        info!("Counter: {}", counter);
         let target = amount::SplitTarget::Values(amounts);
         let premint_secrets = cashu::PreMintSecrets::from_xpriv(
             keyset_id,
@@ -64,7 +62,6 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB
             .collect::<Vec<_>>();
         let swap_request = cashu::nut03::SwapRequest::new(proofs, bs);
 
-        info!(amount = total_proofs, "Swapping");
         let response = wdc.swap(swap_request).await?;
 
         let secrets = premint_secrets
@@ -76,7 +73,6 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB
             .map(|b| b.r.clone())
             .collect::<Vec<_>>();
 
-        info!("Building proofs");
         let proofs = cashu::dhke::construct_proofs(response.signatures, rs, secrets, &keys.keys)?;
 
         let _ = self
@@ -84,7 +80,6 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB
             .increase_count(keyset_id, proofs.len() as u32)
             .await?;
 
-        info!("Returning Proofs");
         Ok(proofs)
     }
 }

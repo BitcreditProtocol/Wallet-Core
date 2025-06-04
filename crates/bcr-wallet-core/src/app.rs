@@ -71,6 +71,19 @@ pub async fn import_token_v3(token: String, idx: usize) {
     state.wallets[idx].import_token_v3(token).await.unwrap();
 }
 
+pub async fn recover(keyset_ids: Vec<String>, idx: usize) {
+    let state = get_state();
+
+    let keyset_ids: Vec<cashu::Id> = keyset_ids
+        .into_iter()
+        .map(|id| cashu::Id::from_str(&id).unwrap())
+        .collect::<Vec<_>>();
+
+    tracing::info!("Recovering wallet with keyset ids: {:?}", keyset_ids);
+
+    state.wallets[idx].restore(keyset_ids).await.unwrap();
+}
+
 pub async fn get_mint_url(idx: usize) -> String {
     let state = get_state();
     state.wallets[idx].mint_url.to_string()
@@ -88,6 +101,11 @@ pub async fn get_proofs(idx: usize) -> Vec<cashu::Proof> {
 pub async fn get_balance(idx: usize) -> u64 {
     let state = get_state();
     state.wallets[idx].get_balance().await.unwrap()
+}
+
+pub async fn recheck(idx: usize) {
+    let state = get_state();
+    state.wallets[idx].recheck().await.unwrap()
 }
 
 pub fn get_wallet_info() -> WalletInfo {

@@ -72,4 +72,5 @@ pub trait MintConnector {
     async fn swap(&self, req: cashu::SwapRequest) -> Result<cashu::SwapResponse>;
     async fn list_keys(&self, kid: cashu::Id) -> Result<cashu::KeysResponse>;
     async fn restore(&self, req: cashu::RestoreRequest) -> Result<cashu::RestoreResponse>;
+    async fn checkstate(&self, req: cashu::CheckStateRequest) -> Result<cashu::CheckStateResponse>;
 }

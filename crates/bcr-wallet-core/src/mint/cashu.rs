@@ -19,6 +19,9 @@ impl MintConnector for Connector<DebitWallet> {
         todo!("{:?}", kid);
     }
     async fn restore(&self, req: cashu::RestoreRequest) -> Result<cashu::RestoreResponse> {
-        todo!("Restore");
+        todo!("Restore {:?}", req);
+    }
+    async fn checkstate(&self, req: cashu::CheckStateRequest) -> Result<cashu::CheckStateResponse> {
+        todo!("Checkstate {:?}", req);
     }
 }

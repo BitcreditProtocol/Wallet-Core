@@ -25,4 +25,8 @@ impl MintConnector for Connector<CreditWallet> {
         let url = self.url("v1/restore");
         self.client.post(url, &req).await
     }
+    async fn checkstate(&self, req: cashu::CheckStateRequest) -> Result<cashu::CheckStateResponse> {
+        let url = self.url("v1/checkstate");
+        self.client.post(url, &req).await
+    }
 }

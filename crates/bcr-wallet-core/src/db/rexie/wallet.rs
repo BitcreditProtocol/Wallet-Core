@@ -120,7 +120,6 @@ impl KeysetDatabase for RexieWalletDatabase {
             let count: u32 = from_js(count)?;
             return Ok(count);
         }
-        // Raise error
         Err(DatabaseError::KeysetNotFound)
     }
 
