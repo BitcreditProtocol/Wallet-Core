@@ -79,6 +79,7 @@ impl WalletDatabase for RexieWalletDatabase {
             let wp = to_js(&wp)?;
             store.put(&wp, None).await?;
         }
+        tx.done().await?;
         Ok(())
     }
 
@@ -112,7 +113,7 @@ impl KeysetDatabase for RexieWalletDatabase {
             TransactionMode::ReadOnly,
         )?;
 
-        let store = tx.store(&self.store_name)?;
+        let store = tx.store(super::constants::KEYSET_COUNTER)?;
 
         let key = to_js(&id)?;
         if let Ok(Some(count)) = store.get(key).await {
@@ -128,18 +129,20 @@ impl KeysetDatabase for RexieWalletDatabase {
             std::slice::from_ref(&super::constants::KEYSET_COUNTER),
             TransactionMode::ReadWrite,
         )?;
-        let store = tx.store(&self.store_name.clone())?;
+        let store = tx.store(super::constants::KEYSET_COUNTER)?;
 
         let key = keyset_id;
         let key = to_js(&key)?;
-        if let Ok(Some(wp)) = store.get(key).await {
+        if let Ok(Some(wp)) = store.get(key.clone()).await {
             let mut count: u32 = from_js(wp)?;
             count += addition;
 
-            let _ = store.put(&to_js(&count)?, None).await?;
+            let _ = store.put(&to_js(&count)?, Some(&key)).await?;
+            tx.done().await?;
             return Ok(count);
         } else {
-            let _ = store.put(&to_js(&addition)?, None).await?;
+            let _ = store.put(&to_js(&addition)?, Some(&key)).await?;
+            tx.done().await?;
             return Ok(addition);
         }
     }

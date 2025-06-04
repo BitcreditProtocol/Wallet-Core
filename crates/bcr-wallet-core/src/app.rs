@@ -36,7 +36,8 @@ pub async fn initialize() {
     let mut wallets = Vec::new();
     for i in 0..10 {
         let rexie_wallet = RexieWalletDatabase::new(format!("wallet_{}", i), manager.get_db());
-        let mint_url = MintUrl::from_str("https://wildcat-dev-docker.minibill.tech").unwrap();
+        // let mint_url = MintUrl::from_str("https://wildcat-dev-docker.minibill.tech").unwrap();
+        let mint_url = MintUrl::from_str("http://localhost:4343").unwrap();
         let wallet = new_credit()
             .set_mint_url(mint_url)
             .set_database(rexie_wallet)

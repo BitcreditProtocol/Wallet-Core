@@ -2,7 +2,7 @@
 // ----- extra library imports
 use anyhow::Result;
 use cashu::{Amount, amount};
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 // ----- local modules
 use super::utils;
 use super::wallet::*;
@@ -45,6 +45,7 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB
         }
 
         let keyset_id = proofs[0].keyset_id;
+        info!(keyset_id=?keyset_id, "Swap");
 
         let keys = wdc.list_keys(keyset_id).await?;
 
@@ -53,7 +54,9 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB
             .first()
             .ok_or(anyhow::anyhow!("No keys found"))?;
 
-        let counter = self.db.get_count(keyset_id).await?;
+        info!("Pre counter");
+        let counter = self.db.get_count(keyset_id).await.unwrap_or(0);
+        info!("Counter: {}", counter);
         let target = amount::SplitTarget::Values(amounts);
         let premint_secrets = cashu::PreMintSecrets::from_xpriv(
             keyset_id,
@@ -64,14 +67,13 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB
         )?
         .secrets;
 
-        // premint_secrets[0].
-
         let bs = premint_secrets
             .iter()
             .map(|b| b.blinded_message.clone())
             .collect::<Vec<_>>();
         let swap_request = cashu::nut03::SwapRequest::new(proofs, bs);
 
+        info!(amount = total_proofs, "Swapping");
         let response = wdc.swap(swap_request).await?;
 
         let secrets = premint_secrets
@@ -82,6 +84,8 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB
             .iter()
             .map(|b| b.r.clone())
             .collect::<Vec<_>>();
+
+        info!("Building proofs");
         let proofs = cashu::dhke::construct_proofs(response.signatures, rs, secrets, &keys.keys)?;
 
         let _ = self
@@ -89,6 +93,7 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB
             .increase_count(keyset_id, proofs.len() as u32)
             .await?;
 
+        info!("Returning Proofs");
         Ok(proofs)
     }
 }
