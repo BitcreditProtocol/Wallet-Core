@@ -119,7 +119,14 @@ where
                     .filter(|p| response.outputs.contains(&p.blinded_message))
                     .collect();
 
-                assert_eq!(response.outputs.len(), premint_secrets.len());
+                if response.outputs.len() != premint_secrets.len() {
+                    warn!(
+                        "Mismatch between response outputs ({}) and filtered premint secrets ({})",
+                        response.outputs.len(),
+                        premint_secrets.len()
+                    );
+                    continue;
+                }
 
                 let proofs = cashu::dhke::construct_proofs(
                     response.signatures,
