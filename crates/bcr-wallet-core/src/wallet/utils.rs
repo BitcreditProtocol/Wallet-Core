@@ -29,33 +29,3 @@ pub fn select_proofs_for_amount(
 
     dp.get(&send_amount).cloned()
 }
-
-pub fn generate_blinds(
-    keyset_id: cashu::Id,
-    amounts: &[cashu::Amount],
-) -> Vec<(
-    cashu::BlindedMessage,
-    cashu::secret::Secret,
-    cashu::SecretKey,
-)> {
-    let mut blinds = Vec::new();
-    for amount in amounts {
-        let blind = generate_blind(keyset_id, *amount);
-        blinds.push(blind);
-    }
-    blinds
-}
-
-pub fn generate_blind(
-    kid: cashu::Id,
-    amount: cashu::Amount,
-) -> (
-    cashu::BlindedMessage,
-    cashu::secret::Secret,
-    cashu::SecretKey,
-) {
-    let secret = cashu::secret::Secret::new(rand::random::<u64>().to_string());
-    let (b_, r) =
-        cashu::dhke::blind_message(secret.as_bytes(), None).expect("cdk_dhke::blind_message");
-    (cashu::BlindedMessage::new(amount, kid, b_), secret, r)
-}
