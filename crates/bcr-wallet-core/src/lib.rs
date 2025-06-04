@@ -63,8 +63,8 @@ pub fn get_wallet_name() -> String {
 }
 
 #[wasm_bindgen]
-pub async fn recover(keysets: Vec<String>, idx: usize) {
-    app::recover(keysets, idx).await
+pub async fn recover(idx: usize) {
+    app::recover(idx).await
 }
 
 #[wasm_bindgen]

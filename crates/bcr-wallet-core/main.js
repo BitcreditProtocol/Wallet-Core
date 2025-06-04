@@ -42,15 +42,8 @@ async function run() {
   });
 
   document.getElementById("recoverbtn").addEventListener("click", async () => {
-    let keyset_ids = [];
-    var id = prompt("Keyset id to recover. Leave blank to stop");
-    while (id.length > 0) {
-      keyset_ids.push(id);
-      id = prompt("Keyset id to recover. Leave blank to stop");
-    }
-    alert(keyset_ids);
     let idx = document.getElementById("walletlist").selectedIndex;
-    await wasmModule.recover(keyset_ids, idx);
+    await wasmModule.recover(idx);
 
     // Reload
 

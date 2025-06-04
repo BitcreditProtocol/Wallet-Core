@@ -72,10 +72,15 @@ where
         Ok(())
     }
 
-    pub async fn restore(&self, keyset_ids: Vec<cashu::Id>) -> anyhow::Result<()> {
+    pub async fn restore(&self) -> anyhow::Result<()> {
+        let keysets = self.connector.list_keysets().await?;
+
+        let keyset_ids: Vec<cashu::Id> = keysets.keysets.iter().map(|ks| ks.id).collect();
+
         let mut restored_value = cashu::Amount::ZERO;
 
         for kid in keyset_ids {
+            tracing::debug!(kid=?kid,"Restore");
             let resp = self.connector.list_keys(kid).await?;
             let keys = resp.keysets.first();
             if keys.is_none() {
