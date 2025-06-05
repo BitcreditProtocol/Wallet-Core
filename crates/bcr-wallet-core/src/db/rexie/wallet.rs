@@ -70,7 +70,9 @@ impl WalletDatabase for RexieWalletDatabase {
         )?;
         let store = tx.store(&self.store_name.clone())?;
 
-        let key = proof.y().unwrap();
+        let key = proof
+            .y()
+            .map_err(|e| DatabaseError::CdkError(e.to_string()))?;
         let key = to_js(&key)?;
         if let Ok(Some(wp)) = store.get(key).await {
             let mut wp: WalletProof = from_js(wp)?;

@@ -14,6 +14,8 @@ pub enum DatabaseError {
     SerializationError(String),
     #[error("Keyset not found")]
     KeysetNotFound,
+    #[error("CDK error: {0}")]
+    CdkError(String),
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq, Deserialize)]
