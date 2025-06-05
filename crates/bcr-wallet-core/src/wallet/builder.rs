@@ -87,7 +87,6 @@ where
     Connector<T>: MintConnector,
 {
     pub fn build(self) -> Wallet<T, DB> {
-        // btc32::Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("bitcoin FAIL");
         let xpriv =
             Xpriv::new_master(bitcoin::Network::Bitcoin, self.seed.unwrap().as_ref()).unwrap();
         Wallet {
