@@ -1,8 +1,9 @@
 // ----- standard library imports
 // ----- extra library imports
-use cashu::{Id, Proof, PublicKey};
+use cashu::{Id, MintUrl, Proof, PublicKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use uuid::Uuid;
 // ----- local modules
 // ----- end imports
 
@@ -41,4 +42,28 @@ pub trait WalletDatabase {
 pub trait KeysetDatabase {
     async fn get_count(&self, keyset_id: Id) -> Result<u32, DatabaseError>;
     async fn increase_count(&self, keyset_id: Id, addition: u32) -> Result<u32, DatabaseError>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletMetadata {
+    pub id: usize,
+    pub name: String,
+    pub mint_url: MintUrl,
+    pub mnemonic: Vec<String>,
+    pub is_credit: bool,
+    pub is_active: bool,
+    pub unit: String,
+}
+
+pub trait Metadata {
+    async fn get_wallets(&self) -> Result<Vec<WalletMetadata>, DatabaseError>;
+    async fn add_wallet(
+        &self,
+        name: String,
+        mint_url: MintUrl,
+        mnemonic: Vec<String>,
+        unit: String,
+        is_credit: bool,
+    ) -> Result<WalletMetadata, DatabaseError>;
+    async fn remove_wallet(&self, id: usize) -> Result<(), DatabaseError>;
 }

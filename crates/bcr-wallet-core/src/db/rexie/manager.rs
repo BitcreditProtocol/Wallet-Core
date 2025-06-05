@@ -22,7 +22,7 @@ fn proof_store(id: &str) -> ObjectStore {
 impl Manager {
     pub async fn new() -> Option<Manager> {
         // TODO use macro up to 99
-        let rexie = Rexie::builder("wallets_db_1")
+        let rexie = Rexie::builder("wallets_db_2")
             .version(1)
             .add_object_store(proof_store("wallet_0"))
             .add_object_store(proof_store("wallet_1"))
@@ -35,6 +35,7 @@ impl Manager {
             .add_object_store(proof_store("wallet_8"))
             .add_object_store(proof_store("wallet_9"))
             .add_object_store(ObjectStore::new(super::KEYSET_COUNTER))
+            .add_object_store(ObjectStore::new(super::WALLET_METADATA).key_path("id"))
             .build()
             .await;
         if let Ok(rexie) = rexie {

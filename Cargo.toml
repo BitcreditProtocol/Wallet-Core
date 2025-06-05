@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 tokio-util = { version = "0.7" }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3" }
-uuid = { version = "1" }
+uuid = { version = "1", features = ["v4", "serde"] }
 url = { version = "2.5" }
 rexie = { version = "0.6" }
 serde-wasm-bindgen = { version = "0.6" }

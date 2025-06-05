@@ -4,11 +4,8 @@ use std::rc::Rc;
 use cashu::{Id, Proof};
 use rexie::Rexie;
 use rexie::TransactionMode;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use serde_wasm_bindgen::{from_value, to_value};
-use wasm_bindgen::JsValue;
 // ----- local modules
+use super::utils;
 use crate::db::types::{DatabaseError, ProofStatus, WalletProof};
 use crate::db::{KeysetDatabase, WalletDatabase};
 // ----- end imports
@@ -30,16 +27,6 @@ impl From<rexie::Error> for DatabaseError {
     }
 }
 
-pub fn to_js<T: Serialize>(value: &T) -> Result<JsValue, DatabaseError> {
-    to_value(value)
-        .map_err(|e| DatabaseError::SerializationError(format!("Cannot convert into JS: {:?}", e)))
-}
-
-pub fn from_js<T: DeserializeOwned>(js: JsValue) -> Result<T, DatabaseError> {
-    from_value(js)
-        .map_err(|e| DatabaseError::SerializationError(format!("Cannot convert from JS: {:?}", e)))
-}
-
 impl WalletDatabase for RexieWalletDatabase {
     async fn get_active_proofs(&self) -> Result<Vec<Proof>, DatabaseError> {
         let tx = self
@@ -51,7 +38,7 @@ impl WalletDatabase for RexieWalletDatabase {
 
         let proofs = all
             .into_iter()
-            .map(from_js)
+            .map(utils::from_js)
             .collect::<Result<Vec<WalletProof>, DatabaseError>>()?;
 
         let unspent = proofs
@@ -73,12 +60,12 @@ impl WalletDatabase for RexieWalletDatabase {
         let key = proof
             .y()
             .map_err(|e| DatabaseError::CdkError(e.to_string()))?;
-        let key = to_js(&key)?;
+        let key = utils::to_js(&key)?;
         if let Ok(Some(wp)) = store.get(key).await {
-            let mut wp: WalletProof = from_js(wp)?;
+            let mut wp: WalletProof = utils::from_js(wp)?;
             wp.status = ProofStatus::Spent;
 
-            let wp = to_js(&wp)?;
+            let wp = utils::to_js(&wp)?;
             store.put(&wp, None).await?;
         }
         tx.done().await?;
@@ -98,7 +85,7 @@ impl WalletDatabase for RexieWalletDatabase {
             id: proof.y().unwrap(),
         };
 
-        let value = to_js(&wallet_proof)?;
+        let value = utils::to_js(&wallet_proof)?;
 
         store.add(&value, None).await?;
 
@@ -117,9 +104,9 @@ impl KeysetDatabase for RexieWalletDatabase {
 
         let store = tx.store(super::constants::KEYSET_COUNTER)?;
 
-        let key = to_js(&id)?;
+        let key = utils::to_js(&id)?;
         if let Ok(Some(count)) = store.get(key).await {
-            let count: u32 = from_js(count)?;
+            let count: u32 = utils::from_js(count)?;
             return Ok(count);
         }
         Err(DatabaseError::KeysetNotFound)
@@ -133,16 +120,16 @@ impl KeysetDatabase for RexieWalletDatabase {
         let store = tx.store(super::constants::KEYSET_COUNTER)?;
 
         let key = keyset_id;
-        let key = to_js(&key)?;
+        let key = utils::to_js(&key)?;
         if let Ok(Some(wp)) = store.get(key.clone()).await {
-            let mut count: u32 = from_js(wp)?;
+            let mut count: u32 = utils::from_js(wp)?;
             count += addition;
 
-            let _ = store.put(&to_js(&count)?, Some(&key)).await?;
+            let _ = store.put(&utils::to_js(&count)?, Some(&key)).await?;
             tx.done().await?;
             Ok(count)
         } else {
-            let _ = store.put(&to_js(&addition)?, Some(&key)).await?;
+            let _ = store.put(&utils::to_js(&addition)?, Some(&key)).await?;
             tx.done().await?;
             Ok(addition)
         }
