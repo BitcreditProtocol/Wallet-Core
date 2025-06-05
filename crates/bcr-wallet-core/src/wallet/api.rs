@@ -91,7 +91,10 @@ where
             let mut fruitless_attempts = 0;
             let mut key_counter = 0;
 
-            while fruitless_attempts < 3 {
+            // Nut13 describes restoring proofs in batches of 100,
+            // If there are 3 batches where nothing is restored, we stop.
+            // We use 2 as Wildcat mints have many more keysets
+            while fruitless_attempts < 2 {
                 let premint_secrets = cashu::PreMintSecrets::restore_batch(
                     kid,
                     self.xpriv,
@@ -138,6 +141,7 @@ where
                 self.db.increase_count(kid, proofs.len() as u32).await?;
 
                 let ys: Vec<cashu::PublicKey> = proofs.iter().map(|p| p.y().unwrap()).collect();
+
                 let states = self
                     .connector
                     .checkstate(CheckStateRequest { ys: ys.clone() })
