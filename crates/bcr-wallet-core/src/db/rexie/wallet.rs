@@ -138,11 +138,11 @@ impl KeysetDatabase for RexieWalletDatabase {
 
             let _ = store.put(&to_js(&count)?, Some(&key)).await?;
             tx.done().await?;
-            return Ok(count);
+            Ok(count)
         } else {
             let _ = store.put(&to_js(&addition)?, Some(&key)).await?;
             tx.done().await?;
-            return Ok(addition);
+            Ok(addition)
         }
     }
 }
