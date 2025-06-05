@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 // ----- standard library im
 use std::rc::Rc;
 // ----- extra library imports
@@ -20,7 +21,8 @@ impl RexieMetadata {
         Self { db }
     }
 
-    async fn len(&self) -> Result<usize, DatabaseError> {
+    /// Finds the first unoccupied natural number to use as id
+    async fn get_empty_id(&self) -> Result<usize, DatabaseError> {
         let tx = self.db.transaction(
             std::slice::from_ref(&super::constants::WALLET_METADATA),
             TransactionMode::ReadOnly,
@@ -28,10 +30,21 @@ impl RexieMetadata {
 
         let store = tx.store(super::constants::WALLET_METADATA)?;
         let keys = store.get_all_keys(None, None).await?;
-
         tx.done().await?;
 
-        Ok(keys.len())
+        let keys = keys
+            .into_iter()
+            .map(from_js)
+            .collect::<Result<Vec<usize>, DatabaseError>>()?;
+        let keys = HashSet::<usize>::from_iter(keys);
+
+        for i in 0..1000 {
+            if !keys.contains(&i) {
+                return Ok(i);
+            }
+        }
+
+        Err(DatabaseError::WalletDatabaseFull)
     }
 }
 
@@ -44,7 +57,7 @@ impl Metadata for RexieMetadata {
 
         let store = tx.store(super::constants::WALLET_METADATA)?;
 
-        let wallets = store
+        let mut wallets = store
             .get_all(None, None)
             .await?
             .into_iter()
@@ -52,6 +65,9 @@ impl Metadata for RexieMetadata {
             .collect::<Result<Vec<WalletMetadata>, DatabaseError>>()?;
 
         tx.done().await?;
+
+        // Sort wallets by id
+        wallets.sort_by_key(|w| w.id);
 
         Ok(wallets)
     }
@@ -83,7 +99,7 @@ impl Metadata for RexieMetadata {
         unit: String,
         is_credit: bool,
     ) -> Result<WalletMetadata, DatabaseError> {
-        let id = self.len().await?;
+        let id = self.get_empty_id().await?;
         let wallet = WalletMetadata {
             id: id,
             name,

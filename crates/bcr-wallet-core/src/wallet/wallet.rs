@@ -24,12 +24,3 @@ where
     pub db: DB,
     pub xpriv: bitcoin::bip32::Xpriv,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct WalletData {
-    pub mint_url: MintUrl,
-    pub mnemonic: [String; 15],
-    pub is_credit: bool,
-    pub is_active: bool,
-    pub unit: String,
-}

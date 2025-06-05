@@ -71,3 +71,31 @@ pub async fn recover(idx: usize) {
 pub async fn recheck(idx: usize) {
     app::recheck(idx).await
 }
+
+#[wasm_bindgen]
+pub async fn get_wallets_names() -> Vec<String> {
+    app::get_wallets().await.1
+}
+
+#[wasm_bindgen]
+pub async fn get_wallets_ids() -> Vec<u64> {
+    app::get_wallets()
+        .await
+        .0
+        .iter()
+        .map(|x| *x as u64)
+        .collect()
+}
+
+#[wasm_bindgen]
+pub async fn add_wallet(
+    name: String,
+    mint_url: String,
+    mnemonic: String,
+    unit: String,
+    credit: bool,
+) {
+    app::add_wallet(name, mint_url, mnemonic, unit, credit)
+        .await
+        .unwrap();
+}

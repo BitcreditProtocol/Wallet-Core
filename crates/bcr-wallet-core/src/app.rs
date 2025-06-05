@@ -1,10 +1,12 @@
 // ----- standard library imports
 
 use std::cell::RefCell;
+use std::str::FromStr;
 // ----- extra library imports
 use crate::db::rexie::RexieWalletDatabase;
 use crate::db::{self, Metadata, WalletMetadata};
 use anyhow::Result;
+use cashu::MintUrl;
 // ----- local modules
 use crate::db::WalletDatabase;
 use crate::wallet;
@@ -92,6 +94,27 @@ thread_local! {
     static APP_STATE: RefCell<Option<&'static AppState>> = const { RefCell::new(None) } ;
 }
 
+pub async fn add_wallet(
+    name: String,
+    mint_url: String,
+    mnemonic: String,
+    unit: String,
+    credit: bool,
+) -> Result<()> {
+    let mint_url: MintUrl = mint_url.parse().map_err(anyhow::Error::msg)?;
+
+    // TODO verify mnemonic
+    let mnemonic: Vec<String> = mnemonic.split_whitespace().map(String::from).collect();
+
+    let state = get_state();
+    state
+        .metadata
+        .add_wallet(name, mint_url, mnemonic, unit, credit)
+        .await?;
+
+    Ok(())
+}
+
 pub async fn get_wallet(id: usize) -> Option<RexieWallet> {
     let state = get_state();
     match state.metadata.get_wallet(id).await {
@@ -113,8 +136,6 @@ pub async fn get_wallet(id: usize) -> Option<RexieWallet> {
                 .build();
 
             return Some(RexieWallet::Credit(wallet));
-
-            // test
         }
         _ => {}
     }
@@ -145,6 +166,17 @@ pub async fn initialize() {
 
 fn get_state() -> &'static AppState {
     APP_STATE.with(|slot| *slot.borrow()).unwrap()
+}
+
+pub async fn get_wallets() -> (Vec<usize>, Vec<String>) {
+    let state = get_state();
+    if let Ok(wallets) = state.metadata.get_wallets().await {
+        let ids = wallets.iter().map(|w| w.id).collect::<Vec<_>>();
+        let names = wallets.iter().map(|w| w.name.clone()).collect();
+        (ids, names)
+    } else {
+        Default::default()
+    }
 }
 
 pub async fn import_token_v3(token: String, idx: usize) {

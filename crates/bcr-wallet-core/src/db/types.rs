@@ -18,6 +18,8 @@ pub enum DatabaseError {
     CdkError(String),
     #[error("Wallet Not Found: {0}")]
     WalletNotFound(usize),
+    #[error("Wallet Database Full")]
+    WalletDatabaseFull,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq, Deserialize)]
@@ -38,6 +40,7 @@ pub trait WalletDatabase {
     /// Mark a proof as spent so it won't get used by subsequent transfers
     async fn deactivate_proof(&self, proof: Proof) -> Result<(), DatabaseError>;
     async fn add_proof(&self, proof: Proof) -> Result<(), DatabaseError>;
+    async fn clear(&self) -> Result<(), DatabaseError>;
 }
 
 pub trait KeysetDatabase {
