@@ -38,7 +38,7 @@ impl RexieMetadata {
             .collect::<Result<Vec<usize>, DatabaseError>>()?;
         let keys = HashSet::<usize>::from_iter(keys);
 
-        for i in 0..1000 {
+        for i in 0..100 {
             if !keys.contains(&i) {
                 return Ok(i);
             }
@@ -66,7 +66,6 @@ impl Metadata for RexieMetadata {
 
         tx.done().await?;
 
-        // Sort wallets by id
         wallets.sort_by_key(|w| w.id);
 
         Ok(wallets)

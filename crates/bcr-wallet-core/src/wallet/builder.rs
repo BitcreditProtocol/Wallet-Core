@@ -32,10 +32,11 @@ pub fn new_debit<DB: WalletDatabase>() -> WalletBuilder<Unconfigured, DebitWalle
         _marker: PhantomData,
     }
 }
-pub fn new_credit<DB: WalletDatabase>() -> WalletBuilder<UnitSet, CreditWallet, DB> {
-    WalletBuilder::<UnitSet, CreditWallet, DB> {
+pub fn new_credit<DB: WalletDatabase>() -> WalletBuilder<Unconfigured, CreditWallet, DB> {
+    WalletBuilder::<Unconfigured, CreditWallet, DB> {
         mint_url: None,
-        unit: Some(cashu::CurrencyUnit::Custom("crsat".into())),
+        unit: None,
+        // unit: Some(cashu::CurrencyUnit::Custom("crsat".into())),
         database: None,
         seed: None,
         _marker: PhantomData,

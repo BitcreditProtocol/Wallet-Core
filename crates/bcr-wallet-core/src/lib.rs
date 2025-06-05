@@ -99,3 +99,15 @@ pub async fn add_wallet(
         .await
         .unwrap();
 }
+
+#[wasm_bindgen]
+pub async fn list_keysets(idx: usize) -> String {
+    let keysets = app::list_keysets(idx).await;
+    let mut ret = String::new();
+    for keyset in &keysets {
+        let keyset_str = format!("kid={} unit={}", keyset.id, keyset.unit);
+        ret.push_str(&keyset_str);
+        ret.push('\n');
+    }
+    ret
+}

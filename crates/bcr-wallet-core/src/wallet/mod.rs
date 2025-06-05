@@ -1,6 +1,7 @@
 mod api;
 mod builder;
 mod credit;
+mod debit;
 mod types;
 mod utils;
 mod wallet;
