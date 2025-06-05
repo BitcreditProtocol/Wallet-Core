@@ -1,24 +1,86 @@
 // ----- standard library imports
 
 use std::cell::RefCell;
-use std::str::FromStr;
 // ----- extra library imports
-use crate::db;
 use crate::db::rexie::RexieWalletDatabase;
-use cashu::MintUrl;
+use crate::db::{self, Metadata, WalletMetadata};
+use anyhow::Result;
 // ----- local modules
 use crate::db::WalletDatabase;
-use crate::wallet::CreditWallet;
+use crate::wallet;
 use crate::wallet::{Wallet, new_credit};
 // ----- end imports
 
 // Experimental, no error handling
 
-type TestWallet = Wallet<CreditWallet, RexieWalletDatabase>;
+pub enum RexieWallet {
+    Credit(Wallet<wallet::CreditWallet, RexieWalletDatabase>),
+    Debit(Wallet<wallet::DebitWallet, RexieWalletDatabase>),
+}
+
+trait WalletInterface {
+    async fn import_token_v3(&self, token: String) -> Result<()>;
+    async fn restore(&self) -> Result<()>;
+    async fn get_active_proofs(&self) -> Result<Vec<cashu::Proof>>;
+    async fn get_balance(&self) -> Result<u64>;
+    async fn recheck(&self) -> Result<()>;
+    async fn split(&self, amount: u64) -> Result<()>;
+    async fn send_proofs_for(&self, amount: u64) -> Result<String>;
+}
+
+impl WalletInterface for RexieWallet {
+    async fn import_token_v3(&self, token: String) -> Result<()> {
+        match self {
+            RexieWallet::Credit(wallet) => wallet.import_token_v3(token).await,
+            RexieWallet::Debit(_) => todo!("DebitWALLET"),
+        }
+    }
+    async fn restore(&self) -> Result<()> {
+        match self {
+            RexieWallet::Credit(wallet) => wallet.restore().await,
+            RexieWallet::Debit(_) => todo!("DebitWALLET"),
+        }
+    }
+    async fn get_active_proofs(&self) -> Result<Vec<cashu::Proof>> {
+        match self {
+            RexieWallet::Credit(wallet) => wallet
+                .db
+                .get_active_proofs()
+                .await
+                .map_err(|e| anyhow::Error::new(e)),
+            RexieWallet::Debit(_) => todo!("DebitWALLET"),
+        }
+    }
+    async fn get_balance(&self) -> Result<u64> {
+        match self {
+            RexieWallet::Credit(wallet) => wallet.get_balance().await,
+            RexieWallet::Debit(_) => todo!("DebitWALLET"),
+        }
+    }
+    async fn recheck(&self) -> Result<()> {
+        match self {
+            RexieWallet::Credit(wallet) => wallet.recheck().await,
+            RexieWallet::Debit(_) => todo!("DebitWALLET"),
+        }
+    }
+    async fn split(&self, amount: u64) -> Result<()> {
+        match self {
+            RexieWallet::Credit(wallet) => wallet.split(amount).await,
+            RexieWallet::Debit(_) => todo!("DebitWALLET"),
+        }
+    }
+    async fn send_proofs_for(&self, amount: u64) -> Result<String> {
+        match self {
+            RexieWallet::Credit(wallet) => wallet.send_proofs_for(amount).await,
+            RexieWallet::Debit(_) => todo!("DebitWALLET"),
+        }
+    }
+}
+
 pub struct AppState {
     info: WalletInfo,
-    wallets: Vec<TestWallet>,
-    _db_manager: db::rexie::Manager,
+    db_manager: db::rexie::Manager,
+    metadata: db::rexie::RexieMetadata,
 }
 
 #[derive(Debug, Clone)]
@@ -30,27 +92,47 @@ thread_local! {
     static APP_STATE: RefCell<Option<&'static AppState>> = const { RefCell::new(None) } ;
 }
 
+pub async fn get_wallet(id: usize) -> Option<RexieWallet> {
+    let state = get_state();
+    match state.metadata.get_wallet(id).await {
+        Ok(
+            metadata @ WalletMetadata {
+                is_credit: true, ..
+            },
+        ) => {
+            let db = RexieWalletDatabase::new(format!("wallet_{}", id), state.db_manager.get_db());
+            let mnemonic = metadata.mnemonic.join(" ");
+            let mnemonic =
+                bip39::Mnemonic::parse_in_normalized(bip39::Language::English, &mnemonic).unwrap();
+
+            let seed = mnemonic.to_seed("");
+            let wallet = new_credit()
+                .set_mint_url(metadata.mint_url)
+                .set_database(db)
+                .set_seed(seed)
+                .build();
+
+            return Some(RexieWallet::Credit(wallet));
+
+            // test
+        }
+        _ => {}
+    }
+
+    None
+}
+
 pub async fn initialize() {
     let manager = db::rexie::Manager::new().await.unwrap();
 
-    let mut wallets = Vec::new();
-    for i in 0..10 {
-        let rexie_wallet = RexieWalletDatabase::new(format!("wallet_{}", i), manager.get_db());
-        let mint_url = MintUrl::from_str("http://localhost:4343").unwrap();
-        let wallet = new_credit()
-            .set_mint_url(mint_url)
-            .set_database(rexie_wallet)
-            .set_seed([0; 32])
-            .build();
-        wallets.push(wallet);
-    }
+    let metadata = db::rexie::RexieMetadata::new(manager.get_db());
 
     let state = AppState {
-        _db_manager: manager,
+        db_manager: manager,
+        metadata,
         info: WalletInfo {
             name: "BitCredit".into(),
         },
-        wallets,
     };
     APP_STATE.with(|context| {
         let mut context_ref = context.borrow_mut();
@@ -66,37 +148,35 @@ fn get_state() -> &'static AppState {
 }
 
 pub async fn import_token_v3(token: String, idx: usize) {
-    let state = get_state();
-    state.wallets[idx].import_token_v3(token).await.unwrap();
+    let wallet = get_wallet(idx).await.unwrap();
+    wallet.import_token_v3(token).await.unwrap();
 }
 
 pub async fn recover(idx: usize) {
-    let state = get_state();
-    state.wallets[idx].restore().await.unwrap();
+    let wallet = get_wallet(idx).await.unwrap();
+    wallet.restore().await.unwrap();
 }
 
 pub async fn get_mint_url(idx: usize) -> String {
     let state = get_state();
-    state.wallets[idx].mint_url.to_string()
+    let md = state.metadata.get_wallet(idx).await.unwrap();
+
+    md.mint_url.to_string()
 }
 
 pub async fn get_proofs(idx: usize) -> Vec<cashu::Proof> {
-    let state = get_state();
-    state.wallets[idx]
-        .db
-        .get_active_proofs()
-        .await
-        .unwrap_or(Vec::new())
+    let wallet = get_wallet(idx).await.unwrap();
+    wallet.get_active_proofs().await.unwrap_or(Vec::new())
 }
 
 pub async fn get_balance(idx: usize) -> u64 {
-    let state = get_state();
-    state.wallets[idx].get_balance().await.unwrap()
+    let wallet = get_wallet(idx).await.unwrap();
+    wallet.get_balance().await.unwrap()
 }
 
 pub async fn recheck(idx: usize) {
-    let state = get_state();
-    state.wallets[idx].recheck().await.unwrap()
+    let wallet = get_wallet(idx).await.unwrap();
+    wallet.recheck().await.unwrap()
 }
 
 pub fn get_wallet_info() -> WalletInfo {
@@ -105,12 +185,9 @@ pub fn get_wallet_info() -> WalletInfo {
 }
 
 pub async fn send_proofs_for(amount: u64, idx: usize) -> String {
-    let state = get_state();
+    let wallet = get_wallet(idx).await.unwrap();
 
     // Ensures we always have the right powers of 2 to send amount
-    let _ = state.wallets[idx].split(amount).await;
-    state.wallets[idx]
-        .send_proofs_for(amount)
-        .await
-        .unwrap_or("".into())
+    let _ = wallet.split(amount).await;
+    wallet.send_proofs_for(amount).await.unwrap_or("".into())
 }

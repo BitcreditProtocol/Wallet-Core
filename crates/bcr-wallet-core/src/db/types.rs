@@ -3,7 +3,6 @@
 use cashu::{Id, MintUrl, Proof, PublicKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use uuid::Uuid;
 // ----- local modules
 // ----- end imports
 
@@ -17,6 +16,8 @@ pub enum DatabaseError {
     KeysetNotFound,
     #[error("CDK error: {0}")]
     CdkError(String),
+    #[error("Wallet Not Found: {0}")]
+    WalletNotFound(usize),
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq, Deserialize)]
@@ -57,6 +58,7 @@ pub struct WalletMetadata {
 
 pub trait Metadata {
     async fn get_wallets(&self) -> Result<Vec<WalletMetadata>, DatabaseError>;
+    async fn get_wallet(&self, id: usize) -> Result<WalletMetadata, DatabaseError>;
     async fn add_wallet(
         &self,
         name: String,

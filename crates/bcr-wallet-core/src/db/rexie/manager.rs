@@ -46,14 +46,4 @@ impl Manager {
     pub fn get_db(&self) -> Rc<Rexie> {
         self.db.clone()
     }
-    pub fn get_wallet(&self, name: String) -> Wallet<CreditWallet, RexieWalletDatabase> {
-        let rexie_wallet = RexieWalletDatabase::new(name, self.get_db());
-        let mint_url = MintUrl::from_str("http://127.0.0.1:4343").unwrap();
-
-        new_credit()
-            .set_mint_url(mint_url)
-            .set_database(rexie_wallet)
-            .set_seed([0; 32])
-            .build()
-    }
 }

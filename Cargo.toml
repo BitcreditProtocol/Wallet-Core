@@ -28,3 +28,4 @@ uuid = { version = "1", features = ["v4", "serde"] }
 url = { version = "2.5" }
 rexie = { version = "0.6" }
 serde-wasm-bindgen = { version = "0.6" }
+bip39 = "2.1"

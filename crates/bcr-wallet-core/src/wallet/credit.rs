@@ -1,7 +1,7 @@
 // ----- standard library imports
 // ----- extra library imports
 use anyhow::Result;
-use cashu::{Amount, amount};
+use cashu::{Amount, Proof, amount};
 use tracing::{error, info, warn};
 // ----- local modules
 use super::types::SwapProofs;
@@ -14,9 +14,9 @@ use crate::mint::MintConnector;
 impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB> {
     async fn swap_proofs_amount(
         &self,
-        proofs: Vec<cashu::Proof>,
-        amounts: Vec<cashu::Amount>,
-    ) -> Result<Vec<cashu::Proof>> {
+        proofs: Vec<Proof>,
+        amounts: Vec<Amount>,
+    ) -> Result<Vec<Proof>> {
         let wdc = &self.connector;
         if proofs.is_empty() {
             warn!("No proofs provided");

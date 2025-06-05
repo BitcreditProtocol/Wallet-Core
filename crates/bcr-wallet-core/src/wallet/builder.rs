@@ -19,7 +19,7 @@ pub struct WalletBuilder<T, D: WalletType, DB: WalletDatabase> {
     mint_url: Option<cashu::MintUrl>,
     unit: Option<cashu::CurrencyUnit>,
     database: Option<DB>,
-    seed: Option<[u8; 32]>,
+    seed: Option<[u8; 64]>,
     _marker: PhantomData<(T, D)>,
 }
 
@@ -73,7 +73,7 @@ impl<T: WalletType, DB: WalletDatabase> WalletBuilder<MintSet, T, DB> {
 }
 
 impl<T: WalletType, DB: WalletDatabase> WalletBuilder<DatabaseSet, T, DB> {
-    pub fn set_seed(self, seed: [u8; 32]) -> WalletBuilder<SeedSet, T, DB> {
+    pub fn set_seed(self, seed: [u8; 64]) -> WalletBuilder<SeedSet, T, DB> {
         WalletBuilder {
             seed: Some(seed),
             _marker: PhantomData,
