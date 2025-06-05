@@ -140,7 +140,10 @@ where
 
                 self.db.increase_count(kid, proofs.len() as u32).await?;
 
-                let ys: Vec<cashu::PublicKey> = proofs.iter().map(|p| p.y().unwrap()).collect();
+                let ys = proofs
+                    .iter()
+                    .map(|p| p.y())
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 let states = self
                     .connector
