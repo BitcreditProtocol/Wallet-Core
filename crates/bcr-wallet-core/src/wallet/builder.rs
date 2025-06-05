@@ -1,5 +1,7 @@
 // ----- standard library imports
+use bitcoin::bip32::Xpriv;
 use std::marker::PhantomData;
+
 // ----- extra library imports
 // ----- local modules
 use crate::db::WalletDatabase;
@@ -85,8 +87,10 @@ where
     Connector<T>: MintConnector,
 {
     pub fn build(self) -> Wallet<T, DB> {
+        let xpriv =
+            Xpriv::new_master(bitcoin::Network::Bitcoin, self.seed.unwrap().as_ref()).unwrap();
         Wallet {
-            seed: self.seed.unwrap(),
+            xpriv,
             mint_url: self.mint_url.clone().unwrap(),
             unit: self.unit.unwrap(),
             connector: Connector::new(self.mint_url.unwrap().to_string()),

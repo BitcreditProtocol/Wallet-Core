@@ -30,6 +30,30 @@ async function run() {
     document.getElementById("output").innerHTML = proofs + "\ntoken:\n" + token;
   });
 
+  document.getElementById("recheckbtn").addEventListener("click", async () => {
+    let idx = document.getElementById("walletlist").selectedIndex;
+    await wasmModule.recheck(idx);
+
+    let balance = await wasmModule.get_balance(idx);
+    document.getElementById("balance").innerHTML = String(balance) + " crsat";
+
+    let proofs = await wasmModule.print_proofs(idx);
+    document.getElementById("output").innerHTML = proofs;
+  });
+
+  document.getElementById("recoverbtn").addEventListener("click", async () => {
+    let idx = document.getElementById("walletlist").selectedIndex;
+    await wasmModule.recover(idx);
+
+    // Reload
+
+    let balance = await wasmModule.get_balance(idx);
+    document.getElementById("balance").innerHTML = String(balance) + " crsat";
+
+    let proofs = await wasmModule.print_proofs(idx);
+    document.getElementById("output").innerHTML = proofs;
+  });
+
   document
     .getElementById("walletlist")
     .addEventListener("change", async (event) => {

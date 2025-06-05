@@ -18,7 +18,7 @@ type TestWallet = Wallet<CreditWallet, RexieWalletDatabase>;
 pub struct AppState {
     info: WalletInfo,
     wallets: Vec<TestWallet>,
-    _db_manager: db::Manager,
+    _db_manager: db::rexie::Manager,
 }
 
 #[derive(Debug, Clone)]
@@ -31,12 +31,13 @@ thread_local! {
 }
 
 pub async fn initialize() {
-    let manager = db::Manager::new().await.unwrap();
+    let manager = db::rexie::Manager::new().await.unwrap();
 
     let mut wallets = Vec::new();
     for i in 0..10 {
         let rexie_wallet = RexieWalletDatabase::new(format!("wallet_{}", i), manager.get_db());
-        let mint_url = MintUrl::from_str("https://wildcat-dev-docker.minibill.tech").unwrap();
+        // let mint_url = MintUrl::from_str("https://wildcat-dev-docker.minibill.tech").unwrap();
+        let mint_url = MintUrl::from_str("http://localhost:4343").unwrap();
         let wallet = new_credit()
             .set_mint_url(mint_url)
             .set_database(rexie_wallet)
@@ -70,6 +71,11 @@ pub async fn import_token_v3(token: String, idx: usize) {
     state.wallets[idx].import_token_v3(token).await.unwrap();
 }
 
+pub async fn recover(idx: usize) {
+    let state = get_state();
+    state.wallets[idx].restore().await.unwrap();
+}
+
 pub async fn get_mint_url(idx: usize) -> String {
     let state = get_state();
     state.wallets[idx].mint_url.to_string()
@@ -87,6 +93,11 @@ pub async fn get_proofs(idx: usize) -> Vec<cashu::Proof> {
 pub async fn get_balance(idx: usize) -> u64 {
     let state = get_state();
     state.wallets[idx].get_balance().await.unwrap()
+}
+
+pub async fn recheck(idx: usize) {
+    let state = get_state();
+    state.wallets[idx].recheck().await.unwrap()
 }
 
 pub fn get_wallet_info() -> WalletInfo {

@@ -1,71 +1,19 @@
 // ----- standard library imports
 // ----- extra library imports
-use anyhow::Result;
-use tracing::{error, warn};
+use cashu::{CheckStateRequest, ProofsMethods};
+use tracing::warn;
 // ----- local modules
+use super::types::SwapProofs;
 use super::utils;
 use super::wallet::*;
+use crate::db::KeysetDatabase;
 use crate::db::WalletDatabase;
 use crate::mint::{Connector, MintConnector};
 // ----- end imports
 
 // TODO async trait
-pub trait SwapProofs {
-    async fn swap_proofs_amount(
-        &self,
-        proofs: Vec<cashu::Proof>,
-        amounts: Vec<cashu::Amount>,
-    ) -> Result<Vec<cashu::Proof>>;
-}
 
-impl<DB: WalletDatabase> SwapProofs for Wallet<CreditWallet, DB> {
-    async fn swap_proofs_amount(
-        &self,
-        proofs: Vec<cashu::Proof>,
-        amounts: Vec<cashu::Amount>,
-    ) -> Result<Vec<cashu::Proof>> {
-        let wdc = &self.connector;
-        if proofs.is_empty() {
-            warn!("No proofs provided");
-            return Err(anyhow::anyhow!("No proofs provided"));
-        };
-        let mut total_proofs = 0u64;
-        let mut total_amounts = 0u64;
-        for p in &proofs {
-            total_proofs += u64::from(p.amount);
-        }
-        for a in &amounts {
-            total_amounts += u64::from(*a);
-        }
-        if total_proofs != total_amounts {
-            error!("Proofs and amounts do not match");
-            return Err(anyhow::anyhow!("Proofs and amounts do not match"));
-        }
-
-        let keyset_id = proofs[0].keyset_id;
-
-        let keys = wdc.list_keys(keyset_id).await?;
-
-        let keys = keys
-            .keysets
-            .first()
-            .ok_or(anyhow::anyhow!("No keys found"))?;
-
-        let new_blinds = utils::generate_blinds(keyset_id, &amounts);
-        let bs = new_blinds.iter().map(|b| b.0.clone()).collect::<Vec<_>>();
-        let swap_request = cashu::nut03::SwapRequest::new(proofs, bs);
-
-        let response = wdc.swap(swap_request).await?;
-
-        let secrets = new_blinds.iter().map(|b| b.1.clone()).collect::<Vec<_>>();
-        let rs = new_blinds.iter().map(|b| b.2.clone()).collect::<Vec<_>>();
-        let proofs = cashu::dhke::construct_proofs(response.signatures, rs, secrets, &keys.keys)?;
-
-        Ok(proofs)
-    }
-}
-
-impl<T: WalletType, DB: WalletDatabase> Wallet<T, DB>
+impl<T: WalletType, DB: WalletDatabase + KeysetDatabase> Wallet<T, DB>
 where
     Connector<T>: MintConnector,
     Wallet<T, DB>: SwapProofs,
@@ -100,6 +48,125 @@ where
                 }
             } else {
                 warn!("Error ocurred when splitting");
+            }
+        }
+        Ok(())
+    }
+
+    /// Scan the wallet database, and update whether proofs are spent or not by asking the mint
+    pub async fn recheck(&self) -> anyhow::Result<()> {
+        let proofs = self.db.get_active_proofs().await?;
+        let ys: Vec<cashu::PublicKey> = proofs.iter().map(|p| p.y().unwrap()).collect();
+        let states = self
+            .connector
+            .checkstate(CheckStateRequest { ys })
+            .await?
+            .states;
+
+        for (state, proof) in states.iter().zip(proofs.iter()) {
+            if state.state != cashu::nut07::State::Unspent {
+                let _ = self.db.deactivate_proof(proof.clone()).await;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn restore(&self) -> anyhow::Result<()> {
+        let keysets = self.connector.list_keysets().await?;
+
+        let keyset_ids: Vec<cashu::Id> = keysets.keysets.iter().map(|ks| ks.id).collect();
+
+        let mut restored_value = cashu::Amount::ZERO;
+
+        for kid in keyset_ids {
+            tracing::debug!(kid=?kid,"Restore");
+            let resp = self.connector.list_keys(kid).await?;
+            let keys = resp.keysets.first();
+            if keys.is_none() {
+                warn!("No keys found for keyset {}", kid);
+                continue;
+            }
+            let keys = keys.unwrap().keys.clone();
+            let mut fruitless_attempts = 0;
+            let mut key_counter = 0;
+
+            // Nut13 describes restoring proofs in batches of 100,
+            // If there are 3 batches where nothing is restored, we stop.
+            // We use 2 as Wildcat mints have many more keysets
+            while fruitless_attempts < 2 {
+                let premint_secrets = cashu::PreMintSecrets::restore_batch(
+                    kid,
+                    self.xpriv,
+                    key_counter,
+                    key_counter + 100,
+                )?;
+
+                let restore_request = cashu::RestoreRequest {
+                    outputs: premint_secrets.blinded_messages(),
+                };
+
+                let response = self.connector.restore(restore_request).await?;
+
+                tracing::info!(sigs=?response.signatures,"Restored signatures");
+
+                if response.signatures.is_empty() {
+                    fruitless_attempts += 1;
+                    key_counter += 100;
+                    continue;
+                }
+
+                let premint_secrets: Vec<&cashu::PreMint> = premint_secrets
+                    .secrets
+                    .iter()
+                    .filter(|p| response.outputs.contains(&p.blinded_message))
+                    .collect();
+
+                if response.outputs.len() != premint_secrets.len() {
+                    warn!(
+                        "Mismatch between response outputs ({}) and filtered premint secrets ({})",
+                        response.outputs.len(),
+                        premint_secrets.len()
+                    );
+                    continue;
+                }
+
+                let proofs = cashu::dhke::construct_proofs(
+                    response.signatures,
+                    premint_secrets.iter().map(|p| p.r.clone()).collect(),
+                    premint_secrets.iter().map(|p| p.secret.clone()).collect(),
+                    &keys,
+                )?;
+
+                self.db.increase_count(kid, proofs.len() as u32).await?;
+
+                let ys = proofs
+                    .iter()
+                    .map(|p| p.y())
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let states = self
+                    .connector
+                    .checkstate(CheckStateRequest { ys: ys.clone() })
+                    .await?
+                    .states;
+
+                let unspent_proofs: Vec<cashu::Proof> = proofs
+                    .iter()
+                    .zip(states)
+                    .filter(|(_, state)| !state.state.eq(&cashu::State::Spent))
+                    .map(|(p, _)| p)
+                    .cloned()
+                    .collect();
+
+                for p in unspent_proofs.iter() {
+                    let _ = self.db.add_proof(p.clone()).await;
+                }
+
+                restored_value += unspent_proofs.total_amount()?;
+
+                fruitless_attempts = 0;
+                key_counter += 100;
             }
         }
         Ok(())

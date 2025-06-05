@@ -19,6 +19,7 @@ anyhow.workspace = true
 rand.workspace = true
 rexie.workspace = true
 tracing.workspace = true
+bitcoin.workspace = true
 tracing-subscriber.workspace = true
 tracing-wasm = "0.2.1"
 getrandom = { version = "0.2.16", features = ["js"] }

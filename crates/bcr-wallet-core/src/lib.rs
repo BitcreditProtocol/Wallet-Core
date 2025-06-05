@@ -61,3 +61,13 @@ pub async fn send(amount: u64, idx: usize) -> String {
 pub fn get_wallet_name() -> String {
     app::get_wallet_info().name
 }
+
+#[wasm_bindgen]
+pub async fn recover(idx: usize) {
+    app::recover(idx).await
+}
+
+#[wasm_bindgen]
+pub async fn recheck(idx: usize) {
+    app::recheck(idx).await
+}

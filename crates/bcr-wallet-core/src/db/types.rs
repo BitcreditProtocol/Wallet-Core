@@ -1,6 +1,6 @@
 // ----- standard library imports
 // ----- extra library imports
-use cashu::{Proof, PublicKey};
+use cashu::{Id, Proof, PublicKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 // ----- local modules
@@ -12,6 +12,10 @@ pub enum DatabaseError {
     DatabaseError(String),
     #[error("Serialization failed: {0}")]
     SerializationError(String),
+    #[error("Keyset not found")]
+    KeysetNotFound,
+    #[error("CDK error: {0}")]
+    CdkError(String),
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq, Deserialize)]
@@ -32,4 +36,9 @@ pub trait WalletDatabase {
     /// Mark a proof as spent so it won't get used by subsequent transfers
     async fn deactivate_proof(&self, proof: Proof) -> Result<(), DatabaseError>;
     async fn add_proof(&self, proof: Proof) -> Result<(), DatabaseError>;
+}
+
+pub trait KeysetDatabase {
+    async fn get_count(&self, keyset_id: Id) -> Result<u32, DatabaseError>;
+    async fn increase_count(&self, keyset_id: Id, addition: u32) -> Result<u32, DatabaseError>;
 }
