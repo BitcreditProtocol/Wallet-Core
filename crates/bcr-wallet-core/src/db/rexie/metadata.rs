@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 // ----- standard library im
+use std::collections::HashSet;
 use std::rc::Rc;
 // ----- extra library imports
 use cashu::MintUrl;

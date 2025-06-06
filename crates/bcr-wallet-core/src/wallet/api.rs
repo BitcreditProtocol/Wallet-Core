@@ -4,10 +4,8 @@ use cashu::{CheckStateRequest, ProofsMethods};
 use tracing::warn;
 // ----- local modules
 use super::types::SwapProofs;
-use super::utils;
-use super::wallet::*;
-use crate::db::KeysetDatabase;
-use crate::db::WalletDatabase;
+use super::{utils, wallet::*};
+use crate::db::{KeysetDatabase, WalletDatabase};
 use crate::mint::{Connector, MintConnector};
 // ----- end imports
 

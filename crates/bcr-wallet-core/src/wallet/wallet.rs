@@ -1,7 +1,6 @@
 // ----- standard library imports
 // ----- extra library imports
 use cashu::{CurrencyUnit, MintUrl};
-use serde::{Deserialize, Serialize};
 // ----- local modules
 use crate::db::WalletDatabase;
 use crate::mint::{Connector, MintConnector};

@@ -1,8 +1,12 @@
-use crate::db::types::DatabaseError;
+// ----- standard library im
+// ----- extra library imports
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::JsValue;
+// ----- local modules
+use crate::db::types::DatabaseError;
+// ----- end imports
 
 pub fn to_js<T: Serialize>(value: &T) -> Result<JsValue, DatabaseError> {
     to_value(value)

@@ -1,8 +1,7 @@
 // ----- standard library imports
-use bitcoin::bip32::Xpriv;
 use std::marker::PhantomData;
-
 // ----- extra library imports
+use bitcoin::bip32::Xpriv;
 // ----- local modules
 use crate::db::WalletDatabase;
 use crate::mint::{Connector, MintConnector};

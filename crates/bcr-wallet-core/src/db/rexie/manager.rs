@@ -1,13 +1,8 @@
 // ----- standard library imports
 use std::rc::Rc;
-use std::str::FromStr;
 // ----- extra library imports
-use cashu::MintUrl;
 use rexie::{ObjectStore, Rexie};
 // ----- local modules
-use super::RexieWalletDatabase;
-use crate::wallet::new_credit;
-use crate::wallet::{CreditWallet, Wallet};
 
 // ----- end imports
 

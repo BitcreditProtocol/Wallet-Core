@@ -6,8 +6,7 @@ use tracing::{error, info, warn};
 // ----- local modules
 use super::types::SwapProofs;
 use super::wallet::*;
-use crate::db::KeysetDatabase;
-use crate::db::WalletDatabase;
+use crate::db::{KeysetDatabase, WalletDatabase};
 use crate::mint::MintConnector;
 // ----- end imports
 

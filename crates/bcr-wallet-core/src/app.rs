@@ -1,18 +1,12 @@
 // ----- standard library imports
-
 use std::cell::RefCell;
-use std::str::FromStr;
 // ----- extra library imports
-use crate::db::rexie::RexieWalletDatabase;
-use crate::db::{self, Metadata, WalletMetadata};
 use anyhow::Result;
-use cashu::{CurrencyUnit, MintUrl};
+use cashu::MintUrl;
 // ----- local modules
-use crate::db::WalletDatabase;
+use crate::db::{self, Metadata, WalletDatabase, WalletMetadata, rexie::RexieWalletDatabase};
 use crate::mint::{Connector, MintConnector};
-use crate::wallet::SwapProofs;
-use crate::wallet::{self, WalletType};
-use crate::wallet::{Wallet, new_credit, new_debit};
+use crate::wallet::{self, SwapProofs, Wallet, WalletType, new_credit, new_debit};
 // ----- end imports
 
 // Experimental, no error handling
