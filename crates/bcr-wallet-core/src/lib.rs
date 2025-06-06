@@ -105,7 +105,10 @@ pub async fn list_keysets(idx: usize) -> String {
     let keysets = app::list_keysets(idx).await;
     let mut ret = String::new();
     for keyset in &keysets {
-        let keyset_str = format!("kid={} unit={}", keyset.id, keyset.unit);
+        let keyset_str = format!(
+            "kid={} unit={} active={}",
+            keyset.id, keyset.unit, keyset.active
+        );
         ret.push_str(&keyset_str);
         ret.push('\n');
     }
