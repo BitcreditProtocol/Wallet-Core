@@ -25,6 +25,7 @@ pub enum DatabaseError {
 #[derive(Debug, Serialize, PartialEq, Eq, Deserialize)]
 pub enum ProofStatus {
     Unspent,
+    Pending,
     Spent,
 }
 
@@ -37,8 +38,13 @@ pub(crate) struct WalletProof {
 
 pub trait WalletDatabase {
     async fn get_active_proofs(&self) -> Result<Vec<Proof>, DatabaseError>;
-    /// Mark a proof as spent so it won't get used by subsequent transfers
-    async fn deactivate_proof(&self, proof: Proof) -> Result<(), DatabaseError>;
+    async fn get_pending_proofs(&self) -> Result<Vec<Proof>, DatabaseError>;
+    /// Mark a proof as pending so it won't get used by subsequent transfers
+    async fn mark_pending(&self, proof: Proof) -> Result<(), DatabaseError>;
+    /// Mark a proof in its final state spent
+    async fn mark_spent(&self, proof: Proof) -> Result<(), DatabaseError>;
+    /// Mark a pending proof as unspent
+    async fn mark_unspent(&self, proof: Proof) -> Result<(), DatabaseError>;
     async fn add_proof(&self, proof: Proof) -> Result<(), DatabaseError>;
     async fn clear(&self) -> Result<(), DatabaseError>;
 }

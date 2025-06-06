@@ -27,8 +27,33 @@ impl From<rexie::Error> for DatabaseError {
     }
 }
 
-impl WalletDatabase for RexieWalletDatabase {
-    async fn get_active_proofs(&self) -> Result<Vec<Proof>, DatabaseError> {
+impl RexieWalletDatabase {
+    async fn update_proof_status(
+        &self,
+        proof: Proof,
+        status: ProofStatus,
+    ) -> Result<(), DatabaseError> {
+        let tx = self.db.transaction(
+            std::slice::from_ref(&self.store_name),
+            TransactionMode::ReadWrite,
+        )?;
+        let store = tx.store(&self.store_name.clone())?;
+
+        let key = proof
+            .y()
+            .map_err(|e| DatabaseError::CdkError(e.to_string()))?;
+        let key = utils::to_js(&key)?;
+        if let Ok(Some(wp)) = store.get(key).await {
+            let mut wp: WalletProof = utils::from_js(wp)?;
+            wp.status = status;
+
+            let wp = utils::to_js(&wp)?;
+            store.put(&wp, None).await?;
+        }
+        tx.done().await?;
+        Ok(())
+    }
+    async fn get_proofs_by_status(&self, status: ProofStatus) -> Result<Vec<Proof>, DatabaseError> {
         let tx = self
             .db
             .transaction(&[&self.store_name], TransactionMode::ReadOnly)?;
@@ -43,11 +68,34 @@ impl WalletDatabase for RexieWalletDatabase {
 
         let unspent = proofs
             .into_iter()
-            .filter(|p| p.status == ProofStatus::Unspent)
+            .filter(|p| p.status == status)
             .map(|p| p.proof)
             .collect::<Vec<Proof>>();
 
         Ok(unspent)
+    }
+}
+
+impl WalletDatabase for RexieWalletDatabase {
+    async fn get_active_proofs(&self) -> Result<Vec<Proof>, DatabaseError> {
+        self.get_proofs_by_status(ProofStatus::Unspent).await
+    }
+
+    async fn get_pending_proofs(&self) -> Result<Vec<Proof>, DatabaseError> {
+        self.get_proofs_by_status(ProofStatus::Pending).await
+    }
+
+    async fn mark_spent(&self, proof: Proof) -> Result<(), DatabaseError> {
+        self.update_proof_status(proof, ProofStatus::Spent).await
+    }
+
+    async fn mark_pending(&self, proof: Proof) -> Result<(), DatabaseError> {
+        self.update_proof_status(proof, ProofStatus::Pending).await
+    }
+
+    /// Only used to reclaim pending proofs
+    async fn mark_unspent(&self, proof: Proof) -> Result<(), DatabaseError> {
+        self.update_proof_status(proof, ProofStatus::Unspent).await
     }
 
     async fn clear(&self) -> Result<(), DatabaseError> {
@@ -58,28 +106,6 @@ impl WalletDatabase for RexieWalletDatabase {
         let store = tx.store(&self.store_name.clone())?;
 
         store.clear().await?;
-        tx.done().await?;
-        Ok(())
-    }
-
-    async fn deactivate_proof(&self, proof: Proof) -> Result<(), DatabaseError> {
-        let tx = self.db.transaction(
-            std::slice::from_ref(&self.store_name),
-            TransactionMode::ReadWrite,
-        )?;
-        let store = tx.store(&self.store_name.clone())?;
-
-        let key = proof
-            .y()
-            .map_err(|e| DatabaseError::CdkError(e.to_string()))?;
-        let key = utils::to_js(&key)?;
-        if let Ok(Some(wp)) = store.get(key).await {
-            let mut wp: WalletProof = utils::from_js(wp)?;
-            wp.status = ProofStatus::Spent;
-
-            let wp = utils::to_js(&wp)?;
-            store.put(&wp, None).await?;
-        }
         tx.done().await?;
         Ok(())
     }

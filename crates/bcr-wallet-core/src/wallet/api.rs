@@ -40,7 +40,7 @@ where
             if let Ok(new_proofs) = self.swap_proofs_amount(proofs.clone(), amounts).await {
                 // set old proofs as spent
                 for p in &proofs {
-                    self.db.deactivate_proof(p.clone()).await?;
+                    self.db.mark_spent(p.clone()).await?;
                 }
 
                 for p in new_proofs {
@@ -53,7 +53,9 @@ where
         Ok(())
     }
 
-    /// Scan the wallet database, and update whether proofs are spent or not by asking the mint
+    /// Scan the wallet database
+    /// update whether proofs are spent or not by asking the mint
+    /// update whether pending proofs are spent and mark as unspent
     pub async fn recheck(&self) -> anyhow::Result<()> {
         let proofs = self.db.get_active_proofs().await?;
         let ys: Vec<cashu::PublicKey> = proofs.iter().map(|p| p.y().unwrap()).collect();
@@ -65,7 +67,21 @@ where
 
         for (state, proof) in states.iter().zip(proofs.iter()) {
             if state.state != cashu::nut07::State::Unspent {
-                let _ = self.db.deactivate_proof(proof.clone()).await;
+                let _ = self.db.mark_spent(proof.clone()).await;
+            }
+        }
+
+        let proofs = self.db.get_pending_proofs().await?;
+        let ys: Vec<cashu::PublicKey> = proofs.iter().map(|p| p.y().unwrap()).collect();
+        let states = self
+            .connector
+            .checkstate(CheckStateRequest { ys })
+            .await?
+            .states;
+
+        for (state, proof) in states.iter().zip(proofs.iter()) {
+            if state.state == cashu::nut07::State::Unspent {
+                let _ = self.db.mark_unspent(proof.clone()).await;
             }
         }
 
@@ -205,7 +221,7 @@ where
 
             // Mark the proofs we send as a token as spent
             for p in &selected_proofs {
-                self.db.deactivate_proof(p.clone()).await?;
+                self.db.mark_pending(p.clone()).await?;
             }
 
             return Ok(token.to_v3_string());
