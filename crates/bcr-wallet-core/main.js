@@ -23,7 +23,9 @@ async function run() {
         ids[document.getElementById("walletlist").selectedIndex],
       );
       let balance = await wasmModule.get_balance(idx);
-      document.getElementById("balance").innerHTML = String(balance) + " crsat";
+      let unit = await wasmModule.get_unit(idx);
+      document.getElementById("balance").innerHTML =
+        String(balance) + " " + unit;
 
       let proofs = await wasmModule.print_proofs(idx);
       document.getElementById("output").innerHTML = proofs;
@@ -46,6 +48,18 @@ async function run() {
 
   document.getElementById("refreshbtn").addEventListener("click", async () => {
     await update_wallets();
+  });
+
+  document.getElementById("redeembtn").addEventListener("click", async () => {
+    let ids = await wasmModule.get_wallets_ids();
+    let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
+
+    let unit = await wasmModule.get_unit(idx);
+    if (unit.toLowerCase() == "crsat") {
+      let token = await wasmModule.redeem_first_inactive(idx);
+      await update_balance();
+      document.getElementById("output").innerHTML += "\ntoken:\n" + token;
+    }
   });
 
   document.getElementById("importbtn").addEventListener("click", async () => {
@@ -96,9 +110,6 @@ async function run() {
         let wallet_url = await wasmModule.get_wallet_url(idx);
         document.getElementById("walletname").innerHTML =
           "[" + wallet_name + "] " + String(idx) + " @ " + wallet_url + "  ";
-
-        document.getElementById("balance").innerHTML = "0 crsat";
-        document.getElementById("output").innerHTML = "";
 
         await update_balance();
 

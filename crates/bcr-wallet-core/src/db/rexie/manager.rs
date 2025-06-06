@@ -16,7 +16,7 @@ fn proof_store(id: &str) -> ObjectStore {
 
 impl Manager {
     pub async fn new() -> Option<Manager> {
-        let mut rexie = Rexie::builder("wallets_db_4").version(1);
+        let mut rexie = Rexie::builder("wallets_db_7").version(1);
         for i in 0..99 {
             rexie = rexie.add_object_store(proof_store(&format!("wallet_{}", i)));
         }

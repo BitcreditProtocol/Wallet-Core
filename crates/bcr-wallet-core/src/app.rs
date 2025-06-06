@@ -293,6 +293,17 @@ pub async fn list_keysets(idx: usize) -> Vec<cashu::KeySetInfo> {
     keysets
 }
 
+pub async fn get_unit(idx: usize) -> cashu::CurrencyUnit {
+    tracing::debug!("Listing keysets for wallet {}", idx);
+    let wallet = get_wallet(idx).await.unwrap();
+
+    let unit = match &wallet {
+        RexieWallet::Debit(debit) => debit.unit.clone(),
+        RexieWallet::Credit(credit) => credit.unit.clone(),
+    };
+    unit
+}
+
 pub async fn get_balance(idx: usize) -> u64 {
     tracing::debug!("Getting balance for wallet {}", idx);
     let wallet = get_wallet(idx).await.unwrap();
@@ -316,4 +327,13 @@ pub async fn send_proofs_for(amount: u64, idx: usize) -> String {
     // Ensures we always have the right powers of 2 to send amount
     let _ = wallet._split(amount).await;
     wallet._send_proofs_for(amount).await.unwrap_or("".into())
+}
+
+pub async fn redeem_first_inactive(idx: usize) -> String {
+    let wallet = get_wallet(idx).await.unwrap();
+
+    return match wallet {
+        RexieWallet::Debit(_) => "".into(),
+        RexieWallet::Credit(credit) => credit.redeem_first_inactive().await.unwrap_or("".into()),
+    };
 }

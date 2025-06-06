@@ -114,3 +114,13 @@ pub async fn list_keysets(idx: usize) -> String {
     }
     ret
 }
+
+#[wasm_bindgen]
+pub async fn get_unit(idx: usize) -> String {
+    app::get_unit(idx).await.to_string()
+}
+
+#[wasm_bindgen]
+pub async fn redeem_first_inactive(idx: usize) -> String {
+    app::redeem_first_inactive(idx).await
+}
