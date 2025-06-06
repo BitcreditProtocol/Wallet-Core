@@ -8,13 +8,8 @@ async function run() {
   document.getElementById("walletname").innerHTML = wallet_name;
 
   let update_wallets = async () => {
-    // test
     let wallets = await wasmModule.get_wallets_names();
-    let ids = await wasmModule.get_wallets_ids();
-    console.log(ids);
-    console.log(wallets);
 
-    // set walletlist items to wallets
     document.getElementById("walletlist").innerHTML = wallets
       .map((name, idx) => `<option value="${idx}">${name}</option>`)
       .join("");
@@ -50,7 +45,6 @@ async function run() {
   });
 
   document.getElementById("refreshbtn").addEventListener("click", async () => {
-    console.log("refresh");
     await update_wallets();
   });
 
@@ -98,8 +92,6 @@ async function run() {
         let idx = Number(
           ids[document.getElementById("walletlist").selectedIndex],
         );
-
-        console.log("Selected wallet:", idx);
 
         let wallet_url = await wasmModule.get_wallet_url(idx);
         document.getElementById("walletname").innerHTML =
