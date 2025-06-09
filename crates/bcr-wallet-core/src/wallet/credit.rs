@@ -26,7 +26,6 @@ where
             .map(|ks| ks.id)
             .collect::<std::collections::HashSet<_>>();
 
-        // proofs[0].keyset_id
         let mut inactive_keyset = None;
         for p in &proofs {
             if inactive_keysets.contains(&p.keyset_id) {
