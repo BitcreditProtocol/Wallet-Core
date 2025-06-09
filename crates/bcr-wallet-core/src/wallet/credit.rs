@@ -64,7 +64,7 @@ where
             self.db.mark_pending(p.clone()).await?;
         }
 
-        return Ok(token.to_v3_string());
+        Ok(token.to_v3_string())
     }
 }
 

@@ -45,7 +45,7 @@ where
         self.db
             .get_active_proofs()
             .await
-            .map_err(|e| anyhow::Error::new(e))
+            .map_err(anyhow::Error::new)
     }
     async fn _get_balance(&self) -> Result<u64> {
         self.get_balance().await
@@ -297,11 +297,10 @@ pub async fn get_unit(idx: usize) -> cashu::CurrencyUnit {
     tracing::debug!("Listing keysets for wallet {}", idx);
     let wallet = get_wallet(idx).await.unwrap();
 
-    let unit = match &wallet {
+    match &wallet {
         RexieWallet::Debit(debit) => debit.unit.clone(),
         RexieWallet::Credit(credit) => credit.unit.clone(),
-    };
-    unit
+    }
 }
 
 pub async fn get_balance(idx: usize) -> u64 {

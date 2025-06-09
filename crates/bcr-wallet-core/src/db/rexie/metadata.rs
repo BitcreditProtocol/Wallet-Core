@@ -100,7 +100,7 @@ impl Metadata for RexieMetadata {
     ) -> Result<WalletMetadata, DatabaseError> {
         let id = self.get_empty_id().await?;
         let wallet = WalletMetadata {
-            id: id,
+            id,
             name,
             is_active: true,
             mint_url,
