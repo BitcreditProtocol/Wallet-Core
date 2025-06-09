@@ -146,8 +146,8 @@ pub async fn add_wallet(
 ) -> Result<()> {
     let mint_url: MintUrl = mint_url.parse().map_err(anyhow::Error::msg)?;
 
-    // TODO verify mnemonic
     let mnemonic: Vec<String> = mnemonic.split_whitespace().map(String::from).collect();
+    bip39::Mnemonic::parse_in_normalized(bip39::Language::English, &mnemonic.join(" "))?; // validate
 
     let state = get_state();
     state
