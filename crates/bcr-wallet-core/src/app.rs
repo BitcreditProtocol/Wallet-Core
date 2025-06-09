@@ -9,7 +9,7 @@ use crate::mint::{Connector, MintConnector};
 use crate::wallet::{self, SwapProofs, Wallet, WalletType, new_credit, new_debit};
 // ----- end imports
 
-// Experimental, no error handling
+// Experimental, Many things will change here, mostly for testing
 
 pub enum RexieWallet {
     Credit(Wallet<wallet::CreditWallet, RexieWalletDatabase>),
@@ -216,7 +216,7 @@ pub async fn get_wallet(id: usize) -> anyhow::Result<RexieWallet> {
 }
 
 pub async fn initialize() {
-    let manager = db::rexie::Manager::new().await.unwrap();
+    let manager = db::rexie::Manager::new("wallets_db_7").await.unwrap();
 
     let metadata = db::rexie::RexieMetadata::new(manager.get_db());
 

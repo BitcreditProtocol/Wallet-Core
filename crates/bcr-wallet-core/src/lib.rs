@@ -14,6 +14,8 @@ use wasm_bindgen::prelude::*;
 // ----- local modules
 // ----- end imports
 
+// Experimental, Many things will change here, a wasm export of using the app, mostly for testing
+
 #[wasm_bindgen]
 pub async fn initialize_api() {
     tracing_wasm::set_as_global_default();
