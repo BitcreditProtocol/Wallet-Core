@@ -79,7 +79,9 @@ where
 
         for (state, proof) in states.iter().zip(proofs.iter()) {
             if state.state == cashu::nut07::State::Unspent {
-                let _ = self.db.mark_unspent(proof.clone()).await;
+                if let Err(e) = self.db.mark_unspent(proof.clone()).await {
+                    warn!("Failed to mark proof as unspent: {}", e);
+                }
             }
         }
 
