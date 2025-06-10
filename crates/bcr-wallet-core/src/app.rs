@@ -147,8 +147,7 @@ pub async fn add_wallet(
     let mint_url: MintUrl = mint_url.parse().map_err(anyhow::Error::msg)?;
 
     // Validation
-    let mnemonic =
-        bip39::Mnemonic::parse_in_normalized(bip39::Language::English, &mnemonic.trim())?;
+    let mnemonic = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, mnemonic.trim())?;
     let mnemonic: Vec<String> = mnemonic.words().map(String::from).collect();
 
     let state = get_state();
