@@ -59,14 +59,17 @@ impl PrefixCodec for BitcrB {
     const PREFIX: &'static str = "bitcrB";
 }
 
-fn parse_token_v3_with_prefix<C: PrefixCodec>(s: &str) -> Result<TokenV3, TokenError> {
-    let s = C::strip_prefix(s)?;
-
+fn decode_base64_token(s: &str) -> Result<Vec<u8>, TokenError> {
     let decode_config = general_purpose::GeneralPurposeConfig::new()
         .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
-    let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config)
+    GeneralPurpose::new(&alphabet::URL_SAFE, decode_config)
         .decode(s)
-        .map_err(|e| TokenError::Base64Error(e))?;
+        .map_err(TokenError::Base64Error)
+}
+
+fn parse_token_v3_with_prefix<C: PrefixCodec>(s: &str) -> Result<TokenV3, TokenError> {
+    let s = C::strip_prefix(s)?;
+    let decoded = decode_base64_token(s)?;
     let decoded_str = String::from_utf8(decoded).map_err(TokenError::Utf8Error)?;
     let token: TokenV3 = serde_json::from_str(&decoded_str).map_err(TokenError::JsonError)?;
     Ok(token)
@@ -74,12 +77,7 @@ fn parse_token_v3_with_prefix<C: PrefixCodec>(s: &str) -> Result<TokenV3, TokenE
 
 fn parse_token_v4_with_prefix<C: PrefixCodec>(s: &str) -> Result<TokenV4, TokenError> {
     let s = C::strip_prefix(s)?;
-
-    let decode_config = general_purpose::GeneralPurposeConfig::new()
-        .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
-    let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config)
-        .decode(s)
-        .map_err(|e| TokenError::Base64Error(e))?;
+    let decoded = decode_base64_token(s)?;
     let token: TokenV4 = ciborium::from_reader(&decoded[..]).map_err(TokenError::CborError)?;
     Ok(token)
 }
@@ -125,10 +123,9 @@ impl fmt::Display for Token {
                 write!(f, "bitcrA{encoded}")
             }
             Token::BitcrV4(v4) => {
-                use serde::ser::Error;
                 let mut data = Vec::new();
                 ciborium::into_writer(v4, &mut data)
-                    .map_err(|e| fmt::Error::custom(e.to_string()))?;
+                    .map_err(|_| fmt::Error)?;
                 let encoded = general_purpose::URL_SAFE.encode(data);
                 write!(f, "bitcrB{encoded}")
             }
