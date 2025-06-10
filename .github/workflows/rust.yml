@@ -37,7 +37,7 @@ jobs:
       - name: Install firefox
         run: sudo apt-get install -y firefox
 
-      - name: Install
+      - name: Install wasm pack test requirements
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Cargo update
