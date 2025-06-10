@@ -14,6 +14,8 @@ use wasm_bindgen::prelude::*;
 // ----- local modules
 // ----- end imports
 
+// Experimental, Many things will change here, a wasm export of using the app, mostly for testing
+
 #[wasm_bindgen]
 pub async fn initialize_api() {
     tracing_wasm::set_as_global_default();
@@ -70,4 +72,57 @@ pub async fn recover(idx: usize) {
 #[wasm_bindgen]
 pub async fn recheck(idx: usize) {
     app::recheck(idx).await
+}
+
+#[wasm_bindgen]
+pub async fn get_wallets_names() -> Vec<String> {
+    app::get_wallets().await.1
+}
+
+#[wasm_bindgen]
+pub async fn get_wallets_ids() -> Vec<u64> {
+    app::get_wallets()
+        .await
+        .0
+        .iter()
+        .map(|x| *x as u64)
+        .collect()
+}
+
+#[wasm_bindgen]
+pub async fn add_wallet(
+    name: String,
+    mint_url: String,
+    mnemonic: String,
+    unit: String,
+    credit: bool,
+) {
+    app::add_wallet(name, mint_url, mnemonic, unit, credit)
+        .await
+        .unwrap();
+}
+
+#[wasm_bindgen]
+pub async fn list_keysets(idx: usize) -> String {
+    let keysets = app::list_keysets(idx).await;
+    let mut ret = String::new();
+    for keyset in &keysets {
+        let keyset_str = format!(
+            "kid={} unit={} active={}",
+            keyset.id, keyset.unit, keyset.active
+        );
+        ret.push_str(&keyset_str);
+        ret.push('\n');
+    }
+    ret
+}
+
+#[wasm_bindgen]
+pub async fn get_unit(idx: usize) -> String {
+    app::get_unit(idx).await.to_string()
+}
+
+#[wasm_bindgen]
+pub async fn redeem_inactive(idx: usize) -> String {
+    app::redeem_inactive(idx).await
 }

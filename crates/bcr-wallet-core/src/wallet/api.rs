@@ -1,13 +1,11 @@
 // ----- standard library imports
 // ----- extra library imports
-use cashu::{CheckStateRequest, ProofsMethods};
-use tracing::warn;
+use cashu::{Amount, CheckStateRequest, Proof, ProofsMethods, amount};
+use tracing::{error, warn};
 // ----- local modules
 use super::types::SwapProofs;
-use super::utils;
-use super::wallet::*;
-use crate::db::KeysetDatabase;
-use crate::db::WalletDatabase;
+use super::{utils, wallet::*};
+use crate::db::{KeysetDatabase, WalletDatabase};
 use crate::mint::{Connector, MintConnector};
 // ----- end imports
 
@@ -40,7 +38,7 @@ where
             if let Ok(new_proofs) = self.swap_proofs_amount(proofs.clone(), amounts).await {
                 // set old proofs as spent
                 for p in &proofs {
-                    self.db.deactivate_proof(p.clone()).await?;
+                    self.db.mark_spent(p.clone()).await?;
                 }
 
                 for p in new_proofs {
@@ -53,19 +51,34 @@ where
         Ok(())
     }
 
-    /// Scan the wallet database, and update whether proofs are spent or not by asking the mint
+    // Invalidates DB proof status and overrides with mint status
+    // Need to swap afterward as pending proof can be marked as active
+    // TODO, improve criteria for updating pending proofs (older than 1day?)
     pub async fn recheck(&self) -> anyhow::Result<()> {
-        let proofs = self.db.get_active_proofs().await?;
-        let ys: Vec<cashu::PublicKey> = proofs.iter().map(|p| p.y().unwrap()).collect();
+        let active_proofs = self.db.get_active_proofs().await?;
+        let pending_proofs = self.db.get_pending_proofs().await?;
+        let non_spent: Vec<Proof> = active_proofs
+            .into_iter()
+            .chain(pending_proofs.into_iter())
+            .collect();
+
+        let ys: Vec<cashu::PublicKey> = non_spent.iter().map(|p| p.y().unwrap()).collect();
         let states = self
             .connector
             .checkstate(CheckStateRequest { ys })
             .await?
             .states;
 
-        for (state, proof) in states.iter().zip(proofs.iter()) {
+        for (state, proof) in states.iter().zip(non_spent.iter()) {
             if state.state != cashu::nut07::State::Unspent {
-                let _ = self.db.deactivate_proof(proof.clone()).await;
+                if let Err(e) = self.db.mark_spent(proof.clone()).await {
+                    warn!(c=?proof.c, amount=?proof.amount, "Failed to mark proof as spent: {}", e);
+                }
+            }
+            if state.state == cashu::nut07::State::Unspent {
+                if let Err(e) = self.db.mark_unspent(proof.clone()).await {
+                    warn!(c=?proof.c, amount=?proof.amount, "Failed to mark proof as unspent: {}", e);
+                }
             }
         }
 
@@ -173,21 +186,11 @@ where
     }
 
     pub async fn import_token_v3(&self, token: String) -> anyhow::Result<()> {
-        if let Ok(token) = token.parse::<cashu::nut00::TokenV3>() {
-            let amounts = token
-                .proofs()
-                .iter()
-                .map(|x| x.amount)
-                .collect::<Vec<cashu::Amount>>();
-
-            if let Ok(new_proofs) = self.swap_proofs_amount(token.proofs(), amounts).await {
-                for p in new_proofs {
-                    self.db.add_proof(p).await?;
-                }
-            }
-        }
+        let token = token.parse::<cashu::nut00::TokenV3>()?;
+        self.import_proofs(token.proofs()).await?;
         Ok(())
     }
+
     pub async fn send_proofs_for(&self, amount: u64) -> anyhow::Result<String> {
         let proofs = self.db.get_active_proofs().await?;
 
@@ -205,12 +208,84 @@ where
 
             // Mark the proofs we send as a token as spent
             for p in &selected_proofs {
-                self.db.deactivate_proof(p.clone()).await?;
+                self.db.mark_pending(p.clone()).await?;
             }
 
             return Ok(token.to_v3_string());
         }
         warn!("Could not select subset of proofs to send");
         Err(anyhow::anyhow!("Could not select subset of proofs to send"))
+    }
+
+    pub async fn perform_swap(
+        &self,
+        proofs: Vec<Proof>,
+        amounts: Vec<Amount>,
+        keyset_id: cashu::Id,
+    ) -> anyhow::Result<Vec<Proof>> {
+        let wdc = &self.connector;
+
+        if proofs.is_empty() {
+            warn!("No proofs provided");
+            return Err(anyhow::anyhow!("No proofs provided"));
+        }
+
+        let mut total_proofs = Amount::from(0);
+        let mut total_amounts = Amount::from(0);
+        for p in &proofs {
+            total_proofs = total_proofs
+                .checked_add(p.amount)
+                .ok_or(anyhow::anyhow!("Overflow"))?;
+        }
+        for a in &amounts {
+            total_amounts = total_amounts
+                .checked_add(*a)
+                .ok_or(anyhow::anyhow!("Overflow"))?;
+        }
+        if total_proofs != total_amounts {
+            error!("Proofs and amounts do not match");
+            return Err(anyhow::anyhow!("Proofs and amounts do not match"));
+        }
+
+        let keys = wdc.list_keys(keyset_id).await?;
+        let keys = keys
+            .keysets
+            .first()
+            .ok_or(anyhow::anyhow!("No keys found"))?;
+
+        let counter = self.db.get_count(keyset_id).await.unwrap_or(0);
+        let target = amount::SplitTarget::Values(amounts);
+        let premint_secrets = cashu::PreMintSecrets::from_xpriv(
+            keyset_id,
+            counter,
+            self.xpriv,
+            total_proofs,
+            &target,
+        )?
+        .secrets;
+
+        let bs = premint_secrets
+            .iter()
+            .map(|b| b.blinded_message.clone())
+            .collect::<Vec<_>>();
+
+        let _ = self.db.increase_count(keyset_id, bs.len() as u32).await?;
+
+        let swap_request = cashu::nut03::SwapRequest::new(proofs, bs);
+
+        let response = wdc.swap(swap_request).await?;
+
+        let secrets = premint_secrets
+            .iter()
+            .map(|b| b.secret.clone())
+            .collect::<Vec<_>>();
+        let rs = premint_secrets
+            .iter()
+            .map(|b| b.r.clone())
+            .collect::<Vec<_>>();
+
+        let proofs = cashu::dhke::construct_proofs(response.signatures, rs, secrets, &keys.keys)?;
+
+        Ok(proofs)
     }
 }

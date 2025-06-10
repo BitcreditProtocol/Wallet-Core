@@ -10,18 +10,23 @@ use crate::wallet::DebitWallet;
 // Standard Cashu Interfaces
 impl MintConnector for Connector<DebitWallet> {
     async fn list_keysets(&self) -> Result<cdk02::KeysetResponse> {
-        todo!()
+        let url = self.url("v1/keysets");
+        self.client.get(url).await
     }
     async fn swap(&self, req: cashu::SwapRequest) -> Result<cashu::SwapResponse> {
-        todo!("{:?}", req);
+        let url = self.url("v1/swap");
+        self.client.post(url, &req).await
     }
     async fn list_keys(&self, kid: cashu::Id) -> Result<cashu::KeysResponse> {
-        todo!("{:?}", kid);
+        let url = self.url(&format!("v1/keys/{kid}"));
+        self.client.get(url).await
     }
     async fn restore(&self, req: cashu::RestoreRequest) -> Result<cashu::RestoreResponse> {
-        todo!("Restore {:?}", req);
+        let url = self.url("v1/restore");
+        self.client.post(url, &req).await
     }
     async fn checkstate(&self, req: cashu::CheckStateRequest) -> Result<cashu::CheckStateResponse> {
-        todo!("Checkstate {:?}", req);
+        let url = self.url("v1/checkstate");
+        self.client.post(url, &req).await
     }
 }

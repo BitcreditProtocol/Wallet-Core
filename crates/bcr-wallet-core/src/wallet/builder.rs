@@ -1,8 +1,7 @@
 // ----- standard library imports
-use bitcoin::bip32::Xpriv;
 use std::marker::PhantomData;
-
 // ----- extra library imports
+use bitcoin::bip32::Xpriv;
 // ----- local modules
 use crate::db::WalletDatabase;
 use crate::mint::{Connector, MintConnector};
@@ -19,7 +18,7 @@ pub struct WalletBuilder<T, D: WalletType, DB: WalletDatabase> {
     mint_url: Option<cashu::MintUrl>,
     unit: Option<cashu::CurrencyUnit>,
     database: Option<DB>,
-    seed: Option<[u8; 32]>,
+    seed: Option<[u8; 64]>,
     _marker: PhantomData<(T, D)>,
 }
 
@@ -32,10 +31,11 @@ pub fn new_debit<DB: WalletDatabase>() -> WalletBuilder<Unconfigured, DebitWalle
         _marker: PhantomData,
     }
 }
-pub fn new_credit<DB: WalletDatabase>() -> WalletBuilder<UnitSet, CreditWallet, DB> {
-    WalletBuilder::<UnitSet, CreditWallet, DB> {
+pub fn new_credit<DB: WalletDatabase>() -> WalletBuilder<Unconfigured, CreditWallet, DB> {
+    WalletBuilder::<Unconfigured, CreditWallet, DB> {
         mint_url: None,
-        unit: Some(cashu::CurrencyUnit::Custom("crsat".into())),
+        unit: None,
+        // unit: Some(cashu::CurrencyUnit::Custom("crsat".into())),
         database: None,
         seed: None,
         _marker: PhantomData,
@@ -73,7 +73,7 @@ impl<T: WalletType, DB: WalletDatabase> WalletBuilder<MintSet, T, DB> {
 }
 
 impl<T: WalletType, DB: WalletDatabase> WalletBuilder<DatabaseSet, T, DB> {
-    pub fn set_seed(self, seed: [u8; 32]) -> WalletBuilder<SeedSet, T, DB> {
+    pub fn set_seed(self, seed: [u8; 64]) -> WalletBuilder<SeedSet, T, DB> {
         WalletBuilder {
             seed: Some(seed),
             _marker: PhantomData,

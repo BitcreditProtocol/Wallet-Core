@@ -4,11 +4,8 @@ use std::rc::Rc;
 use cashu::{Id, Proof};
 use rexie::Rexie;
 use rexie::TransactionMode;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use serde_wasm_bindgen::{from_value, to_value};
-use wasm_bindgen::JsValue;
 // ----- local modules
+use super::utils;
 use crate::db::types::{DatabaseError, ProofStatus, WalletProof};
 use crate::db::{KeysetDatabase, WalletDatabase};
 // ----- end imports
@@ -30,40 +27,12 @@ impl From<rexie::Error> for DatabaseError {
     }
 }
 
-pub fn to_js<T: Serialize>(value: &T) -> Result<JsValue, DatabaseError> {
-    to_value(value)
-        .map_err(|e| DatabaseError::SerializationError(format!("Cannot convert into JS: {:?}", e)))
-}
-
-pub fn from_js<T: DeserializeOwned>(js: JsValue) -> Result<T, DatabaseError> {
-    from_value(js)
-        .map_err(|e| DatabaseError::SerializationError(format!("Cannot convert from JS: {:?}", e)))
-}
-
-impl WalletDatabase for RexieWalletDatabase {
-    async fn get_active_proofs(&self) -> Result<Vec<Proof>, DatabaseError> {
-        let tx = self
-            .db
-            .transaction(&[&self.store_name], TransactionMode::ReadOnly)?;
-
-        let store = tx.store(&self.store_name)?;
-        let all = store.get_all(None, None).await?;
-
-        let proofs = all
-            .into_iter()
-            .map(from_js)
-            .collect::<Result<Vec<WalletProof>, DatabaseError>>()?;
-
-        let unspent = proofs
-            .into_iter()
-            .filter(|p| p.status == ProofStatus::Unspent)
-            .map(|p| p.proof)
-            .collect::<Vec<Proof>>();
-
-        Ok(unspent)
-    }
-
-    async fn deactivate_proof(&self, proof: Proof) -> Result<(), DatabaseError> {
+impl RexieWalletDatabase {
+    async fn update_proof_status(
+        &self,
+        proof: Proof,
+        status: ProofStatus,
+    ) -> Result<(), DatabaseError> {
         let tx = self.db.transaction(
             std::slice::from_ref(&self.store_name),
             TransactionMode::ReadWrite,
@@ -73,14 +42,70 @@ impl WalletDatabase for RexieWalletDatabase {
         let key = proof
             .y()
             .map_err(|e| DatabaseError::CdkError(e.to_string()))?;
-        let key = to_js(&key)?;
+        let key = utils::to_js(&key)?;
         if let Ok(Some(wp)) = store.get(key).await {
-            let mut wp: WalletProof = from_js(wp)?;
-            wp.status = ProofStatus::Spent;
+            let mut wp: WalletProof = utils::from_js(wp)?;
+            wp.status = status;
 
-            let wp = to_js(&wp)?;
+            let wp = utils::to_js(&wp)?;
             store.put(&wp, None).await?;
         }
+        tx.done().await?;
+        Ok(())
+    }
+    async fn get_proofs_by_status(&self, status: ProofStatus) -> Result<Vec<Proof>, DatabaseError> {
+        let tx = self
+            .db
+            .transaction(&[&self.store_name], TransactionMode::ReadOnly)?;
+
+        let store = tx.store(&self.store_name)?;
+        let all = store.get_all(None, None).await?;
+
+        let proofs = all
+            .into_iter()
+            .map(utils::from_js)
+            .collect::<Result<Vec<WalletProof>, DatabaseError>>()?;
+
+        let unspent = proofs
+            .into_iter()
+            .filter(|p| p.status == status)
+            .map(|p| p.proof)
+            .collect::<Vec<Proof>>();
+
+        Ok(unspent)
+    }
+}
+
+impl WalletDatabase for RexieWalletDatabase {
+    async fn get_active_proofs(&self) -> Result<Vec<Proof>, DatabaseError> {
+        self.get_proofs_by_status(ProofStatus::Unspent).await
+    }
+
+    async fn get_pending_proofs(&self) -> Result<Vec<Proof>, DatabaseError> {
+        self.get_proofs_by_status(ProofStatus::Pending).await
+    }
+
+    async fn mark_spent(&self, proof: Proof) -> Result<(), DatabaseError> {
+        self.update_proof_status(proof, ProofStatus::Spent).await
+    }
+
+    async fn mark_pending(&self, proof: Proof) -> Result<(), DatabaseError> {
+        self.update_proof_status(proof, ProofStatus::Pending).await
+    }
+
+    /// Only used to reclaim pending proofs
+    async fn mark_unspent(&self, proof: Proof) -> Result<(), DatabaseError> {
+        self.update_proof_status(proof, ProofStatus::Unspent).await
+    }
+
+    async fn clear(&self) -> Result<(), DatabaseError> {
+        let tx = self.db.transaction(
+            std::slice::from_ref(&self.store_name),
+            TransactionMode::ReadWrite,
+        )?;
+        let store = tx.store(&self.store_name.clone())?;
+
+        store.clear().await?;
         tx.done().await?;
         Ok(())
     }
@@ -98,7 +123,7 @@ impl WalletDatabase for RexieWalletDatabase {
             id: proof.y().unwrap(),
         };
 
-        let value = to_js(&wallet_proof)?;
+        let value = utils::to_js(&wallet_proof)?;
 
         store.add(&value, None).await?;
 
@@ -117,9 +142,9 @@ impl KeysetDatabase for RexieWalletDatabase {
 
         let store = tx.store(super::constants::KEYSET_COUNTER)?;
 
-        let key = to_js(&id)?;
+        let key = utils::to_js(&id)?;
         if let Ok(Some(count)) = store.get(key).await {
-            let count: u32 = from_js(count)?;
+            let count: u32 = utils::from_js(count)?;
             return Ok(count);
         }
         Err(DatabaseError::KeysetNotFound)
@@ -133,16 +158,16 @@ impl KeysetDatabase for RexieWalletDatabase {
         let store = tx.store(super::constants::KEYSET_COUNTER)?;
 
         let key = keyset_id;
-        let key = to_js(&key)?;
+        let key = utils::to_js(&key)?;
         if let Ok(Some(wp)) = store.get(key.clone()).await {
-            let mut count: u32 = from_js(wp)?;
+            let mut count: u32 = utils::from_js(wp)?;
             count += addition;
 
-            let _ = store.put(&to_js(&count)?, Some(&key)).await?;
+            let _ = store.put(&utils::to_js(&count)?, Some(&key)).await?;
             tx.done().await?;
             Ok(count)
         } else {
-            let _ = store.put(&to_js(&addition)?, Some(&key)).await?;
+            let _ = store.put(&utils::to_js(&addition)?, Some(&key)).await?;
             tx.done().await?;
             Ok(addition)
         }
