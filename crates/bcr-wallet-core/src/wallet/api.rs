@@ -53,7 +53,7 @@ where
 
     // Invalidates DB proof status and overrides with mint status
     // Need to swap afterward as pending proof can be marked as active
-    // For manually checking
+    // TODO, improve criteria for updating pending proofs (older than 1day?)
     pub async fn recheck(&self) -> anyhow::Result<()> {
         let active_proofs = self.db.get_active_proofs().await?;
         let pending_proofs = self.db.get_pending_proofs().await?;
