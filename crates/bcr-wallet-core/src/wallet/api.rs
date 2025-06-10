@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 // ----- standard library imports
 // ----- extra library imports
 use cashu::nut00::token::TokenV4Token;
@@ -215,9 +217,12 @@ where
         Ok(())
     }
 
-    pub async fn import_token_v3(&self, token: String) -> anyhow::Result<()> {
-        let token = token.parse::<cashu::nut00::TokenV3>()?;
-        self.import_proofs(token.proofs()).await?;
+    pub async fn import_token(&self, token: String) -> anyhow::Result<()> {
+        let token =
+            Token::from_str(&token).map_err(|e| anyhow::anyhow!("Failed to parse token: {}", e))?;
+        let v4 = cashu::TokenV4::try_from(token)
+            .map_err(|e| anyhow::anyhow!("Failed to parse token: {}", e))?;
+        self.import_proofs(v4.proofs()).await?;
         Ok(())
     }
 

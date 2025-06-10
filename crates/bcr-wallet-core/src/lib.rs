@@ -26,7 +26,7 @@ pub async fn initialize_api() {
 
 #[wasm_bindgen]
 pub async fn import_token(token: String, idx: usize) {
-    app::import_token_v3(token, idx).await;
+    app::import_token(token, idx).await;
 }
 
 #[wasm_bindgen]

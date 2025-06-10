@@ -8,16 +8,23 @@ use bitcoin::base64::alphabet;
 use bitcoin::base64::engine::{GeneralPurpose, general_purpose};
 use cashu::{TokenV3, TokenV4};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 // ----- local modules
 // ----- end imports
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum TokenError {
+    #[error("Token is not supported")]
     UnsupportedToken,
+    #[error("Base 64 decoding failed: {0}")]
     Base64Error(bitcoin::base64::DecodeError),
+    #[error("UTF-8 decoding failed: {0}")]
     Utf8Error(std::string::FromUtf8Error),
+    #[error("JSON serialization failed: {0}")]
     JsonError(serde_json::Error),
+    #[error("CBOR serialization failed: {0}")]
     CborError(ciborium::de::Error<std::io::Error>),
+    #[error("Cashu error: {0}")]
     CashuError(String),
 }
 
