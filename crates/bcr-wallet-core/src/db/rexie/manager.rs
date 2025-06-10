@@ -1,9 +1,9 @@
 // ----- standard library imports
 use std::rc::Rc;
 // ----- extra library imports
-use rexie::{ObjectStore, Rexie};
+use rexie::{ObjectStore, Rexie, TransactionMode};
 // ----- local modules
-
+use crate::db::DatabaseError;
 // ----- end imports
 
 pub struct Manager {
@@ -32,5 +32,25 @@ impl Manager {
     }
     pub fn get_db(&self) -> Rc<Rexie> {
         self.db.clone()
+    }
+    pub async fn clear(&self) -> Result<(), DatabaseError> {
+        let tx = self.db.transaction(
+            std::slice::from_ref(&super::constants::WALLET_METADATA),
+            TransactionMode::ReadWrite,
+        )?;
+
+        for i in 0..99 {
+            let store = tx.store(&format!("wallet_{}", i))?;
+            store.clear().await?;
+        }
+
+        let store = tx.store(super::constants::WALLET_METADATA)?;
+        store.clear().await?;
+
+        let store = tx.store(super::KEYSET_COUNTER)?;
+        store.clear().await?;
+
+        tx.done().await?;
+        Ok(())
     }
 }

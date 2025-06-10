@@ -41,7 +41,6 @@ fn test_token_str_round_trip() {
 
         assert_eq!(token_data, token);
     } else {
-        //error
         panic!("Token is not V3");
     }
 }
