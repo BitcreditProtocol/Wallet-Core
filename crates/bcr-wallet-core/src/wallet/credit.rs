@@ -16,7 +16,7 @@ impl<DB> Wallet<CreditWallet, DB>
 where
     DB: WalletDatabase + KeysetDatabase,
 {
-    pub async fn redeem_first_inactive(&self) -> anyhow::Result<String> {
+    pub async fn redeem_inactive(&self) -> anyhow::Result<String> {
         let proofs = self.db.get_active_proofs().await?;
 
         let keysets = self.connector.list_keysets().await?;
@@ -28,33 +28,16 @@ where
             .map(|ks| ks.id)
             .collect::<std::collections::HashSet<_>>();
 
-        let mut inactive_keyset = None;
-        for p in &proofs {
-            if inactive_keysets.contains(&p.keyset_id) {
-                inactive_keyset = Some(p.keyset_id);
-                break;
-            }
-        }
-        if inactive_keyset.is_none() {
-            return Err(anyhow::anyhow!("No inactive keyset found"));
-        }
-        let inactive_keyset = inactive_keyset.unwrap();
+        let selected_proofs = proofs
+            .into_iter()
+            .filter(|p| inactive_keysets.contains(&p.keyset_id))
+            .collect::<Vec<_>>();
 
-        // Get all proofs that belong to this keyset as selected proofs
-        let mut selected_proofs = Vec::new();
-        for p in &proofs {
-            if p.keyset_id == inactive_keyset {
-                selected_proofs.push(p.clone());
-            }
-        }
         if selected_proofs.is_empty() {
+            error!("No proofs with an inactive keyset");
             return Err(anyhow::anyhow!("No proofs found for inactive keyset"));
         }
 
-        let mut selected_cs = std::collections::HashSet::new();
-        for p in &selected_proofs {
-            selected_cs.insert(p.c);
-        }
         let token = cashu::nut00::Token::new(
             self.mint_url.clone(),
             selected_proofs.clone(),

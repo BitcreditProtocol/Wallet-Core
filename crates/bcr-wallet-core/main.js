@@ -56,7 +56,7 @@ async function run() {
 
     let unit = await wasmModule.get_unit(idx);
     if (unit.toLowerCase() == "crsat") {
-      let token = await wasmModule.redeem_first_inactive(idx);
+      let token = await wasmModule.redeem_inactive(idx);
       await update_balance();
       document.getElementById("output").innerHTML += "\ntoken:\n" + token;
     }

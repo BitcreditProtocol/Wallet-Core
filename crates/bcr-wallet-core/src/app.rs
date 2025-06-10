@@ -329,11 +329,11 @@ pub async fn send_proofs_for(amount: u64, idx: usize) -> String {
     wallet._send_proofs_for(amount).await.unwrap_or("".into())
 }
 
-pub async fn redeem_first_inactive(idx: usize) -> String {
+pub async fn redeem_inactive(idx: usize) -> String {
     let wallet = get_wallet(idx).await.unwrap();
 
     match wallet {
         RexieWallet::Debit(_) => "".into(),
-        RexieWallet::Credit(credit) => credit.redeem_first_inactive().await.unwrap_or("".into()),
+        RexieWallet::Credit(credit) => credit.redeem_inactive().await.unwrap_or("".into()),
     }
 }

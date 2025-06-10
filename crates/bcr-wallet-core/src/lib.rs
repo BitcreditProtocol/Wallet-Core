@@ -123,6 +123,6 @@ pub async fn get_unit(idx: usize) -> String {
 }
 
 #[wasm_bindgen]
-pub async fn redeem_first_inactive(idx: usize) -> String {
-    app::redeem_first_inactive(idx).await
+pub async fn redeem_inactive(idx: usize) -> String {
+    app::redeem_inactive(idx).await
 }
