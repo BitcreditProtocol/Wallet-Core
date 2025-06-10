@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 // ----- standard library imports
 // ----- extra library imports
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use cashu::{Amount, Proof};
 use tracing::{debug, error};
 // ----- local modules
@@ -60,7 +60,7 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB
         amounts: Vec<Amount>,
     ) -> Result<Vec<Proof>> {
         // Swap to the same keyset
-        let keyset_id = proofs[0].keyset_id;
+        let keyset_id = proofs.first().ok_or(anyhow!("No proofs found"))?.keyset_id;
 
         // check that all proofs have the same keyset
         for p in &proofs {
