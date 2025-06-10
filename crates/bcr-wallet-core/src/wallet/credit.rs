@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 // ----- standard library imports
 // ----- extra library imports
 use anyhow::Result;
@@ -87,5 +89,31 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB
 
         debug!(keyset_id = ?keyset_id, amounts=?amounts,"Swapping credit proofs");
         self.perform_swap(proofs, amounts, keyset_id).await
+    }
+    async fn import_proofs(&self, proofs: Vec<Proof>) -> anyhow::Result<()> {
+        // Credit tokens need to handle the edge case where the token we receive
+        // contains different keysets - we can only swap to the same keyset
+
+        // Group proofs by keyset_id
+        let mut keyset_proofs = HashMap::new();
+        for p in &proofs {
+            keyset_proofs
+                .entry(p.keyset_id)
+                .or_insert_with(Vec::new)
+                .push(p.clone());
+        }
+        for (_, keyset_proofs) in keyset_proofs {
+            let amounts = keyset_proofs
+                .iter()
+                .map(|x| x.amount)
+                .collect::<Vec<cashu::Amount>>();
+
+            if let Ok(new_proofs) = self.swap_proofs_amount(keyset_proofs, amounts).await {
+                for p in new_proofs {
+                    self.db.add_proof(p).await?;
+                }
+            }
+        }
+        Ok(())
     }
 }

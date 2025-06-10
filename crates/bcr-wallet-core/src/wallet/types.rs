@@ -11,4 +11,5 @@ pub trait SwapProofs {
         proofs: Vec<Proof>,
         amounts: Vec<Amount>,
     ) -> Result<Vec<Proof>>;
+    async fn import_proofs(&self, proofs: Vec<Proof>) -> Result<()>;
 }

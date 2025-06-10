@@ -28,4 +28,18 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<DebitWallet, DB>
         debug!(keyset_id = ?keyset.id, amounts=?amounts,"Swapping debit proofs");
         self.perform_swap(proofs, amounts, keyset.id).await
     }
+
+    async fn import_proofs(&self, proofs: Vec<Proof>) -> anyhow::Result<()> {
+        let amounts = proofs
+            .iter()
+            .map(|x| x.amount)
+            .collect::<Vec<cashu::Amount>>();
+
+        if let Ok(new_proofs) = self.swap_proofs_amount(proofs, amounts).await {
+            for p in new_proofs {
+                self.db.add_proof(p).await?;
+            }
+        };
+        Ok(())
+    }
 }

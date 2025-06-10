@@ -189,21 +189,11 @@ where
     }
 
     pub async fn import_token_v3(&self, token: String) -> anyhow::Result<()> {
-        if let Ok(token) = token.parse::<cashu::nut00::TokenV3>() {
-            let amounts = token
-                .proofs()
-                .iter()
-                .map(|x| x.amount)
-                .collect::<Vec<cashu::Amount>>();
-
-            if let Ok(new_proofs) = self.swap_proofs_amount(token.proofs(), amounts).await {
-                for p in new_proofs {
-                    self.db.add_proof(p).await?;
-                }
-            }
-        }
+        let token = token.parse::<cashu::nut00::TokenV3>()?;
+        self.import_proofs(token.proofs()).await?;
         Ok(())
     }
+
     pub async fn send_proofs_for(&self, amount: u64) -> anyhow::Result<String> {
         let proofs = self.db.get_active_proofs().await?;
 
