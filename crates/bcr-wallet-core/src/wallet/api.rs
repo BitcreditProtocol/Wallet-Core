@@ -51,36 +51,33 @@ where
         Ok(())
     }
 
-    /// Scan the wallet database
-    /// update whether proofs are spent or not by asking the mint
-    /// update whether pending proofs are spent and mark as unspent
+    // Invalidates DB proof status and overrides with mint status
+    // Need to swap afterward as pending proof can be marked as active
+    // For manually checking
     pub async fn recheck(&self) -> anyhow::Result<()> {
-        let proofs = self.db.get_active_proofs().await?;
-        let ys: Vec<cashu::PublicKey> = proofs.iter().map(|p| p.y().unwrap()).collect();
+        let active_proofs = self.db.get_active_proofs().await?;
+        let pending_proofs = self.db.get_pending_proofs().await?;
+        let non_spent: Vec<Proof> = active_proofs
+            .into_iter()
+            .chain(pending_proofs.into_iter())
+            .collect();
+
+        let ys: Vec<cashu::PublicKey> = non_spent.iter().map(|p| p.y().unwrap()).collect();
         let states = self
             .connector
             .checkstate(CheckStateRequest { ys })
             .await?
             .states;
 
-        for (state, proof) in states.iter().zip(proofs.iter()) {
+        for (state, proof) in states.iter().zip(non_spent.iter()) {
             if state.state != cashu::nut07::State::Unspent {
-                let _ = self.db.mark_spent(proof.clone()).await;
+                if let Err(e) = self.db.mark_spent(proof.clone()).await {
+                    warn!(c=?proof.c, amount=?proof.amount, "Failed to mark proof as spent: {}", e);
+                }
             }
-        }
-
-        let proofs = self.db.get_pending_proofs().await?;
-        let ys: Vec<cashu::PublicKey> = proofs.iter().map(|p| p.y().unwrap()).collect();
-        let states = self
-            .connector
-            .checkstate(CheckStateRequest { ys })
-            .await?
-            .states;
-
-        for (state, proof) in states.iter().zip(proofs.iter()) {
             if state.state == cashu::nut07::State::Unspent {
                 if let Err(e) = self.db.mark_unspent(proof.clone()).await {
-                    warn!("Failed to mark proof as unspent: {}", e);
+                    warn!(c=?proof.c, amount=?proof.amount, "Failed to mark proof as unspent: {}", e);
                 }
             }
         }
