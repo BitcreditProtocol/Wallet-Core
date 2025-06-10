@@ -2,7 +2,7 @@ name: Rust CI
 
 on:
   push:
-    branches: [ "**" ]
+    branches: ["**"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -34,6 +34,9 @@ jobs:
       - name: Install protoc
         run: sudo apt-get install -y protobuf-compiler
 
+      - name: Install
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
       - name: Cargo update
         run: cargo update --verbose
 
@@ -63,13 +66,12 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Clippy
-        run:
-          cargo clippy
+        run: cargo clippy
           --all-features
           --message-format=json | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
         continue-on-error: true
 
-      - name: Cargo deny 
+      - name: Cargo deny
         run: cargo deny check
         continue-on-error: true
 
@@ -78,3 +80,6 @@ jobs:
         with:
           sarif_file: rust-clippy-results.sarif
           wait-for-processing: true
+
+      - run: cargo test
+      - run: wasm-pack test --headless --chrome

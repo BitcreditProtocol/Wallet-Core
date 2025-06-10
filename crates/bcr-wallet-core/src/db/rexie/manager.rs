@@ -34,10 +34,19 @@ impl Manager {
         self.db.clone()
     }
     pub async fn clear(&self) -> Result<(), DatabaseError> {
-        let tx = self.db.transaction(
-            std::slice::from_ref(&super::constants::WALLET_METADATA),
-            TransactionMode::ReadWrite,
-        )?;
+        // Create TX on all
+        let mut store_ops = vec![
+            super::constants::WALLET_METADATA.to_string(),
+            super::constants::KEYSET_COUNTER.to_string(),
+        ];
+        for i in 0..99 {
+            let str = format!("wallet_{}", i);
+            store_ops.push(str);
+        }
+
+        let tx = self
+            .db
+            .transaction(&store_ops, TransactionMode::ReadWrite)?;
 
         for i in 0..99 {
             let store = tx.store(&format!("wallet_{}", i))?;
