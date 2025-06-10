@@ -34,6 +34,9 @@ jobs:
       - name: Install protoc
         run: sudo apt-get install -y protobuf-compiler
 
+      - name: Install firefox
+        run: sudo apt-get install -y firefox
+
       - name: Install
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
@@ -82,4 +85,4 @@ jobs:
           wait-for-processing: true
 
       - run: cargo test
-      - run: wasm-pack test --headless --chrome
+      - run: wasm-pack test --headless --firefox
