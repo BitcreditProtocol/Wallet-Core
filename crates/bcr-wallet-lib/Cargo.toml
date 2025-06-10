@@ -1,0 +1,14 @@
+[package]
+name = "bcr-wallet-lib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+thiserror.workspace = true
+ciborium.workspace = true
+bitcoin.workspace = true
+cashu = { workspace = true, default-features = false, features = ["wallet"] }
+serde.workspace = true
+serde_json.workspace = true

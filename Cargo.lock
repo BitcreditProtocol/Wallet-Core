@@ -110,6 +110,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bcr-wallet-lib",
  "bip39",
  "bitcoin",
  "cashu",
@@ -130,6 +131,18 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+]
+
+[[package]]
+name = "bcr-wallet-lib"
+version = "0.1.0"
+dependencies = [
+ "bitcoin",
+ "cashu",
+ "ciborium",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
 ]
 
 [[package]]

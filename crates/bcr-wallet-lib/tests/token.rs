@@ -1,4 +1,4 @@
-use bcr_wallet_core::wallet::*;
+use bcr_wallet_lib::wallet::*;
 use std::str::FromStr;
 
 #[test]

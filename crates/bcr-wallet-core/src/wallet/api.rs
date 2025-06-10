@@ -1,6 +1,5 @@
-use std::str::FromStr;
-
 // ----- standard library imports
+use std::str::FromStr;
 // ----- extra library imports
 use cashu::nut00::token::TokenV4Token;
 use cashu::{Amount, CheckStateRequest, Proof, ProofsMethods, amount};
@@ -10,7 +9,7 @@ use super::types::SwapProofs;
 use super::{utils, wallet::*};
 use crate::db::{KeysetDatabase, WalletDatabase};
 use crate::mint::{Connector, MintConnector};
-use crate::wallet::Token;
+use bcr_wallet_lib::wallet::Token;
 // ----- end imports
 
 // TODO async trait

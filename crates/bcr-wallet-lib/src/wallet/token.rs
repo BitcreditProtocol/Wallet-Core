@@ -2,7 +2,7 @@
 use std::fmt;
 use std::str::FromStr;
 // ----- extra library imports
-use anyhow::Result;
+// use anyhow::Result;
 use bitcoin::base64::Engine;
 use bitcoin::base64::alphabet;
 use bitcoin::base64::engine::{GeneralPurpose, general_purpose};

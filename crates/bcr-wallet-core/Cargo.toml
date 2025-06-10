@@ -28,6 +28,7 @@ bip39.workspace = true
 cashu = { workspace = true, default-features = false, features = ["wallet"] }
 serde_json.workspace = true
 ciborium.workspace = true
+bcr-wallet-lib.workspace = true
 [dev-dependencies]
 wasm-bindgen-test = { version = "0.3" }
 
