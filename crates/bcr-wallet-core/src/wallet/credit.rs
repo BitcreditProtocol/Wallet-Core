@@ -86,12 +86,17 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB
                 .push(p);
         }
         for (_, keyset_proofs) in keyset_proofs {
-            let amounts = keyset_proofs
-                .iter()
-                .map(|x| x.amount)
-                .collect::<Vec<cashu::Amount>>();
+            let mut total_amount = Amount::from(0);
+            for p in &keyset_proofs {
+                total_amount = total_amount
+                    .checked_add(p.amount)
+                    .ok_or(anyhow!("Overflow"))?;
+            }
 
-            if let Ok(new_proofs) = self.swap_proofs_amount(keyset_proofs, amounts).await {
+            if let Ok(new_proofs) = self
+                .swap_proofs_amount(keyset_proofs, total_amount.split())
+                .await
+            {
                 for p in new_proofs {
                     self.db.add_proof(p).await?;
                 }
