@@ -34,7 +34,6 @@ impl Manager {
         self.db.clone()
     }
     pub async fn clear(&self) -> Result<(), DatabaseError> {
-        // Create TX on all
         let mut store_ops = vec![
             super::constants::WALLET_METADATA.to_string(),
             super::constants::KEYSET_COUNTER.to_string(),
