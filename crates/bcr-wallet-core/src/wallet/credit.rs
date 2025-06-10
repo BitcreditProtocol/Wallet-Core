@@ -79,11 +79,11 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB
 
         // Group proofs by keyset_id
         let mut keyset_proofs = HashMap::new();
-        for p in &proofs {
+        for p in proofs {
             keyset_proofs
                 .entry(p.keyset_id)
                 .or_insert_with(Vec::new)
-                .push(p.clone());
+                .push(p);
         }
         for (_, keyset_proofs) in keyset_proofs {
             let amounts = keyset_proofs
