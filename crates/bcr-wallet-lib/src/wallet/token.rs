@@ -124,8 +124,7 @@ impl fmt::Display for Token {
             }
             Token::BitcrV4(v4) => {
                 let mut data = Vec::new();
-                ciborium::into_writer(v4, &mut data)
-                    .map_err(|_| fmt::Error)?;
+                ciborium::into_writer(v4, &mut data).map_err(|_| fmt::Error)?;
                 let encoded = general_purpose::URL_SAFE.encode(data);
                 write!(f, "bitcrB{encoded}")
             }
