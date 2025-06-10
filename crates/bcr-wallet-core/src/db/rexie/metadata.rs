@@ -22,7 +22,7 @@ impl RexieMetadata {
     }
 
     /// Finds the first unoccupied natural number to use as id
-    async fn get_empty_id(&self) -> Result<usize, DatabaseError> {
+    async fn get_unused_id(&self) -> Result<usize, DatabaseError> {
         let tx = self.db.transaction(
             std::slice::from_ref(&super::constants::WALLET_METADATA),
             TransactionMode::ReadOnly,
@@ -98,7 +98,7 @@ impl Metadata for RexieMetadata {
         unit: String,
         is_credit: bool,
     ) -> Result<WalletMetadata, DatabaseError> {
-        let id = self.get_empty_id().await?;
+        let id = self.get_unused_id().await?;
         let wallet = WalletMetadata {
             id,
             name,
