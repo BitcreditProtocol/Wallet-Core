@@ -268,6 +268,9 @@ where
             .iter()
             .map(|b| b.blinded_message.clone())
             .collect::<Vec<_>>();
+
+        let _ = self.db.increase_count(keyset_id, bs.len() as u32).await?;
+
         let swap_request = cashu::nut03::SwapRequest::new(proofs, bs);
 
         let response = wdc.swap(swap_request).await?;
@@ -282,11 +285,6 @@ where
             .collect::<Vec<_>>();
 
         let proofs = cashu::dhke::construct_proofs(response.signatures, rs, secrets, &keys.keys)?;
-
-        let _ = self
-            .db
-            .increase_count(keyset_id, proofs.len() as u32)
-            .await?;
 
         Ok(proofs)
     }
