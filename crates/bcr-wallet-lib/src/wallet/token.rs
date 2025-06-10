@@ -84,7 +84,6 @@ fn parse_token_v4_with_prefix<C: PrefixCodec>(s: &str) -> Result<TokenV4, TokenE
     Ok(token)
 }
 
-/// Your unified enum, no change here
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Token {
     CashuV3(TokenV3),
