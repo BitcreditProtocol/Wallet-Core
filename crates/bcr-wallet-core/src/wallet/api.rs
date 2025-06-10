@@ -259,7 +259,7 @@ where
             keyset_id,
             counter,
             self.xpriv,
-            Amount::from(total_proofs),
+            total_proofs,
             &target,
         )?
         .secrets;
