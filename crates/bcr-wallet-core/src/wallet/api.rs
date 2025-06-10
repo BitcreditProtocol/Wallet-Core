@@ -1,5 +1,6 @@
 // ----- standard library imports
 // ----- extra library imports
+use cashu::nut00::token::TokenV4Token;
 use cashu::{Amount, CheckStateRequest, Proof, ProofsMethods, amount};
 use tracing::{error, warn};
 // ----- local modules
@@ -7,9 +8,38 @@ use super::types::SwapProofs;
 use super::{utils, wallet::*};
 use crate::db::{KeysetDatabase, WalletDatabase};
 use crate::mint::{Connector, MintConnector};
+use crate::wallet::Token;
 // ----- end imports
 
 // TODO async trait
+
+impl<T: WalletType, DB: WalletDatabase> Wallet<T, DB>
+where
+    Connector<T>: MintConnector,
+{
+    pub fn proofs_to_token(&self, proofs: Vec<Proof>, memo: Option<String>) -> Token {
+        let proofs = proofs
+            .into_iter()
+            .fold(std::collections::HashMap::new(), |mut acc, val| {
+                acc.entry(val.keyset_id)
+                    .and_modify(|p: &mut Vec<Proof>| p.push(val.clone()))
+                    .or_insert(vec![val.clone()]);
+                acc
+            })
+            .into_iter()
+            .map(|(id, proofs)| TokenV4Token::new(id, proofs))
+            .collect();
+
+        let token = cashu::TokenV4 {
+            mint_url: self.mint_url.clone(),
+            unit: self.unit.clone(),
+            memo: memo,
+            token: proofs,
+        };
+
+        Token::BitcrV4(token)
+    }
+}
 
 impl<T: WalletType, DB: WalletDatabase + KeysetDatabase> Wallet<T, DB>
 where
@@ -199,19 +229,15 @@ where
             for p in &selected_proofs {
                 selected_cs.insert(p.c);
             }
-            let token = cashu::nut00::Token::new(
-                self.mint_url.clone(),
-                selected_proofs.clone(),
-                None,
-                self.unit.clone(),
-            );
+
+            let token = self.proofs_to_token(selected_proofs.clone(), None);
 
             // Mark the proofs we send as a token as spent
             for p in &selected_proofs {
                 self.db.mark_pending(p.clone()).await?;
             }
 
-            return Ok(token.to_v3_string());
+            return Ok(token.to_string());
         }
         warn!("Could not select subset of proofs to send");
         Err(anyhow::anyhow!("Could not select subset of proofs to send"))

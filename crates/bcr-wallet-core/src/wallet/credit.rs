@@ -38,18 +38,13 @@ where
             return Err(anyhow::anyhow!("No proofs found for inactive keyset"));
         }
 
-        let token = cashu::nut00::Token::new(
-            self.mint_url.clone(),
-            selected_proofs.clone(),
-            None,
-            self.unit.clone(),
-        );
+        let token = self.proofs_to_token(selected_proofs.clone(), None);
 
         for p in &selected_proofs {
             self.db.mark_pending(p.clone()).await?;
         }
 
-        Ok(token.to_v3_string())
+        Ok(token.to_string())
     }
 }
 
