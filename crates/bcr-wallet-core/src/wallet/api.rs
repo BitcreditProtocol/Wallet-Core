@@ -230,13 +230,17 @@ where
             return Err(anyhow::anyhow!("No proofs provided"));
         }
 
-        let mut total_proofs = 0u64;
-        let mut total_amounts = 0u64;
+        let mut total_proofs = Amount::from(0);
+        let mut total_amounts = Amount::from(0);
         for p in &proofs {
-            total_proofs += u64::from(p.amount);
+            total_proofs = total_proofs
+                .checked_add(p.amount)
+                .ok_or(anyhow::anyhow!("Overflow"))?;
         }
         for a in &amounts {
-            total_amounts += u64::from(*a);
+            total_amounts = total_amounts
+                .checked_add(*a)
+                .ok_or(anyhow::anyhow!("Overflow"))?;
         }
         if total_proofs != total_amounts {
             error!("Proofs and amounts do not match");
