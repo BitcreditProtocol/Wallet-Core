@@ -1,6 +1,6 @@
 // ----- standard library imports
 // ----- extra library imports
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use cashu::{Amount, Proof};
 use tracing::debug;
 // ----- local modules
@@ -30,16 +30,19 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<DebitWallet, DB>
     }
 
     async fn import_proofs(&self, proofs: Vec<Proof>) -> anyhow::Result<()> {
-        let amounts = proofs
-            .iter()
-            .map(|x| x.amount)
-            .collect::<Vec<cashu::Amount>>();
+        let mut total = Amount::from(0);
+        for p in &proofs {
+            total = total.checked_add(p.amount).ok_or(anyhow!("Overflow"))?;
+        }
 
-        if let Ok(new_proofs) = self.swap_proofs_amount(proofs, amounts).await {
+        if let Ok(new_proofs) = self.swap_proofs_amount(proofs, total.split()).await {
             for p in new_proofs {
                 self.db.add_proof(p).await?;
             }
-        };
+        } else {
+            tracing::error!(amounts=?total.split(), "Failed to swap debit proofs");
+            return Err(anyhow::anyhow!("Failed to swap proofs"));
+        }
         Ok(())
     }
 }

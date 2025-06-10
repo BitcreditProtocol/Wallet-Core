@@ -86,20 +86,18 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB
                 .push(p);
         }
         for (_, keyset_proofs) in keyset_proofs {
-            let mut total_amount = Amount::from(0);
+            let mut total = Amount::from(0);
             for p in &keyset_proofs {
-                total_amount = total_amount
-                    .checked_add(p.amount)
-                    .ok_or(anyhow!("Overflow"))?;
+                total = total.checked_add(p.amount).ok_or(anyhow!("Overflow"))?;
             }
 
-            if let Ok(new_proofs) = self
-                .swap_proofs_amount(keyset_proofs, total_amount.split())
-                .await
-            {
+            if let Ok(new_proofs) = self.swap_proofs_amount(keyset_proofs, total.split()).await {
                 for p in new_proofs {
                     self.db.add_proof(p).await?;
                 }
+            } else {
+                error!(amounts=?total.split(), "Failed to swap credit proofs");
+                return Err(anyhow::anyhow!("Failed to swap proofs"));
             }
         }
         Ok(())
