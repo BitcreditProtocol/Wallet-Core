@@ -220,8 +220,17 @@ where
     pub async fn import_token(&self, token: String) -> anyhow::Result<()> {
         let token =
             Token::from_str(&token).map_err(|e| anyhow::anyhow!("Failed to parse token: {}", e))?;
+
         let v4 = cashu::TokenV4::try_from(token)
             .map_err(|e| anyhow::anyhow!("Failed to parse token: {}", e))?;
+
+        if v4.mint_url != self.mint_url || v4.unit != self.unit {
+            tracing::error!(token_mint = ?v4.mint_url, token_unit = ?v4.unit, "Token mint_url or unit does not match wallet");
+            return Err(anyhow::anyhow!(
+                "Token mint_url or unit does not match wallet"
+            ));
+        }
+
         self.import_proofs(v4.proofs()).await?;
         Ok(())
     }
