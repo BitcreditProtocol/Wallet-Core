@@ -6,7 +6,7 @@ use std::str::FromStr;
 use bitcoin::base64::Engine;
 use bitcoin::base64::alphabet;
 use bitcoin::base64::engine::{GeneralPurpose, general_purpose};
-use cashu::{TokenV3, TokenV4};
+use cashu::{CurrencyUnit, MintUrl, Proof, TokenV3, TokenV4};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 // ----- local modules
@@ -24,6 +24,8 @@ pub enum TokenError {
     JsonError(serde_json::Error),
     #[error("CBOR serialization failed: {0}")]
     CborError(ciborium::de::Error<std::io::Error>),
+    #[error("Nut00 error: {0}")]
+    Nut00Error(cashu::nut00::Error),
     #[error("Cashu error: {0}")]
     CashuError(String),
 }
@@ -84,9 +86,7 @@ fn parse_token_v4_with_prefix<C: PrefixCodec>(s: &str) -> Result<TokenV4, TokenE
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Token {
-    CashuV3(TokenV3),
     CashuV4(TokenV4),
-    BitcrV3(TokenV3),
     BitcrV4(TokenV4),
 }
 
@@ -96,13 +96,15 @@ impl FromStr for Token {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.starts_with(CashuA::PREFIX) {
             let v3 = parse_token_v3_with_prefix::<CashuA>(s)?;
-            Ok(Token::CashuV3(v3))
+            let v4 = TokenV4::try_from(v3).map_err(|e| TokenError::Nut00Error(e))?;
+            Ok(Token::CashuV4(v4))
         } else if s.starts_with(CashuB::PREFIX) {
             let v4 = parse_token_v4_with_prefix::<CashuB>(s)?;
             Ok(Token::CashuV4(v4))
         } else if s.starts_with(BitcrA::PREFIX) {
             let v3 = parse_token_v3_with_prefix::<BitcrA>(s)?;
-            Ok(Token::BitcrV3(v3))
+            let v4 = TokenV4::try_from(v3).map_err(|e| TokenError::Nut00Error(e))?;
+            Ok(Token::BitcrV4(v4))
         } else if s.starts_with(BitcrB::PREFIX) {
             let v4 = parse_token_v4_with_prefix::<BitcrB>(s)?;
             Ok(Token::BitcrV4(v4))
@@ -115,13 +117,7 @@ impl FromStr for Token {
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Token::CashuV3(v3) => v3.fmt(f),
             Token::CashuV4(v4) => v4.fmt(f),
-            Token::BitcrV3(v3) => {
-                let json_string = serde_json::to_string(v3).map_err(|_| fmt::Error)?;
-                let encoded = general_purpose::URL_SAFE.encode(json_string);
-                write!(f, "bitcrA{encoded}")
-            }
             Token::BitcrV4(v4) => {
                 let mut data = Vec::new();
                 ciborium::into_writer(v4, &mut data).map_err(|_| fmt::Error)?;
@@ -136,10 +132,47 @@ impl TryFrom<Token> for TokenV4 {
     type Error = TokenError;
     fn try_from(token: Token) -> Result<Self, Self::Error> {
         match token {
-            Token::BitcrV3(v3) => TryFrom::try_from(v3).map_err(|_| TokenError::UnsupportedToken),
-            Token::CashuV3(v3) => TryFrom::try_from(v3).map_err(|_| TokenError::UnsupportedToken),
             Token::CashuV4(v4) => Ok(v4),
             Token::BitcrV4(v4) => Ok(v4),
+        }
+    }
+}
+
+pub struct ProofDetail {
+    pub proof: Proof,
+    pub mint_url: MintUrl,
+}
+
+pub trait TokenOperations {
+    fn unit(&self) -> CurrencyUnit;
+    fn memo(&self) -> Option<String>;
+    fn proofs(&self) -> Vec<Proof>;
+    fn mint_url(&self) -> MintUrl;
+}
+
+impl TokenOperations for Token {
+    fn mint_url(&self) -> MintUrl {
+        match self {
+            Token::CashuV4(v4) => v4.mint_url.clone(),
+            Token::BitcrV4(v4) => v4.mint_url.clone(),
+        }
+    }
+    fn unit(&self) -> CurrencyUnit {
+        match self {
+            Token::CashuV4(v4) => v4.unit.clone(),
+            Token::BitcrV4(v4) => v4.unit.clone(),
+        }
+    }
+    fn memo(&self) -> Option<String> {
+        match self {
+            Token::CashuV4(v4) => v4.memo.clone(),
+            Token::BitcrV4(v4) => v4.memo.clone(),
+        }
+    }
+    fn proofs(&self) -> Vec<Proof> {
+        match self {
+            Token::CashuV4(v4) => v4.proofs(),
+            Token::BitcrV4(v4) => v4.proofs(),
         }
     }
 }
