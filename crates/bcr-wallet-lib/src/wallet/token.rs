@@ -196,9 +196,9 @@ fn create_v4_token(
         .collect();
 
     cashu::TokenV4 {
-        mint_url: mint_url,
-        unit: unit,
         token: v4tokens,
+        mint_url,
+        unit,
         memo,
     }
 }
