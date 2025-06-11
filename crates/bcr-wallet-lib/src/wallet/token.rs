@@ -5,6 +5,7 @@ use std::str::FromStr;
 use bitcoin::base64::Engine;
 use bitcoin::base64::alphabet;
 use bitcoin::base64::engine::{GeneralPurpose, general_purpose};
+use cashu::nut00::token::TokenV4Token;
 use cashu::{CurrencyUnit, MintUrl, Proof, TokenV3, TokenV4};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -173,5 +174,51 @@ impl TokenOperations for Token {
             Token::CashuV4(v4) => v4.proofs(),
             Token::BitcrV4(v4) => v4.proofs(),
         }
+    }
+}
+
+fn create_v4_token(
+    mint_url: MintUrl,
+    unit: CurrencyUnit,
+    memo: Option<String>,
+    proofs: Vec<Proof>,
+) -> TokenV4 {
+    let v4tokens = proofs
+        .into_iter()
+        .fold(std::collections::HashMap::new(), |mut acc, val| {
+            acc.entry(val.keyset_id)
+                .and_modify(|p: &mut Vec<Proof>| p.push(val.clone()))
+                .or_insert(vec![val]);
+            acc
+        })
+        .into_iter()
+        .map(|(id, proofs)| TokenV4Token::new(id, proofs))
+        .collect();
+
+    cashu::TokenV4 {
+        mint_url: mint_url,
+        unit: unit,
+        token: v4tokens,
+        memo,
+    }
+}
+
+impl Token {
+    pub fn new_debit(
+        mint_url: MintUrl,
+        unit: CurrencyUnit,
+        memo: Option<String>,
+        proofs: Vec<Proof>,
+    ) -> Token {
+        Token::CashuV4(create_v4_token(mint_url, unit, memo, proofs))
+    }
+
+    pub fn new_credit(
+        mint_url: MintUrl,
+        unit: CurrencyUnit,
+        memo: Option<String>,
+        proofs: Vec<Proof>,
+    ) -> Token {
+        Token::BitcrV4(create_v4_token(mint_url, unit, memo, proofs))
     }
 }

@@ -1,7 +1,6 @@
 // ----- standard library imports
 use std::str::FromStr;
 // ----- extra library imports
-use cashu::nut00::token::TokenV4Token;
 use cashu::{Amount, CheckStateRequest, CurrencyUnit, Proof, ProofsMethods, amount};
 use tracing::{error, warn};
 // ----- local modules
@@ -11,34 +10,6 @@ use crate::db::{KeysetDatabase, WalletDatabase};
 use crate::mint::{Connector, MintConnector};
 use bcr_wallet_lib::wallet::{Token, TokenOperations};
 // ----- end imports
-
-// TODO async trait
-
-impl<T: WalletType, DB: WalletDatabase> Wallet<T, DB>
-where
-    Connector<T>: MintConnector,
-{
-    pub fn proofs_to_v4(&self, proofs: Vec<Proof>, memo: Option<String>) -> cashu::TokenV4 {
-        let v4tokens = proofs
-            .into_iter()
-            .fold(std::collections::HashMap::new(), |mut acc, val| {
-                acc.entry(val.keyset_id)
-                    .and_modify(|p: &mut Vec<Proof>| p.push(val.clone()))
-                    .or_insert(vec![val]);
-                acc
-            })
-            .into_iter()
-            .map(|(id, proofs)| TokenV4Token::new(id, proofs))
-            .collect();
-
-        cashu::TokenV4 {
-            mint_url: self.mint_url.clone(),
-            unit: self.unit.clone(),
-            token: v4tokens,
-            memo,
-        }
-    }
-}
 
 impl<T: WalletType, DB: WalletDatabase + KeysetDatabase> Wallet<T, DB>
 where

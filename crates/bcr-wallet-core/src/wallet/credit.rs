@@ -51,7 +51,7 @@ where
 
 impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB> {
     fn proofs_to_token(&self, proofs: Vec<Proof>, memo: Option<String>) -> Token {
-        Token::BitcrV4(self.proofs_to_v4(proofs, memo))
+        Token::new_credit(self.mint_url.clone(), self.unit.clone(), memo, proofs)
     }
     async fn swap_proofs_amount(
         &self,
