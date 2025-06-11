@@ -2,7 +2,7 @@
 use std::str::FromStr;
 // ----- extra library imports
 use cashu::nut00::token::TokenV4Token;
-use cashu::{Amount, CheckStateRequest, Proof, ProofsMethods, amount};
+use cashu::{Amount, CheckStateRequest, CurrencyUnit, Proof, ProofsMethods, amount};
 use tracing::{error, warn};
 // ----- local modules
 use super::types::SwapProofs;
@@ -218,7 +218,13 @@ where
         let token =
             Token::from_str(&token).map_err(|e| anyhow::anyhow!("Failed to parse token: {}", e))?;
 
-        if token.mint_url() != self.mint_url || token.unit() != self.unit {
+        if token.mint_url() == self.mint_url
+            && token.unit().to_string().to_lowercase() == "crsat"
+            && self.unit == CurrencyUnit::Sat
+        {
+            // TODO Improve rules
+            // Allow CRSAT -> SAT
+        } else if token.mint_url() != self.mint_url || token.unit() != self.unit {
             tracing::error!( token_mint = ?token.mint_url(), token_unit = ?token.unit(),
                             wallet_mint = ?self.mint_url,
                             wallet_unit = ?self.unit,
