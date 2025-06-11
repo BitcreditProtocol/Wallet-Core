@@ -21,8 +21,8 @@ impl Manager {
             rexie = rexie.add_object_store(proof_store(&format!("wallet_{i}")));
         }
         let rexie = rexie
-            .add_object_store(ObjectStore::new(super::KEYSET_COUNTER))
-            .add_object_store(ObjectStore::new(super::WALLET_METADATA).key_path("id"))
+            .add_object_store(ObjectStore::new(super::constants::KEYSET_COUNTER))
+            .add_object_store(ObjectStore::new(super::constants::WALLET_METADATA).key_path("id"))
             .build()
             .await;
         if let Ok(rexie) = rexie {
@@ -55,7 +55,7 @@ impl Manager {
         let store = tx.store(super::constants::WALLET_METADATA)?;
         store.clear().await?;
 
-        let store = tx.store(super::KEYSET_COUNTER)?;
+        let store = tx.store(super::constants::KEYSET_COUNTER)?;
         store.clear().await?;
 
         tx.done().await?;
