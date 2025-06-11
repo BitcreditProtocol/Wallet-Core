@@ -19,7 +19,7 @@ where
     Connector<T>: MintConnector,
 {
     pub fn proofs_to_v4(&self, proofs: Vec<Proof>, memo: Option<String>) -> cashu::TokenV4 {
-        let proofs = proofs
+        let v4tokens = proofs
             .into_iter()
             .fold(std::collections::HashMap::new(), |mut acc, val| {
                 acc.entry(val.keyset_id)
@@ -34,7 +34,7 @@ where
         cashu::TokenV4 {
             mint_url: self.mint_url.clone(),
             unit: self.unit.clone(),
-            token: proofs,
+            token: v4tokens,
             memo,
         }
     }
