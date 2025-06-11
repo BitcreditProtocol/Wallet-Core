@@ -24,7 +24,7 @@ where
             .fold(std::collections::HashMap::new(), |mut acc, val| {
                 acc.entry(val.keyset_id)
                     .and_modify(|p: &mut Vec<Proof>| p.push(val.clone()))
-                    .or_insert(vec![val.clone()]);
+                    .or_insert(vec![val]);
                 acc
             })
             .into_iter()
