@@ -122,7 +122,7 @@ impl fmt::Display for Token {
                 let mut data = Vec::new();
                 ciborium::into_writer(v4, &mut data).map_err(|_| fmt::Error)?;
                 let encoded = general_purpose::URL_SAFE.encode(data);
-                write!(f, "bitcrB{encoded}")
+                write!(f, "{}{encoded}", BitcrB::PREFIX)
             }
         }
     }
