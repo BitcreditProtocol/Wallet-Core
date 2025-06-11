@@ -96,14 +96,14 @@ impl FromStr for Token {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.starts_with(CashuA::PREFIX) {
             let v3 = parse_token_v3_with_prefix::<CashuA>(s)?;
-            let v4 = TokenV4::try_from(v3).map_err(|e| TokenError::Nut00Error(e))?;
+            let v4 = TokenV4::try_from(v3).map_err(TokenError::Nut00Error)?;
             Ok(Token::CashuV4(v4))
         } else if s.starts_with(CashuB::PREFIX) {
             let v4 = parse_token_v4_with_prefix::<CashuB>(s)?;
             Ok(Token::CashuV4(v4))
         } else if s.starts_with(BitcrA::PREFIX) {
             let v3 = parse_token_v3_with_prefix::<BitcrA>(s)?;
-            let v4 = TokenV4::try_from(v3).map_err(|e| TokenError::Nut00Error(e))?;
+            let v4 = TokenV4::try_from(v3).map_err(TokenError::Nut00Error)?;
             Ok(Token::BitcrV4(v4))
         } else if s.starts_with(BitcrB::PREFIX) {
             let v4 = parse_token_v4_with_prefix::<BitcrB>(s)?;

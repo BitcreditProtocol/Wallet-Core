@@ -18,7 +18,7 @@ impl Manager {
     pub async fn new(db_name: &str) -> Option<Manager> {
         let mut rexie = Rexie::builder(db_name).version(1);
         for i in 0..99 {
-            rexie = rexie.add_object_store(proof_store(&format!("wallet_{}", i)));
+            rexie = rexie.add_object_store(proof_store(&format!("wallet_{i}")));
         }
         let rexie = rexie
             .add_object_store(ObjectStore::new(super::KEYSET_COUNTER))
@@ -39,7 +39,7 @@ impl Manager {
             super::constants::KEYSET_COUNTER.to_string(),
         ];
         for i in 0..99 {
-            let str = format!("wallet_{}", i);
+            let str = format!("wallet_{i}");
             store_ops.push(str);
         }
 
@@ -48,7 +48,7 @@ impl Manager {
             .transaction(&store_ops, TransactionMode::ReadWrite)?;
 
         for i in 0..99 {
-            let store = tx.store(&format!("wallet_{}", i))?;
+            let store = tx.store(&format!("wallet_{i}"))?;
             store.clear().await?;
         }
 

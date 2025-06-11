@@ -34,8 +34,8 @@ where
         let token = cashu::TokenV4 {
             mint_url: self.mint_url.clone(),
             unit: self.unit.clone(),
-            memo: memo,
             token: proofs,
+            memo,
         };
 
         Token::BitcrV4(token)
@@ -224,7 +224,10 @@ where
             .map_err(|e| anyhow::anyhow!("Failed to parse token: {}", e))?;
 
         if v4.mint_url != self.mint_url || v4.unit != self.unit {
-            tracing::error!(token_mint = ?v4.mint_url, token_unit = ?v4.unit, "Token mint_url or unit does not match wallet");
+            tracing::error!( token_mint = ?v4.mint_url, token_unit = ?v4.unit,
+                            wallet_mint = ?self.mint_url,
+                            wallet_unit = ?self.unit,
+                            "Token mint_url or unit does not match wallet" );
             return Err(anyhow::anyhow!(
                 "Token mint_url or unit does not match wallet"
             ));
