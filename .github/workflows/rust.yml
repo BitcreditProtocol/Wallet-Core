@@ -26,7 +26,7 @@ jobs:
           df -h
 
       - name: Switch rust version
-        run: rustup default nightly
+        run: rustup default stable
 
       - name: Update rust
         run: rustup update
