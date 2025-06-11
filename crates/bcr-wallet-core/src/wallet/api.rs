@@ -1,15 +1,15 @@
 // ----- standard library imports
+use std::str::FromStr;
 // ----- extra library imports
-use cashu::{Amount, CheckStateRequest, Proof, ProofsMethods, amount};
+use cashu::{Amount, CheckStateRequest, CurrencyUnit, Proof, ProofsMethods, amount};
 use tracing::{error, warn};
 // ----- local modules
 use super::types::SwapProofs;
 use super::{utils, wallet::*};
 use crate::db::{KeysetDatabase, WalletDatabase};
 use crate::mint::{Connector, MintConnector};
+use bcr_wallet_lib::wallet::{Token, TokenOperations};
 // ----- end imports
-
-// TODO async trait
 
 impl<T: WalletType, DB: WalletDatabase + KeysetDatabase> Wallet<T, DB>
 where
@@ -185,8 +185,26 @@ where
         Ok(())
     }
 
-    pub async fn import_token_v3(&self, token: String) -> anyhow::Result<()> {
-        let token = token.parse::<cashu::nut00::TokenV3>()?;
+    pub async fn import_token(&self, token: String) -> anyhow::Result<()> {
+        let token =
+            Token::from_str(&token).map_err(|e| anyhow::anyhow!("Failed to parse token: {}", e))?;
+
+        if token.mint_url() == self.mint_url
+            && token.unit().to_string().to_lowercase() == "crsat"
+            && self.unit == CurrencyUnit::Sat
+        {
+            // TODO Improve rules
+            // Allow CRSAT -> SAT
+        } else if token.mint_url() != self.mint_url || token.unit() != self.unit {
+            tracing::error!( token_mint = ?token.mint_url(), token_unit = ?token.unit(),
+                            wallet_mint = ?self.mint_url,
+                            wallet_unit = ?self.unit,
+                            "Token mint_url or unit does not match wallet" );
+            return Err(anyhow::anyhow!(
+                "Token mint_url or unit does not match wallet"
+            ));
+        }
+
         self.import_proofs(token.proofs()).await?;
         Ok(())
     }
@@ -199,19 +217,15 @@ where
             for p in &selected_proofs {
                 selected_cs.insert(p.c);
             }
-            let token = cashu::nut00::Token::new(
-                self.mint_url.clone(),
-                selected_proofs.clone(),
-                None,
-                self.unit.clone(),
-            );
+
+            let token = self.proofs_to_token(selected_proofs.clone(), None);
 
             // Mark the proofs we send as a token as spent
             for p in &selected_proofs {
                 self.db.mark_pending(p.clone()).await?;
             }
 
-            return Ok(token.to_v3_string());
+            return Ok(token.to_string());
         }
         warn!("Could not select subset of proofs to send");
         Err(anyhow::anyhow!("Could not select subset of proofs to send"))

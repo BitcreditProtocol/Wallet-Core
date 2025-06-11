@@ -20,7 +20,7 @@ pub enum RexieWallet {
 // The underscore _ in front is to avoid ambiguity with existing methods
 // Excessive boilerplate but keeps the rest of the code clean
 trait WalletInterface {
-    async fn _import_token_v3(&self, token: String) -> Result<()>;
+    async fn _import_token(&self, token: String) -> Result<()>;
     async fn _restore(&self) -> Result<()>;
     async fn _get_active_proofs(&self) -> Result<Vec<cashu::Proof>>;
     async fn _get_balance(&self) -> Result<u64>;
@@ -35,8 +35,8 @@ where
     Connector<T>: MintConnector,
     Wallet<T, RexieWalletDatabase>: SwapProofs,
 {
-    async fn _import_token_v3(&self, token: String) -> Result<()> {
-        self.import_token_v3(token).await
+    async fn _import_token(&self, token: String) -> Result<()> {
+        self.import_token(token).await
     }
     async fn _restore(&self) -> Result<()> {
         self.restore().await
@@ -65,10 +65,10 @@ where
 }
 
 impl WalletInterface for RexieWallet {
-    async fn _import_token_v3(&self, token: String) -> Result<()> {
+    async fn _import_token(&self, token: String) -> Result<()> {
         match self {
-            RexieWallet::Credit(w) => w._import_token_v3(token).await,
-            RexieWallet::Debit(w) => w._import_token_v3(token).await,
+            RexieWallet::Credit(w) => w._import_token(token).await,
+            RexieWallet::Debit(w) => w._import_token(token).await,
         }
     }
 
@@ -253,9 +253,9 @@ pub async fn get_wallets() -> (Vec<usize>, Vec<String>) {
     }
 }
 
-pub async fn import_token_v3(token: String, idx: usize) {
+pub async fn import_token(token: String, idx: usize) {
     let wallet = get_wallet(idx).await.unwrap();
-    wallet._import_token_v3(token).await.unwrap();
+    wallet._import_token(token).await.unwrap();
 }
 
 pub async fn recover(idx: usize) {

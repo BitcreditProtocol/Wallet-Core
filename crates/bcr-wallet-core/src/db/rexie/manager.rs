@@ -1,9 +1,9 @@
 // ----- standard library imports
 use std::rc::Rc;
 // ----- extra library imports
-use rexie::{ObjectStore, Rexie};
+use rexie::{ObjectStore, Rexie, TransactionMode};
 // ----- local modules
-
+use crate::db::DatabaseError;
 // ----- end imports
 
 pub struct Manager {
@@ -18,11 +18,11 @@ impl Manager {
     pub async fn new(db_name: &str) -> Option<Manager> {
         let mut rexie = Rexie::builder(db_name).version(1);
         for i in 0..99 {
-            rexie = rexie.add_object_store(proof_store(&format!("wallet_{}", i)));
+            rexie = rexie.add_object_store(proof_store(&format!("wallet_{i}")));
         }
         let rexie = rexie
-            .add_object_store(ObjectStore::new(super::KEYSET_COUNTER))
-            .add_object_store(ObjectStore::new(super::WALLET_METADATA).key_path("id"))
+            .add_object_store(ObjectStore::new(super::constants::KEYSET_COUNTER))
+            .add_object_store(ObjectStore::new(super::constants::WALLET_METADATA).key_path("id"))
             .build()
             .await;
         if let Ok(rexie) = rexie {
@@ -32,5 +32,33 @@ impl Manager {
     }
     pub fn get_db(&self) -> Rc<Rexie> {
         self.db.clone()
+    }
+    pub async fn clear(&self) -> Result<(), DatabaseError> {
+        let mut store_ops = vec![
+            super::constants::WALLET_METADATA.to_string(),
+            super::constants::KEYSET_COUNTER.to_string(),
+        ];
+        for i in 0..99 {
+            let str = format!("wallet_{i}");
+            store_ops.push(str);
+        }
+
+        let tx = self
+            .db
+            .transaction(&store_ops, TransactionMode::ReadWrite)?;
+
+        for i in 0..99 {
+            let store = tx.store(&format!("wallet_{i}"))?;
+            store.clear().await?;
+        }
+
+        let store = tx.store(super::constants::WALLET_METADATA)?;
+        store.clear().await?;
+
+        let store = tx.store(super::constants::KEYSET_COUNTER)?;
+        store.clear().await?;
+
+        tx.done().await?;
+        Ok(())
     }
 }

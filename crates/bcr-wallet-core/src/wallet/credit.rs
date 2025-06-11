@@ -10,6 +10,7 @@ use super::types::SwapProofs;
 use super::wallet::*;
 use crate::db::{KeysetDatabase, WalletDatabase};
 use crate::mint::MintConnector;
+use bcr_wallet_lib::wallet::Token;
 // ----- end imports
 
 impl<DB> Wallet<CreditWallet, DB>
@@ -38,22 +39,20 @@ where
             return Err(anyhow::anyhow!("No proofs found for inactive keyset"));
         }
 
-        let token = cashu::nut00::Token::new(
-            self.mint_url.clone(),
-            selected_proofs.clone(),
-            None,
-            self.unit.clone(),
-        );
+        let token = self.proofs_to_token(selected_proofs.clone(), None);
 
         for p in &selected_proofs {
             self.db.mark_pending(p.clone()).await?;
         }
 
-        Ok(token.to_v3_string())
+        Ok(token.to_string())
     }
 }
 
 impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB> {
+    fn proofs_to_token(&self, proofs: Vec<Proof>, memo: Option<String>) -> Token {
+        Token::new_credit(self.mint_url.clone(), self.unit.clone(), memo, proofs)
+    }
     async fn swap_proofs_amount(
         &self,
         proofs: Vec<Proof>,

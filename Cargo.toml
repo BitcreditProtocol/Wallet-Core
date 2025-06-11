@@ -6,9 +6,10 @@ license = "MIT"
 [workspace]
 resolver = "3"
 
-members = ["crates/bcr-wallet-core"]
+members = ["crates/bcr-wallet-core", "crates/bcr-wallet-lib"]
 
 [workspace.dependencies]
+bcr-wallet-lib = { path = "./crates/bcr-wallet-lib" }
 anyhow = { version = "1" }
 async-trait = { version = "0.1" }
 bitcoin = { version = "0.32" }
@@ -29,3 +30,5 @@ url = { version = "2.5" }
 rexie = { version = "0.6" }
 serde-wasm-bindgen = { version = "0.6" }
 bip39 = "2.1"
+ciborium = "0.2"
+tracing-wasm = "0.2"
