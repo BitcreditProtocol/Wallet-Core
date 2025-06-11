@@ -8,9 +8,13 @@ use super::types::SwapProofs;
 use super::wallet::*;
 use crate::db::{KeysetDatabase, WalletDatabase};
 use crate::mint::MintConnector;
+use bcr_wallet_lib::wallet::Token;
 // ----- end imports
 
 impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<DebitWallet, DB> {
+    fn proofs_to_token(&self, proofs: Vec<Proof>, memo: Option<String>) -> Token {
+        Token::CashuV4(self.proofs_to_v4(proofs, memo))
+    }
     async fn swap_proofs_amount(
         &self,
         proofs: Vec<Proof>,

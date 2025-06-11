@@ -18,7 +18,7 @@ impl<T: WalletType, DB: WalletDatabase> Wallet<T, DB>
 where
     Connector<T>: MintConnector,
 {
-    pub fn proofs_to_token(&self, proofs: Vec<Proof>, memo: Option<String>) -> Token {
+    pub fn proofs_to_v4(&self, proofs: Vec<Proof>, memo: Option<String>) -> cashu::TokenV4 {
         let proofs = proofs
             .into_iter()
             .fold(std::collections::HashMap::new(), |mut acc, val| {
@@ -31,14 +31,12 @@ where
             .map(|(id, proofs)| TokenV4Token::new(id, proofs))
             .collect();
 
-        let token = cashu::TokenV4 {
+        cashu::TokenV4 {
             mint_url: self.mint_url.clone(),
             unit: self.unit.clone(),
             token: proofs,
             memo,
-        };
-
-        Token::BitcrV4(token)
+        }
     }
 }
 
