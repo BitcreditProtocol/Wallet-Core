@@ -9,7 +9,7 @@ use super::types::SwapProofs;
 use super::{utils, wallet::*};
 use crate::db::{KeysetDatabase, WalletDatabase};
 use crate::mint::{Connector, MintConnector};
-use bcr_wallet_lib::wallet::Token;
+use bcr_wallet_lib::wallet::{Token, TokenOperations};
 // ----- end imports
 
 // TODO async trait
@@ -220,11 +220,8 @@ where
         let token =
             Token::from_str(&token).map_err(|e| anyhow::anyhow!("Failed to parse token: {}", e))?;
 
-        let v4 = cashu::TokenV4::try_from(token)
-            .map_err(|e| anyhow::anyhow!("Failed to parse token: {}", e))?;
-
-        if v4.mint_url != self.mint_url || v4.unit != self.unit {
-            tracing::error!( token_mint = ?v4.mint_url, token_unit = ?v4.unit,
+        if token.mint_url() != self.mint_url || token.unit() != self.unit {
+            tracing::error!( token_mint = ?token.mint_url(), token_unit = ?token.unit(),
                             wallet_mint = ?self.mint_url,
                             wallet_unit = ?self.unit,
                             "Token mint_url or unit does not match wallet" );
@@ -233,7 +230,7 @@ where
             ));
         }
 
-        self.import_proofs(v4.proofs()).await?;
+        self.import_proofs(token.proofs()).await?;
         Ok(())
     }
 
