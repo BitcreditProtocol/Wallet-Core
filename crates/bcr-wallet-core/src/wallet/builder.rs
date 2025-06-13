@@ -47,7 +47,9 @@ impl<T: WalletType, DB: WalletDatabase> WalletBuilder<UnitSet, T, DB> {
         WalletBuilder {
             mint_url: Some(mint_url),
             _marker: PhantomData,
-            ..self
+            database: self.database,
+            seed: self.seed,
+            unit: self.unit,
         }
     }
 }
@@ -57,7 +59,9 @@ impl<T: WalletType, DB: WalletDatabase> WalletBuilder<Unconfigured, T, DB> {
         WalletBuilder {
             unit: Some(unit),
             _marker: PhantomData,
-            ..self
+            seed: self.seed,
+            database: self.database,
+            mint_url: self.mint_url,
         }
     }
 }
@@ -67,7 +71,9 @@ impl<T: WalletType, DB: WalletDatabase> WalletBuilder<MintSet, T, DB> {
         WalletBuilder {
             database: Some(db),
             _marker: PhantomData,
-            ..self
+            unit: self.unit,
+            mint_url: self.mint_url,
+            seed: self.seed,
         }
     }
 }
@@ -77,7 +83,9 @@ impl<T: WalletType, DB: WalletDatabase> WalletBuilder<DatabaseSet, T, DB> {
         WalletBuilder {
             seed: Some(seed),
             _marker: PhantomData,
-            ..self
+            mint_url: self.mint_url,
+            database: self.database,
+            unit: self.unit,
         }
     }
 }
