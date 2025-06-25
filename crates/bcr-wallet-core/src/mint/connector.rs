@@ -49,21 +49,21 @@ impl Default for RestClient {
 }
 
 pub struct Connector<T: WalletType> {
-    pub(crate) base_url: String,
+    pub(crate) base: Url,
     pub(crate) client: RestClient,
     _marker: PhantomData<T>,
 }
 
 impl<T: WalletType> Connector<T> {
-    pub fn new(base_url: String) -> Self {
+    pub fn new(base: Url) -> Self {
         Self {
-            base_url,
+            base,
             client: RestClient::new(),
             _marker: PhantomData,
         }
     }
     pub(crate) fn url(&self, path: &str) -> Url {
-        Url::parse(&format!("{}/{}", self.base_url, path)).unwrap()
+        self.base.join(path).unwrap()
     }
 }
 

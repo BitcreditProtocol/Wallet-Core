@@ -97,11 +97,13 @@ where
     pub fn build(self) -> Wallet<T, DB> {
         let xpriv =
             Xpriv::new_master(bitcoin::Network::Bitcoin, self.seed.unwrap().as_ref()).unwrap();
+        let mint_url = self.mint_url.unwrap();
+        let url = reqwest::Url::parse(&mint_url.to_string()).unwrap();
         Wallet {
             xpriv,
-            mint_url: self.mint_url.clone().unwrap(),
+            mint_url,
             unit: self.unit.unwrap(),
-            connector: Connector::new(self.mint_url.unwrap().to_string()),
+            connector: Connector::new(url),
             db: self.database.unwrap(),
         }
     }
