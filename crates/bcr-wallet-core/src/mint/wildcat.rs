@@ -1,6 +1,7 @@
 // ----- standard library imports
 // ----- extra library imports
 use anyhow::Result;
+use async_trait::async_trait;
 use cashu::nuts::nut02 as cdk02;
 // ----- local modules
 use super::connector::{Connector, MintConnector};
@@ -8,6 +9,7 @@ use crate::wallet::CreditWallet;
 // ----- end imports
 
 // Wildcat endpoints
+#[async_trait(?Send)]
 impl MintConnector for Connector<CreditWallet> {
     async fn list_keysets(&self) -> Result<cdk02::KeysetResponse> {
         let url = self.url("v1/keysets");

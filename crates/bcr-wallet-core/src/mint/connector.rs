@@ -2,6 +2,7 @@
 use std::marker::PhantomData;
 // ----- extra library imports
 use anyhow::Result;
+use async_trait::async_trait;
 use cashu::nuts::nut02 as cdk02;
 use reqwest::Client as HttpClient;
 use reqwest::Url;
@@ -66,7 +67,7 @@ impl<T: WalletType> Connector<T> {
     }
 }
 
-// TODO async trait
+#[async_trait(?Send)]
 pub trait MintConnector {
     async fn list_keysets(&self) -> Result<cdk02::KeysetResponse>;
     async fn swap(&self, req: cashu::SwapRequest) -> Result<cashu::SwapResponse>;
