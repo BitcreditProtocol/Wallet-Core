@@ -22,12 +22,7 @@ pub enum DatabaseError {
     WalletDatabaseFull,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq, Deserialize)]
-pub enum ProofStatus {
-    Unspent,
-    Pending,
-    Spent,
-}
+pub type ProofStatus = cashu::nut07::State;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct WalletProof {
