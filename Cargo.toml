@@ -9,26 +9,27 @@ resolver = "3"
 members = ["crates/bcr-wallet-core", "crates/bcr-wallet-lib"]
 
 [workspace.dependencies]
-bcr-wallet-lib = { path = "./crates/bcr-wallet-lib" }
 anyhow = { version = "1" }
 async-trait = { version = "0.1" }
+bcr-wallet-lib = { path = "./crates/bcr-wallet-lib" }
+bip39 = "2.1"
 bitcoin = { version = "0.32" }
 cashu = { version = "0.9", default-features = false }
+cdk = { version = "0.9", default-features = false }
 chrono = { version = "0.4" }
+ciborium = "0.2"
 rand = { version = "0.8" }
 reqwest = { version = "0.12" }
+rexie = { version = "0.6" }
 secp256k1 = { version = "0.29" }
 serde = { version = "1" }
+serde-wasm-bindgen = { version = "0.6" }
 serde_json = { version = "1" }
 thiserror = { version = "2" }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 tokio-util = { version = "0.7" }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3" }
-uuid = { version = "1", features = ["v4", "serde"] }
-url = { version = "2.5" }
-rexie = { version = "0.6" }
-serde-wasm-bindgen = { version = "0.6" }
-bip39 = "2.1"
-ciborium = "0.2"
 tracing-wasm = "0.2"
+url = { version = "2.5" }
+uuid = { version = "1", features = ["v4", "serde"] }
