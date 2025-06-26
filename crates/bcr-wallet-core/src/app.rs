@@ -3,17 +3,17 @@ use std::cell::RefCell;
 // ----- extra library imports
 use anyhow::Result;
 use cashu::MintUrl;
+use cdk::wallet::HttpClient;
 // ----- local modules
 use crate::db::{self, Metadata, WalletDatabase, WalletMetadata, rexie::RexieWalletDatabase};
-use crate::mint::{Connector, MintConnector};
 use crate::wallet::{self, SwapProofs, Wallet, WalletType, new_credit, new_debit};
 // ----- end imports
 
 // Experimental, Many things will change here, mostly for testing
 
 pub enum RexieWallet {
-    Credit(Wallet<wallet::CreditWallet, RexieWalletDatabase>),
-    Debit(Wallet<wallet::DebitWallet, RexieWalletDatabase>),
+    Credit(Wallet<wallet::CreditWallet, RexieWalletDatabase, HttpClient>),
+    Debit(Wallet<wallet::DebitWallet, RexieWalletDatabase, HttpClient>),
 }
 
 // This trait just exists to make life easy in this file as an access point
@@ -30,10 +30,11 @@ trait WalletInterface {
     async fn _list_keysets(&self) -> Result<Vec<cashu::KeySetInfo>>;
 }
 
-impl<T: WalletType> WalletInterface for Wallet<T, RexieWalletDatabase>
+impl<T, Connector> WalletInterface for Wallet<T, RexieWalletDatabase, Connector>
 where
-    Connector<T>: MintConnector,
-    Wallet<T, RexieWalletDatabase>: SwapProofs,
+    T: WalletType,
+    Wallet<T, RexieWalletDatabase, Connector>: SwapProofs,
+    Connector: cdk::wallet::MintConnector,
 {
     async fn _import_token(&self, token: String) -> Result<()> {
         self.import_token(token).await
@@ -60,7 +61,7 @@ where
         self.send_proofs_for(amount).await
     }
     async fn _list_keysets(&self) -> Result<Vec<cashu::KeySetInfo>> {
-        Ok(self.connector.list_keysets().await?.keysets)
+        Ok(self.connector.get_mint_keysets().await?.keysets)
     }
 }
 

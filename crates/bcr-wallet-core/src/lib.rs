@@ -3,7 +3,6 @@
 
 mod app;
 pub mod db;
-pub mod mint;
 pub mod wallet;
 
 // ----- standard library imports

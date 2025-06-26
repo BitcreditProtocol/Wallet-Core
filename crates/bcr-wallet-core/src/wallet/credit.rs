@@ -9,18 +9,18 @@ use tracing::{debug, error};
 use super::types::SwapProofs;
 use super::wallet::*;
 use crate::db::{KeysetDatabase, WalletDatabase};
-use crate::mint::MintConnector;
 use bcr_wallet_lib::wallet::Token;
 // ----- end imports
 
-impl<DB> Wallet<CreditWallet, DB>
+impl<DB, Connector> Wallet<CreditWallet, DB, Connector>
 where
     DB: WalletDatabase + KeysetDatabase,
+    Connector: cdk::wallet::MintConnector,
 {
     pub async fn redeem_inactive(&self) -> anyhow::Result<String> {
         let proofs = self.db.get_active_proofs().await?;
 
-        let keysets = self.connector.list_keysets().await?;
+        let keysets = self.connector.get_mint_keysets().await?;
 
         let inactive_keysets = keysets
             .keysets
@@ -49,7 +49,11 @@ where
     }
 }
 
-impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<CreditWallet, DB> {
+impl<DB, Connector> SwapProofs for Wallet<CreditWallet, DB, Connector>
+where
+    DB: WalletDatabase + KeysetDatabase,
+    Connector: cdk::wallet::MintConnector,
+{
     fn proofs_to_token(&self, proofs: Vec<Proof>, memo: Option<String>) -> Token {
         Token::new_credit(self.mint_url.clone(), self.unit.clone(), memo, proofs)
     }
