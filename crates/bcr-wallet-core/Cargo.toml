@@ -5,30 +5,30 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-
-serde-wasm-bindgen.workspace = true
-tokio_with_wasm = "0.8"
-wasm-bindgen = "0.2"
-js-sys = "0.3"
-wasm-bindgen-futures = "0.4"
-thiserror.workspace = true
-serde.workspace = true
-async-trait.workspace = true
-reqwest = { workspace = true, features = ["json"] }
 anyhow.workspace = true
-rand.workspace = true
-rexie.workspace = true
-tracing.workspace = true
+async-trait.workspace = true
+bcr-wallet-lib.workspace = true
+bip39.workspace = true
 bitcoin.workspace = true
+cashu = { workspace = true, features = ["wallet"] }
+cdk = { workspace = true, features = ["wallet"] }
+ciborium.workspace = true
+getrandom = { version = "0.2.16", features = ["js"] }
+js-sys = "0.3"
+rand.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+rexie.workspace = true
+serde-wasm-bindgen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio_with_wasm = "0.8"
 tracing-subscriber.workspace = true
 tracing-wasm.workspace = true
-getrandom = { version = "0.2.16", features = ["js"] }
-# getrandom = { version = "0.3.3", features = ["wasm_js"] }
-bip39.workspace = true
-cashu = { workspace = true, default-features = false, features = ["wallet"] }
-serde_json.workspace = true
-ciborium.workspace = true
-bcr-wallet-lib.workspace = true
+tracing.workspace = true
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
 [dev-dependencies]
 wasm-bindgen-test = { version = "0.3" }
 
