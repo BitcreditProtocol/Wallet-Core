@@ -2,19 +2,22 @@
 use std::str::FromStr;
 // ----- extra library imports
 use cashu::{Amount, CheckStateRequest, CurrencyUnit, Proof, ProofsMethods, amount};
+use cdk::wallet::MintConnector;
 use tracing::{error, warn};
 // ----- local modules
 use super::types::SwapProofs;
 use super::{utils, wallet::*};
 use crate::db::{KeysetDatabase, WalletDatabase};
-use crate::mint::{Connector, MintConnector};
 use bcr_wallet_lib::wallet::{Token, TokenOperations};
+
 // ----- end imports
 
-impl<T: WalletType, DB: WalletDatabase + KeysetDatabase> Wallet<T, DB>
+impl<T, DB, C> Wallet<T, DB, C>
 where
-    Connector<T>: MintConnector,
-    Wallet<T, DB>: SwapProofs,
+    T: WalletType,
+    DB: WalletDatabase + KeysetDatabase,
+    C: MintConnector,
+    Wallet<T, DB, C>: SwapProofs,
 {
     pub async fn get_balance(&self) -> anyhow::Result<u64> {
         let proofs = self.db.get_active_proofs().await?;
@@ -65,7 +68,7 @@ where
         let ys: Vec<cashu::PublicKey> = non_spent.iter().map(|p| p.y().unwrap()).collect();
         let states = self
             .connector
-            .checkstate(CheckStateRequest { ys })
+            .post_check_state(CheckStateRequest { ys })
             .await?
             .states;
 
@@ -86,7 +89,7 @@ where
     }
 
     pub async fn restore(&self) -> anyhow::Result<()> {
-        let keysets = self.connector.list_keysets().await?;
+        let keysets = self.connector.get_mint_keysets().await?;
 
         let keyset_ids: Vec<cashu::Id> = keysets.keysets.iter().map(|ks| ks.id).collect();
 
@@ -94,13 +97,8 @@ where
 
         for kid in keyset_ids {
             tracing::debug!(kid=?kid,"Restore");
-            let resp = self.connector.list_keys(kid).await?;
-            let keys = resp.keysets.first();
-            if keys.is_none() {
-                warn!("No keys found for keyset {}", kid);
-                continue;
-            }
-            let keys = keys.unwrap().keys.clone();
+            let keyset = self.connector.get_mint_keyset(kid).await?;
+            let keys = keyset.keys.clone();
             let mut fruitless_attempts = 0;
             let mut key_counter = 0;
 
@@ -119,7 +117,7 @@ where
                     outputs: premint_secrets.blinded_messages(),
                 };
 
-                let response = self.connector.restore(restore_request).await?;
+                let response = self.connector.post_restore(restore_request).await?;
 
                 tracing::info!(sigs=?response.signatures,"Restored signatures");
 
@@ -160,7 +158,7 @@ where
 
                 let states = self
                     .connector
-                    .checkstate(CheckStateRequest { ys: ys.clone() })
+                    .post_check_state(CheckStateRequest { ys: ys.clone() })
                     .await?
                     .states;
 
@@ -261,11 +259,7 @@ where
             return Err(anyhow::anyhow!("Proofs and amounts do not match"));
         }
 
-        let keys = wdc.list_keys(keyset_id).await?;
-        let keys = keys
-            .keysets
-            .first()
-            .ok_or(anyhow::anyhow!("No keys found"))?;
+        let keyset = wdc.get_mint_keyset(keyset_id).await?;
 
         let counter = self.db.get_count(keyset_id).await.unwrap_or(0);
         let target = amount::SplitTarget::Values(amounts);
@@ -287,7 +281,7 @@ where
 
         let swap_request = cashu::nut03::SwapRequest::new(proofs, bs);
 
-        let response = wdc.swap(swap_request).await?;
+        let response = wdc.post_swap(swap_request).await?;
 
         let secrets = premint_secrets
             .iter()
@@ -298,7 +292,7 @@ where
             .map(|b| b.r.clone())
             .collect::<Vec<_>>();
 
-        let proofs = cashu::dhke::construct_proofs(response.signatures, rs, secrets, &keys.keys)?;
+        let proofs = cashu::dhke::construct_proofs(response.signatures, rs, secrets, &keyset.keys)?;
 
         Ok(proofs)
     }

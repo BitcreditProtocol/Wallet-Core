@@ -2,9 +2,9 @@
 use std::marker::PhantomData;
 // ----- extra library imports
 use bitcoin::bip32::Xpriv;
+use cdk::wallet::HttpClient;
 // ----- local modules
 use crate::db::WalletDatabase;
-use crate::mint::{Connector, MintConnector};
 use crate::wallet::{CreditWallet, DebitWallet, Wallet, WalletType};
 // ----- end imports
 
@@ -90,21 +90,22 @@ impl<T: WalletType, DB: WalletDatabase> WalletBuilder<DatabaseSet, T, DB> {
     }
 }
 
-impl<T: WalletType, DB: WalletDatabase> WalletBuilder<SeedSet, T, DB>
+impl<T, DB> WalletBuilder<SeedSet, T, DB>
 where
-    Connector<T>: MintConnector,
+    T: WalletType,
+    DB: WalletDatabase,
 {
-    pub fn build(self) -> Wallet<T, DB> {
+    pub fn build(self) -> Wallet<T, DB, HttpClient> {
         let xpriv =
             Xpriv::new_master(bitcoin::Network::Bitcoin, self.seed.unwrap().as_ref()).unwrap();
         let mint_url = self.mint_url.unwrap();
-        let url = reqwest::Url::parse(&mint_url.to_string()).unwrap();
         Wallet {
             xpriv,
-            mint_url,
+            mint_url: mint_url.clone(),
             unit: self.unit.unwrap(),
-            connector: Connector::new(url),
+            connector: HttpClient::new(mint_url),
             db: self.database.unwrap(),
+            _phantom: std::marker::PhantomData,
         }
     }
 }

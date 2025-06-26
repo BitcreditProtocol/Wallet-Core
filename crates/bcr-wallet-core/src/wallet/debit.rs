@@ -7,11 +7,14 @@ use tracing::debug;
 use super::types::SwapProofs;
 use super::wallet::*;
 use crate::db::{KeysetDatabase, WalletDatabase};
-use crate::mint::MintConnector;
 use bcr_wallet_lib::wallet::Token;
 // ----- end imports
 
-impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<DebitWallet, DB> {
+impl<DB, Connector> SwapProofs for Wallet<DebitWallet, DB, Connector>
+where
+    DB: WalletDatabase + KeysetDatabase,
+    Connector: cdk::wallet::MintConnector,
+{
     fn proofs_to_token(&self, proofs: Vec<Proof>, memo: Option<String>) -> Token {
         Token::new_debit(self.mint_url.clone(), self.unit.clone(), memo, proofs)
     }
@@ -20,7 +23,7 @@ impl<DB: WalletDatabase + KeysetDatabase> SwapProofs for Wallet<DebitWallet, DB>
         proofs: Vec<Proof>,
         amounts: Vec<Amount>,
     ) -> Result<Vec<Proof>> {
-        let keysets = self.connector.list_keysets().await?;
+        let keysets = self.connector.get_mint_keysets().await?;
         let unit = self.unit.clone();
         // Swap to an active keyset
         let keyset = keysets
