@@ -2,47 +2,60 @@ use bcr_wallet_lib::wallet::*;
 use std::str::FromStr;
 
 #[test]
-fn test_tokenv4_from_tokenv3() {
-    let token_v3_str = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJhbW91bnQiOjIsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6IjQwNzkxNWJjMjEyYmU2MWE3N2UzZTZkMmFlYjRjNzI3OTgwYmRhNTFjZDA2YTZhZmMyOWUyODYxNzY4YTc4MzciLCJDIjoiMDJiYzkwOTc5OTdkODFhZmIyY2M3MzQ2YjVlNDM0NWE5MzQ2YmQyYTUwNmViNzk1ODU5OGE3MmYwY2Y4NTE2M2VhIn0seyJhbW91bnQiOjgsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6ImZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmUiLCJDIjoiMDI5ZThlNTA1MGI4OTBhN2Q2YzA5NjhkYjE2YmMxZDVkNWZhMDQwZWExZGUyODRmNmVjNjlkNjEyOTlmNjcxMDU5In1dfV0sInVuaXQiOiJzYXQiLCJtZW1vIjoiVGhhbmsgeW91LiJ9";
-    let token_v3 = Token::from_str(token_v3_str).expect("TokenV3 should be created from string");
-    if let Token::CashuV4(token_v4) = token_v3 {
-        let token_v4_expected = "cashuBpGFtd2h0dHBzOi8vODMzMy5zcGFjZTozMzM4YXVjc2F0YWRqVGhhbmsgeW91LmF0gaJhaUgAmh8pMlPkHmFwgqRhYQJhc3hANDA3OTE1YmMyMTJiZTYxYTc3ZTNlNmQyYWViNGM3Mjc5ODBiZGE1MWNkMDZhNmFmYzI5ZTI4NjE3NjhhNzgzN2FjWCECvJCXmX2Br7LMc0a15DRak0a9KlBut5WFmKcvDPhRY-phZPakYWEIYXN4QGZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmVhY1ghAp6OUFC4kKfWwJaNsWvB1dX6BA6h3ihPbsadYSmfZxBZYWT2";
-        assert_eq!(token_v4.to_string(), token_v4_expected);
-    } else {
-        panic!("TokenV3 expected");
-    }
+fn test_token_str_round_trip_1() {
+    let token_str = "cashuBpGF0gaJhaUgArSaMTR9YJmFwgaNhYQFhc3hAOWE2ZGJiODQ3YmQyMzJiYTc2ZGIwZGYxOTcyMTZiMjlkM2I4Y2MxNDU1M2NkMjc4MjdmYzFjYzk0MmZlZGI0ZWFjWCEDhhhUP_trhpXfStS6vN6So0qWvc2X3O4NfM-Y1HISZ5JhZGlUaGFuayB5b3VhbXVodHRwOi8vbG9jYWxob3N0OjMzMzhhdWNzYXQ=";
+
+    let token = Token::from_str(token_str).unwrap();
+    assert!(matches!(token, Token::CashuV4(_)));
+    let Token::CashuV4(inner) = token.clone() else {
+        panic!("Expected CashuV4 token");
+    };
+    assert_eq!(inner.token.len(), 1);
+    assert_eq!(inner.token[0].keyset_id.to_string(), "00ad268c4d1f5826");
+    let _ = token.to_string().strip_prefix("cashuB").expect("prefix");
+    assert_eq!(inner.mint_url.to_string(), "http://localhost:3338");
+    //
+    assert_eq!(
+        inner.token[0].keyset_id,
+        cashu::Id::from_str("00ad268c4d1f5826").unwrap()
+    );
+    assert_eq!(inner.unit.clone(), cashu::CurrencyUnit::Sat);
+
+    let encoded = &inner.to_string();
+
+    let token_data = CashuTokenV4::from_str(encoded).unwrap();
+    assert_eq!(token_data, inner);
 }
 
 #[test]
-fn test_token_str_round_trip() {
-    let token_str = "bitcrAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJhbW91bnQiOjIsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6IjQwNzkxNWJjMjEyYmU2MWE3N2UzZTZkMmFlYjRjNzI3OTgwYmRhNTFjZDA2YTZhZmMyOWUyODYxNzY4YTc4MzciLCJDIjoiMDJiYzkwOTc5OTdkODFhZmIyY2M3MzQ2YjVlNDM0NWE5MzQ2YmQyYTUwNmViNzk1ODU5OGE3MmYwY2Y4NTE2M2VhIn0seyJhbW91bnQiOjgsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6ImZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmUiLCJDIjoiMDI5ZThlNTA1MGI4OTBhN2Q2YzA5NjhkYjE2YmMxZDVkNWZhMDQwZWExZGUyODRmNmVjNjlkNjEyOTlmNjcxMDU5In1dfV0sInVuaXQiOiJzYXQiLCJtZW1vIjoiVGhhbmsgeW91LiJ9";
+fn test_token_str_round_trip_2() {
+    let token_str = "bitcrBpGFtdWh0dHA6Ly9sb2NhbGhvc3Q6MzMzOGF1ZWNyc2F0YXSBomFpSACtJoxNH1gmYXCBo2FhAWFzeEA5YTZkYmI4NDdiZDIzMmJhNzZkYjBkZjE5NzIxNmIyOWQzYjhjYzE0NTUzY2QyNzgyN2ZjMWNjOTQyZmVkYjRlYWNYIQOGGFQ_-2uGld9K1Lq83pKjSpa9zZfc7g18z5jUchJnkmFkaVRoYW5rIHlvdQ";
 
     let token = Token::from_str(token_str).unwrap();
-    let v4: cashu::TokenV4 = TryFrom::try_from(token.clone()).unwrap();
-    assert_eq!(v4.token.len(), 1);
-    assert_eq!(v4.token[0].keyset_id.to_string(), "009a1f293253e41e");
+    assert!(matches!(token, Token::BitcrV4(_)));
+    let Token::BitcrV4(inner) = token.clone() else {
+        panic!("Expected BitcrV4 token");
+    };
+    assert_eq!(inner.token.len(), 1);
+    assert_eq!(inner.token[0].keyset_id.to_string(), "00ad268c4d1f5826");
 
     token.to_string().strip_prefix("bitcrB").unwrap();
+    assert_eq!(inner.mint_url.to_string(), "http://localhost:3338");
+    //
+    assert_eq!(
+        inner.token[0].keyset_id,
+        cashu::Id::from_str("00ad268c4d1f5826").unwrap()
+    );
+    assert_eq!(
+        inner.unit.clone(),
+        cashu::CurrencyUnit::Custom(String::from("CRSAT"))
+    ); // this should be Custom("crsat")
 
-    if let Token::BitcrV4(token) = token {
-        assert_eq!(token.mint_url.to_string(), "https://8333.space:3338");
+    let encoded = &inner.to_string();
 
-        assert_eq!(
-            token.token[0].keyset_id,
-            cashu::Id::from_str("009a1f293253e41e").unwrap()
-        );
-        assert_eq!(token.unit.clone(), cashu::CurrencyUnit::Sat);
-
-        let encoded = &token.to_string();
-
-        let token_data = cashu::TokenV4::from_str(encoded).unwrap();
-
-        assert_eq!(token_data, token);
-    } else {
-        panic!("Token is not V3");
-    }
+    let token_data = BitcrTokenV4::from_str(encoded).unwrap();
+    assert_eq!(token_data, inner);
 }
-
 #[test]
 fn incorrect_tokens() {
     let incorrect_prefix = "casshuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJhbW91bnQiOjIsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6IjQwNzkxNWJjMjEyYmU2MWE3N2UzZTZkMmFlYjRjNzI3OTgwYmRhNTFjZDA2YTZhZmMyOWUyODYxNzY4YTc4MzciLCJDIjoiMDJiYzkwOTc5OTdkODFhZmIyY2M3MzQ2YjVlNDM0NWE5MzQ2YmQyYTUwNmViNzk1ODU5OGE3MmYwY2Y4NTE2M2VhIn0seyJhbW91bnQiOjgsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6ImZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmUiLCJDIjoiMDI5ZThlNTA1MGI4OTBhN2Q2YzA5NjhkYjE2YmMxZDVkNWZhMDQwZWExZGUyODRmNmVjNjlkNjEyOTlmNjcxMDU5In1dfV0sInVuaXQiOiJzYXQiLCJtZW1vIjoiVGhhbmsgeW91LiJ9";
@@ -57,36 +70,11 @@ fn incorrect_tokens() {
 
     assert!(no_prefix_token.is_err());
 
-    let correct_token = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJhbW91bnQiOjIsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6IjQwNzkxNWJjMjEyYmU2MWE3N2UzZTZkMmFlYjRjNzI3OTgwYmRhNTFjZDA2YTZhZmMyOWUyODYxNzY4YTc4MzciLCJDIjoiMDJiYzkwOTc5OTdkODFhZmIyY2M3MzQ2YjVlNDM0NWE5MzQ2YmQyYTUwNmViNzk1ODU5OGE3MmYwY2Y4NTE2M2VhIn0seyJhbW91bnQiOjgsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6ImZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmUiLCJDIjoiMDI5ZThlNTA1MGI4OTBhN2Q2YzA5NjhkYjE2YmMxZDVkNWZhMDQwZWExZGUyODRmNmVjNjlkNjEyOTlmNjcxMDU5In1dfV0sInVuaXQiOiJzYXQiLCJtZW1vIjoiVGhhbmsgeW91LiJ9";
+    let correct_token = "cashuBo2F0gqJhaUgA_9SLj17PgGFwgaNhYQFhc3hAYWNjMTI0MzVlN2I4NDg0YzNjZjE4NTAxNDkyMThhZjkwZjcxNmE1MmJmNGE1ZWQzNDdlNDhlY2MxM2Y3NzM4OGFjWCECRFODGd5IXVW-07KaZCvuWHk3WrnnpiDhHki6SCQh88-iYWlIAK0mjE0fWCZhcIKjYWECYXN4QDEzMjNkM2Q0NzA3YTU4YWQyZTIzYWRhNGU5ZjFmNDlmNWE1YjRhYzdiNzA4ZWIwZDYxZjczOGY0ODMwN2U4ZWVhY1ghAjRWqhENhLSsdHrr2Cw7AFrKUL9Ffr1XN6RBT6w659lNo2FhAWFzeEA1NmJjYmNiYjdjYzY0MDZiM2ZhNWQ1N2QyMTc0ZjRlZmY4YjQ0MDJiMTc2OTI2ZDNhNTdkM2MzZGNiYjU5ZDU3YWNYIQJzEpxXGeWZN5qXSmJjY8MzxWyvwObQGr5G1YCCgHicY2FtdWh0dHA6Ly9sb2NhbGhvc3Q6MzMzOGF1Y3NhdA==";
 
     let correct_token = Token::from_str(correct_token);
 
     assert!(correct_token.is_ok());
-}
-
-#[test]
-fn test_token_v4_str_round_trip() {
-    let token_str = "bitcrBpGF0gaJhaUgArSaMTR9YJmFwgaNhYQFhc3hAOWE2ZGJiODQ3YmQyMzJiYTc2ZGIwZGYxOTcyMTZiMjlkM2I4Y2MxNDU1M2NkMjc4MjdmYzFjYzk0MmZlZGI0ZWFjWCEDhhhUP_trhpXfStS6vN6So0qWvc2X3O4NfM-Y1HISZ5JhZGlUaGFuayB5b3VhbXVodHRwOi8vbG9jYWxob3N0OjMzMzhhdWNzYXQ=";
-    let token = Token::from_str(token_str).unwrap();
-    token.to_string().strip_prefix("bitcrB").unwrap();
-    if let Token::BitcrV4(token) = token {
-        assert_eq!(
-            token.mint_url,
-            cashu::MintUrl::from_str("http://localhost:3338").unwrap()
-        );
-        assert_eq!(
-            token.token[0].keyset_id,
-            cashu::Id::from_str("00ad268c4d1f5826").unwrap()
-        );
-
-        let encoded = &token.to_string();
-
-        let token_data = cashu::TokenV4::from_str(encoded).unwrap();
-
-        assert_eq!(token_data, token);
-    } else {
-        panic!("Unexpected token type");
-    }
 }
 
 #[test]

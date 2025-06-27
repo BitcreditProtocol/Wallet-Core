@@ -1,14 +1,14 @@
 // ----- standard library imports
 use std::str::FromStr;
 // ----- extra library imports
-use cashu::{Amount, CheckStateRequest, CurrencyUnit, Proof, ProofsMethods, amount};
+use cashu::{Amount, CheckStateRequest, Proof, ProofsMethods, amount};
 use cdk::wallet::MintConnector;
 use tracing::{error, warn};
 // ----- local modules
 use super::types::SwapProofs;
 use super::{utils, wallet::*};
 use crate::db::{KeysetDatabase, WalletDatabase};
-use bcr_wallet_lib::wallet::{Token, TokenOperations};
+use bcr_wallet_lib::wallet::Token;
 
 // ----- end imports
 
@@ -187,13 +187,13 @@ where
         let token =
             Token::from_str(&token).map_err(|e| anyhow::anyhow!("Failed to parse token: {}", e))?;
 
-        if token.mint_url() == self.mint_url
-            && token.unit().to_string().to_lowercase() == "crsat"
-            && self.unit == CurrencyUnit::Sat
-        {
+        if token.mint_url() == self.mint_url && token.unit().as_ref() == Some(&self.unit) {
             // TODO Improve rules
             // Allow CRSAT -> SAT
-        } else if token.mint_url() != self.mint_url || token.unit() != self.unit {
+        } else if token.mint_url() != self.mint_url
+            || token.unit().is_none()
+            || token.unit().as_ref() != Some(&self.unit)
+        {
             tracing::error!( token_mint = ?token.mint_url(), token_unit = ?token.unit(),
                             wallet_mint = ?self.mint_url,
                             wallet_unit = ?self.unit,
