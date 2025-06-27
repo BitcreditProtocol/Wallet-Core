@@ -16,7 +16,7 @@ where
     Connector: cdk::wallet::MintConnector,
 {
     fn proofs_to_token(&self, proofs: Vec<Proof>, memo: Option<String>) -> Token {
-        Token::new_debit(self.mint_url.clone(), self.unit.clone(), memo, proofs)
+        Token::new_cashu(self.mint_url.clone(), proofs, memo, self.unit.clone())
     }
     async fn swap_proofs_amount(
         &self,
