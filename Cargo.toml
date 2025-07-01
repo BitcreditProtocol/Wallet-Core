@@ -14,8 +14,8 @@ async-trait = { version = "0.1" }
 bcr-wallet-lib = { path = "./crates/bcr-wallet-lib" }
 bip39 = "2.1"
 bitcoin = { version = "0.32" }
-cashu = { version = "0.9", default-features = false }
-cdk = { version = "0.9", default-features = false }
+cashu = { version = "0.11", default-features = false }
+cdk = { version = "0.11", default-features = false }
 chrono = { version = "0.4" }
 ciborium = "0.2"
 rand = { version = "0.8" }

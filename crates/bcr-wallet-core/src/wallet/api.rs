@@ -202,8 +202,9 @@ where
                 "Token mint_url or unit does not match wallet"
             ));
         }
-
-        self.import_proofs(token.proofs()).await?;
+        let keysets = self.connector.get_mint_keysets().await?.keysets;
+        let proofs = token.proofs(&keysets)?;
+        self.import_proofs(proofs).await?;
         Ok(())
     }
 
