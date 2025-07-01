@@ -1,4 +1,5 @@
 use bcr_wallet_lib::wallet::*;
+use cashu::nut02 as cdk02;
 use std::str::FromStr;
 
 #[test]
@@ -17,7 +18,7 @@ fn test_token_str_round_trip_1() {
     //
     assert_eq!(
         inner.token[0].keyset_id,
-        cashu::Id::from_str("00ad268c4d1f5826").unwrap()
+        cdk02::ShortKeysetId::from_str("00ad268c4d1f5826").unwrap()
     );
     assert_eq!(inner.unit.clone(), cashu::CurrencyUnit::Sat);
 
@@ -44,7 +45,7 @@ fn test_token_str_round_trip_2() {
     //
     assert_eq!(
         inner.token[0].keyset_id,
-        cashu::Id::from_str("00ad268c4d1f5826").unwrap()
+        cdk02::ShortKeysetId::from_str("00ad268c4d1f5826").unwrap()
     );
     assert_eq!(
         inner.unit.clone(),
