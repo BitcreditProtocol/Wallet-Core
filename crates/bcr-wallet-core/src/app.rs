@@ -1,340 +1,207 @@
 // ----- standard library imports
-use std::cell::RefCell;
+use std::{cell::RefCell, collections::HashSet, rc::Rc, str::FromStr};
 // ----- extra library imports
-use anyhow::Result;
-use cashu::MintUrl;
-use cdk::wallet::HttpClient;
-// ----- local modules
-use crate::db::{self, Metadata, WalletDatabase, WalletMetadata, rexie::RexieWalletDatabase};
-use crate::wallet::{self, SwapProofs, Wallet, WalletType, new_credit, new_debit};
+use anyhow::Error as AnyError;
+use bitcoin::hashes::{Hash, sha1};
+use cdk::wallet::MintConnector;
+// ----- local imports
+use crate::{
+    error::{Error, Result},
+    persistence::{self, rexie::ProofDB},
+    wallet::{CreditPocket, DebitPocket, WalletBalance},
+};
+
 // ----- end imports
 
-// Experimental, Many things will change here, mostly for testing
-
-pub enum RexieWallet {
-    Credit(Wallet<wallet::CreditWallet, RexieWalletDatabase, HttpClient>),
-    Debit(Wallet<wallet::DebitWallet, RexieWalletDatabase, HttpClient>),
-}
-
-// This trait just exists to make life easy in this file as an access point
-// The underscore _ in front is to avoid ambiguity with existing methods
-// Excessive boilerplate but keeps the rest of the code clean
-trait WalletInterface {
-    async fn _import_token(&self, token: String) -> Result<()>;
-    async fn _restore(&self) -> Result<()>;
-    async fn _get_active_proofs(&self) -> Result<Vec<cashu::Proof>>;
-    async fn _get_balance(&self) -> Result<u64>;
-    async fn _recheck(&self) -> Result<()>;
-    async fn _split(&self, amount: u64) -> Result<()>;
-    async fn _send_proofs_for(&self, amount: u64) -> Result<String>;
-    async fn _list_keysets(&self) -> Result<Vec<cashu::KeySetInfo>>;
-}
-
-impl<T, Connector> WalletInterface for Wallet<T, RexieWalletDatabase, Connector>
-where
-    T: WalletType,
-    Wallet<T, RexieWalletDatabase, Connector>: SwapProofs,
-    Connector: cdk::wallet::MintConnector,
-{
-    async fn _import_token(&self, token: String) -> Result<()> {
-        self.import_token(token).await
-    }
-    async fn _restore(&self) -> Result<()> {
-        self.restore().await
-    }
-    async fn _get_active_proofs(&self) -> Result<Vec<cashu::Proof>> {
-        self.db
-            .get_active_proofs()
-            .await
-            .map_err(anyhow::Error::new)
-    }
-    async fn _get_balance(&self) -> Result<u64> {
-        self.get_balance().await
-    }
-    async fn _recheck(&self) -> Result<()> {
-        self.recheck().await
-    }
-    async fn _split(&self, amount: u64) -> Result<()> {
-        self.split(amount).await
-    }
-    async fn _send_proofs_for(&self, amount: u64) -> Result<String> {
-        self.send_proofs_for(amount).await
-    }
-    async fn _list_keysets(&self) -> Result<Vec<cashu::KeySetInfo>> {
-        Ok(self.connector.get_mint_keysets().await?.keysets)
-    }
-}
-
-impl WalletInterface for RexieWallet {
-    async fn _import_token(&self, token: String) -> Result<()> {
-        match self {
-            RexieWallet::Credit(w) => w._import_token(token).await,
-            RexieWallet::Debit(w) => w._import_token(token).await,
-        }
-    }
-
-    async fn _restore(&self) -> Result<()> {
-        match self {
-            RexieWallet::Credit(w) => w._restore().await,
-            RexieWallet::Debit(w) => w._restore().await,
-        }
-    }
-
-    async fn _get_active_proofs(&self) -> Result<Vec<cashu::Proof>> {
-        match self {
-            RexieWallet::Credit(w) => w._get_active_proofs().await,
-            RexieWallet::Debit(w) => w._get_active_proofs().await,
-        }
-    }
-
-    async fn _get_balance(&self) -> Result<u64> {
-        match self {
-            RexieWallet::Credit(w) => w._get_balance().await,
-            RexieWallet::Debit(w) => w._get_balance().await,
-        }
-    }
-
-    async fn _recheck(&self) -> Result<()> {
-        match self {
-            RexieWallet::Credit(w) => w._recheck().await,
-            RexieWallet::Debit(w) => w._recheck().await,
-        }
-    }
-
-    async fn _split(&self, amount: u64) -> Result<()> {
-        match self {
-            RexieWallet::Credit(w) => w._split(amount).await,
-            RexieWallet::Debit(w) => w._split(amount).await,
-        }
-    }
-
-    async fn _send_proofs_for(&self, amount: u64) -> Result<String> {
-        match self {
-            RexieWallet::Credit(w) => w._send_proofs_for(amount).await,
-            RexieWallet::Debit(w) => w._send_proofs_for(amount).await,
-        }
-    }
-
-    async fn _list_keysets(&self) -> Result<Vec<cashu::KeySetInfo>> {
-        match self {
-            RexieWallet::Credit(w) => w._list_keysets().await,
-            RexieWallet::Debit(w) => w._list_keysets().await,
-        }
-    }
-}
+type ProductionConnector = cdk::wallet::HttpClient;
+type ProductionPocketRepository = crate::persistence::rexie::ProofDB;
+type ProductionDebitPocket = crate::pocket::DbPocket<ProductionPocketRepository>;
+type ProductionCreditPocket = crate::pocket::CrPocket<ProductionPocketRepository>;
+type ProductionWallet = crate::wallet::Wallet<ProductionConnector>;
 
 pub struct AppState {
-    info: WalletInfo,
-    db_manager: db::rexie::Manager,
-    metadata: db::rexie::RexieMetadata,
+    wallets: Vec<Rc<ProductionWallet>>,
+    network: bitcoin::NetworkKind,
 }
-
-#[derive(Debug, Clone)]
-pub struct WalletInfo {
-    pub name: String,
+impl AppState {
+    pub fn new(network: bitcoin::NetworkKind) -> Self {
+        Self {
+            wallets: Vec::new(),
+            network,
+        }
+    }
+}
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new(bitcoin::NetworkKind::Main)
+    }
 }
 
 thread_local! {
-    static APP_STATE: RefCell<Option<&'static AppState>> = const { RefCell::new(None) } ;
+static APP_STATE: RefCell<AppState> = RefCell::new(AppState::default());
 }
 
-pub async fn add_wallet(
-    name: String,
-    mint_url: String,
-    mnemonic: String,
-    unit: String,
-    credit: bool,
-) -> Result<()> {
-    let mint_url: MintUrl = mint_url.parse().map_err(anyhow::Error::msg)?;
+pub fn initialize_api(net: bitcoin::NetworkKind) {
+    tracing::debug!("Initializing API with network: {:?}", net);
+    APP_STATE.replace(AppState::new(net));
+}
 
+/// returns the index of the wallet
+pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Result<usize> {
+    tracing::debug!("Adding a new wallet for mint {name}, {mint_url}, {mnemonic}");
+    let network = APP_STATE.with_borrow(|state| state.network);
     // Validation
     let mnemonic = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, mnemonic.trim())?;
-    let mnemonic: Vec<String> = mnemonic.words().map(String::from).collect();
+    let master_xpriv = bitcoin::bip32::Xpriv::new_master(network, &mnemonic.to_seed(""))?;
 
-    let state = get_state();
-    state
-        .metadata
-        .add_wallet(name, mint_url, mnemonic, unit, credit)
-        .await?;
+    let mint_url = cashu::MintUrl::from_str(&mint_url)?;
+    let client = ProductionConnector::new(mint_url.clone());
+    let info = client.get_mint_info().await?;
 
-    Ok(())
-}
+    let keyset_infos = client.get_mint_keysets().await?.keysets;
+    let currencies = keyset_infos
+        .iter()
+        .map(|k| k.unit.clone())
+        .collect::<HashSet<_>>();
 
-pub async fn get_wallet(id: usize) -> anyhow::Result<RexieWallet> {
-    let state = get_state();
-    match state.metadata.get_wallet(id).await {
-        Ok(
-            metadata @ WalletMetadata {
-                is_credit: true, ..
-            },
-        ) => {
-            let db = RexieWalletDatabase::new(format!("wallet_{}", id), state.db_manager.get_db());
-            let mnemonic = metadata.mnemonic.join(" ");
-            let mnemonic =
-                bip39::Mnemonic::parse_in_normalized(bip39::Language::English, &mnemonic)?;
-
-            let unit = metadata.unit.parse()?;
-
-            let seed = mnemonic.to_seed("");
-            let wallet = new_credit()
-                .set_unit(unit)
-                .set_mint_url(metadata.mint_url)
-                .set_database(db)
-                .set_seed(seed)
-                .build();
-
-            tracing::info!(mint_url=?wallet.mint_url, "Wallet loaded successfully");
-
-            return Ok(RexieWallet::Credit(wallet));
-        }
-        Ok(
-            metadata @ WalletMetadata {
-                is_credit: false, ..
-            },
-        ) => {
-            let db = RexieWalletDatabase::new(format!("wallet_{}", id), state.db_manager.get_db());
-            let mnemonic = metadata.mnemonic.join(" ");
-            let mnemonic =
-                bip39::Mnemonic::parse_in_normalized(bip39::Language::English, &mnemonic)?;
-
-            let unit = metadata.unit.parse()?;
-
-            let seed = mnemonic.to_seed("");
-            let wallet = new_debit()
-                .set_unit(unit)
-                .set_mint_url(metadata.mint_url)
-                .set_database(db)
-                .set_seed(seed)
-                .build();
-
-            tracing::info!(mint_url=?wallet.mint_url, "Wallet loaded successfully");
-
-            return Ok(RexieWallet::Debit(wallet));
-        }
-        _ => {}
+    if currencies.len() > 2 {
+        return Err(Error::Any(AnyError::msg(
+            "Mint supports more than 2 currencies, not supported yet",
+        )));
     }
 
-    Err(anyhow::Error::msg("Wallet not found"))
-}
-
-pub async fn initialize() {
-    let manager = db::rexie::Manager::new("wallets_db_7").await.unwrap();
-
-    let metadata = db::rexie::RexieMetadata::new(manager.get_db());
-
-    let state = AppState {
-        db_manager: manager,
-        metadata,
-        info: WalletInfo {
-            name: "BitCredit".into(),
-        },
-    };
-    APP_STATE.with(|context| {
-        let mut context_ref = context.borrow_mut();
-        if context_ref.is_none() {
-            let leaked: &'static AppState = Box::leak(Box::new(state)); // leak to get a static ref
-            *context_ref = Some(leaked);
-        }
-    });
-}
-
-fn get_state() -> &'static AppState {
-    APP_STATE.with(|slot| *slot.borrow()).unwrap()
-}
-
-pub async fn get_wallets() -> (Vec<usize>, Vec<String>) {
-    tracing::debug!("Listing wallets");
-    let state = get_state();
-    if let Ok(wallets) = state.metadata.get_wallets().await {
-        let ids = wallets.iter().map(|w| w.id).collect::<Vec<_>>();
-        let names = wallets.iter().map(|w| w.name.clone()).collect();
-        (ids, names)
+    // building a unique identifier of the mint to name the local DB
+    let mint_id = if let Some(pubkey) = info.pubkey {
+        sha1::Hash::hash(&pubkey.to_bytes())
+    } else if let Some(name) = info.name {
+        sha1::Hash::hash(name.as_bytes())
     } else {
-        Default::default()
+        sha1::Hash::hash(mint_url.to_string().as_bytes())
+    };
+    // building database and object_stores
+    let mut rexie_builder = rexie::Rexie::builder(&format!("bitcredit_wallet_{mint_id}"));
+    let credit_unit = currencies
+        .iter()
+        .find(|unit| unit.to_string().starts_with("cr"));
+    if let Some(unit) = credit_unit {
+        let stores = ProofDB::object_stores(unit);
+        for store in stores {
+            rexie_builder = rexie_builder.add_object_store(store);
+        }
     }
-}
+    let debit_unit = currencies
+        .iter()
+        .find(|unit| !unit.to_string().starts_with("cr"));
+    if let Some(unit) = debit_unit {
+        let stores = ProofDB::object_stores(unit);
+        for store in stores {
+            rexie_builder = rexie_builder.add_object_store(store);
+        }
+    }
+    let rexie = Rc::new(rexie_builder.build().await?);
 
-pub async fn import_token(token: String, idx: usize) {
-    let wallet = get_wallet(idx).await.unwrap();
-    wallet._import_token(token).await.unwrap();
-}
-
-pub async fn recover(idx: usize) {
-    tracing::debug!("Recovering wallet {}", idx);
-    let wallet = get_wallet(idx).await.unwrap();
-    wallet._restore().await.unwrap();
-}
-
-pub async fn get_mint_url(idx: usize) -> String {
-    tracing::debug!("Getting mint URL for wallet {}", idx);
-    let state = get_state();
-    let md = state.metadata.get_wallet(idx).await.unwrap();
-
-    md.mint_url.to_string()
-}
-
-pub async fn get_proofs(idx: usize) -> Vec<cashu::Proof> {
-    tracing::debug!("Listing proofs for wallet {}", idx);
-    let wallet = get_wallet(idx).await.unwrap();
-    wallet._get_active_proofs().await.unwrap_or(Vec::new())
-}
-
-pub async fn list_keysets(idx: usize) -> Vec<cashu::KeySetInfo> {
-    tracing::debug!("Listing keysets for wallet {}", idx);
-    let wallet = get_wallet(idx).await.unwrap();
-
-    let unit = match &wallet {
-        RexieWallet::Debit(debit) => debit.unit.clone(),
-        RexieWallet::Credit(credit) => credit.unit.clone(),
+    // building the credit pocket
+    let credit_pocket: Box<dyn CreditPocket> = if let Some(unit) = credit_unit {
+        let db = persistence::rexie::ProofDB::new(rexie.clone(), unit.clone())?;
+        let pocket = ProductionCreditPocket {
+            unit: unit.clone(),
+            db,
+            xpriv: master_xpriv,
+        };
+        Box::new(pocket)
+    } else {
+        Box::new(crate::pocket::DummyPocket {})
+    };
+    // building the debit pocket
+    let debit_pocket: Box<dyn DebitPocket> = if let Some(unit) = debit_unit {
+        let db = persistence::rexie::ProofDB::new(rexie.clone(), unit.clone())?;
+        let pocket = ProductionDebitPocket {
+            unit: unit.clone(),
+            db,
+            xpriv: master_xpriv,
+        };
+        Box::new(pocket)
+    } else {
+        Box::new(crate::pocket::DummyPocket {})
     };
 
-    let keysets = wallet._list_keysets().await.unwrap();
-
-    let keysets = keysets.into_iter().filter(|k| k.unit == unit).collect();
-    tracing::debug!("Keysets: {:?}", keysets);
-    keysets
+    let new_wallet: ProductionWallet = ProductionWallet {
+        client,
+        url: mint_url,
+        debit: debit_pocket,
+        credit: credit_pocket,
+        mnemonic,
+        name,
+    };
+    let index = APP_STATE.with_borrow_mut(|state| {
+        state.wallets.push(Rc::new(new_wallet));
+        state.wallets.len() - 1
+    });
+    Ok(index)
 }
 
-pub async fn get_unit(idx: usize) -> cashu::CurrencyUnit {
-    tracing::debug!("Listing keysets for wallet {}", idx);
-    let wallet = get_wallet(idx).await.unwrap();
-
-    match &wallet {
-        RexieWallet::Debit(debit) => debit.unit.clone(),
-        RexieWallet::Credit(credit) => credit.unit.clone(),
-    }
+pub fn wallet_name(idx: usize) -> Result<String> {
+    tracing::debug!("name for wallet {idx}");
+    let wallet: Rc<ProductionWallet> =
+        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
+            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
+            Ok(wallet.clone())
+        })?;
+    Ok(wallet.name.clone())
 }
 
-pub async fn get_balance(idx: usize) -> u64 {
-    tracing::debug!("Getting balance for wallet {}", idx);
-    let wallet = get_wallet(idx).await.unwrap();
-    wallet._get_balance().await.unwrap()
+pub fn wallet_mint_url(idx: usize) -> Result<String> {
+    tracing::debug!("mint_url for wallet {idx}");
+    let wallet: Rc<ProductionWallet> =
+        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
+            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
+            Ok(wallet.clone())
+        })?;
+    Ok(wallet.url.to_string())
 }
 
-pub async fn recheck(idx: usize) {
-    tracing::debug!("Rechecking wallet {}", idx);
-    let wallet = get_wallet(idx).await.unwrap();
-    wallet._recheck().await.unwrap()
+pub async fn wallet_balance(idx: usize) -> Result<WalletBalance> {
+    tracing::debug!("balance for wallet {}", idx);
+    let wallet: Rc<ProductionWallet> =
+        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
+            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
+            Ok(wallet.clone())
+        })?;
+    wallet.balance().await
 }
 
-pub fn get_wallet_info() -> WalletInfo {
-    let state = get_state();
-    state.info.clone()
+pub async fn wallet_receive(token: String, idx: usize) -> Result<cashu::Amount> {
+    let token = bcr_wallet_lib::wallet::Token::from_str(&token)?;
+    let wallet: Rc<ProductionWallet> =
+        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
+            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
+            Ok(wallet.clone())
+        })?;
+    let cashed_in = wallet.receive(token).await?;
+    Ok(cashed_in)
 }
 
-pub async fn send_proofs_for(amount: u64, idx: usize) -> String {
-    let wallet = get_wallet(idx).await.unwrap();
-
-    // Ensures we always have the right powers of 2 to send amount
-    let _ = wallet._split(amount).await;
-    wallet._send_proofs_for(amount).await.unwrap_or("".into())
+pub fn wallets_ids() -> Result<Vec<u64>> {
+    tracing::debug!("get_wallet_ids");
+    let ids = APP_STATE.with_borrow(|state| {
+        state
+            .wallets
+            .iter()
+            .enumerate()
+            .map(|(i, _)| i as u64)
+            .collect::<Vec<_>>()
+    });
+    Ok(ids)
 }
 
-pub async fn redeem_inactive(idx: usize) -> String {
-    let wallet = get_wallet(idx).await.unwrap();
-
-    match wallet {
-        RexieWallet::Debit(_) => "".into(),
-        RexieWallet::Credit(credit) => credit.redeem_inactive().await.unwrap_or("".into()),
-    }
+pub fn wallets_names() -> Result<Vec<String>> {
+    tracing::debug!("get_wallet_ids");
+    let names = APP_STATE.with_borrow(|state| {
+        state
+            .wallets
+            .iter()
+            .map(|w| w.name.clone())
+            .collect::<Vec<_>>()
+    });
+    Ok(names)
 }
