@@ -2,10 +2,7 @@ async function run() {
   const wasmModule = await import("./pkg/bcr_wallet_core.js");
   await wasmModule.default();
 
-  await wasmModule.initialize_api();
-
-  const wallet_name = wasmModule.get_wallet_name();
-  document.getElementById("walletname").innerHTML = wallet_name;
+  await wasmModule.initialize_api("test");
 
   let update_wallets = async () => {
     let wallets = await wasmModule.get_wallets_names();
@@ -39,10 +36,8 @@ async function run() {
     let name = prompt("Enter wallet name");
     let mint_url = prompt("Enter mint url");
     let mnemonic = prompt("Enter mnemonic");
-    let unit = prompt("Enter unit");
-    let credit = confirm("Is this a wildcat credit wallet ?");
 
-    await wasmModule.add_wallet(name, mint_url, mnemonic, unit, credit);
+    await wasmModule.add_wallet(name, mint_url, mnemonic);
     await update_wallets();
   });
 
