@@ -1,5 +1,5 @@
 // ----- standard library imports
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 // ----- extra library imports
 use anyhow::Error as AnyError;
 use async_trait::async_trait;
@@ -126,14 +126,24 @@ impl ProofDB {
         Ok(proof.y)
     }
 
+    async fn load_proof(&self, y: PublicKey) -> Result<Option<ProofEntry>> {
+        let tx = self
+            .db
+            .transaction(&[self.proof_store.clone()], TransactionMode::ReadOnly)?;
+        let proofs = tx.store(&self.proof_store)?;
+        let js_entry = proofs.get(y.to_string().into()).await?;
+        tx.done().await?;
+        let entry = js_entry.map(from_value::<ProofEntry>).transpose()?;
+        Ok(entry)
+    }
+
     #[allow(dead_code)]
     async fn delete_proof(&self, y: PublicKey) -> Result<()> {
-        let key = JsValue::from_str(&y.to_string());
         let tx = self
             .db
             .transaction(&[self.proof_store.clone()], TransactionMode::ReadWrite)?;
         let proofs = tx.store(&self.proof_store)?;
-        proofs.delete(key).await?;
+        proofs.delete(y.to_string().into()).await?;
         tx.done().await?;
         Ok(())
     }
@@ -141,10 +151,11 @@ impl ProofDB {
     #[allow(dead_code)]
     async fn update_proof_state(
         &self,
-        index: PublicKey,
+        y: PublicKey,
+        old_state_set: &[cdk07::State],
         new_state: cdk07::State,
     ) -> Result<ProofEntry> {
-        let key = JsValue::from_str(&index.to_string());
+        let key = JsValue::from_str(&y.to_string());
         let tx = self
             .db
             .transaction(&[self.proof_store.clone()], TransactionMode::ReadWrite)?;
@@ -153,13 +164,15 @@ impl ProofDB {
             .get(key.clone())
             .await?
             .map(from_value::<ProofEntry>)
-            .ok_or(Error::ProofNotFound(index))??;
+            .ok_or(Error::ProofNotFound(y))??;
+        if !old_state_set.contains(&proof.state) {
+            return Err(Error::InvalidProofState(y));
+        }
         proof.state = new_state;
         let entry = to_value(&proof)?;
-        let new_entry = proofs.put(&entry, Some(&key)).await?;
+        proofs.put(&entry, None).await?;
         tx.done().await?;
-        let new_proof: ProofEntry = from_value(new_entry)?;
-        Ok(new_proof)
+        Ok(proof)
     }
 
     async fn list_proofs(&self, state: Option<cdk07::State>) -> Result<Vec<ProofEntry>> {
@@ -236,16 +249,37 @@ impl ProofDB {
 
 #[async_trait(?Send)]
 impl PocketRepository for ProofDB {
-    async fn store_new(&self, proof: cdk00::Proof) -> Result<()> {
+    async fn store_new(&self, proof: cdk00::Proof) -> Result<PublicKey> {
         let entry = ProofEntry::from(proof);
+        let y = entry.y;
         self.store_proof(entry).await?;
-        Ok(())
+        Ok(y)
     }
 
-    async fn list_unspent(&self) -> Result<Vec<cdk00::Proof>> {
+    async fn load_proof(&self, y: PublicKey) -> Result<Option<(cdk00::Proof, cdk07::State)>> {
+        let proof_state = self.load_proof(y).await?.map(|entry| {
+            let state = entry.state;
+            (cdk00::Proof::from(entry), state)
+        });
+        Ok(proof_state)
+    }
+
+    async fn list_unspent(&self) -> Result<HashMap<PublicKey, cdk00::Proof>> {
         self.list_proofs(Some(cdk07::State::Unspent))
             .await
-            .map(|proofs| proofs.into_iter().map(cdk00::Proof::from).collect())
+            .map(|proofs| {
+                proofs
+                    .into_iter()
+                    .map(|entry| (entry.y, cdk00::Proof::from(entry)))
+                    .collect()
+            })
+    }
+
+    async fn mark_as_pending(&self, y: PublicKey) -> Result<cdk00::Proof> {
+        let entry = self
+            .update_proof_state(y, &[cdk07::State::Unspent], cdk07::State::Pending)
+            .await?;
+        Ok(cdk00::Proof::from(entry))
     }
 
     async fn counter(&self, kid: cdk02::Id) -> Result<u32> {

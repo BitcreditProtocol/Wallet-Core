@@ -1,11 +1,13 @@
 // ----- standard library imports
-use std::{cell::RefCell, collections::HashSet, rc::Rc, str::FromStr};
+use std::{cell::RefCell, collections::HashSet, rc::Rc, str::FromStr, sync::Mutex};
 // ----- extra library imports
 use anyhow::Error as AnyError;
+use bcr_wallet_lib::wallet::Token;
 use bitcoin::hashes::{Hash, sha1};
 use cdk::wallet::MintConnector;
 // ----- local imports
 use crate::{
+    SendSummary,
     error::{Error, Result},
     persistence::{self, rexie::ProofDB},
     wallet::{CreditPocket, DebitPocket, WalletBalance},
@@ -41,8 +43,13 @@ thread_local! {
 static APP_STATE: RefCell<AppState> = RefCell::new(AppState::default());
 }
 
-pub fn initialize_api(net: bitcoin::NetworkKind) {
-    tracing::debug!("Initializing API with network: {:?}", net);
+pub fn initialize_api(network: String) {
+    tracing::debug!("Initializing API with network: {:?}", network);
+    let net = match network.as_str() {
+        "main" => bitcoin::NetworkKind::Main,
+        "test" => bitcoin::NetworkKind::Test,
+        _ => panic!("Unknown network: {network}"),
+    };
     APP_STATE.replace(AppState::new(net));
 }
 
@@ -103,11 +110,7 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
     // building the credit pocket
     let credit_pocket: Box<dyn CreditPocket> = if let Some(unit) = credit_unit {
         let db = persistence::rexie::ProofDB::new(rexie.clone(), unit.clone())?;
-        let pocket = ProductionCreditPocket {
-            unit: unit.clone(),
-            db,
-            xpriv: master_xpriv,
-        };
+        let pocket = ProductionCreditPocket::new(unit.clone(), db, master_xpriv);
         Box::new(pocket)
     } else {
         Box::new(crate::pocket::DummyPocket {})
@@ -115,11 +118,7 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
     // building the debit pocket
     let debit_pocket: Box<dyn DebitPocket> = if let Some(unit) = debit_unit {
         let db = persistence::rexie::ProofDB::new(rexie.clone(), unit.clone())?;
-        let pocket = ProductionDebitPocket {
-            unit: unit.clone(),
-            db,
-            xpriv: master_xpriv,
-        };
+        let pocket = ProductionDebitPocket::new(unit.clone(), db, master_xpriv);
         Box::new(pocket)
     } else {
         Box::new(crate::pocket::DummyPocket {})
@@ -132,6 +131,7 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
         credit: credit_pocket,
         mnemonic,
         name,
+        current_send: Mutex::new(None),
     };
     let index = APP_STATE.with_borrow_mut(|state| {
         state.wallets.push(Rc::new(new_wallet));
@@ -170,7 +170,7 @@ pub async fn wallet_balance(idx: usize) -> Result<WalletBalance> {
     wallet.balance().await
 }
 
-pub async fn wallet_receive(token: String, idx: usize) -> Result<cashu::Amount> {
+pub async fn wallet_receive(idx: usize, token: String) -> Result<cashu::Amount> {
     let token = bcr_wallet_lib::wallet::Token::from_str(&token)?;
     let wallet: Rc<ProductionWallet> =
         APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
@@ -195,7 +195,7 @@ pub fn wallets_ids() -> Result<Vec<u64>> {
 }
 
 pub fn wallets_names() -> Result<Vec<String>> {
-    tracing::debug!("get_wallet_ids");
+    tracing::debug!("get_wallet_names");
     let names = APP_STATE.with_borrow(|state| {
         state
             .wallets
@@ -204,4 +204,36 @@ pub fn wallets_names() -> Result<Vec<String>> {
             .collect::<Vec<_>>()
     });
     Ok(names)
+}
+
+pub async fn wallet_prepare_send(idx: usize, amount: u64, unit: String) -> Result<SendSummary> {
+    tracing::debug!("wallet_prepare_send({idx}, {amount}, {unit})");
+    let amount = cashu::Amount::from(amount);
+    let unit = if unit.is_empty() {
+        None
+    } else {
+        Some(cashu::CurrencyUnit::from_str(&unit)?)
+    };
+    let wallet: Rc<ProductionWallet> =
+        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
+            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
+            Ok(wallet.clone())
+        })?;
+
+    let summary = wallet.prepare_send(amount, unit).await?;
+    Ok(SendSummary::from(summary))
+}
+
+pub async fn wallet_send(idx: usize, request_id: String, memo: Option<String>) -> Result<Token> {
+    tracing::debug!("wallet_send({idx}, {request_id}, {:?})", memo);
+
+    let rid = uuid::Uuid::from_str(&request_id)?;
+
+    let wallet: Rc<ProductionWallet> =
+        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
+            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
+            Ok(wallet.clone())
+        })?;
+    let token = wallet.send(rid, memo).await?;
+    Ok(token)
 }

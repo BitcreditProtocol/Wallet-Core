@@ -4,9 +4,11 @@ use tracing::info;
 use wasm_bindgen::prelude::*;
 // ----- local modules
 mod app;
-mod error;
+pub mod error;
 pub mod persistence;
 pub mod pocket;
+mod types;
+mod utils;
 mod wallet;
 
 // ----- end imports
@@ -17,12 +19,7 @@ mod wallet;
 pub async fn initialize_api(network: String) {
     tracing_wasm::set_as_global_default();
     info!("Tracing setup");
-    let net = match network.as_str() {
-        "main" => bitcoin::NetworkKind::Main,
-        "test" => bitcoin::NetworkKind::Test,
-        _ => panic!("Unknown network: {network}"),
-    };
-    app::initialize_api(net);
+    app::initialize_api(network);
 }
 
 #[wasm_bindgen]
@@ -82,13 +79,69 @@ pub async fn debit_balance(idx: usize) -> u64 {
 }
 
 #[wasm_bindgen]
-pub async fn receive(token: String, idx: usize) -> u64 {
-    let returned = app::wallet_receive(token, idx).await;
+pub async fn receive(idx: usize, token: String) -> u64 {
+    let returned = app::wallet_receive(idx, token).await;
     match returned {
         Ok(amount) => amount.into(),
         Err(e) => {
-            tracing::error!("receive(<token>, {idx}): {e}");
+            tracing::error!("receive({idx}, <token>): {e}");
             0
+        }
+    }
+}
+
+#[wasm_bindgen]
+#[derive(Default)]
+pub struct SendSummary {
+    pub(crate) request_id: String,
+    unit: String,
+    pub send_fees: u64,
+    pub swap_fees: u64,
+}
+
+#[wasm_bindgen]
+impl SendSummary {
+    #[wasm_bindgen(getter)]
+    pub fn request_id(&self) -> String {
+        self.request_id.clone()
+    }
+    #[wasm_bindgen(getter)]
+    pub fn unit(&self) -> String {
+        self.unit.clone()
+    }
+}
+
+impl std::convert::From<types::SendSummary> for SendSummary {
+    fn from(summary: types::SendSummary) -> Self {
+        Self {
+            request_id: summary.request_id.to_string(),
+            unit: summary.unit.to_string(),
+            send_fees: summary.send_fees.into(),
+            swap_fees: summary.swap_fees.into(),
+        }
+    }
+}
+
+#[wasm_bindgen]
+pub async fn prepare_send(idx: usize, amount: u64, unit: String) -> SendSummary {
+    let returned = app::wallet_prepare_send(idx, amount, unit.clone()).await;
+    match returned {
+        Ok(summary) => summary,
+        Err(e) => {
+            tracing::error!("prepare_send({idx}, {amount}, {unit}): {e}");
+            SendSummary::default()
+        }
+    }
+}
+
+#[wasm_bindgen]
+pub async fn send(idx: usize, request_id: String, memo: Option<String>) -> String {
+    let returned = app::wallet_send(idx, request_id.clone(), memo.clone()).await;
+    match returned {
+        Ok(token) => token.to_string(),
+        Err(e) => {
+            tracing::error!("send({idx}, {request_id}, {:?}): {e}", memo);
+            String::new()
         }
     }
 }
