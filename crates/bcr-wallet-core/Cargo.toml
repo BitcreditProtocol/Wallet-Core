@@ -27,11 +27,13 @@ tokio_with_wasm = {version = "0.8", features = ["rt-multi-thread"]}
 tracing-subscriber.workspace = true
 tracing-wasm.workspace = true
 tracing.workspace = true
+uuid = {workspace = true }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]
 bcr-wdc-utils = {git = "https://github.com/BitcreditProtocol/wildcat", features = ["test-utils"]}
+cdk-common.workspace = true
 mockall = { workspace = true}
 wasm-bindgen-test = { version = "0.3" }
 

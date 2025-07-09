@@ -16,6 +16,7 @@ bip39 = "2.1"
 bitcoin = { version = "0.32" }
 cashu = { version = "0.11", default-features = false }
 cdk = { version = "0.11", default-features = false }
+cdk-common = { version = "0.11", default-features = false }
 chrono = { version = "0.4" }
 ciborium = "0.2"
 mockall = {version  = "0.13"}

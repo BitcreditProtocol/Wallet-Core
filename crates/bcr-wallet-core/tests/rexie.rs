@@ -7,8 +7,7 @@ use cashu::{Amount, CurrencyUnit};
 use rexie::Rexie;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 // ----- local imports
-use bcr_wallet_core::persistence::rexie::ProofDB;
-use bcr_wallet_core::pocket::PocketRepository;
+use bcr_wallet_core::{error::Error, persistence::rexie::ProofDB, pocket::PocketRepository};
 
 // ----- end imports
 
@@ -43,9 +42,41 @@ async fn proof_list_unspent() {
     let proof = signatures_test::generate_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
     proofdb.store_new(proof.clone()).await.unwrap();
 
-    let proofs = proofdb.list_unspent().await.unwrap();
-    assert_eq!(proofs.len(), 1);
-    assert_eq!(proof.c, proofs[0].c);
+    let proofs_map = proofdb.list_unspent().await.unwrap();
+    assert_eq!(proofs_map.len(), 1);
+    let test_proof = proofs_map.values().collect::<Vec<_>>()[0];
+    assert_eq!(proof.c, test_proof.c);
+}
+
+#[wasm_bindgen_test]
+async fn proof_mark_pending() {
+    let proofdb = create_proof_db("proof_mark_pending").await;
+
+    let (_, keyset) = keys_test::generate_keyset();
+    let proof = signatures_test::generate_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
+    let y =
+        cashu::dhke::hash_to_curve(proof.secret.as_bytes()).expect("Hash to curve should not fail");
+    proofdb.store_new(proof.clone()).await.unwrap();
+
+    let new_proof = proofdb.mark_as_pending(y).await.unwrap();
+    assert_eq!(proof.c, new_proof.c);
+}
+
+#[wasm_bindgen_test]
+async fn proof_mark_pending_twice_is_error() {
+    let proofdb = create_proof_db("proof_mark_pending").await;
+
+    let (_, keyset) = keys_test::generate_keyset();
+    let proof = signatures_test::generate_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
+    let y =
+        cashu::dhke::hash_to_curve(proof.secret.as_bytes()).expect("Hash to curve should not fail");
+    proofdb.store_new(proof.clone()).await.unwrap();
+
+    let new_proof = proofdb.mark_as_pending(y).await.unwrap();
+    assert_eq!(proof.c, new_proof.c);
+
+    let response = proofdb.mark_as_pending(y).await;
+    assert!(matches!(response, Err(Error::InvalidProofState(_))));
 }
 
 #[wasm_bindgen_test]

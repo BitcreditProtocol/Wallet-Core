@@ -1,11 +1,16 @@
 // ----- standard library imports
+use std::sync::Mutex;
 // ----- extra library imports
 use async_trait::async_trait;
 use bcr_wallet_lib::wallet::Token;
-use cashu::KeySetInfo;
+use cashu::{Amount, CurrencyUnit, KeySetInfo, MintUrl};
 use cdk::wallet::MintConnector;
+use uuid::Uuid;
 // ----- local imports
-use crate::error::{Error, Result};
+use crate::{
+    error::{Error, Result},
+    types::{PocketSendSummary, SendSummary, WalletSendSummary},
+};
 
 // ----- end imports
 
@@ -13,14 +18,29 @@ use crate::error::{Error, Result};
 /// same currency emitted by the same mint
 #[async_trait(?Send)]
 pub trait Pocket {
-    async fn balance(&self) -> Result<cashu::Amount>;
     fn is_mine(&self, token: &Token) -> bool;
+    fn unit(&self) -> CurrencyUnit;
+
+    async fn balance(&self) -> Result<Amount>;
+
     async fn receive(
         &self,
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
         token: Token,
-    ) -> Result<cashu::Amount>;
+    ) -> Result<Amount>;
+
+    async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo])
+    -> Result<PocketSendSummary>;
+
+    async fn send(
+        &self,
+        rid: Uuid,
+        keysets_info: &[KeySetInfo],
+        client: &dyn MintConnector,
+        mint_url: MintUrl,
+        memo: Option<String>,
+    ) -> Result<Token>;
 }
 
 #[async_trait(?Send)]
@@ -37,6 +57,8 @@ pub struct Wallet<Conn> {
     #[allow(dead_code)]
     pub mnemonic: bip39::Mnemonic,
     pub name: String,
+
+    pub current_send: Mutex<Option<WalletSendSummary>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -69,5 +91,109 @@ where
             let teaser = token.to_string().chars().take(20).collect::<String>();
             return Err(Error::InvalidToken(teaser));
         }
+    }
+
+    async fn prepare_send_with_pocket(
+        amount: Amount,
+        infos: &[KeySetInfo],
+        pocket: &dyn Pocket,
+    ) -> Result<(WalletSendSummary, SendSummary)> {
+        let pocket_summary = pocket.prepare_send(amount, infos).await?;
+        let reference = WalletSendSummary {
+            request_id: Uuid::new_v4(),
+            unit: pocket.unit(),
+            internal_rid: pocket_summary.request_id,
+        };
+        let summary = SendSummary {
+            request_id: reference.request_id,
+            unit: pocket.unit(),
+            send_fees: pocket_summary.send_fees,
+            swap_fees: pocket_summary.swap_fees,
+        };
+        Ok((reference, summary))
+    }
+
+    pub async fn prepare_send(
+        &self,
+        amount: Amount,
+        unit: Option<CurrencyUnit>,
+    ) -> Result<SendSummary> {
+        let infos = self.client.get_mint_keysets().await?.keysets;
+        match unit {
+            Some(unit) if unit == self.credit.unit() => {
+                let (refer, summary) =
+                    Self::prepare_send_with_pocket(amount, &infos, self.credit.as_ref()).await?;
+                *self.current_send.lock().unwrap() = Some(refer);
+                Ok(summary)
+            }
+            Some(unit) if unit == self.debit.unit() => {
+                let (refer, summary) =
+                    Self::prepare_send_with_pocket(amount, &infos, self.debit.as_ref()).await?;
+                *self.current_send.lock().unwrap() = Some(refer);
+                Ok(summary)
+            }
+            Some(unit) => Err(Error::UnknownCurrencyUnit(unit)),
+            None => {
+                // first we try to pay with credit
+                let credit_balance = self.credit.balance().await?;
+                if credit_balance >= amount {
+                    let (refer, summary) =
+                        Self::prepare_send_with_pocket(amount, &infos, self.credit.as_ref())
+                            .await?;
+                    *self.current_send.lock().unwrap() = Some(refer);
+                    return Ok(summary);
+                }
+                // and then fall back to debit
+                let debit_balance = self.debit.balance().await?;
+                if debit_balance >= amount {
+                    let (refer, summary) =
+                        Self::prepare_send_with_pocket(amount, &infos, self.debit.as_ref()).await?;
+                    *self.current_send.lock().unwrap() = Some(refer);
+                    return Ok(summary);
+                }
+                Err(Error::InsufficientFunds)
+            }
+        }
+    }
+
+    pub async fn send(&self, rid: Uuid, memo: Option<String>) -> Result<Token> {
+        let current_send = self.current_send.lock().unwrap().take();
+        if current_send.is_none() {
+            return Err(Error::NoPrepareSendRef(rid));
+        };
+        let current_ref = current_send.unwrap();
+        if current_ref.request_id != rid {
+            return Err(Error::NoPrepareSendRef(rid));
+        }
+
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
+
+        if current_ref.unit == self.credit.unit() {
+            let token = self
+                .credit
+                .send(
+                    current_ref.internal_rid,
+                    &keysets_info,
+                    &self.client,
+                    self.url.clone(),
+                    memo,
+                )
+                .await?;
+            return Ok(token);
+        }
+        if current_ref.unit == self.debit.unit() {
+            let token = self
+                .debit
+                .send(
+                    current_ref.internal_rid,
+                    &keysets_info,
+                    &self.client,
+                    self.url.clone(),
+                    memo,
+                )
+                .await?;
+            return Ok(token);
+        }
+        Err(Error::Internal(String::from("unit unrecognized")))
     }
 }

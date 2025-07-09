@@ -21,13 +21,21 @@ pub enum Error {
     Cdk00(#[from] cashu::nut00::Error),
     #[error("cashu::nut13: {0}")]
     Cdk13(#[from] cashu::nut13::Error),
+    #[error("cashu::amount: {0}")]
+    CdkAmount(#[from] cashu::amount::Error),
     #[error("bitcoin::bip32 {0}")]
     BtcBip32(#[from] bitcoin::bip32::Error),
+    #[error("uuid:: {0}")]
+    Uuid(#[from] uuid::Error),
 
+    #[error("insufficient funds")]
+    InsufficientFunds,
     #[error("local proof DB not initialized correctly")]
     BadProofDB,
     #[error("proof in local DB not found: {0}")]
     ProofNotFound(cashu::PublicKey),
+    #[error("proof not in desired state: {0}")]
+    InvalidProofState(cashu::PublicKey),
     #[error("internal, generic: {0}")]
     Any(AnyError),
     #[error("wallet at idx {0} not found")]
@@ -36,6 +44,17 @@ pub enum Error {
     InvalidToken(String),
     #[error("no active keyset")]
     NoActiveKeyset,
+    #[error("unknown keyset ID")]
+    UnknownKeysetId(cashu::Id),
+    #[error("unknown currency unit: {0}")]
+    UnknownCurrencyUnit(cashu::CurrencyUnit),
     #[error("currency unit mismatch: mine {0}, his {1}")]
     CurrencyUnitMismatch(cashu::CurrencyUnit, cashu::CurrencyUnit),
+    #[error("no reference to prepare_send request_id: {0}")]
+    NoPrepareSendRef(uuid::Uuid),
+    #[error("expired keyset {0}")]
+    ExpiredKeyset(cashu::Id),
+
+    #[error("internal error: {0}")]
+    Internal(String),
 }
