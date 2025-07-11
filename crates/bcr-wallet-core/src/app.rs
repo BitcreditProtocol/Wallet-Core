@@ -160,6 +160,26 @@ pub fn wallet_mint_url(idx: usize) -> Result<String> {
     Ok(wallet.url.to_string())
 }
 
+pub fn wallet_credit_unit(idx: usize) -> Result<String> {
+    tracing::debug!("wallet_credit_unit({idx})");
+    let wallet: Rc<ProductionWallet> =
+        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
+            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
+            Ok(wallet.clone())
+        })?;
+    Ok(wallet.credit.unit().to_string())
+}
+
+pub fn wallet_debit_unit(idx: usize) -> Result<String> {
+    tracing::debug!("wallet_debit_unit({idx})");
+    let wallet: Rc<ProductionWallet> =
+        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
+            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
+            Ok(wallet.clone())
+        })?;
+    Ok(wallet.debit.unit().to_string())
+}
+
 pub async fn wallet_balance(idx: usize) -> Result<WalletBalance> {
     tracing::debug!("balance for wallet {}", idx);
     let wallet: Rc<ProductionWallet> =

@@ -42,12 +42,6 @@ pub trait PocketRepository {
 
     async fn counter(&self, kid: cdk02::Id) -> Result<u32>;
     async fn increment_counter(&self, kid: cdk02::Id, old: u32, increment: u32) -> Result<()>;
-
-    // async fn add_transaction(&self, tx: Transaction) ->Result<()>;
-    // async fn get_transaction(&self, txid: TransactionId) -> Result<Option<Transaction>>;
-    // async fn list_transactions(
-    //     &self, since: Option<u64>,
-    // ) -> Result<Vec<Transaction>>;
 }
 
 ///////////////////////////////////////////// credit pocket
@@ -126,10 +120,11 @@ where
                     info.unit.clone(),
                 ));
             }
-            assert_eq!(
-                info.input_fee_ppk, 0,
-                "current version does not support mint with fees"
-            );
+            if info.input_fee_ppk != 0 {
+                return Err(Error::Any(AnyError::msg(
+                    "mint with fees not supported yet",
+                )));
+            }
             let keyset = client.get_mint_keyset(*kid).await?;
             grouped_keysets.insert(keyset.id, keyset);
 

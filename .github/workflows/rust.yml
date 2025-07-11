@@ -31,9 +31,6 @@ jobs:
       - name: Update rust
         run: rustup update
 
-      - name: Install protoc
-        run: sudo apt-get install -y protobuf-compiler
-
       - name: Install firefox
         run: sudo apt-get install -y firefox
 
