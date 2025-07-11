@@ -194,6 +194,6 @@ where
                 .await?;
             return Ok(token);
         }
-        Err(Error::Internal(String::from("unit unrecognized")))
+        Err(Error::UnknownCurrencyUnit(current_ref.unit))
     }
 }

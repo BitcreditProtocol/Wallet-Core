@@ -19,13 +19,15 @@ async function run() {
       let idx = Number(
         ids[document.getElementById("walletlist").selectedIndex],
       );
-      let balance = await wasmModule.get_balance(idx);
-      let unit = await wasmModule.get_unit(idx);
+      let wallet_name = await wasmModule.get_wallet_name(idx);
+      let debit_balance = await wasmModule.get_wallet_debit_balance(idx);
+      let debit_unit = await wasmModule.get_wallet_debit_unit(idx);
+      let credit_balance = await wasmModule.get_wallet_credit_balance(idx);
+      let credit_unit = await wasmModule.get_wallet_credit_unit(idx);
       document.getElementById("balance").innerHTML =
-        String(balance) + " " + unit;
-
-      let proofs = await wasmModule.print_proofs(idx);
-      document.getElementById("output").innerHTML = proofs;
+        "Wallet: " + wallet_name + "\n\t" +
+        String(credit_balance) + " " + credit_unit + "\n\t" +
+        String(debit_balance) + " " + debit_unit;
     }
   };
 
@@ -49,19 +51,19 @@ async function run() {
     let ids = await wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
 
-    let unit = await wasmModule.get_unit(idx);
-    if (unit.toLowerCase() == "crsat") {
-      let token = await wasmModule.redeem_inactive(idx);
-      await update_balance();
-      document.getElementById("output").innerHTML += "\ntoken:\n" + token;
-    }
+    // let unit = await wasmModule.get_unit(idx);
+    // if (unit.toLowerCase() == "crsat") {
+    //   let token = await wasmModule.redeem_inactive(idx);
+    //   await update_balance();
+    //   document.getElementById("output").innerHTML += "\ntoken:\n" + token;
+    // }
   });
 
   document.getElementById("importbtn").addEventListener("click", async () => {
     let ids = await wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
-    let token = prompt("Enter V3 token");
-    await wasmModule.import_token(token, idx);
+    let token = prompt("Enter token");
+    await wasmModule.wallet_receive_token(idx, token);
 
     await update_balance();
   });
@@ -70,7 +72,10 @@ async function run() {
     let ids = await wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
     let amount = Math.round(Number(prompt("Enter amount to send")));
-    let token = await wasmModule.send(BigInt(amount), idx);
+    let summary = await wasmModule.wallet_prepare_send(idx, BigInt(amount), "");
+    
+    prompt("send summary, currency unit: " + summary.unit + ", total fees: " + String(summary.send_fees + summary.swap_fees));
+    let token = await wasmModule.wallet_send(idx, summary.request_id);
 
     await update_balance();
 
@@ -80,7 +85,7 @@ async function run() {
   document.getElementById("recheckbtn").addEventListener("click", async () => {
     let ids = await wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
-    await wasmModule.recheck(idx);
+    // await wasmModule.recheck(idx);
 
     await update_balance();
   });
@@ -88,7 +93,7 @@ async function run() {
   document.getElementById("recoverbtn").addEventListener("click", async () => {
     let ids = await wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
-    await wasmModule.recover(idx);
+    // await wasmModule.recover(idx);
 
     await update_balance();
   });
@@ -102,14 +107,15 @@ async function run() {
           ids[document.getElementById("walletlist").selectedIndex],
         );
 
-        let wallet_url = await wasmModule.get_wallet_url(idx);
+        let wallet_name = await wasmModule.get_wallet_name(idx);
+        let wallet_url = await wasmModule.get_wallet_mint_url(idx);
         document.getElementById("walletname").innerHTML =
           "[" + wallet_name + "] " + String(idx) + " @ " + wallet_url + "  ";
 
         await update_balance();
 
-        let keyset_info = await wasmModule.list_keysets(idx);
-        document.getElementById("keyset").innerHTML = keyset_info;
+        // let keyset_info = await wasmModule.list_keysets(idx);
+        // document.getElementById("keyset").innerHTML = keyset_info;
       }
     });
 
