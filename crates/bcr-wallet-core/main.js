@@ -21,11 +21,11 @@ async function run() {
       );
       let wallet_name = await wasmModule.get_wallet_name(idx);
       let wallet_balance = await wasmModule.get_wallet_balance(idx);
-      let wallet_units = await wasmModule.get_wallet_currency_units(idx);
+      let wallet_unit = await wasmModule.get_wallet_currency_unit(idx);
       document.getElementById("balance").innerHTML =
         "Wallet: " + wallet_name + "\n\t" +
-        String(wallet_balance.credit) + " " + wallet_units.credit + "\n\t" +
-        String(wallet_balance.debit) + " " + wallet_units.debit;
+        String(wallet_balance.credit) + " " + wallet_unit.credit + "\n\t" +
+        String(wallet_balance.debit) + " " + wallet_unit.debit;
     }
   };
 

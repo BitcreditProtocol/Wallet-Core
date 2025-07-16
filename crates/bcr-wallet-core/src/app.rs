@@ -3,7 +3,10 @@ use std::{cell::RefCell, collections::HashSet, rc::Rc, str::FromStr, sync::Mutex
 // ----- extra library imports
 use anyhow::Error as AnyError;
 use bcr_wallet_lib::wallet::Token;
-use bitcoin::hashes::{Hash, sha1};
+use bitcoin::{
+    hashes::{Hash, sha1},
+    hex::DisplayHex,
+};
 use cdk::wallet::MintConnector;
 // ----- local imports
 use crate::{
@@ -86,7 +89,8 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
     }
 
     // building database and object_stores
-    let mut rexie_builder = rexie::Rexie::builder(&format!("bitcredit_wallet_{mint_id}"));
+    let rexie_db_name = format!("bitcredit_wallet_{}", mint_id.as_byte_array().as_hex());
+    let mut rexie_builder = rexie::Rexie::builder(&rexie_db_name);
     let credit_unit = currencies
         .iter()
         .find(|unit| unit.to_string().starts_with("cr"));
@@ -106,6 +110,7 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
         }
     }
     let rexie = Rc::new(rexie_builder.build().await?);
+    tracing::debug!("Rexie DB created: {}", rexie.name());
 
     // building the credit pocket
     let credit_pocket: Box<dyn CreditPocket> = if let Some(unit) = credit_unit {
@@ -167,8 +172,8 @@ pub struct WalletCurrencyUnit {
     pub debit: String,
 }
 
-pub fn wallet_currency_units(idx: usize) -> Result<WalletCurrencyUnit> {
-    tracing::debug!("wallet_currency_units({idx})");
+pub fn wallet_currency_unit(idx: usize) -> Result<WalletCurrencyUnit> {
+    tracing::debug!("wallet_currency_unit({idx})");
     let wallet: Rc<ProductionWallet> =
         APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
             let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
@@ -197,7 +202,7 @@ pub async fn wallet_receive(idx: usize, token: String) -> Result<cashu::Amount> 
             let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
             Ok(wallet.clone())
         })?;
-    let cashed_in = wallet.receive(token).await?;
+    let cashed_in = wallet.receive_token(token).await?;
     Ok(cashed_in)
 }
 
