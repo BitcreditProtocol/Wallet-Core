@@ -30,7 +30,7 @@ pub trait Pocket {
         proofs: Vec<cdk00::Proof>,
     ) -> Result<Amount>;
 
-    async fn receive(
+    async fn receive_token(
         &self,
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
@@ -101,16 +101,18 @@ where
         Ok(WalletBalance { debit, credit })
     }
 
-    pub async fn receive(&self, token: Token) -> Result<cashu::Amount> {
+    pub async fn receive_token(&self, token: Token) -> Result<cashu::Amount> {
         let keysets_info = self.client.get_mint_keysets().await?.keysets;
         if self.credit.is_mine(&token) {
             tracing::debug!("import credit token");
             self.credit
-                .receive(&self.client, &keysets_info, token)
+                .receive_token(&self.client, &keysets_info, token)
                 .await
         } else if self.debit.is_mine(&token) {
             tracing::debug!("import debit token");
-            self.debit.receive(&self.client, &keysets_info, token).await
+            self.debit
+                .receive_token(&self.client, &keysets_info, token)
+                .await
         } else {
             let teaser = token.to_string().chars().take(20).collect::<String>();
             return Err(Error::InvalidToken(teaser));
@@ -119,10 +121,10 @@ where
 
     async fn prepare_send_with_pocket(
         amount: Amount,
-        infos: &[KeySetInfo],
+        keysets_info: &[KeySetInfo],
         pocket: &dyn Pocket,
     ) -> Result<(WalletSendSummary, SendSummary)> {
-        let pocket_summary = pocket.prepare_send(amount, infos).await?;
+        let pocket_summary = pocket.prepare_send(amount, keysets_info).await?;
         let reference = WalletSendSummary {
             request_id: Uuid::new_v4(),
             unit: pocket.unit(),

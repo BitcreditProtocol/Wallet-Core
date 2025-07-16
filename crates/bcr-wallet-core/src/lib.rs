@@ -79,8 +79,8 @@ impl std::convert::From<app::WalletCurrencyUnit> for WalletCurrencyUnit {
 }
 
 #[wasm_bindgen]
-pub fn get_wallet_currency_units(idx: usize) -> WalletCurrencyUnit {
-    let returned = app::wallet_currency_units(idx);
+pub fn get_wallet_currency_unit(idx: usize) -> WalletCurrencyUnit {
+    let returned = app::wallet_currency_unit(idx);
     match returned {
         Ok(units) => WalletCurrencyUnit::from(units),
         Err(e) => {

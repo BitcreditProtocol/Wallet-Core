@@ -76,11 +76,11 @@ where
     async fn digest_proofs(
         &self,
         client: &dyn MintConnector,
-        infos: &[KeySetInfo],
+        keysets_info: &[KeySetInfo],
         inputs: Vec<cdk00::Proof>,
     ) -> Result<Amount> {
         let infos: HashMap<cashu::Id, KeySetInfo> =
-            collect_keyset_infos_from_proofs(inputs.iter(), infos)?;
+            collect_keyset_infos_from_proofs(inputs.iter(), keysets_info)?;
         //---- validating keysets
         for info in infos.values() {
             if info.unit != self.unit {
@@ -209,27 +209,27 @@ where
         self.digest_proofs(client, keysets_info, proofs).await
     }
 
-    async fn receive(
+    async fn receive_token(
         &self,
         client: &dyn MintConnector,
-        k_infos: &[KeySetInfo],
+        keysets_info: &[KeySetInfo],
         token: Token,
     ) -> Result<Amount> {
-        let proofs = token.proofs(k_infos)?;
+        let proofs = token.proofs(keysets_info)?;
         if proofs.is_empty() {
             tracing::warn!("token with no proofs");
             return Ok(Amount::ZERO);
         }
-        self.digest_proofs(client, k_infos, proofs).await
+        self.digest_proofs(client, keysets_info, proofs).await
     }
 
     async fn prepare_send(
         &self,
         target: Amount,
-        infos: &[KeySetInfo],
+        keysets_info: &[KeySetInfo],
     ) -> Result<PocketSendSummary> {
         let proofs = self.db.list_unspent().await?;
-        let infos = collect_keyset_infos_from_proofs(proofs.values(), infos)?;
+        let infos = collect_keyset_infos_from_proofs(proofs.values(), keysets_info)?;
         let ys = group_ys_by_keyset_id(proofs.iter());
         // selecting keysets
         let mut kids: Vec<cashu::Id> = Vec::with_capacity(infos.len());
@@ -244,7 +244,10 @@ where
                 continue;
             }
             match kids.binary_search_by_key(&info.final_expiry, |kid| {
-                infos.get(kid).unwrap().final_expiry
+                infos
+                    .get(kid)
+                    .expect("kids is a subset of info.keys()")
+                    .final_expiry
             }) {
                 Ok(pos) => kids.insert(pos, *kid),
                 Err(pos) => kids.insert(pos, *kid),
@@ -345,7 +348,7 @@ where
 {
     async fn reclaim_proofs(
         &self,
-        k_infos: &[KeySetInfo],
+        keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
     ) -> Result<(Amount, Vec<cdk00::Proof>)> {
         let pendings = self.db.list_pending().await?;
@@ -364,16 +367,18 @@ where
             })
             .collect();
 
-        let infos = collect_keyset_infos_from_proofs(unspent_proofs.iter(), k_infos)?;
+        let infos = collect_keyset_infos_from_proofs(unspent_proofs.iter(), keysets_info)?;
 
         let (reclaimable, redeemable): (Vec<_>, Vec<_>) =
             unspent_proofs.into_iter().partition(|p| {
                 let info = infos
                     .get(&p.keyset_id)
-                    .expect("keyset info should be here by now");
+                    .expect("infos map is built from unspent_proofs keyset_id");
                 info.unit == self.unit && info.active
             });
-        let reclaimed = self.digest_proofs(client, k_infos, reclaimable).await?;
+        let reclaimed = self
+            .digest_proofs(client, keysets_info, reclaimable)
+            .await?;
         Ok((reclaimed, redeemable))
     }
 }
@@ -403,10 +408,10 @@ where
 {
     async fn find_active_keyset(
         &self,
-        infos: &[KeySetInfo],
+        keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
     ) -> Result<(KeySetInfo, KeySet)> {
-        let active_info = infos
+        let active_info = keysets_info
             .iter()
             .find(|info| info.unit == self.unit && info.active && info.input_fee_ppk == 0);
         let Some(active_info) = active_info else {
@@ -419,10 +424,10 @@ where
     async fn digest_proofs(
         &self,
         client: &dyn MintConnector,
-        k_infos: &[KeySetInfo],
+        keysets_info: &[KeySetInfo],
         proofs: Vec<cdk00::Proof>,
     ) -> Result<Amount> {
-        let (active_info, active_keyset) = self.find_active_keyset(k_infos, client).await?;
+        let (active_info, active_keyset) = self.find_active_keyset(keysets_info, client).await?;
         let counter = self.db.counter(active_info.id).await?;
         let total_amount = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
         let premint_secrets = cdk00::PreMintSecrets::from_xpriv(
@@ -486,27 +491,27 @@ where
         self.digest_proofs(client, keysets_info, proofs).await
     }
 
-    async fn receive(
+    async fn receive_token(
         &self,
         client: &dyn MintConnector,
-        k_infos: &[KeySetInfo],
+        keysets_info: &[KeySetInfo],
         token: Token,
     ) -> Result<Amount> {
-        let proofs = token.proofs(k_infos)?;
+        let proofs = token.proofs(keysets_info)?;
         if proofs.is_empty() {
             tracing::warn!("token with no proofs");
             return Ok(Amount::ZERO);
         }
-        self.digest_proofs(client, k_infos, proofs).await
+        self.digest_proofs(client, keysets_info, proofs).await
     }
 
     async fn prepare_send(
         &self,
         target: Amount,
-        infos: &[KeySetInfo],
+        keysets_info: &[KeySetInfo],
     ) -> Result<PocketSendSummary> {
         let proofs = self.db.list_unspent().await?;
-        let infos = collect_keyset_infos_from_proofs(proofs.values(), infos)?;
+        let infos = collect_keyset_infos_from_proofs(proofs.values(), keysets_info)?;
         let ys = group_ys_by_keyset_id(proofs.iter());
         let mut kids: Vec<cashu::Id> = Vec::with_capacity(infos.len());
         for (kid, info) in infos.iter() {
@@ -546,12 +551,12 @@ where
     async fn send(
         &self,
         rid: Uuid,
-        keyset_infos: &[KeySetInfo],
+        keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
         mint_url: MintUrl,
         memo: Option<String>,
     ) -> Result<Token> {
-        let (_, active_keyset) = self.find_active_keyset(keyset_infos, client).await?;
+        let (_, active_keyset) = self.find_active_keyset(keysets_info, client).await?;
 
         let send_ref = {
             let mut locked = self.current_send.lock().unwrap();
@@ -641,10 +646,10 @@ impl Pocket for DummyPocket {
     ) -> Result<Amount> {
         Ok(Amount::ZERO)
     }
-    async fn receive(
+    async fn receive_token(
         &self,
         _client: &dyn MintConnector,
-        _k_infos: &[KeySetInfo],
+        _keysets_info: &[KeySetInfo],
         _token: Token,
     ) -> Result<cashu::Amount> {
         Ok(Amount::ZERO)
@@ -814,12 +819,12 @@ async fn swap_proof_to_target(
 ///////////////////////////////////////////// collect_keyset_infos_from_proofs
 fn collect_keyset_infos_from_proofs<'a>(
     proofs: impl Iterator<Item = &'a cdk00::Proof>,
-    keyset_infos: &[KeySetInfo],
+    keysets_info: &[KeySetInfo],
 ) -> Result<HashMap<cashu::Id, KeySetInfo>> {
     let kids = proofs.map(|p| p.keyset_id).collect::<HashSet<_>>();
     let mut infos: HashMap<cashu::Id, KeySetInfo> = HashMap::new();
     for kid in kids {
-        let info = keyset_infos.iter().find(|info| info.id == kid);
+        let info = keysets_info.iter().find(|info| info.id == kid);
         if let Some(info) = info {
             infos.insert(kid, info.clone());
         } else {
@@ -984,7 +989,10 @@ mod tests {
         let crpocket = crpocket(db);
 
         let token = Token::new_bitcr(mint_url, proofs, None, crpocket.unit());
-        let cashed = crpocket.receive(&connector, &k_infos, token).await.unwrap();
+        let cashed = crpocket
+            .receive_token(&connector, &k_infos, token)
+            .await
+            .unwrap();
         assert_eq!(cashed, Amount::from(24u64));
     }
 
@@ -1003,7 +1011,7 @@ mod tests {
         let crpocket = crpocket(db);
 
         let token = Token::new_bitcr(mint_url, proofs, None, crpocket.unit());
-        let result = crpocket.receive(&connector, &k_infos, token).await;
+        let result = crpocket.receive_token(&connector, &k_infos, token).await;
         assert!(matches!(result, Err(Error::InactiveKeyset(_))));
     }
 
@@ -1022,7 +1030,7 @@ mod tests {
         let crpocket = crpocket(db);
 
         let token = Token::new_bitcr(mint_url, proofs, None, crpocket.unit());
-        let result = crpocket.receive(&connector, &k_infos, token).await;
+        let result = crpocket.receive_token(&connector, &k_infos, token).await;
         assert!(matches!(result, Err(Error::CurrencyUnitMismatch(_, _))));
     }
 
@@ -1073,7 +1081,10 @@ mod tests {
         let dbpocket = dbpocket(db);
 
         let token = Token::new_cashu(mint_url, proofs, None, dbpocket.unit());
-        let cashed = dbpocket.receive(&connector, &k_infos, token).await.unwrap();
+        let cashed = dbpocket
+            .receive_token(&connector, &k_infos, token)
+            .await
+            .unwrap();
         assert_eq!(cashed, Amount::from(24u64));
     }
 
