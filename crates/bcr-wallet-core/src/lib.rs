@@ -13,8 +13,7 @@ mod wallet;
 
 // ----- end imports
 
-// Experimental, Many things will change here, a wasm export of using the app, mostly for testing
-
+// --------------------------------------------------------------- initialize_api
 #[wasm_bindgen]
 pub async fn initialize_api(network: String) {
     tracing_wasm::set_as_global_default();
@@ -22,14 +21,20 @@ pub async fn initialize_api(network: String) {
     app::initialize_api(network);
 }
 
+// --------------------------------------------------------------- add_wallet
 #[wasm_bindgen]
-pub async fn add_wallet(mint_url: String, mnemonic: String, name: String) {
-    let returned = app::add_wallet(mint_url, mnemonic, name).await;
-    if let Err(e) = returned {
-        tracing::error!("Failed to add wallet: {e}");
+pub async fn add_wallet(mint_url: String, mnemonic: String, name: String) -> u32 {
+    let returned = app::add_wallet(mint_url.clone(), mnemonic.clone(), name.clone()).await;
+    match returned {
+        Ok(idx) => idx as u32,
+        Err(e) => {
+            tracing::error!("add_wallet({mint_url}, {mnemonic}, {name}): {e}");
+            0
+        }
     }
 }
 
+// --------------------------------------------------------------- get_wallet_name
 #[wasm_bindgen]
 pub fn get_wallet_name(idx: usize) -> String {
     let returned = app::wallet_name(idx);
@@ -42,6 +47,7 @@ pub fn get_wallet_name(idx: usize) -> String {
     }
 }
 
+// --------------------------------------------------------------- get_wallet_mint_url
 #[wasm_bindgen]
 pub fn get_wallet_mint_url(idx: usize) -> String {
     let returned = app::wallet_mint_url(idx);
@@ -54,85 +60,105 @@ pub fn get_wallet_mint_url(idx: usize) -> String {
     }
 }
 
+// --------------------------------------------------------------- get_wallet_units
 #[wasm_bindgen]
-pub fn get_wallet_credit_unit(idx: usize) -> String {
-    let returned = app::wallet_credit_unit(idx);
-    match returned {
-        Ok(url) => url,
-        Err(e) => {
-            tracing::error!("wallet_credit_unit({idx}): {e}");
-            String::new()
+#[derive(Default)]
+pub struct WalletCurrencyUnit {
+    #[wasm_bindgen(getter_with_clone)]
+    pub credit: String,
+    #[wasm_bindgen(getter_with_clone)]
+    pub debit: String,
+}
+impl std::convert::From<app::WalletCurrencyUnit> for WalletCurrencyUnit {
+    fn from(unit: app::WalletCurrencyUnit) -> Self {
+        Self {
+            credit: unit.credit.to_string(),
+            debit: unit.debit.to_string(),
         }
     }
 }
 
 #[wasm_bindgen]
-pub fn get_wallet_debit_unit(idx: usize) -> String {
-    let returned = app::wallet_debit_unit(idx);
+pub fn get_wallet_currency_units(idx: usize) -> WalletCurrencyUnit {
+    let returned = app::wallet_currency_units(idx);
     match returned {
-        Ok(url) => url,
+        Ok(units) => WalletCurrencyUnit::from(units),
         Err(e) => {
-            tracing::error!("wallet_debit_unit({idx}): {e}");
-            String::new()
+            tracing::error!("wallet_currency_units({idx}): {e}");
+            WalletCurrencyUnit::default()
+        }
+    }
+}
+
+// --------------------------------------------------------------- get_wallet_balance
+#[wasm_bindgen]
+#[derive(Default)]
+pub struct WalletBalance {
+    #[wasm_bindgen(readonly)]
+    pub credit: u64,
+    #[wasm_bindgen(readonly)]
+    pub debit: u64,
+}
+impl std::convert::From<wallet::WalletBalance> for WalletBalance {
+    fn from(balance: wallet::WalletBalance) -> Self {
+        Self {
+            credit: u64::from(balance.credit),
+            debit: u64::from(balance.debit),
         }
     }
 }
 
 #[wasm_bindgen]
-pub async fn get_wallet_credit_balance(idx: usize) -> u64 {
+pub async fn get_wallet_balance(idx: usize) -> WalletBalance {
     let returned = app::wallet_balance(idx).await;
     match returned {
-        Ok(balance) => balance.credit.into(),
+        Ok(balance) => WalletBalance::from(balance),
         Err(e) => {
-            tracing::error!("credit_balance({idx}): {e}");
-            0
+            tracing::error!("get_wallet_balance({idx}): {e}");
+            WalletBalance::default()
         }
     }
 }
 
-#[wasm_bindgen]
-pub async fn get_wallet_debit_balance(idx: usize) -> u64 {
-    let returned = app::wallet_balance(idx).await;
-    match returned {
-        Ok(balance) => balance.debit.into(),
-        Err(e) => {
-            tracing::error!("debit_balance({idx}): {e}");
-            0
-        }
-    }
-}
-
+// --------------------------------------------------------------- wallet_receive_token
 #[wasm_bindgen]
 pub async fn wallet_receive_token(idx: usize, token: String) -> u64 {
+    let preview_token = token[0..10].to_string();
     let returned = app::wallet_receive(idx, token).await;
     match returned {
         Ok(amount) => amount.into(),
         Err(e) => {
-            tracing::error!("receive({idx}, <token>): {e}");
+            tracing::error!("wallet_receive_token({idx}, {preview_token}...): {e}");
             0
         }
     }
 }
 
+// --------------------------------------------------------------- wallet_reclaim_funds
+#[wasm_bindgen]
+pub async fn wallet_reclaim_funds(idx: usize) -> WalletBalance {
+    let returned = app::wallet_reclaim_funds(idx).await;
+    match returned {
+        Ok(balance) => WalletBalance::from(balance),
+        Err(e) => {
+            tracing::error!("wallet_reclaim_funds({idx}): {e}");
+            WalletBalance::default()
+        }
+    }
+}
+
+// --------------------------------------------------------------- wallet_prepare_send
 #[wasm_bindgen]
 #[derive(Default)]
 pub struct SendSummary {
-    pub(crate) request_id: String,
-    unit: String,
+    #[wasm_bindgen(getter_with_clone)]
+    pub request_id: String,
+    #[wasm_bindgen(getter_with_clone)]
+    pub unit: String,
+    #[wasm_bindgen(readonly)]
     pub send_fees: u64,
+    #[wasm_bindgen(readonly)]
     pub swap_fees: u64,
-}
-
-#[wasm_bindgen]
-impl SendSummary {
-    #[wasm_bindgen(getter)]
-    pub fn request_id(&self) -> String {
-        self.request_id.clone()
-    }
-    #[wasm_bindgen(getter)]
-    pub fn unit(&self) -> String {
-        self.unit.clone()
-    }
 }
 
 impl std::convert::From<types::SendSummary> for SendSummary {
@@ -158,6 +184,7 @@ pub async fn wallet_prepare_send(idx: usize, amount: u64, unit: String) -> SendS
     }
 }
 
+// --------------------------------------------------------------- wallet_send
 #[wasm_bindgen]
 pub async fn wallet_send(idx: usize, request_id: String, memo: Option<String>) -> String {
     let returned = app::wallet_send(idx, request_id.clone(), memo.clone()).await;
@@ -170,6 +197,7 @@ pub async fn wallet_send(idx: usize, request_id: String, memo: Option<String>) -
     }
 }
 
+// --------------------------------------------------------------- get_wallets_ids
 #[wasm_bindgen]
 pub fn get_wallets_ids() -> Vec<u32> {
     let returned = app::wallets_ids();
@@ -182,6 +210,7 @@ pub fn get_wallets_ids() -> Vec<u32> {
     }
 }
 
+// --------------------------------------------------------------- get_wallets_names
 #[wasm_bindgen]
 pub fn get_wallets_names() -> Vec<String> {
     let returned = app::wallets_names();
