@@ -178,7 +178,7 @@ pub async fn wallet_prepare_send(idx: usize, amount: u64, unit: String) -> SendS
     match returned {
         Ok(summary) => summary,
         Err(e) => {
-            tracing::error!("prepare_send({idx}, {amount}, {unit}): {e}");
+            tracing::error!("wallet_prepare_send({idx}, {amount}, {unit}): {e}");
             SendSummary::default()
         }
     }
@@ -191,8 +191,21 @@ pub async fn wallet_send(idx: usize, request_id: String, memo: Option<String>) -
     match returned {
         Ok(token) => token.to_string(),
         Err(e) => {
-            tracing::error!("send({idx}, {request_id}, {:?}): {e}", memo);
+            tracing::error!("wallet_send({idx}, {request_id}, {:?}): {e}", memo);
             String::new()
+        }
+    }
+}
+
+// --------------------------------------------------------------- wallet_clean_local_db
+#[wasm_bindgen]
+pub async fn wallet_clean_local_db(idx: usize) -> u32 {
+    let returned = app::wallet_clean_local_db(idx).await;
+    match returned {
+        Ok(proofs_removed) => proofs_removed,
+        Err(e) => {
+            tracing::error!("wallet_clean_local_db({idx}): {e}");
+            0
         }
     }
 }

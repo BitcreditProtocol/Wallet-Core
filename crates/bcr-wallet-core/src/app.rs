@@ -3,14 +3,14 @@ use std::{cell::RefCell, collections::HashSet, rc::Rc, str::FromStr, sync::Mutex
 // ----- extra library imports
 use anyhow::Error as AnyError;
 use bcr_wallet_lib::wallet::Token;
-use bitcoin::hashes::{sha1, Hash};
+use bitcoin::hashes::{Hash, sha1};
 use cdk::wallet::MintConnector;
 // ----- local imports
 use crate::{
+    SendSummary,
     error::{Error, Result},
     persistence::{self, rexie::ProofDB},
     wallet::{CreditPocket, DebitPocket, WalletBalance},
-    SendSummary,
 };
 
 // ----- end imports
@@ -268,4 +268,15 @@ pub async fn wallet_reclaim_funds(idx: usize) -> Result<WalletBalance> {
 
     let balance = wallet.reclaim_funds().await?;
     Ok(balance)
+}
+
+pub async fn wallet_clean_local_db(idx: usize) -> Result<u32> {
+    tracing::debug!("wallet_clean_local_db({idx})");
+    let wallet: Rc<ProductionWallet> =
+        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
+            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
+            Ok(wallet.clone())
+        })?;
+    let deleted = wallet.clean_local_db().await?;
+    Ok(deleted)
 }

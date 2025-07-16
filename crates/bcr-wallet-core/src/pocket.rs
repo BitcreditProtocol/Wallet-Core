@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use bcr_wallet_lib::wallet::Token;
 use bitcoin::bip32 as btc32;
 use cashu::{
-    amount::SplitTarget, nut00 as cdk00, nut01 as cdk01, nut03 as cdk03, nut07 as cdk07, Amount,
-    CurrencyUnit, KeySet, KeySetInfo, MintUrl,
+    Amount, CurrencyUnit, KeySet, KeySetInfo, MintUrl, amount::SplitTarget, nut00 as cdk00,
+    nut01 as cdk01, nut03 as cdk03, nut07 as cdk07,
 };
 use cdk::wallet::MintConnector;
 use uuid::Uuid;
@@ -37,10 +37,12 @@ pub trait PocketRepository {
     async fn store_new(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
     async fn store_pending(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
     async fn load_proof(&self, y: cdk01::PublicKey)
-        -> Result<Option<(cdk00::Proof, cdk07::State)>>;
+    -> Result<Option<(cdk00::Proof, cdk07::State)>>;
+    async fn delete_proof(&self, y: cdk01::PublicKey) -> Result<()>;
     async fn list_unspent(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn list_pending(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn list_reserved(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
+    async fn list_all(&self) -> Result<Vec<cdk01::PublicKey>>;
 
     async fn mark_as_pending(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
 
@@ -326,6 +328,14 @@ where
         let token = Token::new_bitcr(mint_url, proofs, memo, self.unit.clone());
         Ok(token)
     }
+
+    async fn clean_local_proofs(
+        &self,
+        client: &dyn MintConnector,
+    ) -> Result<Vec<cdk01::PublicKey>> {
+        let cleaned_ys = clean_local_proofs(&self.db, client).await?;
+        Ok(cleaned_ys)
+    }
 }
 
 #[async_trait(?Send)]
@@ -422,7 +432,9 @@ where
             total_amount,
             &SplitTarget::None,
         )?;
-        self.db.increment_counter(active_info.id, counter, premint_secrets.len() as u32).await?;
+        self.db
+            .increment_counter(active_info.id, counter, premint_secrets.len() as u32)
+            .await?;
         let request = cdk03::SwapRequest::new(proofs, premint_secrets.blinded_messages());
         let signatures = client.post_swap(request).await?.signatures;
         let proofs = unblind_proofs(&active_keyset, &signatures, &premint_secrets);
@@ -581,6 +593,14 @@ where
         let token = Token::new_cashu(mint_url, proofs, memo, self.unit.clone());
         Ok(token)
     }
+
+    async fn clean_local_proofs(
+        &self,
+        client: &dyn MintConnector,
+    ) -> Result<Vec<cdk01::PublicKey>> {
+        let cleaned_ys = clean_local_proofs(&self.db, client).await?;
+        Ok(cleaned_ys)
+    }
 }
 
 #[async_trait(?Send)]
@@ -642,6 +662,12 @@ impl Pocket for DummyPocket {
     ) -> Result<Token> {
         Err(Error::Any(AnyError::msg("DummyPocket is dummy")))
     }
+    async fn clean_local_proofs(
+        &self,
+        _client: &dyn MintConnector,
+    ) -> Result<Vec<cdk01::PublicKey>> {
+        Ok(Vec::new())
+    }
 }
 #[async_trait(?Send)]
 impl CreditPocket for DummyPocket {
@@ -664,6 +690,25 @@ impl DebitPocket for DummyPocket {
     }
 }
 
+///////////////////////////////////////////// clean_local_proofs
+async fn clean_local_proofs(
+    db: &dyn PocketRepository,
+    client: &dyn MintConnector,
+) -> Result<Vec<cdk01::PublicKey>> {
+    let ys = db.list_all().await?;
+    let request = cdk07::CheckStateRequest { ys };
+    let response = client.post_check_state(request).await?;
+    let mut cleaned_ys: Vec<cdk01::PublicKey> = Vec::with_capacity(response.states.len());
+    for proofstate in response.states {
+        if proofstate.state == cdk07::State::Spent {
+            db.delete_proof(proofstate.y).await?;
+            cleaned_ys.push(proofstate.y);
+        }
+    }
+    Ok(cleaned_ys)
+}
+
+///////////////////////////////////////////// unblind_proofs
 fn unblind_proofs(
     keyset: &KeySet,
     signatures: &[cdk00::BlindSignature],
@@ -723,6 +768,7 @@ fn unblind_proofs(
     proofs
 }
 
+///////////////////////////////////////////// swap_proof_to_target
 async fn swap_proof_to_target(
     proof: cdk00::Proof,
     target_keyset: &KeySet,
@@ -765,6 +811,7 @@ async fn swap_proof_to_target(
     Ok(on_target)
 }
 
+///////////////////////////////////////////// collect_keyset_infos_from_proofs
 fn collect_keyset_infos_from_proofs<'a>(
     proofs: impl Iterator<Item = &'a cdk00::Proof>,
     keyset_infos: &[KeySetInfo],
@@ -782,6 +829,7 @@ fn collect_keyset_infos_from_proofs<'a>(
     Ok(infos)
 }
 
+///////////////////////////////////////////// group_ys_by_keyset_id
 fn group_ys_by_keyset_id<'a>(
     proofs: impl Iterator<Item = (&'a cdk01::PublicKey, &'a cdk00::Proof)>,
 ) -> HashMap<cashu::Id, Vec<cdk01::PublicKey>> {
@@ -1028,7 +1076,6 @@ mod tests {
         let cashed = dbpocket.receive(&connector, &k_infos, token).await.unwrap();
         assert_eq!(cashed, Amount::from(24u64));
     }
-
 
     #[tokio::test]
     async fn credit_prepare_send() {
