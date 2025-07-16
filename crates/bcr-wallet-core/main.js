@@ -20,14 +20,12 @@ async function run() {
         ids[document.getElementById("walletlist").selectedIndex],
       );
       let wallet_name = await wasmModule.get_wallet_name(idx);
-      let debit_balance = await wasmModule.get_wallet_debit_balance(idx);
-      let debit_unit = await wasmModule.get_wallet_debit_unit(idx);
-      let credit_balance = await wasmModule.get_wallet_credit_balance(idx);
-      let credit_unit = await wasmModule.get_wallet_credit_unit(idx);
+      let wallet_balance = await wasmModule.get_wallet_balance(idx);
+      let wallet_units = await wasmModule.get_wallet_currency_units(idx);
       document.getElementById("balance").innerHTML =
         "Wallet: " + wallet_name + "\n\t" +
-        String(credit_balance) + " " + credit_unit + "\n\t" +
-        String(debit_balance) + " " + debit_unit;
+        String(wallet_balance.credit) + " " + wallet_units.credit + "\n\t" +
+        String(wallet_balance.debit) + " " + wallet_units.debit;
     }
   };
 
@@ -51,12 +49,6 @@ async function run() {
     let ids = await wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
 
-    // let unit = await wasmModule.get_unit(idx);
-    // if (unit.toLowerCase() == "crsat") {
-    //   let token = await wasmModule.redeem_inactive(idx);
-    //   await update_balance();
-    //   document.getElementById("output").innerHTML += "\ntoken:\n" + token;
-    // }
   });
 
   document.getElementById("importbtn").addEventListener("click", async () => {

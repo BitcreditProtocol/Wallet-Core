@@ -52,8 +52,8 @@ pub enum Error {
     CurrencyUnitMismatch(cashu::CurrencyUnit, cashu::CurrencyUnit),
     #[error("no reference to prepare_send request_id: {0}")]
     NoPrepareSendRef(uuid::Uuid),
-    #[error("expired keyset {0}")]
-    ExpiredKeyset(cashu::Id),
+    #[error("inactive keyset {0}")]
+    InactiveKeyset(cashu::Id),
 
     #[error("internal error: {0}")]
     Internal(String),

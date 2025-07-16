@@ -3,14 +3,14 @@ use std::{cell::RefCell, collections::HashSet, rc::Rc, str::FromStr, sync::Mutex
 // ----- extra library imports
 use anyhow::Error as AnyError;
 use bcr_wallet_lib::wallet::Token;
-use bitcoin::hashes::{Hash, sha1};
+use bitcoin::hashes::{sha1, Hash};
 use cdk::wallet::MintConnector;
 // ----- local imports
 use crate::{
-    SendSummary,
     error::{Error, Result},
     persistence::{self, rexie::ProofDB},
     wallet::{CreditPocket, DebitPocket, WalletBalance},
+    SendSummary,
 };
 
 // ----- end imports
@@ -63,21 +63,9 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
 
     let mint_url = cashu::MintUrl::from_str(&mint_url)?;
     let client = ProductionConnector::new(mint_url.clone());
-    let info = client.get_mint_info().await?;
-
-    let keyset_infos = client.get_mint_keysets().await?.keysets;
-    let currencies = keyset_infos
-        .iter()
-        .map(|k| k.unit.clone())
-        .collect::<HashSet<_>>();
-
-    if currencies.len() > 2 {
-        return Err(Error::Any(AnyError::msg(
-            "Mint supports more than 2 currencies, not supported yet",
-        )));
-    }
 
     // building a unique identifier of the mint to name the local DB
+    let info = client.get_mint_info().await?;
     let mint_id = if let Some(pubkey) = info.pubkey {
         sha1::Hash::hash(&pubkey.to_bytes())
     } else if let Some(name) = info.name {
@@ -85,6 +73,18 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
     } else {
         sha1::Hash::hash(mint_url.to_string().as_bytes())
     };
+
+    let keyset_infos = client.get_mint_keysets().await?.keysets;
+    let currencies = keyset_infos
+        .iter()
+        .map(|k| k.unit.clone())
+        .collect::<HashSet<_>>();
+    if currencies.len() > 2 {
+        return Err(Error::Any(AnyError::msg(
+            "Mint supports more than 2 currencies, not supported yet",
+        )));
+    }
+
     // building database and object_stores
     let mut rexie_builder = rexie::Rexie::builder(&format!("bitcredit_wallet_{mint_id}"));
     let credit_unit = currencies
@@ -113,6 +113,7 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
         let pocket = ProductionCreditPocket::new(unit.clone(), db, master_xpriv);
         Box::new(pocket)
     } else {
+        tracing::warn!("app::add_wallet: credit_pocket = DummyPocket");
         Box::new(crate::pocket::DummyPocket {})
     };
     // building the debit pocket
@@ -121,6 +122,7 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
         let pocket = ProductionDebitPocket::new(unit.clone(), db, master_xpriv);
         Box::new(pocket)
     } else {
+        tracing::warn!("app::add_wallet: debit_pocket = DummyPocket");
         Box::new(crate::pocket::DummyPocket {})
     };
 
@@ -160,24 +162,22 @@ pub fn wallet_mint_url(idx: usize) -> Result<String> {
     Ok(wallet.url.to_string())
 }
 
-pub fn wallet_credit_unit(idx: usize) -> Result<String> {
-    tracing::debug!("wallet_credit_unit({idx})");
-    let wallet: Rc<ProductionWallet> =
-        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
-            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
-            Ok(wallet.clone())
-        })?;
-    Ok(wallet.credit.unit().to_string())
+pub struct WalletCurrencyUnit {
+    pub credit: String,
+    pub debit: String,
 }
 
-pub fn wallet_debit_unit(idx: usize) -> Result<String> {
-    tracing::debug!("wallet_debit_unit({idx})");
+pub fn wallet_currency_units(idx: usize) -> Result<WalletCurrencyUnit> {
+    tracing::debug!("wallet_currency_units({idx})");
     let wallet: Rc<ProductionWallet> =
         APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
             let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
             Ok(wallet.clone())
         })?;
-    Ok(wallet.debit.unit().to_string())
+    Ok(WalletCurrencyUnit {
+        credit: wallet.credit.unit().to_string(),
+        debit: wallet.debit.unit().to_string(),
+    })
 }
 
 pub async fn wallet_balance(idx: usize) -> Result<WalletBalance> {
@@ -256,4 +256,16 @@ pub async fn wallet_send(idx: usize, request_id: String, memo: Option<String>) -
         })?;
     let token = wallet.send(rid, memo).await?;
     Ok(token)
+}
+
+pub async fn wallet_reclaim_funds(idx: usize) -> Result<WalletBalance> {
+    tracing::debug!("wallet_reclaim({idx})");
+    let wallet: Rc<ProductionWallet> =
+        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
+            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
+            Ok(wallet.clone())
+        })?;
+
+    let balance = wallet.reclaim_funds().await?;
+    Ok(balance)
 }

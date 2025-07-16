@@ -3,7 +3,7 @@ use std::sync::Mutex;
 // ----- extra library imports
 use async_trait::async_trait;
 use bcr_wallet_lib::wallet::Token;
-use cashu::{Amount, CurrencyUnit, KeySetInfo, MintUrl};
+use cashu::{nut00 as cdk00, Amount, CurrencyUnit, KeySetInfo, MintUrl};
 use cdk::wallet::MintConnector;
 use uuid::Uuid;
 // ----- local imports
@@ -23,6 +23,13 @@ pub trait Pocket {
 
     async fn balance(&self) -> Result<Amount>;
 
+    async fn receive_proofs(
+        &self,
+        client: &dyn MintConnector,
+        keysets_info: &[KeySetInfo],
+        proofs: Vec<cdk00::Proof>,
+    ) -> Result<Amount>;
+
     async fn receive(
         &self,
         client: &dyn MintConnector,
@@ -31,7 +38,7 @@ pub trait Pocket {
     ) -> Result<Amount>;
 
     async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo])
-    -> Result<PocketSendSummary>;
+        -> Result<PocketSendSummary>;
 
     async fn send(
         &self,
@@ -44,10 +51,24 @@ pub trait Pocket {
 }
 
 #[async_trait(?Send)]
-pub trait CreditPocket: Pocket {}
+pub trait CreditPocket: Pocket {
+    /// returns the amount reclaimed and the proofs that can be redeemed (i.e. unspent proofs with
+    /// inactive keysets)
+    async fn reclaim_proofs(
+        &self,
+        keysets_info: &[KeySetInfo],
+        client: &dyn MintConnector,
+    ) -> Result<(Amount, Vec<cdk00::Proof>)>;
+}
 
 #[async_trait(?Send)]
-pub trait DebitPocket: Pocket {}
+pub trait DebitPocket: Pocket {
+    async fn reclaim_proofs(
+        &self,
+        keysets_info: &[KeySetInfo],
+        client: &dyn MintConnector,
+    ) -> Result<Amount>;
+}
 
 pub struct Wallet<Conn> {
     pub client: Conn,
@@ -195,5 +216,25 @@ where
             return Ok(token);
         }
         Err(Error::UnknownCurrencyUnit(current_ref.unit))
+    }
+
+    pub async fn reclaim_funds(&self) -> Result<WalletBalance> {
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
+        let debit_reclaimed = self
+            .debit
+            .reclaim_proofs(&keysets_info, &self.client)
+            .await?;
+        let (credit_reclaimed, reedemable_credit_proofs) = self
+            .credit
+            .reclaim_proofs(&keysets_info, &self.client)
+            .await?;
+        let debit_redeemed = self
+            .debit
+            .receive_proofs(&self.client, &keysets_info, reedemable_credit_proofs)
+            .await?;
+        Ok(WalletBalance {
+            credit: credit_reclaimed,
+            debit: debit_reclaimed + debit_redeemed,
+        })
     }
 }

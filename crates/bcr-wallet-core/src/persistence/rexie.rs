@@ -256,6 +256,14 @@ impl PocketRepository for ProofDB {
         Ok(y)
     }
 
+    async fn store_pending(&self, proof: cdk00::Proof) -> Result<PublicKey> {
+        let mut entry = ProofEntry::from(proof);
+        let y = entry.y;
+        entry.state = cdk07::State::PendingSpent;
+        self.store_proof(entry).await?;
+        Ok(y)
+    }
+
     async fn load_proof(&self, y: PublicKey) -> Result<Option<(cdk00::Proof, cdk07::State)>> {
         let proof_state = self.load_proof(y).await?.map(|entry| {
             let state = entry.state;
@@ -266,6 +274,38 @@ impl PocketRepository for ProofDB {
 
     async fn list_unspent(&self) -> Result<HashMap<PublicKey, cdk00::Proof>> {
         self.list_proofs(Some(cdk07::State::Unspent))
+            .await
+            .map(|proofs| {
+                proofs
+                    .into_iter()
+                    .map(|entry| (entry.y, cdk00::Proof::from(entry)))
+                    .collect()
+            })
+    }
+    async fn list_pending(&self) -> Result<HashMap<PublicKey, cdk00::Proof>> {
+        let pendings = self
+            .list_proofs(Some(cdk07::State::Pending))
+            .await
+            .map(|proofs| {
+                proofs
+                    .into_iter()
+                    .map(|entry| (entry.y, cdk00::Proof::from(entry)))
+            })?;
+        let mut pendingspents: HashMap<PublicKey, cdk00::Proof> = self
+            .list_proofs(Some(cdk07::State::PendingSpent))
+            .await
+            .map(|proofs| {
+                proofs
+                    .into_iter()
+                    .map(|entry| (entry.y, cdk00::Proof::from(entry)))
+                    .collect()
+            })?;
+        pendingspents.extend(pendings);
+        Ok(pendingspents)
+    }
+
+    async fn list_reserved(&self) -> Result<HashMap<PublicKey, cdk00::Proof>> {
+        self.list_proofs(Some(cdk07::State::Reserved))
             .await
             .map(|proofs| {
                 proofs
