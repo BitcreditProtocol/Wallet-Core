@@ -4,7 +4,7 @@ use std::{collections::HashMap, rc::Rc};
 use anyhow::Error as AnyError;
 use async_trait::async_trait;
 use cashu::{
-    CurrencyUnit, PublicKey, nut00 as cdk00, nut02 as cdk02, nut07 as cdk07, nut12 as cdk12,
+    CurrencyUnit, nut00 as cdk00, nut01 as cdk01, nut02 as cdk02, nut07 as cdk07, nut12 as cdk12,
     secret::Secret,
 };
 use rexie::{Rexie, TransactionMode};
@@ -20,11 +20,11 @@ use crate::{
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ProofEntry {
-    y: PublicKey,
+    y: cdk01::PublicKey,
     amount: cashu::Amount,
     keyset_id: cdk02::Id,
     secret: Secret,
-    c: PublicKey,
+    c: cdk01::PublicKey,
     witness: Option<cdk00::Witness>,
     dleq: Option<cdk12::ProofDleq>,
     state: cdk07::State,
@@ -115,7 +115,7 @@ impl ProofDB {
         Ok(db)
     }
 
-    async fn store_proof(&self, proof: ProofEntry) -> Result<PublicKey> {
+    async fn store_entry(&self, proof: ProofEntry) -> Result<cdk01::PublicKey> {
         let entry = to_value(&proof)?;
         let tx = self
             .db
@@ -126,7 +126,7 @@ impl ProofDB {
         Ok(proof.y)
     }
 
-    async fn load_proof(&self, y: PublicKey) -> Result<Option<ProofEntry>> {
+    async fn load_entry(&self, y: cdk01::PublicKey) -> Result<Option<ProofEntry>> {
         let tx = self
             .db
             .transaction(&[self.proof_store.clone()], TransactionMode::ReadOnly)?;
@@ -138,7 +138,7 @@ impl ProofDB {
     }
 
     #[allow(dead_code)]
-    async fn delete_proof(&self, y: PublicKey) -> Result<()> {
+    async fn delete_entry(&self, y: cdk01::PublicKey) -> Result<()> {
         let tx = self
             .db
             .transaction(&[self.proof_store.clone()], TransactionMode::ReadWrite)?;
@@ -149,9 +149,9 @@ impl ProofDB {
     }
 
     #[allow(dead_code)]
-    async fn update_proof_state(
+    async fn update_entry_state(
         &self,
-        y: PublicKey,
+        y: cdk01::PublicKey,
         old_state_set: &[cdk07::State],
         new_state: cdk07::State,
     ) -> Result<ProofEntry> {
@@ -175,7 +175,23 @@ impl ProofDB {
         Ok(proof)
     }
 
-    async fn list_proofs(&self, state: Option<cdk07::State>) -> Result<Vec<ProofEntry>> {
+    async fn list_entry_keys(&self) -> Result<Vec<cdk01::PublicKey>> {
+        let tx = self
+            .db
+            .transaction(&[self.proof_store.clone()], TransactionMode::ReadOnly)?;
+        let proof_repo = tx.store(&self.proof_store)?;
+        let ys = proof_repo
+            .get_all_keys(None, None)
+            .await?
+            .into_iter()
+            .map(from_value::<cdk01::PublicKey>)
+            .map(|r| r.map_err(Error::from))
+            .collect::<Result<Vec<_>>>()?;
+        tx.done().await?;
+        Ok(ys)
+    }
+
+    async fn list_entries(&self, state: Option<cdk07::State>) -> Result<Vec<ProofEntry>> {
         let tx = self
             .db
             .transaction(&[self.proof_store.clone()], TransactionMode::ReadOnly)?;
@@ -249,31 +265,43 @@ impl ProofDB {
 
 #[async_trait(?Send)]
 impl PocketRepository for ProofDB {
-    async fn store_new(&self, proof: cdk00::Proof) -> Result<PublicKey> {
+    async fn store_new(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey> {
         let entry = ProofEntry::from(proof);
         let y = entry.y;
-        self.store_proof(entry).await?;
+        self.store_entry(entry).await?;
         Ok(y)
     }
 
-    async fn store_pending(&self, proof: cdk00::Proof) -> Result<PublicKey> {
+    async fn store_pending(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey> {
         let mut entry = ProofEntry::from(proof);
         let y = entry.y;
         entry.state = cdk07::State::PendingSpent;
-        self.store_proof(entry).await?;
+        self.store_entry(entry).await?;
         Ok(y)
     }
 
-    async fn load_proof(&self, y: PublicKey) -> Result<Option<(cdk00::Proof, cdk07::State)>> {
-        let proof_state = self.load_proof(y).await?.map(|entry| {
+    async fn load_proof(
+        &self,
+        y: cdk01::PublicKey,
+    ) -> Result<Option<(cdk00::Proof, cdk07::State)>> {
+        let proof_state = self.load_entry(y).await?.map(|entry| {
             let state = entry.state;
             (cdk00::Proof::from(entry), state)
         });
         Ok(proof_state)
     }
 
-    async fn list_unspent(&self) -> Result<HashMap<PublicKey, cdk00::Proof>> {
-        self.list_proofs(Some(cdk07::State::Unspent))
+    async fn delete_proof(&self, y: cdk01::PublicKey) -> Result<()> {
+        self.delete_entry(y).await
+    }
+
+    async fn list_all(&self) -> Result<Vec<cdk01::PublicKey>> {
+        let ys = self.list_entry_keys().await?;
+        Ok(ys)
+    }
+
+    async fn list_unspent(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
+        self.list_entries(Some(cdk07::State::Unspent))
             .await
             .map(|proofs| {
                 proofs
@@ -282,17 +310,17 @@ impl PocketRepository for ProofDB {
                     .collect()
             })
     }
-    async fn list_pending(&self) -> Result<HashMap<PublicKey, cdk00::Proof>> {
+    async fn list_pending(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         let pendings = self
-            .list_proofs(Some(cdk07::State::Pending))
+            .list_entries(Some(cdk07::State::Pending))
             .await
             .map(|proofs| {
                 proofs
                     .into_iter()
                     .map(|entry| (entry.y, cdk00::Proof::from(entry)))
             })?;
-        let mut pendingspents: HashMap<PublicKey, cdk00::Proof> = self
-            .list_proofs(Some(cdk07::State::PendingSpent))
+        let mut pendingspents: HashMap<cdk01::PublicKey, cdk00::Proof> = self
+            .list_entries(Some(cdk07::State::PendingSpent))
             .await
             .map(|proofs| {
                 proofs
@@ -304,8 +332,8 @@ impl PocketRepository for ProofDB {
         Ok(pendingspents)
     }
 
-    async fn list_reserved(&self) -> Result<HashMap<PublicKey, cdk00::Proof>> {
-        self.list_proofs(Some(cdk07::State::Reserved))
+    async fn list_reserved(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
+        self.list_entries(Some(cdk07::State::Reserved))
             .await
             .map(|proofs| {
                 proofs
@@ -315,9 +343,9 @@ impl PocketRepository for ProofDB {
             })
     }
 
-    async fn mark_as_pending(&self, y: PublicKey) -> Result<cdk00::Proof> {
+    async fn mark_as_pending(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof> {
         let entry = self
-            .update_proof_state(y, &[cdk07::State::Unspent], cdk07::State::Pending)
+            .update_entry_state(y, &[cdk07::State::Unspent], cdk07::State::Pending)
             .await?;
         Ok(cdk00::Proof::from(entry))
     }

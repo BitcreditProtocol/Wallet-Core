@@ -39,13 +39,32 @@ async fn proof_list_unspent() {
     let proofdb = create_proof_db("proof_list_unspent").await;
 
     let (_, keyset) = keys_test::generate_keyset();
-    let proof = signatures_test::generate_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
-    proofdb.store_new(proof.clone()).await.unwrap();
+    let new = signatures_test::generate_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
+    proofdb.store_new(new.clone()).await.unwrap();
+
+    let pending = signatures_test::generate_proofs(&keyset, &[Amount::from(16u64)])[0].clone();
+    proofdb.store_pending(pending).await.unwrap();
 
     let proofs_map = proofdb.list_unspent().await.unwrap();
     assert_eq!(proofs_map.len(), 1);
     let test_proof = proofs_map.values().collect::<Vec<_>>()[0];
-    assert_eq!(proof.c, test_proof.c);
+    assert_eq!(new.c, test_proof.c);
+}
+
+#[wasm_bindgen_test]
+async fn proof_list_all() {
+    let proofdb = create_proof_db("proof_list_all").await;
+
+    let (_, keyset) = keys_test::generate_keyset();
+    let new = signatures_test::generate_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
+    let new_y = proofdb.store_new(new.clone()).await.unwrap();
+    let pending = signatures_test::generate_proofs(&keyset, &[Amount::from(16u64)])[0].clone();
+    let pending_y = proofdb.store_pending(pending).await.unwrap();
+
+    let ys = proofdb.list_all().await.unwrap();
+    assert_eq!(ys.len(), 2);
+    assert!(ys.contains(&new_y));
+    assert!(ys.contains(&pending_y));
 }
 
 #[wasm_bindgen_test]

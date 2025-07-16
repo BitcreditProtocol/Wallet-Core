@@ -3,7 +3,7 @@ use std::sync::Mutex;
 // ----- extra library imports
 use async_trait::async_trait;
 use bcr_wallet_lib::wallet::Token;
-use cashu::{nut00 as cdk00, Amount, CurrencyUnit, KeySetInfo, MintUrl};
+use cashu::{Amount, CurrencyUnit, KeySetInfo, MintUrl, nut00 as cdk00, nut01 as cdk01};
 use cdk::wallet::MintConnector;
 use uuid::Uuid;
 // ----- local imports
@@ -38,7 +38,7 @@ pub trait Pocket {
     ) -> Result<Amount>;
 
     async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo])
-        -> Result<PocketSendSummary>;
+    -> Result<PocketSendSummary>;
 
     async fn send(
         &self,
@@ -48,6 +48,9 @@ pub trait Pocket {
         mint_url: MintUrl,
         memo: Option<String>,
     ) -> Result<Token>;
+
+    async fn clean_local_proofs(&self, client: &dyn MintConnector)
+    -> Result<Vec<cdk01::PublicKey>>;
 }
 
 #[async_trait(?Send)]
@@ -236,5 +239,12 @@ where
             credit: credit_reclaimed,
             debit: debit_reclaimed + debit_redeemed,
         })
+    }
+
+    pub async fn clean_local_db(&self) -> Result<u32> {
+        let credit_ys = self.credit.clean_local_proofs(&self.client).await?;
+        let debit_ys = self.debit.clean_local_proofs(&self.client).await?;
+        let total = credit_ys.len() + debit_ys.len();
+        Ok(total as u32)
     }
 }
