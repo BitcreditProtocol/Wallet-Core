@@ -144,17 +144,19 @@ where
         amount: Amount,
         unit: Option<CurrencyUnit>,
     ) -> Result<SendSummary> {
-        let infos = self.client.get_mint_keysets().await?.keysets;
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
         match unit {
             Some(unit) if unit == self.credit.unit() => {
                 let (refer, summary) =
-                    Self::prepare_send_with_pocket(amount, &infos, self.credit.as_ref()).await?;
+                    Self::prepare_send_with_pocket(amount, &keysets_info, self.credit.as_ref())
+                        .await?;
                 *self.current_send.lock().unwrap() = Some(refer);
                 Ok(summary)
             }
             Some(unit) if unit == self.debit.unit() => {
                 let (refer, summary) =
-                    Self::prepare_send_with_pocket(amount, &infos, self.debit.as_ref()).await?;
+                    Self::prepare_send_with_pocket(amount, &keysets_info, self.debit.as_ref())
+                        .await?;
                 *self.current_send.lock().unwrap() = Some(refer);
                 Ok(summary)
             }
@@ -164,7 +166,7 @@ where
                 let credit_balance = self.credit.balance().await?;
                 if credit_balance >= amount {
                     let (refer, summary) =
-                        Self::prepare_send_with_pocket(amount, &infos, self.credit.as_ref())
+                        Self::prepare_send_with_pocket(amount, &keysets_info, self.credit.as_ref())
                             .await?;
                     *self.current_send.lock().unwrap() = Some(refer);
                     return Ok(summary);
@@ -173,7 +175,8 @@ where
                 let debit_balance = self.debit.balance().await?;
                 if debit_balance >= amount {
                     let (refer, summary) =
-                        Self::prepare_send_with_pocket(amount, &infos, self.debit.as_ref()).await?;
+                        Self::prepare_send_with_pocket(amount, &keysets_info, self.debit.as_ref())
+                            .await?;
                     *self.current_send.lock().unwrap() = Some(refer);
                     return Ok(summary);
                 }

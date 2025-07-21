@@ -4,7 +4,7 @@ use std::{cell::RefCell, collections::HashSet, rc::Rc, str::FromStr, sync::Mutex
 use anyhow::Error as AnyError;
 use bcr_wallet_lib::wallet::Token;
 use bitcoin::{
-    hashes::{Hash, sha1},
+    hashes::{Hash, HashEngine, sha256},
     hex::DisplayHex,
 };
 use cdk::wallet::MintConnector;
@@ -67,15 +67,18 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
     let mint_url = cashu::MintUrl::from_str(&mint_url)?;
     let client = ProductionConnector::new(mint_url.clone());
 
-    // building a unique identifier of the mint to name the local DB
+    // building a unique identifier for the local DB
+    let mut hasher = sha256::HashEngine::default();
+    hasher.input(mnemonic.to_entropy().as_slice());
+
     let info = client.get_mint_info().await?;
-    let mint_id = if let Some(pubkey) = info.pubkey {
-        sha1::Hash::hash(&pubkey.to_bytes())
+    if let Some(pubkey) = info.pubkey {
+        hasher.input(&pubkey.to_bytes());
     } else if let Some(name) = info.name {
-        sha1::Hash::hash(name.as_bytes())
+        hasher.input(name.as_bytes());
     } else {
-        sha1::Hash::hash(mint_url.to_string().as_bytes())
-    };
+        hasher.input(mint_url.to_string().as_bytes());
+    }
 
     let keyset_infos = client.get_mint_keysets().await?.keysets;
     let currencies = keyset_infos
@@ -89,7 +92,8 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
     }
 
     // building database and object_stores
-    let rexie_db_name = format!("bitcredit_wallet_{}", mint_id.as_byte_array().as_hex());
+    let db_id = sha256::Hash::from_engine(hasher);
+    let rexie_db_name = format!("bitcredit_wallet_{}", db_id.as_byte_array().as_hex(),);
     let mut rexie_builder = rexie::Rexie::builder(&rexie_db_name);
     let credit_unit = currencies
         .iter()
