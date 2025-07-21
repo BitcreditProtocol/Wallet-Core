@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use bcr_wallet_lib::wallet::Token;
 use bitcoin::bip32 as btc32;
 use cashu::{
-    amount::SplitTarget, nut00 as cdk00, nut01 as cdk01, nut03 as cdk03, nut07 as cdk07, Amount,
-    CurrencyUnit, KeySet, KeySetInfo, MintUrl,
+    Amount, CurrencyUnit, KeySet, KeySetInfo, MintUrl, amount::SplitTarget, nut00 as cdk00,
+    nut01 as cdk01, nut03 as cdk03, nut07 as cdk07,
 };
 use cdk::wallet::MintConnector;
 use uuid::Uuid;
@@ -37,7 +37,7 @@ pub trait PocketRepository {
     async fn store_new(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
     async fn store_pendingspent(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
     async fn load_proof(&self, y: cdk01::PublicKey)
-        -> Result<Option<(cdk00::Proof, cdk07::State)>>;
+    -> Result<Option<(cdk00::Proof, cdk07::State)>>;
     async fn delete_proof(&self, y: cdk01::PublicKey) -> Result<()>;
     async fn list_unspent(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn list_pending(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
@@ -73,15 +73,12 @@ impl<Repo> CrPocket<Repo>
 where
     Repo: PocketRepository,
 {
-    async fn digest_proofs(
+    fn validate_keysets<'a>(
         &self,
-        client: &dyn MintConnector,
-        keysets_info: &[KeySetInfo],
-        inputs: Vec<cdk00::Proof>,
-    ) -> Result<Amount> {
-        let infos: HashMap<cashu::Id, KeySetInfo> =
-            collect_keyset_infos_from_proofs(inputs.iter(), keysets_info)?;
-        //---- validating keysets
+        keysets_info: &'a [KeySetInfo],
+        inputs: &[cdk00::Proof],
+    ) -> Result<HashMap<cashu::Id, &'a KeySetInfo>> {
+        let infos = collect_keyset_infos_from_proofs(inputs.iter(), keysets_info)?;
         for info in infos.values() {
             if info.unit != self.unit {
                 return Err(Error::CurrencyUnitMismatch(
@@ -98,30 +95,41 @@ where
                 )));
             }
         }
-        //storing proofs in pending state
-        //in case anything goes wrong we can restore them using reclaim_proofs
-        let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
-        for proof in inputs.into_iter() {
-            let y = self.db.store_pendingspent(proof.clone()).await?;
-            proofs.insert(y, proof);
+        Ok(infos)
+    }
+
+    async fn digest_proofs(
+        &self,
+        client: &dyn MintConnector,
+        infos: HashMap<cashu::Id, &KeySetInfo>,
+        inputs: HashMap<cdk01::PublicKey, cdk00::Proof>,
+    ) -> Result<Amount> {
+        if inputs.is_empty() {
+            tracing::warn!("CrPocket::digest_proofs: empty inputs");
+            return Ok(Amount::ZERO);
         }
-        let ys = group_ys_by_keyset_id(proofs.iter());
-        let mut keysets: HashMap<cashu::Id, KeySet> = HashMap::new();
-        let mut premints: HashMap<cashu::Id, cdk00::PreMintSecrets> = HashMap::new();
+        let inputs_len = inputs.len();
+        // reshaping keysets_info into something more user-friendly
+        // reshaping inputs into keyset_id -> proofs
+        let mut old_proofs: HashMap<cashu::Id, Vec<cdk00::Proof>> = HashMap::new();
+        for (_, proof) in inputs.into_iter() {
+            old_proofs
+                .entry(proof.keyset_id)
+                .and_modify(|v| v.push(proof.clone()))
+                .or_insert_with(|| vec![proof]);
+        }
         // collecting the keysets first as we dont't want any failure once the swap request
         // has been made
+        let mut keysets: HashMap<cashu::Id, KeySet> = HashMap::new();
         for kid in infos.keys() {
             let keyset = client.get_mint_keyset(*kid).await?;
             keysets.insert(*kid, keyset);
         }
-        for kid in infos.keys() {
+        // preparing the premints
+        let mut premints: HashMap<cashu::Id, cdk00::PreMintSecrets> = HashMap::new();
+        for (kid, proofs) in old_proofs.iter() {
+            let total = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
             let counter = self.db.counter(*kid).await?;
-            let total = ys
-                .get(kid)
-                .expect("keyset id should be here")
-                .iter()
-                .map(|y| proofs.get(y).expect("proof should be here").amount)
-                .fold(Amount::ZERO, |acc, a| acc + a);
             let premint = cdk00::PreMintSecrets::from_xpriv(
                 *kid,
                 counter,
@@ -133,33 +141,31 @@ where
             premints.insert(*kid, premint);
             self.db.increment_counter(*kid, counter, increment).await?;
         }
-
+        // preparing the swap request
         let mut proofs_in_request: Vec<cdk00::Proof> = Vec::new();
         let mut blinds_in_request: Vec<cdk00::BlindedMessage> = Vec::new();
-        for (kid, ys_for_kid) in ys.iter() {
-            let proofs_for_kid = ys_for_kid
-                .iter()
-                .map(|y| proofs.get(y).expect("proofs should be here"))
-                .cloned();
-            proofs_in_request.extend(proofs_for_kid);
+        for (kid, proofs) in old_proofs.into_iter() {
+            proofs_in_request.extend(proofs);
             let blinds_for_kid = premints
-                .get(kid)
-                .expect("premint should be here")
+                .get(&kid)
+                .expect("premints built with same keys")
                 .blinded_messages();
             blinds_in_request.extend(blinds_for_kid);
         }
-
         let request = cdk03::SwapRequest::new(proofs_in_request, blinds_in_request);
+        // sending the swap request
         let response = client.post_swap(request).await?;
-        let signatures: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = response
-            .signatures
-            .into_iter()
-            .fold(HashMap::new(), |mut acc, sig| {
-                acc.entry(sig.keyset_id)
-                    .and_modify(|v| v.push(sig.clone()))
-                    .or_insert_with(|| vec![sig]);
-                acc
-            });
+        let signatures_len = response.signatures.len();
+        tracing::debug!(
+            "CrPocket::digest_proofs: proofs_digested: {inputs_len}, new signatures: {signatures_len}"
+        );
+        let mut signatures: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
+        for signature in response.signatures {
+            signatures
+                .entry(signature.keyset_id)
+                .and_modify(|v| v.push(signature.clone()))
+                .or_insert_with(|| vec![signature]);
+        }
         let mut total_cashed_in = Amount::ZERO;
         for (kid, signatures) in signatures.iter() {
             let premint = premints.get(kid).expect("premint should be here");
@@ -204,9 +210,16 @@ where
         &self,
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
-        proofs: Vec<cdk00::Proof>,
+        inputs: Vec<cdk00::Proof>,
     ) -> Result<Amount> {
-        self.digest_proofs(client, keysets_info, proofs).await
+        let infos = self.validate_keysets(keysets_info, &inputs)?;
+        // storing proofs in pending state
+        let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
+        for input in inputs.into_iter() {
+            let y = self.db.store_pendingspent(input.clone()).await?;
+            proofs.insert(y, input);
+        }
+        self.digest_proofs(client, infos, proofs).await
     }
 
     async fn receive_token(
@@ -215,12 +228,12 @@ where
         keysets_info: &[KeySetInfo],
         token: Token,
     ) -> Result<Amount> {
-        let proofs = token.proofs(keysets_info)?;
-        if proofs.is_empty() {
+        let inputs = token.proofs(keysets_info)?;
+        if inputs.is_empty() {
             tracing::warn!("token with no proofs");
             return Ok(Amount::ZERO);
         }
-        self.digest_proofs(client, keysets_info, proofs).await
+        self.receive_proofs(client, keysets_info, inputs).await
     }
 
     async fn prepare_send(
@@ -310,7 +323,7 @@ where
         if let Some(swap_y) = send_ref.swap_proof {
             let swap_proof = self.db.mark_as_pendingspent(swap_y).await?;
             let swap_proof_keyset = client.get_mint_keyset(swap_proof.keyset_id).await?;
-            let target_swapped_ys = swap_proof_to_target(
+            let target_swapped = swap_proof_to_target(
                 swap_proof,
                 &swap_proof_keyset,
                 send_ref.target - current_amount,
@@ -319,8 +332,8 @@ where
                 client,
             )
             .await?;
-            for y in target_swapped_ys {
-                let proof = self.db.mark_as_pendingspent(y).await?;
+            for y in target_swapped.keys() {
+                let proof = self.db.mark_as_pendingspent(*y).await?;
                 current_amount += proof.amount;
                 proofs.push(proof);
             }
@@ -351,35 +364,39 @@ where
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
     ) -> Result<(Amount, Vec<cdk00::Proof>)> {
-        let pendings = self.db.list_pending().await?;
+        let mut pendings = self.db.list_pending().await?;
+        let infos = collect_keyset_infos_from_proofs(pendings.values(), keysets_info)?;
         let ys = pendings.keys().cloned().collect::<Vec<_>>();
         let request = cdk07::CheckStateRequest { ys };
         let response = client.post_check_state(request).await?;
-        let unspent_proofs: Vec<cdk00::Proof> = response
+        let unspent_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = response
             .states
             .iter()
             .filter_map(|state| {
                 if state.state == cdk07::State::Unspent {
-                    pendings.get(&state.y).cloned()
+                    let proof = pendings
+                        .remove(&state.y)
+                        .expect("response built from pendings");
+                    Some((state.y, proof))
                 } else {
                     None
                 }
             })
             .collect();
 
-        let infos = collect_keyset_infos_from_proofs(unspent_proofs.iter(), keysets_info)?;
-
-        let (reclaimable, redeemable): (Vec<_>, Vec<_>) =
-            unspent_proofs.into_iter().partition(|p| {
+        let (reclaimable, redeemable): (HashMap<_, _>, HashMap<_, _>) =
+            unspent_proofs.into_iter().partition(|(_, p)| {
                 let info = infos
                     .get(&p.keyset_id)
                     .expect("infos map is built from unspent_proofs keyset_id");
                 info.unit == self.unit && info.active
             });
-        let reclaimed = self
-            .digest_proofs(client, keysets_info, reclaimable)
-            .await?;
-        Ok((reclaimed, redeemable))
+        let reclaimed = self.digest_proofs(client, infos, reclaimable).await?;
+        tracing::debug!(
+            "CrPocket::reclaim_proofs: reclaimed: {reclaimed}, redeemable: {}",
+            redeemable.len()
+        );
+        Ok((reclaimed, redeemable.into_values().collect()))
     }
 }
 
@@ -427,6 +444,10 @@ where
         keysets_info: &[KeySetInfo],
         proofs: Vec<cdk00::Proof>,
     ) -> Result<Amount> {
+        if proofs.is_empty() {
+            tracing::warn!("DbPocket::digest_proofs: empty inputs");
+            return Ok(Amount::ZERO);
+        }
         let (active_info, active_keyset) = self.find_active_keyset(keysets_info, client).await?;
         let counter = self.db.counter(active_info.id).await?;
         let total_amount = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
@@ -577,7 +598,7 @@ where
         }
         if let Some(swap_y) = send_ref.swap_proof {
             let proof = self.db.mark_as_pendingspent(swap_y).await?;
-            let target_swapped_ys = swap_proof_to_target(
+            let target_swapped = swap_proof_to_target(
                 proof,
                 &active_keyset,
                 send_ref.target - current_amount,
@@ -586,8 +607,8 @@ where
                 client,
             )
             .await?;
-            for y in target_swapped_ys {
-                let proof = self.db.mark_as_pendingspent(y).await?;
+            for y in target_swapped.keys() {
+                let proof = self.db.mark_as_pendingspent(*y).await?;
                 current_amount += proof.amount;
                 proofs.push(proof);
             }
@@ -619,8 +640,14 @@ where
         client: &dyn MintConnector,
     ) -> Result<Amount> {
         let pendings = self.db.list_pending().await?;
-        self.digest_proofs(client, keysets_info, pendings.values().cloned().collect())
-            .await
+        let pendings_len = pendings.len();
+        let reclaimed = self
+            .digest_proofs(client, keysets_info, pendings.into_values().collect())
+            .await?;
+        tracing::debug!(
+            "DbPocket::reclaim_proofs: pendings: {pendings_len} reclaimed: {reclaimed}"
+        );
+        Ok(reclaimed)
     }
 }
 
@@ -781,7 +808,7 @@ async fn swap_proof_to_target(
     xpriv: btc32::Xpriv,
     db: &dyn PocketRepository,
     client: &dyn MintConnector,
-) -> Result<Vec<cdk01::PublicKey>> {
+) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
     let target = SplitTarget::Value(target_amount);
     let counter = db.counter(target_keyset.id).await?;
     let premint =
@@ -791,7 +818,7 @@ async fn swap_proof_to_target(
     db.increment_counter(target_keyset.id, counter, premint.len() as u32)
         .await?;
     let signatures = client.post_swap(request).await?.signatures;
-    let mut on_target: Vec<cdk01::PublicKey> = Vec::new();
+    let mut on_target: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
     let mut proofs = unblind_proofs(target_keyset, &signatures, &premint);
     proofs.sort_by_key(|proof| std::cmp::Reverse(proof.amount));
     let mut current_amount = Amount::ZERO;
@@ -801,7 +828,7 @@ async fn swap_proof_to_target(
             Ok(y) => {
                 if current_amount + proof.amount <= target_amount {
                     current_amount += proof.amount;
-                    on_target.push(y);
+                    on_target.insert(y, proof);
                 }
             }
             Err(e) => {
@@ -817,16 +844,16 @@ async fn swap_proof_to_target(
 }
 
 ///////////////////////////////////////////// collect_keyset_infos_from_proofs
-fn collect_keyset_infos_from_proofs<'a>(
-    proofs: impl Iterator<Item = &'a cdk00::Proof>,
-    keysets_info: &[KeySetInfo],
-) -> Result<HashMap<cashu::Id, KeySetInfo>> {
+fn collect_keyset_infos_from_proofs<'it, 'inf>(
+    proofs: impl Iterator<Item = &'it cdk00::Proof>,
+    keysets_info: &'inf [KeySetInfo],
+) -> Result<HashMap<cashu::Id, &'inf KeySetInfo>> {
     let kids = proofs.map(|p| p.keyset_id).collect::<HashSet<_>>();
-    let mut infos: HashMap<cashu::Id, KeySetInfo> = HashMap::new();
+    let mut infos: HashMap<cashu::Id, &'inf KeySetInfo> = HashMap::new();
     for kid in kids {
         let info = keysets_info.iter().find(|info| info.id == kid);
         if let Some(info) = info {
-            infos.insert(kid, info.clone());
+            infos.insert(kid, info);
         } else {
             return Err(Error::UnknownKeysetId(kid));
         }
@@ -938,7 +965,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credit_receive() {
+    async fn credit_receive_token() {
         let mint_url = MintUrl::from_str("https://test.com/mint").unwrap();
         let (info, keyset) = keys_test::generate_keyset();
         let kid = info.id;
@@ -997,7 +1024,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credit_receive_inactive_keyset() {
+    async fn credit_receive_token_inactive_keyset() {
         let mint_url = MintUrl::from_str("https://test.com/mint").unwrap();
         let (mut info, keyset) = keys_test::generate_keyset();
         info.active = false;
@@ -1016,7 +1043,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credit_receive_currency_mismatch() {
+    async fn credit_receive_token_currency_mismatch() {
         let mint_url = MintUrl::from_str("https://test.com/mint").unwrap();
         let (mut info, keyset) = keys_test::generate_keyset();
         info.unit = CurrencyUnit::Usd;
@@ -1035,7 +1062,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn debit_receive() {
+    async fn debit_receive_token() {
         let mint_url = MintUrl::from_str("https://test.com/mint").unwrap();
         let (info, keyset) = keys_test::generate_keyset();
         let kid = info.id;
@@ -1163,5 +1190,68 @@ mod tests {
 
         let response = crpocket.prepare_send(amount, &k_infos).await;
         assert!(matches!(response, Err(Error::InsufficientFunds)));
+    }
+
+    #[tokio::test]
+    async fn swap_proof_to_target() {
+        let (_, keyset) = keys_test::generate_keyset();
+        // 16 --> 13 ==> ( 8 + 4 + 1 ) + 2 + 1
+        let amount = Amount::from(16u64);
+        let target = Amount::from(13u64);
+        let proof = signatures_test::generate_proofs(&keyset, &[amount])[0].clone();
+
+        let seed = [0u8; 32];
+        let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
+        let mut mockdb = MockPocketRepository::new();
+        let mut mockclient = MockMintConnector::new();
+
+        mockdb
+            .expect_counter()
+            .times(1)
+            .with(eq(keyset.id))
+            .returning(|_| Ok(0));
+        mockdb
+            .expect_increment_counter()
+            .times(1)
+            .with(eq(keyset.id), eq(0), eq(5))
+            .returning(|_, _, _| Ok(()));
+        let cloned_keyset = keyset.clone();
+        mockclient
+            .expect_post_swap()
+            .times(1)
+            .returning(move |request| {
+                let amounts = request
+                    .outputs()
+                    .iter()
+                    .map(|b| b.amount)
+                    .collect::<Vec<_>>();
+                let mock_signatures =
+                    signatures_test::generate_signatures(&cloned_keyset, &amounts);
+                Ok(cdk03::SwapResponse {
+                    signatures: mock_signatures,
+                })
+            });
+        mockdb.expect_store_new().times(5).returning(|p| {
+            let y = cashu::dhke::hash_to_curve(p.secret.as_bytes())
+                .expect("Hash to curve should not fail");
+            Ok(y)
+        });
+
+        let proofs = super::swap_proof_to_target(
+            proof,
+            &KeySet::from(keyset),
+            target,
+            xpriv,
+            &mockdb,
+            &mockclient,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(proofs.len(), 3);
+        let total = proofs
+            .iter()
+            .fold(Amount::ZERO, |acc, (_, p)| acc + p.amount);
+        assert_eq!(total, target);
     }
 }
