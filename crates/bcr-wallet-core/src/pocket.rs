@@ -190,10 +190,6 @@ impl<Repo> Pocket for CrPocket<Repo>
 where
     Repo: PocketRepository,
 {
-    fn is_mine(&self, token: &Token) -> bool {
-        matches!(token, Token::BitcrV4(..)) && token.unit().as_ref() == Some(&self.unit)
-    }
-
     fn unit(&self) -> CurrencyUnit {
         self.unit.clone()
     }
@@ -220,20 +216,6 @@ where
             proofs.insert(y, input);
         }
         self.digest_proofs(client, infos, proofs).await
-    }
-
-    async fn receive_token(
-        &self,
-        client: &dyn MintConnector,
-        keysets_info: &[KeySetInfo],
-        token: Token,
-    ) -> Result<Amount> {
-        let inputs = token.proofs(keysets_info)?;
-        if inputs.is_empty() {
-            tracing::warn!("token with no proofs");
-            return Ok(Amount::ZERO);
-        }
-        self.receive_proofs(client, keysets_info, inputs).await
     }
 
     async fn prepare_send(
@@ -487,10 +469,6 @@ impl<Repo> Pocket for DbPocket<Repo>
 where
     Repo: PocketRepository,
 {
-    fn is_mine(&self, token: &Token) -> bool {
-        matches!(token, Token::CashuV4(..)) && token.unit().as_ref() == Some(&self.unit)
-    }
-
     fn unit(&self) -> CurrencyUnit {
         self.unit.clone()
     }
@@ -509,20 +487,6 @@ where
         keysets_info: &[KeySetInfo],
         proofs: Vec<cdk00::Proof>,
     ) -> Result<Amount> {
-        self.digest_proofs(client, keysets_info, proofs).await
-    }
-
-    async fn receive_token(
-        &self,
-        client: &dyn MintConnector,
-        keysets_info: &[KeySetInfo],
-        token: Token,
-    ) -> Result<Amount> {
-        let proofs = token.proofs(keysets_info)?;
-        if proofs.is_empty() {
-            tracing::warn!("token with no proofs");
-            return Ok(Amount::ZERO);
-        }
         self.digest_proofs(client, keysets_info, proofs).await
     }
 
@@ -656,9 +620,6 @@ pub struct DummyPocket {}
 
 #[async_trait(?Send)]
 impl Pocket for DummyPocket {
-    fn is_mine(&self, _token: &Token) -> bool {
-        false
-    }
     fn unit(&self) -> CurrencyUnit {
         CurrencyUnit::Custom(String::from("dummy"))
     }
@@ -671,14 +632,6 @@ impl Pocket for DummyPocket {
         _keysets_info: &[KeySetInfo],
         _proofs: Vec<cdk00::Proof>,
     ) -> Result<Amount> {
-        Ok(Amount::ZERO)
-    }
-    async fn receive_token(
-        &self,
-        _client: &dyn MintConnector,
-        _keysets_info: &[KeySetInfo],
-        _token: Token,
-    ) -> Result<cashu::Amount> {
         Ok(Amount::ZERO)
     }
     async fn prepare_send(&self, _: Amount, _: &[KeySetInfo]) -> Result<PocketSendSummary> {
@@ -884,7 +837,6 @@ mod tests {
     };
     use cashu::nut02 as cdk02;
     use mockall::predicate::*;
-    use std::str::FromStr;
 
     #[test]
     fn unblind_proofs() {
@@ -965,8 +917,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credit_receive_token() {
-        let mint_url = MintUrl::from_str("https://test.com/mint").unwrap();
+    async fn credit_receive_proofs() {
         let (info, keyset) = keys_test::generate_keyset();
         let kid = info.id;
         let k_infos = vec![KeySetInfo::from(info)];
@@ -1015,17 +966,15 @@ mod tests {
 
         let crpocket = crpocket(db);
 
-        let token = Token::new_bitcr(mint_url, proofs, None, crpocket.unit());
         let cashed = crpocket
-            .receive_token(&connector, &k_infos, token)
+            .receive_proofs(&connector, &k_infos, proofs)
             .await
             .unwrap();
         assert_eq!(cashed, Amount::from(24u64));
     }
 
     #[tokio::test]
-    async fn credit_receive_token_inactive_keyset() {
-        let mint_url = MintUrl::from_str("https://test.com/mint").unwrap();
+    async fn credit_receive_proofs_inactive_keyset() {
         let (mut info, keyset) = keys_test::generate_keyset();
         info.active = false;
         let k_infos = vec![KeySetInfo::from(info)];
@@ -1037,14 +986,12 @@ mod tests {
 
         let crpocket = crpocket(db);
 
-        let token = Token::new_bitcr(mint_url, proofs, None, crpocket.unit());
-        let result = crpocket.receive_token(&connector, &k_infos, token).await;
+        let result = crpocket.receive_proofs(&connector, &k_infos, proofs).await;
         assert!(matches!(result, Err(Error::InactiveKeyset(_))));
     }
 
     #[tokio::test]
-    async fn credit_receive_token_currency_mismatch() {
-        let mint_url = MintUrl::from_str("https://test.com/mint").unwrap();
+    async fn credit_receive_proofs_currency_mismatch() {
         let (mut info, keyset) = keys_test::generate_keyset();
         info.unit = CurrencyUnit::Usd;
         let k_infos = vec![KeySetInfo::from(info)];
@@ -1056,14 +1003,12 @@ mod tests {
 
         let crpocket = crpocket(db);
 
-        let token = Token::new_bitcr(mint_url, proofs, None, crpocket.unit());
-        let result = crpocket.receive_token(&connector, &k_infos, token).await;
+        let result = crpocket.receive_proofs(&connector, &k_infos, proofs).await;
         assert!(matches!(result, Err(Error::CurrencyUnitMismatch(_, _))));
     }
 
     #[tokio::test]
-    async fn debit_receive_token() {
-        let mint_url = MintUrl::from_str("https://test.com/mint").unwrap();
+    async fn debit_receive_proofs() {
         let (info, keyset) = keys_test::generate_keyset();
         let kid = info.id;
         let k_infos = vec![KeySetInfo::from(info)];
@@ -1107,9 +1052,8 @@ mod tests {
 
         let dbpocket = dbpocket(db);
 
-        let token = Token::new_cashu(mint_url, proofs, None, dbpocket.unit());
         let cashed = dbpocket
-            .receive_token(&connector, &k_infos, token)
+            .receive_proofs(&connector, &k_infos, proofs)
             .await
             .unwrap();
         assert_eq!(cashed, Amount::from(24u64));

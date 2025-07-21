@@ -18,7 +18,6 @@ use crate::{
 /// same currency emitted by the same mint
 #[async_trait(?Send)]
 pub trait Pocket {
-    fn is_mine(&self, token: &Token) -> bool;
     fn unit(&self) -> CurrencyUnit;
 
     async fn balance(&self) -> Result<Amount>;
@@ -28,13 +27,6 @@ pub trait Pocket {
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
         proofs: Vec<cdk00::Proof>,
-    ) -> Result<Amount>;
-
-    async fn receive_token(
-        &self,
-        client: &dyn MintConnector,
-        keysets_info: &[KeySetInfo],
-        token: Token,
     ) -> Result<Amount>;
 
     async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo])
@@ -102,19 +94,37 @@ where
     }
 
     pub async fn receive_token(&self, token: Token) -> Result<cashu::Amount> {
+        let teaser = token.to_string().chars().take(20).collect::<String>();
         let keysets_info = self.client.get_mint_keysets().await?.keysets;
-        if self.credit.is_mine(&token) {
-            tracing::debug!("import credit token");
-            self.credit
-                .receive_token(&self.client, &keysets_info, token)
-                .await
-        } else if self.debit.is_mine(&token) {
+        let proofs = token.proofs(&keysets_info)?;
+
+        if proofs.is_empty() {
+            return Err(Error::EmptyToken(teaser));
+        }
+
+        if matches!(token, Token::CashuV4(..)) {
             tracing::debug!("import debit token");
+            if token.unit().is_some() && token.unit() != Some(self.debit.unit()) {
+                return Err(Error::CurrencyUnitMismatch(
+                    token.unit().unwrap(),
+                    self.debit.unit(),
+                ));
+            }
             self.debit
-                .receive_token(&self.client, &keysets_info, token)
+                .receive_proofs(&self.client, &keysets_info, proofs)
+                .await
+        } else if matches!(token, Token::BitcrV4(..)) {
+            tracing::debug!("import credit token");
+            if token.unit().is_some() && token.unit() != Some(self.credit.unit()) {
+                return Err(Error::CurrencyUnitMismatch(
+                    token.unit().unwrap(),
+                    self.credit.unit(),
+                ));
+            }
+            self.credit
+                .receive_proofs(&self.client, &keysets_info, proofs)
                 .await
         } else {
-            let teaser = token.to_string().chars().take(20).collect::<String>();
             return Err(Error::InvalidToken(teaser));
         }
     }

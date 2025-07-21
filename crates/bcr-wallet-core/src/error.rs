@@ -40,6 +40,8 @@ pub enum Error {
     Any(AnyError),
     #[error("wallet at idx {0} not found")]
     WalletNotFound(usize),
+    #[error("empty token: {0}")]
+    EmptyToken(String),
     #[error("invalid token: {0}")]
     InvalidToken(String),
     #[error("no active keyset")]
