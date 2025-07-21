@@ -137,7 +137,6 @@ impl ProofDB {
         Ok(entry)
     }
 
-    #[allow(dead_code)]
     async fn delete_entry(&self, y: cdk01::PublicKey) -> Result<()> {
         let tx = self
             .db
@@ -148,7 +147,6 @@ impl ProofDB {
         Ok(())
     }
 
-    #[allow(dead_code)]
     async fn update_entry_state(
         &self,
         y: cdk01::PublicKey,
@@ -272,7 +270,7 @@ impl PocketRepository for ProofDB {
         Ok(y)
     }
 
-    async fn store_pending(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey> {
+    async fn store_pendingspent(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey> {
         let mut entry = ProofEntry::from(proof);
         let y = entry.y;
         entry.state = cdk07::State::PendingSpent;
@@ -343,9 +341,9 @@ impl PocketRepository for ProofDB {
             })
     }
 
-    async fn mark_as_pending(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof> {
+    async fn mark_as_pendingspent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof> {
         let entry = self
-            .update_entry_state(y, &[cdk07::State::Unspent], cdk07::State::Pending)
+            .update_entry_state(y, &[cdk07::State::Unspent], cdk07::State::PendingSpent)
             .await?;
         Ok(cdk00::Proof::from(entry))
     }
