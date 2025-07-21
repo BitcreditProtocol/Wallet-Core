@@ -74,10 +74,10 @@ async function run() {
     document.getElementById("output").innerHTML += "\ntoken:\n" + token;
   });
 
-  document.getElementById("recheckbtn").addEventListener("click", async () => {
+  document.getElementById("reclaimbtn").addEventListener("click", async () => {
     let ids = await wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
-    // await wasmModule.recheck(idx);
+    await wasmModule.wallet_reclaim_funds(idx);
 
     await update_balance();
   });
@@ -88,6 +88,13 @@ async function run() {
     // await wasmModule.recover(idx);
 
     await update_balance();
+  });
+
+  document.getElementById("cleanbtn").addEventListener("click", async () => {
+    let ids = await wasmModule.get_wallets_ids();
+    let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
+    let proofs_removed = await wasmModule.wallet_clean_local_db(idx);
+    console.log("proofs removed: " + proofs_removed);
   });
 
   document
