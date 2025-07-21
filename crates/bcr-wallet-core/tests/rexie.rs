@@ -43,7 +43,7 @@ async fn proof_list_unspent() {
     proofdb.store_new(new.clone()).await.unwrap();
 
     let pending = signatures_test::generate_proofs(&keyset, &[Amount::from(16u64)])[0].clone();
-    proofdb.store_pending(pending).await.unwrap();
+    proofdb.store_pendingspent(pending).await.unwrap();
 
     let proofs_map = proofdb.list_unspent().await.unwrap();
     assert_eq!(proofs_map.len(), 1);
@@ -59,7 +59,7 @@ async fn proof_list_all() {
     let new = signatures_test::generate_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
     let new_y = proofdb.store_new(new.clone()).await.unwrap();
     let pending = signatures_test::generate_proofs(&keyset, &[Amount::from(16u64)])[0].clone();
-    let pending_y = proofdb.store_pending(pending).await.unwrap();
+    let pending_y = proofdb.store_pendingspent(pending).await.unwrap();
 
     let ys = proofdb.list_all().await.unwrap();
     assert_eq!(ys.len(), 2);
@@ -77,7 +77,7 @@ async fn proof_mark_pending() {
         cashu::dhke::hash_to_curve(proof.secret.as_bytes()).expect("Hash to curve should not fail");
     proofdb.store_new(proof.clone()).await.unwrap();
 
-    let new_proof = proofdb.mark_as_pending(y).await.unwrap();
+    let new_proof = proofdb.mark_as_pendingspent(y).await.unwrap();
     assert_eq!(proof.c, new_proof.c);
 }
 
@@ -91,10 +91,10 @@ async fn proof_mark_pending_twice_is_error() {
         cashu::dhke::hash_to_curve(proof.secret.as_bytes()).expect("Hash to curve should not fail");
     proofdb.store_new(proof.clone()).await.unwrap();
 
-    let new_proof = proofdb.mark_as_pending(y).await.unwrap();
+    let new_proof = proofdb.mark_as_pendingspent(y).await.unwrap();
     assert_eq!(proof.c, new_proof.c);
 
-    let response = proofdb.mark_as_pending(y).await;
+    let response = proofdb.mark_as_pendingspent(y).await;
     assert!(matches!(response, Err(Error::InvalidProofState(_))));
 }
 

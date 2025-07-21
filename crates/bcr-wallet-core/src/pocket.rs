@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use bcr_wallet_lib::wallet::Token;
 use bitcoin::bip32 as btc32;
 use cashu::{
-    Amount, CurrencyUnit, KeySet, KeySetInfo, MintUrl, amount::SplitTarget, nut00 as cdk00,
-    nut01 as cdk01, nut03 as cdk03, nut07 as cdk07,
+    amount::SplitTarget, nut00 as cdk00, nut01 as cdk01, nut03 as cdk03, nut07 as cdk07, Amount,
+    CurrencyUnit, KeySet, KeySetInfo, MintUrl,
 };
 use cdk::wallet::MintConnector;
 use uuid::Uuid;
@@ -35,16 +35,16 @@ struct SendReference {
 #[async_trait(?Send)]
 pub trait PocketRepository {
     async fn store_new(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
-    async fn store_pending(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
+    async fn store_pendingspent(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
     async fn load_proof(&self, y: cdk01::PublicKey)
-    -> Result<Option<(cdk00::Proof, cdk07::State)>>;
+        -> Result<Option<(cdk00::Proof, cdk07::State)>>;
     async fn delete_proof(&self, y: cdk01::PublicKey) -> Result<()>;
     async fn list_unspent(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn list_pending(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn list_reserved(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn list_all(&self) -> Result<Vec<cdk01::PublicKey>>;
 
-    async fn mark_as_pending(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
+    async fn mark_as_pendingspent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
 
     async fn counter(&self, kid: cashu::Id) -> Result<u32>;
     async fn increment_counter(&self, kid: cashu::Id, old: u32, increment: u32) -> Result<()>;
@@ -102,7 +102,7 @@ where
         //in case anything goes wrong we can restore them using reclaim_proofs
         let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
         for proof in inputs.into_iter() {
-            let y = self.db.store_pending(proof.clone()).await?;
+            let y = self.db.store_pendingspent(proof.clone()).await?;
             proofs.insert(y, proof);
         }
         let ys = group_ys_by_keyset_id(proofs.iter());
@@ -302,13 +302,13 @@ where
         let mut proofs: Vec<cdk00::Proof> = Vec::new();
         let mut current_amount = Amount::ZERO;
         for y in send_ref.send_proofs {
-            let proof = self.db.mark_as_pending(y).await?;
+            let proof = self.db.mark_as_pendingspent(y).await?;
             current_amount += proof.amount;
             proofs.push(proof);
         }
 
         if let Some(swap_y) = send_ref.swap_proof {
-            let swap_proof = self.db.mark_as_pending(swap_y).await?;
+            let swap_proof = self.db.mark_as_pendingspent(swap_y).await?;
             let swap_proof_keyset = client.get_mint_keyset(swap_proof.keyset_id).await?;
             let target_swapped_ys = swap_proof_to_target(
                 swap_proof,
@@ -320,7 +320,7 @@ where
             )
             .await?;
             for y in target_swapped_ys {
-                let proof = self.db.mark_as_pending(y).await?;
+                let proof = self.db.mark_as_pendingspent(y).await?;
                 current_amount += proof.amount;
                 proofs.push(proof);
             }
@@ -571,12 +571,12 @@ where
         let mut proofs: Vec<cdk00::Proof> = Vec::new();
         let mut current_amount = Amount::ZERO;
         for y in send_ref.send_proofs {
-            let proof = self.db.mark_as_pending(y).await?;
+            let proof = self.db.mark_as_pendingspent(y).await?;
             current_amount += proof.amount;
             proofs.push(proof);
         }
         if let Some(swap_y) = send_ref.swap_proof {
-            let proof = self.db.mark_as_pending(swap_y).await?;
+            let proof = self.db.mark_as_pendingspent(swap_y).await?;
             let target_swapped_ys = swap_proof_to_target(
                 proof,
                 &active_keyset,
@@ -587,7 +587,7 @@ where
             )
             .await?;
             for y in target_swapped_ys {
-                let proof = self.db.mark_as_pending(y).await?;
+                let proof = self.db.mark_as_pendingspent(y).await?;
                 current_amount += proof.amount;
                 proofs.push(proof);
             }
@@ -954,7 +954,7 @@ mod tests {
             .times(1)
             .with(eq(kid))
             .returning(move |_| Ok(KeySet::from(cloned_keyset.clone())));
-        db.expect_store_pending().times(2).returning(|p| {
+        db.expect_store_pendingspent().times(2).returning(|p| {
             let y = cashu::dhke::hash_to_curve(p.secret.as_bytes())
                 .expect("hash_to_curve should not fail");
             Ok(y)
