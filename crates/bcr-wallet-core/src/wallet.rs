@@ -52,6 +52,12 @@ pub trait CreditPocket: Pocket {
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
     ) -> Result<(Amount, Vec<cdk00::Proof>)>;
+
+    async fn get_redeemable_proofs(
+        &self,
+        keysets_info: &[KeySetInfo],
+        client: &dyn MintConnector,
+    ) -> Result<Vec<cdk00::Proof>>;
 }
 
 #[async_trait(?Send)]
@@ -252,5 +258,22 @@ where
         let debit_ys = self.debit.clean_local_proofs(&self.client).await?;
         let total = credit_ys.len() + debit_ys.len();
         Ok(total as u32)
+    }
+
+    pub async fn redeem_credit(&self) -> Result<Amount> {
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
+        let credit_proofs: Vec<cdk00::Proof> = self
+            .credit
+            .get_redeemable_proofs(&keysets_info, &self.client)
+            .await?;
+        if credit_proofs.is_empty() {
+            Ok(Amount::ZERO)
+        } else {
+            let amount = self
+                .debit
+                .receive_proofs(&self.client, &keysets_info, credit_proofs)
+                .await?;
+            Ok(amount)
+        }
     }
 }

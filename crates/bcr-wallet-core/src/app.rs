@@ -279,6 +279,18 @@ pub async fn wallet_reclaim_funds(idx: usize) -> Result<WalletBalance> {
     Ok(balance)
 }
 
+pub async fn wallet_redeem_credit(idx: usize) -> Result<cashu::Amount> {
+    tracing::debug!("wallet_redeem({idx})");
+    let wallet: Rc<ProductionWallet> =
+        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
+            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
+            Ok(wallet.clone())
+        })?;
+
+    let amount_redeemed = wallet.redeem_credit().await?;
+    Ok(amount_redeemed)
+}
+
 pub async fn wallet_clean_local_db(idx: usize) -> Result<u32> {
     tracing::debug!("wallet_clean_local_db({idx})");
     let wallet: Rc<ProductionWallet> =

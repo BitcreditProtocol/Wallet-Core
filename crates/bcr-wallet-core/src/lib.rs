@@ -197,6 +197,19 @@ pub async fn wallet_send(idx: usize, request_id: String, memo: Option<String>) -
     }
 }
 
+// --------------------------------------------------------------- wallet_redeem
+#[wasm_bindgen]
+pub async fn wallet_redeem_credit(idx: usize) -> u64 {
+    let returned = app::wallet_redeem_credit(idx).await;
+    match returned {
+        Ok(amount_redeemed) => u64::from(amount_redeemed),
+        Err(e) => {
+            tracing::error!("wallet_redeem({idx}): {e}");
+            0
+        }
+    }
+}
+
 // --------------------------------------------------------------- wallet_clean_local_db
 #[wasm_bindgen]
 pub async fn wallet_clean_local_db(idx: usize) -> u32 {
