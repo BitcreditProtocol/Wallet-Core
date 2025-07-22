@@ -49,6 +49,9 @@ async function run() {
     let ids = await wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
 
+    let amount_redeemed = await wasmModule.wallet_redeem_credit(idx);
+    console.log("amount redeemed: " + amount_redeemed);
+    await update_wallets();
   });
 
   document.getElementById("importbtn").addEventListener("click", async () => {

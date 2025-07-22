@@ -347,6 +347,27 @@ where
         );
         Ok((reclaimed, redeemable.into_values().collect()))
     }
+
+    async fn get_redeemable_proofs(
+        &self,
+        keysets_info: &[KeySetInfo],
+        _client: &dyn MintConnector,
+    ) -> Result<Vec<cdk00::Proof>> {
+        let unspent = self.db.list_unspent().await?;
+        let infos = collect_keyset_infos_from_proofs(unspent.values(), keysets_info)?;
+        let mut redeemable: Vec<cdk00::Proof> = Vec::with_capacity(unspent.len());
+        for (y, proof) in unspent.into_iter() {
+            let info = infos
+                .get(&proof.keyset_id)
+                .expect("infos map is built from unspent proofs keyset_id");
+            if info.active {
+                continue;
+            }
+            self.db.mark_as_pendingspent(y).await?;
+            redeemable.push(proof);
+        }
+        Ok(redeemable)
+    }
 }
 
 ///////////////////////////////////////////// debit pocket
@@ -609,6 +630,13 @@ impl CreditPocket for DummyPocket {
         _client: &dyn MintConnector,
     ) -> Result<(Amount, Vec<cdk00::Proof>)> {
         Ok((Amount::ZERO, Vec::new()))
+    }
+    async fn get_redeemable_proofs(
+        &self,
+        _keysets_info: &[KeySetInfo],
+        _client: &dyn MintConnector,
+    ) -> Result<Vec<cdk00::Proof>> {
+        Ok(Vec::new())
     }
 }
 #[async_trait(?Send)]
