@@ -3,7 +3,7 @@ use std::sync::Mutex;
 // ----- extra library imports
 use async_trait::async_trait;
 use bcr_wallet_lib::wallet::Token;
-use cashu::{Amount, CurrencyUnit, KeySetInfo, MintUrl, nut00 as cdk00, nut01 as cdk01};
+use cashu::{Amount, CurrencyUnit, KeySetInfo, nut00 as cdk00, nut01 as cdk01};
 use cdk::wallet::MintConnector;
 use uuid::Uuid;
 // ----- local imports
@@ -32,14 +32,12 @@ pub trait Pocket {
     async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo])
     -> Result<PocketSendSummary>;
 
-    async fn send(
+    async fn send_proofs(
         &self,
         rid: Uuid,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
-        mint_url: MintUrl,
-        memo: Option<String>,
-    ) -> Result<Token>;
+    ) -> Result<Vec<cdk00::Proof>>;
 
     async fn clean_local_proofs(&self, client: &dyn MintConnector)
     -> Result<Vec<cdk01::PublicKey>>;
@@ -94,12 +92,15 @@ where
     }
 
     pub async fn receive_token(&self, token: Token) -> Result<cashu::Amount> {
-        let teaser = token.to_string().chars().take(20).collect::<String>();
+        let token_teaser = token.to_string().chars().take(20).collect::<String>();
+        if token.mint_url() != self.url {
+            return Err(Error::InvalidToken(token_teaser));
+        }
         let keysets_info = self.client.get_mint_keysets().await?.keysets;
         let proofs = token.proofs(&keysets_info)?;
 
         if proofs.is_empty() {
-            return Err(Error::EmptyToken(teaser));
+            return Err(Error::EmptyToken(token_teaser));
         }
 
         if matches!(token, Token::CashuV4(..)) {
@@ -125,7 +126,7 @@ where
                 .receive_proofs(&self.client, &keysets_info, proofs)
                 .await
         } else {
-            return Err(Error::InvalidToken(teaser));
+            return Err(Error::InvalidToken(token_teaser));
         }
     }
 
@@ -208,29 +209,19 @@ where
         let keysets_info = self.client.get_mint_keysets().await?.keysets;
 
         if current_ref.unit == self.credit.unit() {
-            let token = self
+            let proofs = self
                 .credit
-                .send(
-                    current_ref.internal_rid,
-                    &keysets_info,
-                    &self.client,
-                    self.url.clone(),
-                    memo,
-                )
+                .send_proofs(current_ref.internal_rid, &keysets_info, &self.client)
                 .await?;
+            let token = Token::new_bitcr(self.url.clone(), proofs, memo, self.credit.unit());
             return Ok(token);
         }
         if current_ref.unit == self.debit.unit() {
-            let token = self
+            let proofs = self
                 .debit
-                .send(
-                    current_ref.internal_rid,
-                    &keysets_info,
-                    &self.client,
-                    self.url.clone(),
-                    memo,
-                )
+                .send_proofs(current_ref.internal_rid, &keysets_info, &self.client)
                 .await?;
+            let token = Token::new_cashu(self.url.clone(), proofs, memo, self.debit.unit());
             return Ok(token);
         }
         Err(Error::UnknownCurrencyUnit(current_ref.unit))
