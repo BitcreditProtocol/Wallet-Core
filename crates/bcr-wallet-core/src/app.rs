@@ -56,6 +56,16 @@ pub fn initialize_api(network: String) {
     APP_STATE.replace(AppState::new(net));
 }
 
+fn get_wallet(idx: usize) -> Result<Rc<ProductionWallet>> {
+    APP_STATE.with_borrow(|state| {
+        state
+            .wallets
+            .get(idx)
+            .cloned()
+            .ok_or(Error::WalletNotFound(idx))
+    })
+}
+
 /// returns the index of the wallet
 pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Result<usize> {
     tracing::debug!("Adding a new wallet for mint {name}, {mint_url}, {mnemonic}");
@@ -153,21 +163,14 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
 
 pub fn wallet_name(idx: usize) -> Result<String> {
     tracing::debug!("name for wallet {idx}");
-    let wallet: Rc<ProductionWallet> =
-        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
-            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
-            Ok(wallet.clone())
-        })?;
+
+    let wallet = get_wallet(idx)?;
     Ok(wallet.name.clone())
 }
 
 pub fn wallet_mint_url(idx: usize) -> Result<String> {
     tracing::debug!("mint_url for wallet {idx}");
-    let wallet: Rc<ProductionWallet> =
-        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
-            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
-            Ok(wallet.clone())
-        })?;
+    let wallet = get_wallet(idx)?;
     Ok(wallet.url.to_string())
 }
 
@@ -178,11 +181,7 @@ pub struct WalletCurrencyUnit {
 
 pub fn wallet_currency_unit(idx: usize) -> Result<WalletCurrencyUnit> {
     tracing::debug!("wallet_currency_unit({idx})");
-    let wallet: Rc<ProductionWallet> =
-        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
-            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
-            Ok(wallet.clone())
-        })?;
+    let wallet = get_wallet(idx)?;
     Ok(WalletCurrencyUnit {
         credit: wallet.credit.unit().to_string(),
         debit: wallet.debit.unit().to_string(),
@@ -191,23 +190,64 @@ pub fn wallet_currency_unit(idx: usize) -> Result<WalletCurrencyUnit> {
 
 pub async fn wallet_balance(idx: usize) -> Result<WalletBalance> {
     tracing::debug!("balance for wallet {}", idx);
-    let wallet: Rc<ProductionWallet> =
-        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
-            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
-            Ok(wallet.clone())
-        })?;
+
+    let wallet = get_wallet(idx)?;
     wallet.balance().await
 }
 
 pub async fn wallet_receive(idx: usize, token: String) -> Result<cashu::Amount> {
     let token = bcr_wallet_lib::wallet::Token::from_str(&token)?;
-    let wallet: Rc<ProductionWallet> =
-        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
-            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
-            Ok(wallet.clone())
-        })?;
+
+    let wallet = get_wallet(idx)?;
     let cashed_in = wallet.receive_token(token).await?;
     Ok(cashed_in)
+}
+
+pub async fn wallet_prepare_send(idx: usize, amount: u64, unit: String) -> Result<SendSummary> {
+    tracing::debug!("wallet_prepare_send({idx}, {amount}, {unit})");
+
+    let amount = cashu::Amount::from(amount);
+    let unit = if unit.is_empty() {
+        None
+    } else {
+        Some(cashu::CurrencyUnit::from_str(&unit)?)
+    };
+    let wallet = get_wallet(idx)?;
+    let summary = wallet.prepare_send(amount, unit).await?;
+    Ok(SendSummary::from(summary))
+}
+
+pub async fn wallet_send(idx: usize, request_id: String, memo: Option<String>) -> Result<Token> {
+    tracing::debug!("wallet_send({idx}, {request_id}, {:?})", memo);
+
+    let rid = uuid::Uuid::from_str(&request_id)?;
+    let wallet = get_wallet(idx)?;
+    let token = wallet.send(rid, memo).await?;
+    Ok(token)
+}
+
+pub async fn wallet_reclaim_funds(idx: usize) -> Result<WalletBalance> {
+    tracing::debug!("wallet_reclaim_funds({idx})");
+
+    let wallet = get_wallet(idx)?;
+    let balance = wallet.reclaim_funds().await?;
+    Ok(balance)
+}
+
+pub async fn wallet_redeem_credit(idx: usize) -> Result<cashu::Amount> {
+    tracing::debug!("wallet_redeem_credit({idx})");
+
+    let wallet = get_wallet(idx)?;
+    let amount_redeemed = wallet.redeem_credit().await?;
+    Ok(amount_redeemed)
+}
+
+pub async fn wallet_clean_local_db(idx: usize) -> Result<u32> {
+    tracing::debug!("wallet_clean_local_db({idx})");
+
+    let wallet = get_wallet(idx)?;
+    let deleted = wallet.clean_local_db().await?;
+    Ok(deleted)
 }
 
 pub fn wallets_ids() -> Result<Vec<u64>> {
@@ -233,71 +273,4 @@ pub fn wallets_names() -> Result<Vec<String>> {
             .collect::<Vec<_>>()
     });
     Ok(names)
-}
-
-pub async fn wallet_prepare_send(idx: usize, amount: u64, unit: String) -> Result<SendSummary> {
-    tracing::debug!("wallet_prepare_send({idx}, {amount}, {unit})");
-    let amount = cashu::Amount::from(amount);
-    let unit = if unit.is_empty() {
-        None
-    } else {
-        Some(cashu::CurrencyUnit::from_str(&unit)?)
-    };
-    let wallet: Rc<ProductionWallet> =
-        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
-            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
-            Ok(wallet.clone())
-        })?;
-
-    let summary = wallet.prepare_send(amount, unit).await?;
-    Ok(SendSummary::from(summary))
-}
-
-pub async fn wallet_send(idx: usize, request_id: String, memo: Option<String>) -> Result<Token> {
-    tracing::debug!("wallet_send({idx}, {request_id}, {:?})", memo);
-
-    let rid = uuid::Uuid::from_str(&request_id)?;
-
-    let wallet: Rc<ProductionWallet> =
-        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
-            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
-            Ok(wallet.clone())
-        })?;
-    let token = wallet.send(rid, memo).await?;
-    Ok(token)
-}
-
-pub async fn wallet_reclaim_funds(idx: usize) -> Result<WalletBalance> {
-    tracing::debug!("wallet_reclaim({idx})");
-    let wallet: Rc<ProductionWallet> =
-        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
-            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
-            Ok(wallet.clone())
-        })?;
-
-    let balance = wallet.reclaim_funds().await?;
-    Ok(balance)
-}
-
-pub async fn wallet_redeem_credit(idx: usize) -> Result<cashu::Amount> {
-    tracing::debug!("wallet_redeem({idx})");
-    let wallet: Rc<ProductionWallet> =
-        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
-            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
-            Ok(wallet.clone())
-        })?;
-
-    let amount_redeemed = wallet.redeem_credit().await?;
-    Ok(amount_redeemed)
-}
-
-pub async fn wallet_clean_local_db(idx: usize) -> Result<u32> {
-    tracing::debug!("wallet_clean_local_db({idx})");
-    let wallet: Rc<ProductionWallet> =
-        APP_STATE.with_borrow(|state| -> Result<Rc<ProductionWallet>> {
-            let wallet = state.wallets.get(idx).ok_or(Error::WalletNotFound(idx))?;
-            Ok(wallet.clone())
-        })?;
-    let deleted = wallet.clean_local_db().await?;
-    Ok(deleted)
 }
