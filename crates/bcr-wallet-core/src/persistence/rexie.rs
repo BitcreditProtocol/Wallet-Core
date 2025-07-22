@@ -64,14 +64,15 @@ pub struct CounterEntry {
     counter: u32,
 }
 
-pub struct ProofDB {
+///////////////////////////////////////////// PocketDB
+pub struct PocketDB {
     db: Rc<Rexie>,
 
     proof_store: String,
     counter_store: String,
 }
 
-impl ProofDB {
+impl PocketDB {
     const PROOF_BASE_DB_NAME: &'static str = "proofs";
     const PROOF_DB_KEY: &'static str = "y";
     const COUNTER_BASE_DB_NAME: &'static str = "counters";
@@ -101,13 +102,13 @@ impl ProofDB {
         let proof_store = Self::proof_store_name(&unit);
         let counter_store = Self::counter_store_name(&unit);
         if !db.store_names().contains(&proof_store) {
-            return Err(Error::BadProofDB);
+            return Err(Error::BadPocketDB);
         }
         if !db.store_names().contains(&counter_store) {
-            return Err(Error::BadProofDB);
+            return Err(Error::BadPocketDB);
         }
 
-        let db = ProofDB {
+        let db = PocketDB {
             db,
             proof_store,
             counter_store,
@@ -262,7 +263,7 @@ impl ProofDB {
 }
 
 #[async_trait(?Send)]
-impl PocketRepository for ProofDB {
+impl PocketRepository for PocketDB {
     async fn store_new(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey> {
         let entry = ProofEntry::from(proof);
         let y = entry.y;
@@ -278,14 +279,12 @@ impl PocketRepository for ProofDB {
         Ok(y)
     }
 
-    async fn load_proof(
-        &self,
-        y: cdk01::PublicKey,
-    ) -> Result<Option<(cdk00::Proof, cdk07::State)>> {
+    async fn load_proof(&self, y: cdk01::PublicKey) -> Result<(cdk00::Proof, cdk07::State)> {
         let proof_state = self.load_entry(y).await?.map(|entry| {
             let state = entry.state;
             (cdk00::Proof::from(entry), state)
         });
+        let proof_state = proof_state.ok_or(Error::ProofNotFound(y))?;
         Ok(proof_state)
     }
 
@@ -370,21 +369,21 @@ mod tests {
 
     #[test]
     fn proof_store_name() {
-        let name = ProofDB::proof_store_name(&CurrencyUnit::Sat);
+        let name = PocketDB::proof_store_name(&CurrencyUnit::Sat);
         assert_eq!("sat_proofs", name);
-        let name = ProofDB::proof_store_name(&CurrencyUnit::Custom(String::from("test")));
+        let name = PocketDB::proof_store_name(&CurrencyUnit::Custom(String::from("test")));
         assert_eq!("test_proofs", name);
-        let name = ProofDB::proof_store_name(&CurrencyUnit::Custom(String::from("TEST")));
+        let name = PocketDB::proof_store_name(&CurrencyUnit::Custom(String::from("TEST")));
         assert_eq!("test_proofs", name);
     }
     #[test]
 
     fn counter_store_name() {
-        let name = ProofDB::counter_store_name(&CurrencyUnit::Sat);
+        let name = PocketDB::counter_store_name(&CurrencyUnit::Sat);
         assert_eq!("sat_counters", name);
-        let name = ProofDB::counter_store_name(&CurrencyUnit::Custom(String::from("test")));
+        let name = PocketDB::counter_store_name(&CurrencyUnit::Custom(String::from("test")));
         assert_eq!("test_counters", name);
-        let name = ProofDB::counter_store_name(&CurrencyUnit::Custom(String::from("TEST")));
+        let name = PocketDB::counter_store_name(&CurrencyUnit::Custom(String::from("TEST")));
         assert_eq!("test_counters", name);
     }
 }

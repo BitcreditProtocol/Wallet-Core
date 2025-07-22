@@ -30,8 +30,8 @@ pub enum Error {
 
     #[error("insufficient funds")]
     InsufficientFunds,
-    #[error("local proof DB not initialized correctly")]
-    BadProofDB,
+    #[error("local pocket DB not initialized correctly")]
+    BadPocketDB,
     #[error("proof in local DB not found: {0}")]
     ProofNotFound(cashu::PublicKey),
     #[error("proof not in desired state: {0}")]

@@ -35,8 +35,7 @@ struct SendReference {
 pub trait PocketRepository {
     async fn store_new(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
     async fn store_pendingspent(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
-    async fn load_proof(&self, y: cdk01::PublicKey)
-    -> Result<Option<(cdk00::Proof, cdk07::State)>>;
+    async fn load_proof(&self, y: cdk01::PublicKey) -> Result<(cdk00::Proof, cdk07::State)>;
     async fn delete_proof(&self, y: cdk01::PublicKey) -> Result<()>;
     async fn list_unspent(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn list_pending(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
