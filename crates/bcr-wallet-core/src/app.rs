@@ -12,14 +12,14 @@ use cdk::wallet::MintConnector;
 use crate::{
     SendSummary,
     error::{Error, Result},
-    persistence::{self, rexie::ProofDB},
+    persistence::{self, rexie::PocketDB},
     wallet::{CreditPocket, DebitPocket, WalletBalance},
 };
 
 // ----- end imports
 
 type ProductionConnector = cdk::wallet::HttpClient;
-type ProductionPocketRepository = crate::persistence::rexie::ProofDB;
+type ProductionPocketRepository = crate::persistence::rexie::PocketDB;
 type ProductionDebitPocket = crate::pocket::DbPocket<ProductionPocketRepository>;
 type ProductionCreditPocket = crate::pocket::CrPocket<ProductionPocketRepository>;
 type ProductionWallet = crate::wallet::Wallet<ProductionConnector>;
@@ -109,7 +109,7 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
         .iter()
         .find(|unit| unit.to_string().starts_with("cr"));
     if let Some(unit) = credit_unit {
-        let stores = ProofDB::object_stores(unit);
+        let stores = PocketDB::object_stores(unit);
         for store in stores {
             rexie_builder = rexie_builder.add_object_store(store);
         }
@@ -118,7 +118,7 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
         .iter()
         .find(|unit| !unit.to_string().starts_with("cr"));
     if let Some(unit) = debit_unit {
-        let stores = ProofDB::object_stores(unit);
+        let stores = PocketDB::object_stores(unit);
         for store in stores {
             rexie_builder = rexie_builder.add_object_store(store);
         }
@@ -128,7 +128,7 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
 
     // building the credit pocket
     let credit_pocket: Box<dyn CreditPocket> = if let Some(unit) = credit_unit {
-        let db = persistence::rexie::ProofDB::new(rexie.clone(), unit.clone())?;
+        let db = persistence::rexie::PocketDB::new(rexie.clone(), unit.clone())?;
         let pocket = ProductionCreditPocket::new(unit.clone(), db, master_xpriv);
         Box::new(pocket)
     } else {
@@ -137,7 +137,7 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
     };
     // building the debit pocket
     let debit_pocket: Box<dyn DebitPocket> = if let Some(unit) = debit_unit {
-        let db = persistence::rexie::ProofDB::new(rexie.clone(), unit.clone())?;
+        let db = persistence::rexie::PocketDB::new(rexie.clone(), unit.clone())?;
         let pocket = ProductionDebitPocket::new(unit.clone(), db, master_xpriv);
         Box::new(pocket)
     } else {
