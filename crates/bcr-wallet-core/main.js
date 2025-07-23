@@ -78,7 +78,7 @@ async function run() {
     let summary = await wasmModule.wallet_prepare_send(idx, BigInt(amount), "");
     let now = Math.floor(Date.now() / 1000);
     
-    prompt("send summary, currency unit: " + summary.unit + ", total fees: " + String(summary.send_fees + summary.swap_fees));
+    prompt("send summary, currency unit: {summary.unit} total fees: {summary.send_fees + summary.swap_fees}");
     let token_tx = await wasmModule.wallet_send(idx, summary.request_id, now);
 
     await update_balance();

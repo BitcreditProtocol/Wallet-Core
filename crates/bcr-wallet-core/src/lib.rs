@@ -42,7 +42,7 @@ pub fn get_wallet_name(idx: usize) -> String {
         Ok(name) => name,
         Err(e) => {
             tracing::error!("mint_url({idx}): {e}");
-            String::new()
+            String::default()
         }
     }
 }
@@ -55,7 +55,7 @@ pub fn get_wallet_mint_url(idx: usize) -> String {
         Ok(url) => url,
         Err(e) => {
             tracing::error!("mint_url({idx}): {e}");
-            String::new()
+            String::default()
         }
     }
 }
@@ -129,7 +129,7 @@ pub async fn wallet_receive_token(idx: usize, token: String, tstamp: u32) -> Str
         Ok(tx_id) => tx_id.to_string(),
         Err(e) => {
             tracing::error!("wallet_receive_token({idx}, {preview_token}...): {e}");
-            String::new()
+            String::default()
         }
     }
 }
@@ -178,7 +178,8 @@ pub async fn wallet_prepare_send(idx: usize, amount: u64, unit: String) -> SendS
     match returned {
         Ok(summary) => summary,
         Err(e) => {
-            tracing::error!("wallet_prepare_send({idx}, {amount}, {unit}): {e}"); SendSummary::default()
+            tracing::error!("wallet_prepare_send({idx}, {amount}, {unit}): {e}");
+            SendSummary::default()
         }
     }
 }
@@ -304,7 +305,7 @@ pub fn get_wallets_ids() -> Vec<u32> {
         Ok(indexes) => indexes.into_iter().map(|i| i as u32).collect(),
         Err(e) => {
             tracing::error!("get_wallets_ids: {e}");
-            Vec::new()
+            Vec::default()
         }
     }
 }
@@ -317,7 +318,7 @@ pub fn get_wallets_names() -> Vec<String> {
         Ok(names) => names,
         Err(e) => {
             tracing::error!("get_wallets_names: {e}");
-            Vec::new()
+            Vec::default()
         }
     }
 }
