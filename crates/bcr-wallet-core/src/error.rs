@@ -32,6 +32,8 @@ pub enum Error {
     InsufficientFunds,
     #[error("local pocket DB not initialized correctly")]
     BadPocketDB,
+    #[error("local transaction DB not initialized correctly")]
+    BadTransactionDB,
     #[error("proof in local DB not found: {0}")]
     ProofNotFound(cashu::PublicKey),
     #[error("proof not in desired state: {0}")]
@@ -56,6 +58,8 @@ pub enum Error {
     NoPrepareSendRef(uuid::Uuid),
     #[error("inactive keyset {0}")]
     InactiveKeyset(cashu::Id),
+    #[error("transaction not found {0}")]
+    TransactionNotFound(cdk::wallet::types::TransactionId),
 
     #[error("internal error: {0}")]
     Internal(String),

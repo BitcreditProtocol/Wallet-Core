@@ -29,6 +29,12 @@ async function run() {
     }
   };
 
+  let format_tx = async (idx, tx_id) => {
+    let tx = await wasmModule.wallet_load_tx(idx, tx_id);
+    let tx_formatted = "\n {tx_id}: {tx.direction} {tx.amount} {tx.unit} (fees: {tx.fees})";
+    document.getElementById("transactions").innerHTML += tx_formatted;
+  }
+
   await update_wallets();
 
   document.getElementById("addbtn").addEventListener("click", async () => {
@@ -58,7 +64,9 @@ async function run() {
     let ids = await wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
     let token = prompt("Enter token");
-    await wasmModule.wallet_receive_token(idx, token);
+    let now = Math.floor(Date.now() / 1000);
+    let tx_id = await wasmModule.wallet_receive_token(idx, token, now);
+    await format_tx(idx, tx_id);
 
     await update_balance();
   });
@@ -68,13 +76,15 @@ async function run() {
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
     let amount = Math.round(Number(prompt("Enter amount to send")));
     let summary = await wasmModule.wallet_prepare_send(idx, BigInt(amount), "");
+    let now = Math.floor(Date.now() / 1000);
     
     prompt("send summary, currency unit: " + summary.unit + ", total fees: " + String(summary.send_fees + summary.swap_fees));
-    let token = await wasmModule.wallet_send(idx, summary.request_id);
+    let token_tx = await wasmModule.wallet_send(idx, summary.request_id, now);
 
     await update_balance();
+    await format_tx(idx, token_tx.tx_id);
 
-    document.getElementById("output").innerHTML += "\ntoken:\n" + token;
+    document.getElementById("output").innerHTML += "\ntoken:\n" + token_tx.token;
   });
 
   document.getElementById("reclaimbtn").addEventListener("click", async () => {

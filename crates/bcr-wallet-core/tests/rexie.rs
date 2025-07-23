@@ -1,13 +1,19 @@
 #![cfg(target_arch = "wasm32")]
 // ----- standard library imports
-use std::rc::Rc;
+use std::{collections::HashMap, matches, rc::Rc, str::FromStr};
 // ----- extra library imports
 use bcr_wdc_utils::{keys::test_utils as keys_test, signatures::test_utils as signatures_test};
-use cashu::{Amount, CurrencyUnit};
+use cashu::{Amount, CurrencyUnit, MintUrl, nut07 as cdk07};
+use cdk::wallet::types::{Transaction, TransactionDirection};
 use rexie::Rexie;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 // ----- local imports
-use bcr_wallet_core::{error::Error, persistence::rexie::PocketDB, pocket::PocketRepository};
+use bcr_wallet_core::{
+    error::Error,
+    persistence::rexie::{PocketDB, TransactionDB},
+    pocket::PocketRepository,
+    wallet::TransactionRepository,
+};
 
 // ----- end imports
 
@@ -141,4 +147,89 @@ async fn pocket_increment_nonexisting_counter() {
     let kid = keys_test::generate_random_keysetid();
     let result = proofdb.increment_counter(kid, 0, 10).await;
     assert!(result.is_err());
+}
+
+async fn create_transaction_db(test_name: &str) -> TransactionDB {
+    let id = "test";
+    let obj_stores = TransactionDB::object_stores(id);
+    let mut builder = Rexie::builder(test_name).version(1);
+    for store in obj_stores {
+        builder = builder.add_object_store(store);
+    }
+    let rexie = Rc::new(builder.build().await.unwrap());
+    let proof = TransactionDB::new(rexie, id).unwrap();
+    proof
+}
+
+#[wasm_bindgen_test]
+async fn transaction_store_tx() {
+    let transactiondb = create_transaction_db("transaction_store_tx").await;
+
+    let ys = keys_test::publics()[0..3].to_vec();
+    let tx = Transaction {
+        mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
+        direction: TransactionDirection::Incoming,
+        amount: Amount::from(100u64),
+        fee: Amount::from(1u64),
+        unit: CurrencyUnit::Custom(String::from("test")),
+        ys,
+        timestamp: 42,
+        memo: None,
+        metadata: HashMap::new(),
+    };
+    transactiondb.store_tx(tx).await.unwrap();
+}
+
+#[wasm_bindgen_test]
+async fn transaction_load_tx() {
+    let transactiondb = create_transaction_db("transaction_load_tx").await;
+
+    let ys = keys_test::publics()[0..3].to_vec();
+    let tx = Transaction {
+        mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
+        direction: TransactionDirection::Incoming,
+        amount: Amount::from(100u64),
+        fee: Amount::from(1u64),
+        // keep an eye on https://github.com/cashubtc/cdk/issues/908
+        unit: CurrencyUnit::Sat,
+        ys,
+        timestamp: 42,
+        memo: None,
+        metadata: HashMap::new(),
+    };
+    let txid = transactiondb.store_tx(tx.clone()).await.unwrap();
+
+    let loaded_tx = transactiondb.load_tx(txid).await.unwrap();
+    assert_eq!(
+        loaded_tx.mint_url,
+        MintUrl::from_str("https://test.com/mint").unwrap()
+    );
+    assert_eq!(loaded_tx.direction, TransactionDirection::Incoming);
+    assert_eq!(loaded_tx.amount, tx.amount);
+    assert_eq!(loaded_tx.fee, tx.fee);
+    assert_eq!(loaded_tx.unit, tx.unit);
+    assert_eq!(loaded_tx.ys, tx.ys);
+}
+
+#[wasm_bindgen_test]
+async fn transaction_delete_tx() {
+    let transactiondb = create_transaction_db("transaction_load_tx").await;
+
+    let ys = keys_test::publics()[0..3].to_vec();
+    let tx = Transaction {
+        mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
+        direction: TransactionDirection::Incoming,
+        amount: Amount::from(100u64),
+        fee: Amount::from(1u64),
+        // keep an eye on https://github.com/cashubtc/cdk/issues/908
+        unit: CurrencyUnit::Sat,
+        ys,
+        timestamp: 42,
+        memo: None,
+        metadata: HashMap::new(),
+    };
+    let txid = transactiondb.store_tx(tx.clone()).await.unwrap();
+    transactiondb.delete_tx(txid).await.unwrap();
+    let res = transactiondb.load_tx(txid).await;
+    assert!(matches!(res, Err(Error::TransactionNotFound(..))));
 }

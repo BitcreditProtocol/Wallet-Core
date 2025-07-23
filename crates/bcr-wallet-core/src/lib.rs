@@ -9,7 +9,7 @@ pub mod persistence;
 pub mod pocket;
 mod types;
 mod utils;
-mod wallet;
+pub mod wallet;
 
 // ----- end imports
 
@@ -122,14 +122,14 @@ pub async fn get_wallet_balance(idx: usize) -> WalletBalance {
 
 // --------------------------------------------------------------- wallet_receive_token
 #[wasm_bindgen]
-pub async fn wallet_receive_token(idx: usize, token: String) -> u64 {
+pub async fn wallet_receive_token(idx: usize, token: String, tstamp: u32) -> String {
     let preview_token = token[0..10].to_string();
-    let returned = app::wallet_receive(idx, token).await;
+    let returned = app::wallet_receive(idx, token, tstamp as u64).await;
     match returned {
-        Ok(amount) => amount.into(),
+        Ok(tx_id) => tx_id.to_string(),
         Err(e) => {
             tracing::error!("wallet_receive_token({idx}, {preview_token}...): {e}");
-            0
+            String::new()
         }
     }
 }
@@ -178,21 +178,39 @@ pub async fn wallet_prepare_send(idx: usize, amount: u64, unit: String) -> SendS
     match returned {
         Ok(summary) => summary,
         Err(e) => {
-            tracing::error!("wallet_prepare_send({idx}, {amount}, {unit}): {e}");
-            SendSummary::default()
+            tracing::error!("wallet_prepare_send({idx}, {amount}, {unit}): {e}"); SendSummary::default()
         }
     }
 }
 
 // --------------------------------------------------------------- wallet_send
 #[wasm_bindgen]
-pub async fn wallet_send(idx: usize, request_id: String, memo: Option<String>) -> String {
-    let returned = app::wallet_send(idx, request_id.clone(), memo.clone()).await;
+#[derive(Default)]
+pub struct TokenTxId {
+    #[wasm_bindgen(getter_with_clone)]
+    pub token: String,
+    #[wasm_bindgen(getter_with_clone)]
+    pub tx_id: String,
+}
+#[wasm_bindgen]
+pub async fn wallet_send(
+    idx: usize,
+    request_id: String,
+    tstamp: u32,
+    memo: Option<String>,
+) -> TokenTxId {
+    let returned = app::wallet_send(idx, request_id.clone(), memo.clone(), tstamp as u64).await;
     match returned {
-        Ok(token) => token.to_string(),
+        Ok((token, tx_id)) => TokenTxId {
+            token: token.to_string(),
+            tx_id: tx_id.to_string(),
+        },
         Err(e) => {
-            tracing::error!("wallet_send({idx}, {request_id}, {:?}): {e}", memo);
-            String::new()
+            tracing::error!(
+                "wallet_send({idx}, {request_id}, {tstamp}, {:?}): {e}",
+                memo
+            );
+            TokenTxId::default()
         }
     }
 }
@@ -219,6 +237,61 @@ pub async fn wallet_clean_local_db(idx: usize) -> u32 {
         Err(e) => {
             tracing::error!("wallet_clean_local_db({idx}): {e}");
             0
+        }
+    }
+}
+
+// --------------------------------------------------------------- wallet_load_tx
+#[wasm_bindgen]
+#[derive(Default)]
+pub struct Transaction {
+    #[wasm_bindgen(readonly)]
+    pub amount: u64,
+    #[wasm_bindgen(readonly)]
+    pub fees: u64,
+    #[wasm_bindgen(getter_with_clone)]
+    pub unit: String,
+    #[wasm_bindgen(readonly)]
+    pub tstamp: u64,
+    #[wasm_bindgen(getter_with_clone)]
+    pub direction: String,
+    #[wasm_bindgen(getter_with_clone)]
+    pub memo: String,
+}
+impl std::convert::From<cdk::wallet::types::Transaction> for Transaction {
+    fn from(tx: cdk::wallet::types::Transaction) -> Self {
+        Self {
+            amount: u64::from(tx.amount),
+            fees: u64::from(tx.fee),
+            unit: tx.unit.to_string(),
+            direction: tx.direction.to_string(),
+            tstamp: tx.timestamp,
+            memo: tx.memo.unwrap_or_default(),
+        }
+    }
+}
+
+#[wasm_bindgen]
+pub async fn wallet_load_tx(idx: usize, tx_id: String) -> Transaction {
+    let returned = app::wallet_load_tx(idx, &tx_id).await;
+    match returned {
+        Ok(tx) => Transaction::from(tx),
+        Err(e) => {
+            tracing::error!("wallet_load_tx({idx}, {tx_id}): {e}");
+            Transaction::default()
+        }
+    }
+}
+
+// --------------------------------------------------------------- wallet_list_tx_ids
+#[wasm_bindgen]
+pub async fn wallet_list_tx_ids(idx: usize) -> Vec<String> {
+    let returned = app::wallet_list_tx_ids(idx).await;
+    match returned {
+        Ok(tx_ids) => tx_ids.into_iter().map(|id| id.to_string()).collect(),
+        Err(e) => {
+            tracing::error!("wallet_list_tx_ids({idx}): {e}");
+            Vec::default()
         }
     }
 }
