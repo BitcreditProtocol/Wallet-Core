@@ -7,7 +7,10 @@ use bitcoin::{
     hashes::{Hash, HashEngine, sha256},
     hex::DisplayHex,
 };
-use cdk::wallet::MintConnector;
+use cdk::wallet::{
+    MintConnector,
+    types::{Transaction, TransactionId},
+};
 // ----- local imports
 use crate::{
     SendSummary,
@@ -19,10 +22,11 @@ use crate::{
 // ----- end imports
 
 type ProductionConnector = cdk::wallet::HttpClient;
+type ProductionTransactionRepository = crate::persistence::rexie::TransactionDB;
 type ProductionPocketRepository = crate::persistence::rexie::PocketDB;
 type ProductionDebitPocket = crate::pocket::DbPocket<ProductionPocketRepository>;
 type ProductionCreditPocket = crate::pocket::CrPocket<ProductionPocketRepository>;
-type ProductionWallet = crate::wallet::Wallet<ProductionConnector>;
+type ProductionWallet = crate::wallet::Wallet<ProductionConnector, ProductionTransactionRepository>;
 
 pub struct AppState {
     wallets: Vec<Rc<ProductionWallet>>,
@@ -102,9 +106,16 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
     }
 
     // building database and object_stores
-    let db_id = sha256::Hash::from_engine(hasher);
-    let rexie_db_name = format!("bitcredit_wallet_{}", db_id.as_byte_array().as_hex(),);
+    let db_id = sha256::Hash::from_engine(hasher)
+        .as_byte_array()
+        .as_hex()
+        .to_string();
+    let rexie_db_name = format!("bitcredit_wallet_{db_id}");
+    let transaction_stores = ProductionTransactionRepository::object_stores(&db_id);
     let mut rexie_builder = rexie::Rexie::builder(&rexie_db_name);
+    for store in transaction_stores {
+        rexie_builder = rexie_builder.add_object_store(store);
+    }
     let credit_unit = currencies
         .iter()
         .find(|unit| unit.to_string().starts_with("cr"));
@@ -145,9 +156,12 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
         Box::new(crate::pocket::DummyPocket {})
     };
 
+    let tx_repo = ProductionTransactionRepository::new(rexie.clone(), &db_id)?;
+
     let new_wallet: ProductionWallet = ProductionWallet {
         client,
         url: mint_url,
+        tx_repo,
         debit: debit_pocket,
         credit: credit_pocket,
         mnemonic,
@@ -195,12 +209,13 @@ pub async fn wallet_balance(idx: usize) -> Result<WalletBalance> {
     wallet.balance().await
 }
 
-pub async fn wallet_receive(idx: usize, token: String) -> Result<cashu::Amount> {
-    let token = bcr_wallet_lib::wallet::Token::from_str(&token)?;
+pub async fn wallet_receive(idx: usize, token: String, tstamp: u64) -> Result<TransactionId> {
+    tracing::debug!("wallet_receive({idx}, {token}, {tstamp})");
 
+    let token = bcr_wallet_lib::wallet::Token::from_str(&token)?;
     let wallet = get_wallet(idx)?;
-    let cashed_in = wallet.receive_token(token).await?;
-    Ok(cashed_in)
+    let tx_id = wallet.receive_token(token, tstamp).await?;
+    Ok(tx_id)
 }
 
 pub async fn wallet_prepare_send(idx: usize, amount: u64, unit: String) -> Result<SendSummary> {
@@ -217,13 +232,18 @@ pub async fn wallet_prepare_send(idx: usize, amount: u64, unit: String) -> Resul
     Ok(SendSummary::from(summary))
 }
 
-pub async fn wallet_send(idx: usize, request_id: String, memo: Option<String>) -> Result<Token> {
-    tracing::debug!("wallet_send({idx}, {request_id}, {:?})", memo);
+pub async fn wallet_send(
+    idx: usize,
+    request_id: String,
+    memo: Option<String>,
+    tstamp: u64,
+) -> Result<(Token, TransactionId)> {
+    tracing::debug!("wallet_send({idx}, {request_id}, {:?}, {tstamp})", memo);
 
     let rid = uuid::Uuid::from_str(&request_id)?;
     let wallet = get_wallet(idx)?;
-    let token = wallet.send(rid, memo).await?;
-    Ok(token)
+    let (token, tx_id) = wallet.send(rid, memo, tstamp).await?;
+    Ok((token, tx_id))
 }
 
 pub async fn wallet_reclaim_funds(idx: usize) -> Result<WalletBalance> {
@@ -248,6 +268,23 @@ pub async fn wallet_clean_local_db(idx: usize) -> Result<u32> {
     let wallet = get_wallet(idx)?;
     let deleted = wallet.clean_local_db().await?;
     Ok(deleted)
+}
+
+pub async fn wallet_load_tx(idx: usize, tx_id: &str) -> Result<Transaction> {
+    tracing::debug!("wallet_load_tx({idx}, {tx_id})");
+
+    let tx_id = TransactionId::from_str(tx_id)?;
+    let wallet = get_wallet(idx)?;
+    let tx = wallet.load_tx(tx_id).await?;
+    Ok(tx)
+}
+
+pub async fn wallet_list_tx_ids(idx: usize) -> Result<Vec<TransactionId>> {
+    tracing::debug!("wallet_list_tx_ids({idx})");
+
+    let wallet = get_wallet(idx)?;
+    let tx_ids = wallet.list_tx_ids().await?;
+    Ok(tx_ids)
 }
 
 pub fn wallets_ids() -> Result<Vec<u64>> {

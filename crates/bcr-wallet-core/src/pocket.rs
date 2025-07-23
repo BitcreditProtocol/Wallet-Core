@@ -101,11 +101,12 @@ where
         client: &dyn MintConnector,
         infos: HashMap<cashu::Id, &KeySetInfo>,
         inputs: HashMap<cdk01::PublicKey, cdk00::Proof>,
-    ) -> Result<Amount> {
+    ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
         if inputs.is_empty() {
             tracing::warn!("CrPocket::digest_proofs: empty inputs");
-            return Ok(Amount::ZERO);
+            return Ok((Amount::ZERO, Vec::new()));
         }
+        let ys = inputs.keys().cloned().collect();
         // reshaping inputs into keyset_id -> proofs
         let mut old_proofs: HashMap<cashu::Id, Vec<cdk00::Proof>> = HashMap::new();
         for (_, proof) in inputs.into_iter() {
@@ -151,7 +152,7 @@ where
             &self.db,
         )
         .await?;
-        Ok(cashed_in)
+        Ok((cashed_in, ys))
     }
 }
 
@@ -177,7 +178,7 @@ where
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
         inputs: Vec<cdk00::Proof>,
-    ) -> Result<Amount> {
+    ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
         let infos = self.validate_keysets(keysets_info, &inputs)?;
         // storing proofs in pending state
         let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
@@ -251,7 +252,7 @@ where
         rid: Uuid,
         _: &[KeySetInfo],
         client: &dyn MintConnector,
-    ) -> Result<Vec<cdk00::Proof>> {
+    ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         let send_ref = {
             let mut locked = self.current_send.lock().unwrap();
             if locked.is_none() {
@@ -262,12 +263,12 @@ where
             }
             locked.take().unwrap()
         };
-        let mut proofs: Vec<cdk00::Proof> = Vec::new();
+        let mut sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
         let mut current_amount = Amount::ZERO;
         for y in send_ref.send_proofs {
             let proof = self.db.mark_as_pendingspent(y).await?;
             current_amount += proof.amount;
-            proofs.push(proof);
+            sending_proofs.insert(y, proof);
         }
 
         if let Some(swap_y) = send_ref.swap_proof {
@@ -285,12 +286,12 @@ where
             for y in target_swapped.keys() {
                 let proof = self.db.mark_as_pendingspent(*y).await?;
                 current_amount += proof.amount;
-                proofs.push(proof);
+                sending_proofs.insert(*y, proof);
             }
         }
         // this will go once tested thoroughly
         assert_eq!(current_amount, send_ref.target, "amount should match");
-        Ok(proofs)
+        Ok(sending_proofs)
     }
 
     async fn clean_local_proofs(
@@ -339,7 +340,7 @@ where
                     .expect("infos map is built from unspent_proofs keyset_id");
                 info.unit == self.unit && info.active
             });
-        let reclaimed = self.digest_proofs(client, infos, reclaimable).await?;
+        let (reclaimed, _) = self.digest_proofs(client, infos, reclaimable).await?;
         tracing::debug!(
             "CrPocket::reclaim_proofs: reclaimed: {reclaimed}, redeemable: {}",
             redeemable.len()
@@ -411,12 +412,13 @@ where
         &self,
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
-        proofs: Vec<cdk00::Proof>,
-    ) -> Result<Amount> {
-        if proofs.is_empty() {
+        inputs: HashMap<cdk01::PublicKey, cdk00::Proof>,
+    ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
+        if inputs.is_empty() {
             tracing::warn!("DbPocket::digest_proofs: empty inputs");
-            return Ok(Amount::ZERO);
+            return Ok((Amount::ZERO, Vec::new()));
         }
+        let (ys, proofs): (Vec<cdk01::PublicKey>, Vec<cdk00::Proof>) = inputs.into_iter().unzip();
         let (active_info, active_keyset) = self.find_active_keyset(keysets_info, client).await?;
         let counter = self.db.counter(active_info.id).await?;
         let total_amount = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
@@ -433,7 +435,7 @@ where
         let premints = HashMap::from([(active_info.id, premint_secrets)]);
         let keysets = HashMap::from([(active_info.id, active_keyset)]);
         let cashed_in = swap(self.unit(), proofs, premints, keysets, client, &self.db).await?;
-        Ok(cashed_in)
+        Ok((cashed_in, ys))
     }
 }
 
@@ -458,8 +460,14 @@ where
         &self,
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
-        proofs: Vec<cdk00::Proof>,
-    ) -> Result<Amount> {
+        inputs: Vec<cdk00::Proof>,
+    ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
+        // storing proofs in pending state
+        let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
+        for input in inputs.into_iter() {
+            let y = self.db.store_pendingspent(input.clone()).await?;
+            proofs.insert(y, input);
+        }
         self.digest_proofs(client, keysets_info, proofs).await
     }
 
@@ -511,9 +519,7 @@ where
         rid: Uuid,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
-    ) -> Result<Vec<cdk00::Proof>> {
-        let (_, active_keyset) = self.find_active_keyset(keysets_info, client).await?;
-
+    ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         let send_ref = {
             let mut locked = self.current_send.lock().unwrap();
             if locked.is_none() {
@@ -524,12 +530,13 @@ where
             }
             locked.take().unwrap()
         };
-        let mut proofs: Vec<cdk00::Proof> = Vec::new();
+        let (_, active_keyset) = self.find_active_keyset(keysets_info, client).await?;
+        let mut sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
         let mut current_amount = Amount::ZERO;
         for y in send_ref.send_proofs {
             let proof = self.db.mark_as_pendingspent(y).await?;
             current_amount += proof.amount;
-            proofs.push(proof);
+            sending_proofs.insert(y, proof);
         }
         if let Some(swap_y) = send_ref.swap_proof {
             let proof = self.db.mark_as_pendingspent(swap_y).await?;
@@ -545,12 +552,12 @@ where
             for y in target_swapped.keys() {
                 let proof = self.db.mark_as_pendingspent(*y).await?;
                 current_amount += proof.amount;
-                proofs.push(proof);
+                sending_proofs.insert(*y, proof);
             }
         }
         // this will go once tested thoroughly
         assert_eq!(current_amount, send_ref.target, "amount should match");
-        Ok(proofs)
+        Ok(sending_proofs)
     }
 
     async fn clean_local_proofs(
@@ -574,9 +581,7 @@ where
     ) -> Result<Amount> {
         let pendings = self.db.list_pending().await?;
         let pendings_len = pendings.len();
-        let reclaimed = self
-            .digest_proofs(client, keysets_info, pendings.into_values().collect())
-            .await?;
+        let (reclaimed, _) = self.digest_proofs(client, keysets_info, pendings).await?;
         tracing::debug!(
             "DbPocket::reclaim_proofs: pendings: {pendings_len} reclaimed: {reclaimed}"
         );
@@ -600,8 +605,8 @@ impl Pocket for DummyPocket {
         _client: &dyn MintConnector,
         _keysets_info: &[KeySetInfo],
         _proofs: Vec<cdk00::Proof>,
-    ) -> Result<Amount> {
-        Ok(Amount::ZERO)
+    ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
+        Ok((Amount::ZERO, Vec::new()))
     }
     async fn prepare_send(&self, _: Amount, _: &[KeySetInfo]) -> Result<PocketSendSummary> {
         Err(Error::Any(AnyError::msg("DummyPocket is dummy")))
@@ -611,7 +616,7 @@ impl Pocket for DummyPocket {
         _: Uuid,
         _: &[KeySetInfo],
         _: &dyn MintConnector,
-    ) -> Result<Vec<cdk00::Proof>> {
+    ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         Err(Error::Any(AnyError::msg("DummyPocket is dummy")))
     }
     async fn clean_local_proofs(
@@ -991,7 +996,7 @@ mod tests {
 
         let crpocket = crpocket(db);
 
-        let cashed = crpocket
+        let (cashed, _) = crpocket
             .receive_proofs(&connector, &k_infos, proofs)
             .await
             .unwrap();
@@ -1048,6 +1053,10 @@ mod tests {
             .times(1)
             .with(eq(kid))
             .returning(move |_| Ok(KeySet::from(cloned_keyset.clone())));
+        db.expect_store_pendingspent().times(2).returning(|p| {
+            let y = p.y().expect("Hash to curve should not fail");
+            Ok(y)
+        });
         db.expect_counter()
             .times(1)
             .with(eq(kid))
@@ -1077,7 +1086,7 @@ mod tests {
 
         let dbpocket = dbpocket(db);
 
-        let cashed = dbpocket
+        let (cashed, _) = dbpocket
             .receive_proofs(&connector, &k_infos, proofs)
             .await
             .unwrap();

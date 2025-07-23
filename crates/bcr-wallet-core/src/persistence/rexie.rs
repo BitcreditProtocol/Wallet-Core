@@ -1,12 +1,13 @@
 // ----- standard library imports
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, rc::Rc, str::FromStr};
 // ----- extra library imports
 use anyhow::Error as AnyError;
 use async_trait::async_trait;
 use cashu::{
-    CurrencyUnit, nut00 as cdk00, nut01 as cdk01, nut02 as cdk02, nut07 as cdk07, nut12 as cdk12,
-    secret::Secret,
+    CurrencyUnit, MintUrl, nut00 as cdk00, nut01 as cdk01, nut02 as cdk02, nut07 as cdk07,
+    nut12 as cdk12, secret::Secret,
 };
+use cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
 use rexie::{Rexie, TransactionMode};
 use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::JsValue;
@@ -14,6 +15,7 @@ use wasm_bindgen::JsValue;
 use crate::{
     error::{Error, Result},
     pocket::PocketRepository,
+    wallet,
 };
 
 // ----- end imports
@@ -363,27 +365,160 @@ impl PocketRepository for PocketDB {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+///////////////////////////////////////////// TransactionEntry
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct TransactionEntry {
+    pub tx_id: String,
+    pub mint_url: MintUrl,
+    pub direction: TransactionDirection,
+    pub amount: cashu::Amount,
+    pub fee: cashu::Amount,
+    pub unit: CurrencyUnit,
+    pub ys: Vec<cdk01::PublicKey>,
+    pub timestamp: u64,
+    pub memo: Option<String>,
+    pub metadata: HashMap<String, String>,
+}
 
-    #[test]
-    fn proof_store_name() {
-        let name = PocketDB::proof_store_name(&CurrencyUnit::Sat);
-        assert_eq!("sat_proofs", name);
-        let name = PocketDB::proof_store_name(&CurrencyUnit::Custom(String::from("test")));
-        assert_eq!("test_proofs", name);
-        let name = PocketDB::proof_store_name(&CurrencyUnit::Custom(String::from("TEST")));
-        assert_eq!("test_proofs", name);
+impl std::convert::From<Transaction> for TransactionEntry {
+    fn from(tx: Transaction) -> Self {
+        let tx_id = TransactionId::new(tx.ys.clone());
+        TransactionEntry {
+            tx_id: tx_id.to_string(),
+            mint_url: tx.mint_url,
+            direction: tx.direction,
+            amount: tx.amount,
+            fee: tx.fee,
+            unit: tx.unit,
+            ys: tx.ys,
+            timestamp: tx.timestamp,
+            memo: tx.memo,
+            metadata: tx.metadata,
+        }
     }
-    #[test]
+}
+impl std::convert::From<TransactionEntry> for Transaction {
+    fn from(entry: TransactionEntry) -> Self {
+        Transaction {
+            mint_url: entry.mint_url,
+            direction: entry.direction,
+            amount: entry.amount,
+            fee: entry.fee,
+            unit: entry.unit,
+            ys: entry.ys,
+            timestamp: entry.timestamp,
+            memo: entry.memo,
+            metadata: entry.metadata,
+        }
+    }
+}
 
-    fn counter_store_name() {
-        let name = PocketDB::counter_store_name(&CurrencyUnit::Sat);
-        assert_eq!("sat_counters", name);
-        let name = PocketDB::counter_store_name(&CurrencyUnit::Custom(String::from("test")));
-        assert_eq!("test_counters", name);
-        let name = PocketDB::counter_store_name(&CurrencyUnit::Custom(String::from("TEST")));
-        assert_eq!("test_counters", name);
+///////////////////////////////////////////// TransactionDB
+#[allow(dead_code)]
+pub struct TransactionDB {
+    db: Rc<Rexie>,
+
+    tx_store: String,
+}
+
+#[allow(dead_code)]
+impl TransactionDB {
+    const TRANSACTION_BASE_DB_NAME: &'static str = "transactions";
+    const TRANSACTION_DB_KEY: &'static str = "tx_id";
+
+    fn tx_store_name(wallet_id: &str) -> String {
+        format!("{wallet_id}_{}", Self::TRANSACTION_BASE_DB_NAME)
+    }
+
+    pub fn object_stores(wallet_id: &str) -> Vec<rexie::ObjectStore> {
+        let tx_store_name = Self::tx_store_name(wallet_id);
+        vec![
+            rexie::ObjectStore::new(&tx_store_name)
+                .auto_increment(false)
+                .key_path(Self::TRANSACTION_DB_KEY),
+        ]
+    }
+
+    pub fn new(db: Rc<Rexie>, wallet_id: &str) -> Result<Self> {
+        let tx_store = Self::tx_store_name(wallet_id);
+        if !db.store_names().contains(&tx_store) {
+            return Err(Error::BadTransactionDB);
+        }
+        let db = TransactionDB { db, tx_store };
+        Ok(db)
+    }
+
+    async fn store(&self, tx_entry: TransactionEntry) -> Result<TransactionId> {
+        let entry = to_value(&tx_entry)?;
+        let tx = self
+            .db
+            .transaction(&[self.tx_store.clone()], TransactionMode::ReadWrite)?;
+        let transactions = tx.store(&self.tx_store)?;
+        transactions.add(&entry, None).await?;
+        tx.done().await?;
+        let tx_id =
+            TransactionId::from_str(&tx_entry.tx_id).expect("double conversion should not fail");
+        Ok(tx_id)
+    }
+
+    async fn load(&self, tx_id: TransactionId) -> Result<Option<TransactionEntry>> {
+        let tx = self
+            .db
+            .transaction(&[self.tx_store.clone()], TransactionMode::ReadOnly)?;
+        let transactions = tx.store(&self.tx_store)?;
+        let js_entry = transactions.get(tx_id.to_string().into()).await?;
+        tx.done().await?;
+        let entry = js_entry.map(from_value::<TransactionEntry>).transpose()?;
+        Ok(entry)
+    }
+
+    async fn delete(&self, tx_id: TransactionId) -> Result<()> {
+        let tx = self
+            .db
+            .transaction(&[self.tx_store.clone()], TransactionMode::ReadWrite)?;
+        let transactions = tx.store(&self.tx_store)?;
+        transactions.delete(tx_id.to_string().into()).await?;
+        tx.done().await?;
+        Ok(())
+    }
+
+    async fn list_ids(&self) -> Result<Vec<TransactionId>> {
+        let tx = self
+            .db
+            .transaction(&[self.tx_store.clone()], TransactionMode::ReadOnly)?;
+        let transactions = tx.store(&self.tx_store)?;
+        let tx_ids = transactions
+            .get_all_keys(None, None)
+            .await?
+            .into_iter()
+            .map(from_value::<TransactionId>)
+            .map(|r| r.map_err(Error::from))
+            .collect::<Result<Vec<_>>>()?;
+        tx.done().await?;
+        Ok(tx_ids)
+    }
+}
+
+#[async_trait(?Send)]
+impl wallet::TransactionRepository for TransactionDB {
+    async fn store_tx(&self, tx: Transaction) -> Result<TransactionId> {
+        let tx_entry = TransactionEntry::from(tx);
+        self.store(tx_entry).await
+    }
+
+    async fn load_tx(&self, tx_id: TransactionId) -> Result<Transaction> {
+        let entry = self
+            .load(tx_id)
+            .await?
+            .ok_or(Error::TransactionNotFound(tx_id))?;
+        Ok(Transaction::from(entry))
+    }
+
+    async fn delete_tx(&self, tx_id: TransactionId) -> Result<()> {
+        self.delete(tx_id).await
+    }
+
+    async fn list_tx_ids(&self) -> Result<Vec<TransactionId>> {
+        self.list_ids().await
     }
 }

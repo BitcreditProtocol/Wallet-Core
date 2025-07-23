@@ -17,6 +17,7 @@ pub struct SendSummary {
 #[derive(Clone)]
 pub struct WalletSendSummary {
     pub request_id: Uuid,
+    pub amount: Amount,
     pub unit: CurrencyUnit,
     pub internal_rid: Uuid,
 }
