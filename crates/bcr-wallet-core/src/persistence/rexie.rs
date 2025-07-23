@@ -20,8 +20,9 @@ use crate::{
 
 // ----- end imports
 
+///////////////////////////////////////////// ProofEntry
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct ProofEntry {
+struct ProofEntry {
     y: cdk01::PublicKey,
     amount: cashu::Amount,
     keyset_id: cdk02::Id,
@@ -34,8 +35,7 @@ pub struct ProofEntry {
 
 impl std::convert::From<cdk00::Proof> for ProofEntry {
     fn from(proof: cdk00::Proof) -> Self {
-        let y = cashu::dhke::hash_to_curve(proof.secret.as_bytes())
-            .expect("Hash to curve should not fail");
+        let y = proof.y().expect("Hash to curve should not fail");
         ProofEntry {
             y,
             amount: proof.amount,
@@ -60,6 +60,8 @@ impl std::convert::From<ProofEntry> for cdk00::Proof {
         }
     }
 }
+
+///////////////////////////////////////////// CounterEntry
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct CounterEntry {
     kid: cdk02::Id,

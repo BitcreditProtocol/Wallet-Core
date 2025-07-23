@@ -989,8 +989,7 @@ mod tests {
                 Ok(response)
             });
         db.expect_store_new().times(2).returning(|p| {
-            let y = cashu::dhke::hash_to_curve(p.secret.as_bytes())
-                .expect("Hash to curve should not fail");
+            let y = p.y().expect("Hash to curve should not fail");
             Ok(y)
         });
 
@@ -1079,8 +1078,7 @@ mod tests {
                 Ok(response)
             });
         db.expect_store_new().times(2).returning(|p| {
-            let y = cashu::dhke::hash_to_curve(p.secret.as_bytes())
-                .expect("Hash to curve should not fail");
+            let y = p.y().expect("Hash to curve should not fail");
             Ok(y)
         });
 
@@ -1102,8 +1100,7 @@ mod tests {
         let proofs = signatures_test::generate_proofs(&keyset, &amounts);
         let proofs_map: HashMap<cdk01::PublicKey, cdk00::Proof> =
             HashMap::from_iter(proofs.into_iter().map(|p| {
-                let y = cashu::dhke::hash_to_curve(p.secret.as_bytes())
-                    .expect("Hash to curve should not fail");
+                let y = p.y().expect("Hash to curve should not fail");
                 (y, p)
             }));
 
@@ -1128,8 +1125,7 @@ mod tests {
         let proofs = signatures_test::generate_proofs(&keyset, &amounts);
         let proofs_map: HashMap<cdk01::PublicKey, cdk00::Proof> =
             HashMap::from_iter(proofs.into_iter().map(|p| {
-                let y = cashu::dhke::hash_to_curve(p.secret.as_bytes())
-                    .expect("Hash to curve should not fail");
+                let y = p.y().expect("Hash to curve should not fail");
                 (y, p)
             }));
 
@@ -1154,8 +1150,7 @@ mod tests {
         let proofs = signatures_test::generate_proofs(&keyset, &amounts);
         let proofs_map: HashMap<cdk01::PublicKey, cdk00::Proof> =
             HashMap::from_iter(proofs.into_iter().map(|p| {
-                let y = cashu::dhke::hash_to_curve(p.secret.as_bytes())
-                    .expect("Hash to curve should not fail");
+                let y = p.y().expect("Hash to curve should not fail");
                 (y, p)
             }));
 
@@ -1210,8 +1205,7 @@ mod tests {
                 })
             });
         mockdb.expect_store_new().times(5).returning(|p| {
-            let y = cashu::dhke::hash_to_curve(p.secret.as_bytes())
-                .expect("Hash to curve should not fail");
+            let y = p.y().expect("Hash to curve should not fail");
             Ok(y)
         });
 
@@ -1231,5 +1225,43 @@ mod tests {
             .iter()
             .fold(Amount::ZERO, |acc, (_, p)| acc + p.amount);
         assert_eq!(total, target);
+    }
+
+    #[tokio::test]
+    async fn swap() {
+        let (info, keyset) = keys_test::generate_random_keyset();
+        let amounts = [Amount::from(8u64), Amount::from(16u64)];
+        let unit = CurrencyUnit::Sat;
+        let inputs = signatures_test::generate_proofs(&keyset, &amounts);
+        let premints = HashMap::from_iter([(
+            info.id,
+            cdk00::PreMintSecrets::random(info.id, Amount::from(24u64), &SplitTarget::None)
+                .unwrap(),
+        )]);
+        let keysets = HashMap::from([(info.id, KeySet::from(keyset.clone()))]);
+
+        let mut mockclient = MockMintConnector::new();
+        let mut mockdb = MockPocketRepository::new();
+        mockclient
+            .expect_post_swap()
+            .times(1)
+            .returning(move |request| {
+                let amounts = request
+                    .outputs()
+                    .iter()
+                    .map(|b| b.amount)
+                    .collect::<Vec<_>>();
+                let signatures = signatures_test::generate_signatures(&keyset, &amounts);
+                Ok(cdk03::SwapResponse { signatures })
+            });
+        mockdb.expect_store_new().times(2).returning(|p| {
+            let y = p.y().expect("Hash to curve should not fail");
+            Ok(y)
+        });
+
+        let amount = super::swap(unit, inputs, premints, keysets, &mockclient, &mockdb)
+            .await
+            .unwrap();
+        assert_eq!(amount, Amount::from(24u64));
     }
 }

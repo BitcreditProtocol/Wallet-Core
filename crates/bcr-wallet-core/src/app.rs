@@ -203,7 +203,7 @@ pub fn wallet_currency_unit(idx: usize) -> Result<WalletCurrencyUnit> {
 }
 
 pub async fn wallet_balance(idx: usize) -> Result<WalletBalance> {
-    tracing::debug!("balance for wallet {}", idx);
+    tracing::debug!("wallet_balance({idx})");
 
     let wallet = get_wallet(idx)?;
     wallet.balance().await
