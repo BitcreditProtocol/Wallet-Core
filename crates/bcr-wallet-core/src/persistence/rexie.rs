@@ -426,7 +426,8 @@ pub struct TransactionDB {
 #[allow(dead_code)]
 impl TransactionDB {
     const TRANSACTION_BASE_DB_NAME: &'static str = "transactions";
-    const TRANSACTION_DB_KEY: &'static str = "tx_id";
+    const TRANSACTION_DB_KEY: &'static str = "tx_id"; // MUST match TransactionDB field
+    const TRANSACTION_DB_INDEX: &'static str = "timestamp"; // MUST match TransactionDB field
 
     fn tx_store_name(wallet_id: &str) -> String {
         format!("{wallet_id}_{}", Self::TRANSACTION_BASE_DB_NAME)
@@ -434,10 +435,13 @@ impl TransactionDB {
 
     pub fn object_stores(wallet_id: &str) -> Vec<rexie::ObjectStore> {
         let tx_store_name = Self::tx_store_name(wallet_id);
+        let tx_tstamp_index =
+            rexie::Index::new(Self::TRANSACTION_DB_INDEX, Self::TRANSACTION_DB_INDEX).unique(false);
         vec![
             rexie::ObjectStore::new(&tx_store_name)
                 .auto_increment(false)
-                .key_path(Self::TRANSACTION_DB_KEY),
+                .key_path(Self::TRANSACTION_DB_KEY)
+                .add_index(tx_tstamp_index),
         ]
     }
 
@@ -489,12 +493,16 @@ impl TransactionDB {
             .db
             .transaction(&[self.tx_store.clone()], TransactionMode::ReadOnly)?;
         let transactions = tx.store(&self.tx_store)?;
-        let tx_ids = transactions
+
+        let js_convert = |jsv| from_value::<String>(jsv).map_err(Error::from);
+        let tx_convert = |s: String| TransactionId::from_str(&s).map_err(Error::from);
+        let tx_tstamp_index = transactions.index(Self::TRANSACTION_DB_INDEX)?;
+        let tx_ids = tx_tstamp_index
             .get_all_keys(None, None)
             .await?
             .into_iter()
-            .map(from_value::<TransactionId>)
-            .map(|r| r.map_err(Error::from))
+            .map(js_convert)
+            .map(|r| r.and_then(tx_convert))
             .collect::<Result<Vec<_>>>()?;
         tx.done().await?;
         Ok(tx_ids)
