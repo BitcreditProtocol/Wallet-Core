@@ -233,3 +233,42 @@ async fn transaction_delete_tx() {
     let res = transactiondb.load_tx(txid).await;
     assert!(matches!(res, Err(Error::TransactionNotFound(..))));
 }
+
+#[wasm_bindgen_test]
+async fn transaction_list_tx_idxs() {
+    let transactiondb = create_transaction_db("transaction_list_tx_idxs").await;
+
+    let ys = keys_test::publics()[0..2].to_vec();
+    let tx_new = Transaction {
+        mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
+        direction: TransactionDirection::Incoming,
+        amount: Amount::from(100u64),
+        fee: Amount::from(1u64),
+        // keep an eye on https://github.com/cashubtc/cdk/issues/908
+        unit: CurrencyUnit::Sat,
+        ys,
+        timestamp: 84,
+        memo: None,
+        metadata: HashMap::new(),
+    };
+    let txid_new = transactiondb.store_tx(tx_new).await.unwrap();
+    let ys = keys_test::publics()[1..3].to_vec();
+    let tx_old = Transaction {
+        mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
+        direction: TransactionDirection::Incoming,
+        amount: Amount::from(100u64),
+        fee: Amount::from(1u64),
+        // keep an eye on https://github.com/cashubtc/cdk/issues/908
+        unit: CurrencyUnit::Sat,
+        ys,
+        timestamp: 42,
+        memo: None,
+        metadata: HashMap::new(),
+    };
+    let txid_old = transactiondb.store_tx(tx_old).await.unwrap();
+    assert!(txid_new < txid_old); // otherwise test does not make sense
+    let txs = transactiondb.list_tx_ids().await.unwrap();
+    assert_eq!(txs.len(), 2);
+    assert_eq!(txs[0], txid_old);
+    assert_eq!(txs[1], txid_new);
+}
