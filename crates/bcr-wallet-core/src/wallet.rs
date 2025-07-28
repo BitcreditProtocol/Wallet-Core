@@ -81,14 +81,13 @@ pub trait TransactionRepository {
     async fn list_tx_ids(&self) -> Result<Vec<TransactionId>>;
 }
 
-pub struct Wallet<Conn, TxRepo> {
+pub struct Wallet<Conn, TxRepo, DebtPck> {
     pub client: Conn,
     pub tx_repo: TxRepo,
     pub url: cashu::MintUrl,
-    pub debit: Box<dyn DebitPocket>,
+    pub debit: DebtPck,
     pub credit: Box<dyn CreditPocket>,
     #[allow(dead_code)]
-    pub mnemonic: bip39::Mnemonic,
     pub name: String,
 
     pub current_send: Mutex<Option<WalletSendSummary>>,
@@ -100,7 +99,10 @@ pub struct WalletBalance {
     pub credit: cashu::Amount,
 }
 
-impl<Conn, TxRepo> Wallet<Conn, TxRepo> {
+impl<Conn, TxRepo, DebtPck> Wallet<Conn, TxRepo, DebtPck>
+where
+    DebtPck: DebitPocket,
+{
     pub async fn balance(&self) -> Result<WalletBalance> {
         let debit = self.debit.balance().await?;
         let credit = self.credit.balance().await?;
@@ -128,9 +130,10 @@ impl<Conn, TxRepo> Wallet<Conn, TxRepo> {
     }
 }
 
-impl<Conn, TxRepo> Wallet<Conn, TxRepo>
+impl<Conn, TxRepo, DebtPck> Wallet<Conn, TxRepo, DebtPck>
 where
     Conn: MintConnector,
+    DebtPck: DebitPocket,
 {
     pub async fn prepare_send(
         &self,
@@ -148,8 +151,7 @@ where
             }
             Some(unit) if unit == self.debit.unit() => {
                 let (refer, summary) =
-                    Self::prepare_send_with_pocket(amount, &keysets_info, self.debit.as_ref())
-                        .await?;
+                    Self::prepare_send_with_pocket(amount, &keysets_info, &self.debit).await?;
                 *self.current_send.lock().unwrap() = Some(refer);
                 Ok(summary)
             }
@@ -168,8 +170,7 @@ where
                 let debit_balance = self.debit.balance().await?;
                 if debit_balance >= amount {
                     let (refer, summary) =
-                        Self::prepare_send_with_pocket(amount, &keysets_info, self.debit.as_ref())
-                            .await?;
+                        Self::prepare_send_with_pocket(amount, &keysets_info, &self.debit).await?;
                     *self.current_send.lock().unwrap() = Some(refer);
                     return Ok(summary);
                 }
@@ -223,7 +224,7 @@ where
     }
 }
 
-impl<Conn, TxRepo> Wallet<Conn, TxRepo>
+impl<Conn, TxRepo, DebtPck> Wallet<Conn, TxRepo, DebtPck>
 where
     TxRepo: TransactionRepository,
 {
@@ -236,10 +237,11 @@ where
     }
 }
 
-impl<Conn, TxRepo> Wallet<Conn, TxRepo>
+impl<Conn, TxRepo, DebtPck> Wallet<Conn, TxRepo, DebtPck>
 where
     Conn: MintConnector,
     TxRepo: TransactionRepository,
+    DebtPck: DebitPocket,
 {
     pub async fn receive_token(&self, token: Token, tstamp: u64) -> Result<TransactionId> {
         let token_teaser = token.to_string().chars().take(20).collect::<String>();

@@ -1,6 +1,7 @@
 // ----- standard library imports
 // ----- extra library imports
-use cashu::{Amount, CurrencyUnit};
+use bitcoin::bip32 as btc32;
+use cashu::{Amount, CurrencyUnit, MintUrl};
 use uuid::Uuid;
 // ----- local imports
 
@@ -35,4 +36,15 @@ impl PocketSendSummary {
             ..Default::default()
         }
     }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct WalletConfig {
+    pub wallet_id: String,
+    pub name: String,
+
+    pub mint: MintUrl,
+    pub debit_unit: CurrencyUnit,
+    pub credit_unit: Option<CurrencyUnit>,
+    pub master: btc32::Xpriv,
 }

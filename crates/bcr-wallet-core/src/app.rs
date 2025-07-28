@@ -4,9 +4,11 @@ use std::{cell::RefCell, collections::HashSet, rc::Rc, str::FromStr, sync::Mutex
 use anyhow::Error as AnyError;
 use bcr_wallet_lib::wallet::Token;
 use bitcoin::{
+    bip32 as btc32,
     hashes::{Hash, HashEngine, sha256},
     hex::DisplayHex,
 };
+use cashu::CurrencyUnit;
 use cdk::wallet::{
     MintConnector,
     types::{Transaction, TransactionId},
@@ -15,8 +17,7 @@ use cdk::wallet::{
 use crate::{
     SendSummary,
     error::{Error, Result},
-    persistence::{self, rexie::PocketDB},
-    wallet::{CreditPocket, DebitPocket, WalletBalance},
+    wallet::{CreditPocket, Pocket, WalletBalance},
 };
 
 // ----- end imports
@@ -26,7 +27,11 @@ type ProductionTransactionRepository = crate::persistence::rexie::TransactionDB;
 type ProductionPocketRepository = crate::persistence::rexie::PocketDB;
 type ProductionDebitPocket = crate::pocket::DbPocket<ProductionPocketRepository>;
 type ProductionCreditPocket = crate::pocket::CrPocket<ProductionPocketRepository>;
-type ProductionWallet = crate::wallet::Wallet<ProductionConnector, ProductionTransactionRepository>;
+type ProductionWallet = crate::wallet::Wallet<
+    ProductionConnector,
+    ProductionTransactionRepository,
+    ProductionDebitPocket,
+>;
 
 pub struct AppState {
     wallets: Vec<Rc<ProductionWallet>>,
@@ -69,31 +74,20 @@ fn get_wallet(idx: usize) -> Result<Rc<ProductionWallet>> {
             .ok_or(Error::WalletNotFound(idx))
     })
 }
-
 /// returns the index of the wallet
 pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Result<usize> {
     tracing::debug!("Adding a new wallet for mint {name}, {mint_url}, {mnemonic}");
-    let network = APP_STATE.with_borrow(|state| state.network);
-    // Validation
-    let mnemonic = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, mnemonic.trim())?;
-    let master_xpriv = bitcoin::bip32::Xpriv::new_master(network, &mnemonic.to_seed(""))?;
 
     let mint_url = cashu::MintUrl::from_str(&mint_url)?;
     let client = ProductionConnector::new(mint_url.clone());
-
-    // building a unique identifier for the local DB
-    let mut hasher = sha256::HashEngine::default();
-    hasher.input(mnemonic.to_entropy().as_slice());
-
     let info = client.get_mint_info().await?;
-    if let Some(pubkey) = info.pubkey {
-        hasher.input(&pubkey.to_bytes());
+    let mint_id = if let Some(pk) = info.pubkey {
+        pk.to_bytes().to_vec()
     } else if let Some(name) = info.name {
-        hasher.input(name.as_bytes());
+        name.to_string().as_bytes().to_vec()
     } else {
-        hasher.input(mint_url.to_string().as_bytes());
-    }
-
+        mint_url.to_string().as_bytes().to_vec()
+    };
     let keyset_infos = client.get_mint_keysets().await?.keysets;
     let currencies = keyset_infos
         .iter()
@@ -105,71 +99,35 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
         )));
     }
 
-    // building database and object_stores
-    let db_id = sha256::Hash::from_engine(hasher)
-        .as_byte_array()
-        .as_hex()
-        .to_string();
-    let rexie_db_name = format!("bitcredit_wallet_{db_id}");
-    let transaction_stores = ProductionTransactionRepository::object_stores(&db_id);
-    let mut rexie_builder = rexie::Rexie::builder(&rexie_db_name);
-    for store in transaction_stores {
-        rexie_builder = rexie_builder.add_object_store(store);
-    }
     let credit_unit = currencies
         .iter()
         .find(|unit| unit.to_string().starts_with("cr"));
-    if let Some(unit) = credit_unit {
-        let stores = PocketDB::object_stores(unit);
-        for store in stores {
-            rexie_builder = rexie_builder.add_object_store(store);
-        }
-    }
     let debit_unit = currencies
         .iter()
         .find(|unit| !unit.to_string().starts_with("cr"));
-    if let Some(unit) = debit_unit {
-        let stores = PocketDB::object_stores(unit);
-        for store in stores {
-            rexie_builder = rexie_builder.add_object_store(store);
-        }
+    if debit_unit.is_none() {
+        let currencies = currencies.into_iter().collect();
+        return Err(Error::NoDebitCurrencyInMint(currencies));
     }
-    let rexie = Rc::new(rexie_builder.build().await?);
-    tracing::debug!("Rexie DB created: {}", rexie.name());
+    let debit_unit = debit_unit.unwrap();
 
-    // building the credit pocket
-    let credit_pocket: Box<dyn CreditPocket> = if let Some(unit) = credit_unit {
-        let db = persistence::rexie::PocketDB::new(rexie.clone(), unit.clone())?;
-        let pocket = ProductionCreditPocket::new(unit.clone(), db, master_xpriv);
-        Box::new(pocket)
-    } else {
-        tracing::warn!("app::add_wallet: credit_pocket = DummyPocket");
-        Box::new(crate::pocket::DummyPocket {})
-    };
-    // building the debit pocket
-    let debit_pocket: Box<dyn DebitPocket> = if let Some(unit) = debit_unit {
-        let db = persistence::rexie::PocketDB::new(rexie.clone(), unit.clone())?;
-        let pocket = ProductionDebitPocket::new(unit.clone(), db, master_xpriv);
-        Box::new(pocket)
-    } else {
-        tracing::warn!("app::add_wallet: debit_pocket = DummyPocket");
-        Box::new(crate::pocket::DummyPocket {})
-    };
-
-    let tx_repo = ProductionTransactionRepository::new(rexie.clone(), &db_id)?;
-
-    let new_wallet: ProductionWallet = ProductionWallet {
-        client,
-        url: mint_url,
-        tx_repo,
-        debit: debit_pocket,
-        credit: credit_pocket,
-        mnemonic,
+    let network = APP_STATE.with_borrow(|state| state.network);
+    let mnemonic = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, mnemonic.trim())?;
+    let master_xpriv = bitcoin::bip32::Xpriv::new_master(network, &mnemonic.to_seed(""))?;
+    let wallet_id = build_wallet_id(&mint_id, &master_xpriv);
+    let rexiedb = build_wallet_db(&wallet_id, debit_unit, credit_unit).await?;
+    let wallet = build_wallet(
+        &wallet_id,
         name,
-        current_send: Mutex::new(None),
-    };
+        mint_url,
+        master_xpriv,
+        client,
+        rexiedb,
+        (debit_unit.clone(), credit_unit.cloned()),
+    )?;
+
     let index = APP_STATE.with_borrow_mut(|state| {
-        state.wallets.push(Rc::new(new_wallet));
+        state.wallets.push(Rc::new(wallet));
         state.wallets.len() - 1
     });
     Ok(index)
@@ -310,4 +268,76 @@ pub fn wallets_names() -> Result<Vec<String>> {
             .collect::<Vec<_>>()
     });
     Ok(names)
+}
+
+fn build_wallet_id(mint_id: &[u8], master: &btc32::Xpriv) -> String {
+    let secp = secp256k1::Secp256k1::signing_only();
+    let xpub = btc32::Xpub::from_priv(&secp, master);
+    let mut hasher = sha256::HashEngine::default();
+    hasher.input(mint_id);
+    hasher.input(xpub.fingerprint().to_bytes().as_slice());
+    sha256::Hash::from_engine(hasher)
+        .as_byte_array()
+        .as_hex()
+        .to_string()
+}
+
+async fn build_wallet_db(
+    wallet_id: &str,
+    debit: &CurrencyUnit,
+    credit: Option<&CurrencyUnit>,
+) -> Result<Rc<rexie::Rexie>> {
+    let rexie_db_name = format!("bitcredit_wallet_{wallet_id}");
+    let transaction_stores = ProductionTransactionRepository::object_stores(wallet_id);
+    let mut rexie_builder = rexie::Rexie::builder(&rexie_db_name);
+    for store in transaction_stores {
+        rexie_builder = rexie_builder.add_object_store(store);
+    }
+    let stores = ProductionPocketRepository::object_stores(debit);
+    for store in stores {
+        rexie_builder = rexie_builder.add_object_store(store);
+    }
+    if let Some(unit) = credit {
+        let stores = ProductionPocketRepository::object_stores(unit);
+        for store in stores {
+            rexie_builder = rexie_builder.add_object_store(store);
+        }
+    }
+    let rexie = Rc::new(rexie_builder.build().await?);
+    Ok(rexie)
+}
+
+fn build_wallet(
+    wallet_id: &str,
+    name: String,
+    mint_url: cashu::MintUrl,
+    master: btc32::Xpriv,
+    client: ProductionConnector,
+    rexiedb: Rc<rexie::Rexie>,
+    (debit, credit): (CurrencyUnit, Option<CurrencyUnit>),
+) -> Result<ProductionWallet> {
+    // building the transaction repository
+    let tx_repo = ProductionTransactionRepository::new(rexiedb.clone(), wallet_id)?;
+    // building the debit pocket
+    let debitdb = ProductionPocketRepository::new(rexiedb.clone(), debit.clone())?;
+    let debit_pocket = ProductionDebitPocket::new(debit.clone(), debitdb, master);
+    // building the credit pocket
+    let credit_pocket: Box<dyn CreditPocket> = if let Some(unit) = credit {
+        let db = ProductionPocketRepository::new(rexiedb.clone(), unit.clone())?;
+        let pocket = ProductionCreditPocket::new(unit.clone(), db, master);
+        Box::new(pocket)
+    } else {
+        tracing::warn!("app::add_wallet: credit_pocket = DummyPocket");
+        Box::new(crate::pocket::DummyPocket {})
+    };
+    let new_wallet: ProductionWallet = ProductionWallet {
+        client,
+        url: mint_url,
+        tx_repo,
+        debit: debit_pocket,
+        credit: credit_pocket,
+        name,
+        current_send: Mutex::new(None),
+    };
+    Ok(new_wallet)
 }
