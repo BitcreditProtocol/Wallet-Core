@@ -643,16 +643,6 @@ impl CreditPocket for DummyPocket {
         Ok(Vec::new())
     }
 }
-#[async_trait(?Send)]
-impl DebitPocket for DummyPocket {
-    async fn reclaim_proofs(
-        &self,
-        _keysets_info: &[KeySetInfo],
-        _client: &dyn MintConnector,
-    ) -> Result<Amount> {
-        Ok(Amount::ZERO)
-    }
-}
 
 ///////////////////////////////////////////// clean_local_proofs
 async fn clean_local_proofs(

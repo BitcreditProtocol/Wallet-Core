@@ -60,6 +60,8 @@ pub enum Error {
     InactiveKeyset(cashu::Id),
     #[error("transaction not found {0}")]
     TransactionNotFound(cdk::wallet::types::TransactionId),
+    #[error("Mint not supporting debit currency")]
+    NoDebitCurrencyInMint(Vec<cashu::CurrencyUnit>),
 
     #[error("internal error: {0}")]
     Internal(String),
