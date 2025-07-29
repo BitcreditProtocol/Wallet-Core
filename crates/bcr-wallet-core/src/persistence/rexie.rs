@@ -418,14 +418,12 @@ impl std::convert::From<TransactionEntry> for Transaction {
 }
 
 ///////////////////////////////////////////// TransactionDB
-#[allow(dead_code)]
 pub struct TransactionDB {
     db: Rc<Rexie>,
 
     tx_store: String,
 }
 
-#[allow(dead_code)]
 impl TransactionDB {
     const TRANSACTION_BASE_DB_NAME: &'static str = "transactions";
     const TRANSACTION_DB_KEY: &'static str = "tx_id"; // MUST match TransactionDB field
@@ -574,7 +572,6 @@ impl std::convert::From<WalletEntry> for WalletConfig {
 }
 
 ///////////////////////////////////////////// PurseDB
-#[allow(dead_code)]
 pub struct PurseDB {
     db: Rc<Rexie>,
 

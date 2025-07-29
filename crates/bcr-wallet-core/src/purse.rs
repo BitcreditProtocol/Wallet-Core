@@ -8,10 +8,8 @@ use crate::{error::Result, types::WalletConfig};
 
 #[async_trait(?Send)]
 pub trait PurseRepository {
-    #[allow(dead_code)]
     async fn store_wallet(&self, wallet: WalletConfig) -> Result<()>;
     async fn load_wallet(&self, wallet_id: &str) -> Result<WalletConfig>;
-    #[allow(dead_code)]
     async fn delete_wallet(&self, wallet_id: &str) -> Result<()>;
     async fn list_wallets(&self) -> Result<Vec<String>>;
 }
