@@ -17,6 +17,7 @@ use cdk::wallet::{
 use crate::{
     SendSummary,
     error::{Error, Result},
+    types::WalletConfig,
     wallet::{CreditPocket, Pocket, WalletBalance},
 };
 
@@ -32,22 +33,68 @@ type ProductionWallet = crate::wallet::Wallet<
     ProductionTransactionRepository,
     ProductionDebitPocket,
 >;
+type ProductionPurseRepository = crate::persistence::rexie::PurseDB;
+type ProductionPurse = crate::purse::Purse<ProductionPurseRepository>;
 
 pub struct AppState {
     wallets: Vec<Rc<ProductionWallet>>,
-    network: bitcoin::NetworkKind,
+    network: bitcoin::Network,
+    purse: Option<Rc<ProductionPurse>>,
 }
 impl AppState {
-    pub fn new(network: bitcoin::NetworkKind) -> Self {
+    pub const DB_VERSION: u32 = 1;
+
+    pub fn new(network: bitcoin::Network, purse: Option<Rc<ProductionPurse>>) -> Self {
+        tracing::debug!("Creating new AppState with network: {:?}", network);
         Self {
             wallets: Vec::new(),
             network,
+            purse,
         }
+    }
+
+    pub async fn load_wallets(&mut self) -> Result<()> {
+        tracing::debug!("AppState::load_wallets({})", self.network);
+        let Some(purse) = &self.purse else {
+            return Err(Error::BadPurseDB);
+        };
+        let w_ids = purse.list_wallets().await?;
+        for wid in w_ids {
+            tracing::debug!("Loading wallet with id: {wid}");
+            let w_cfg = purse.load_wallet(&wid).await?;
+            if w_cfg.network != self.network {
+                tracing::info!(
+                    "Skipping wallet {wid} with network {:?}, expected {:?}",
+                    w_cfg.network,
+                    self.network,
+                );
+                continue;
+            }
+            let rexiedb = build_wallet_db(
+                AppState::DB_VERSION,
+                &w_cfg.wallet_id,
+                &w_cfg.debit,
+                w_cfg.credit.as_ref(),
+            )
+            .await?;
+            let client = ProductionConnector::new(w_cfg.mint.clone());
+            let wallet = build_wallet(
+                &w_cfg.wallet_id,
+                w_cfg.name,
+                w_cfg.mint,
+                w_cfg.master,
+                client,
+                rexiedb,
+                (w_cfg.debit, w_cfg.credit),
+            )?;
+            self.wallets.push(Rc::new(wallet));
+        }
+        Ok(())
     }
 }
 impl Default for AppState {
     fn default() -> Self {
-        Self::new(bitcoin::NetworkKind::Main)
+        Self::new(bitcoin::Network::Bitcoin, None)
     }
 }
 
@@ -55,14 +102,26 @@ thread_local! {
 static APP_STATE: RefCell<AppState> = RefCell::new(AppState::default());
 }
 
-pub fn initialize_api(network: String) {
-    tracing::debug!("Initializing API with network: {:?}", network);
-    let net = match network.as_str() {
-        "main" => bitcoin::NetworkKind::Main,
-        "test" => bitcoin::NetworkKind::Test,
-        _ => panic!("Unknown network: {network}"),
+pub async fn initialize_api(network: String) {
+    tracing::debug!("Initializing API with network: {network}");
+    let net = bitcoin::Network::from_str(&network)
+        .unwrap_or_else(|_| panic!("invalid network: {network}"));
+
+    let rexie = build_appstate_db(AppState::DB_VERSION)
+        .await
+        .expect("Failed to build app state DB");
+    let purse_repo =
+        ProductionPurseRepository::new(rexie.clone()).expect("Failed to create purse repository");
+    let purse = ProductionPurse {
+        wallets: purse_repo,
     };
-    APP_STATE.replace(AppState::new(net));
+
+    let mut appstate = AppState::new(net, Some(Rc::new(purse)));
+    appstate
+        .load_wallets()
+        .await
+        .expect("Failed to load wallets");
+    APP_STATE.replace(appstate);
 }
 
 fn get_wallet(idx: usize) -> Result<Rc<ProductionWallet>> {
@@ -73,6 +132,9 @@ fn get_wallet(idx: usize) -> Result<Rc<ProductionWallet>> {
             .cloned()
             .ok_or(Error::WalletNotFound(idx))
     })
+}
+fn get_purse() -> Result<Rc<ProductionPurse>> {
+    APP_STATE.with_borrow(|state| state.purse.clone().ok_or(Error::BadPurseDB))
 }
 /// returns the index of the wallet
 pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Result<usize> {
@@ -115,22 +177,34 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
     let mnemonic = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, mnemonic.trim())?;
     let master_xpriv = bitcoin::bip32::Xpriv::new_master(network, &mnemonic.to_seed(""))?;
     let wallet_id = build_wallet_id(&mint_id, &master_xpriv);
-    let rexiedb = build_wallet_db(&wallet_id, debit_unit, credit_unit).await?;
+    let rexiedb =
+        build_wallet_db(AppState::DB_VERSION, &wallet_id, debit_unit, credit_unit).await?;
     let wallet = build_wallet(
         &wallet_id,
-        name,
-        mint_url,
+        name.clone(),
+        mint_url.clone(),
         master_xpriv,
         client,
         rexiedb,
         (debit_unit.clone(), credit_unit.cloned()),
     )?;
+    let wallet_cfg = WalletConfig {
+        wallet_id: wallet_id.clone(),
+        name,
+        network,
+        mint: mint_url.clone(),
+        master: master_xpriv,
+        debit: debit_unit.clone(),
+        credit: credit_unit.cloned(),
+    };
+    let purse = get_purse()?;
+    purse.store_wallet(wallet_cfg).await?;
 
-    let index = APP_STATE.with_borrow_mut(|state| {
+    let idx = APP_STATE.with_borrow_mut(|state| {
         state.wallets.push(Rc::new(wallet));
         state.wallets.len() - 1
     });
-    Ok(index)
+    Ok(idx)
 }
 
 pub fn wallet_name(idx: usize) -> Result<String> {
@@ -282,14 +356,26 @@ fn build_wallet_id(mint_id: &[u8], master: &btc32::Xpriv) -> String {
         .to_string()
 }
 
+async fn build_appstate_db(db_version: u32) -> Result<Rc<rexie::Rexie>> {
+    let rexie_db_name = "bitcredit_wallet";
+    let mut rexie_builder = rexie::Rexie::builder(rexie_db_name).version(db_version);
+    let purse_stores = ProductionPurseRepository::object_stores();
+    for store in purse_stores {
+        rexie_builder = rexie_builder.add_object_store(store);
+    }
+    let rexie = Rc::new(rexie_builder.build().await?);
+    Ok(rexie)
+}
+
 async fn build_wallet_db(
+    db_version: u32,
     wallet_id: &str,
     debit: &CurrencyUnit,
     credit: Option<&CurrencyUnit>,
 ) -> Result<Rc<rexie::Rexie>> {
     let rexie_db_name = format!("bitcredit_wallet_{wallet_id}");
     let transaction_stores = ProductionTransactionRepository::object_stores(wallet_id);
-    let mut rexie_builder = rexie::Rexie::builder(&rexie_db_name);
+    let mut rexie_builder = rexie::Rexie::builder(&rexie_db_name).version(db_version);
     for store in transaction_stores {
         rexie_builder = rexie_builder.add_object_store(store);
     }
