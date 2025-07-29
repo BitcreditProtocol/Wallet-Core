@@ -7,6 +7,7 @@ mod app;
 pub mod error;
 pub mod persistence;
 pub mod pocket;
+mod purse;
 mod types;
 mod utils;
 pub mod wallet;
@@ -18,7 +19,7 @@ pub mod wallet;
 pub async fn initialize_api(network: String) {
     tracing_wasm::set_as_global_default();
     info!("Tracing setup");
-    app::initialize_api(network);
+    app::initialize_api(network).await;
 }
 
 // --------------------------------------------------------------- add_wallet

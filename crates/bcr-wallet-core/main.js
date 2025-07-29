@@ -2,7 +2,7 @@ async function run() {
   const wasmModule = await import("./pkg/bcr_wallet_core.js");
   await wasmModule.default();
 
-  await wasmModule.initialize_api("test");
+  await wasmModule.initialize_api("testnet");
 
   let update_wallets = async () => {
     let wallets = await wasmModule.get_wallets_names();
@@ -55,7 +55,6 @@ async function run() {
     }
     return -1;
   }
-
 
   document.getElementById("addbtn").addEventListener("click", async () => {
     //test

@@ -32,6 +32,8 @@ pub enum Error {
     InsufficientFunds,
     #[error("local pocket DB not initialized correctly")]
     BadPocketDB,
+    #[error("local purse DB not initialized correctly")]
+    BadPurseDB,
     #[error("local transaction DB not initialized correctly")]
     BadTransactionDB,
     #[error("proof in local DB not found: {0}")]
@@ -40,6 +42,8 @@ pub enum Error {
     InvalidProofState(cashu::PublicKey),
     #[error("internal, generic: {0}")]
     Any(AnyError),
+    #[error("wallet id {0} not found")]
+    WalletIdNotFound(String),
     #[error("wallet at idx {0} not found")]
     WalletNotFound(usize),
     #[error("empty token: {0}")]

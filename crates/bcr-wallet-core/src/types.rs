@@ -42,9 +42,10 @@ impl PocketSendSummary {
 pub struct WalletConfig {
     pub wallet_id: String,
     pub name: String,
+    pub network: bitcoin::Network,
 
     pub mint: MintUrl,
-    pub debit_unit: CurrencyUnit,
-    pub credit_unit: Option<CurrencyUnit>,
+    pub debit: CurrencyUnit,
+    pub credit: Option<CurrencyUnit>,
     pub master: btc32::Xpriv,
 }

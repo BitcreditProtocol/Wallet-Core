@@ -87,7 +87,6 @@ pub struct Wallet<Conn, TxRepo, DebtPck> {
     pub url: cashu::MintUrl,
     pub debit: DebtPck,
     pub credit: Box<dyn CreditPocket>,
-    #[allow(dead_code)]
     pub name: String,
 
     pub current_send: Mutex<Option<WalletSendSummary>>,
