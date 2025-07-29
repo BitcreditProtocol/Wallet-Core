@@ -126,7 +126,7 @@ impl PocketDB {
         let entry = to_value(&proof)?;
         let tx = self
             .db
-            .transaction(&[self.proof_store.clone()], TransactionMode::ReadWrite)?;
+            .transaction(&[&self.proof_store], TransactionMode::ReadWrite)?;
         let proofs = tx.store(&self.proof_store)?;
         proofs.add(&entry, None).await?;
         tx.done().await?;
@@ -136,7 +136,7 @@ impl PocketDB {
     async fn load_entry(&self, y: cdk01::PublicKey) -> Result<Option<ProofEntry>> {
         let tx = self
             .db
-            .transaction(&[self.proof_store.clone()], TransactionMode::ReadOnly)?;
+            .transaction(&[&self.proof_store], TransactionMode::ReadOnly)?;
         let proofs = tx.store(&self.proof_store)?;
         let js_entry = proofs.get(y.to_string().into()).await?;
         tx.done().await?;
@@ -147,7 +147,7 @@ impl PocketDB {
     async fn delete_entry(&self, y: cdk01::PublicKey) -> Result<()> {
         let tx = self
             .db
-            .transaction(&[self.proof_store.clone()], TransactionMode::ReadWrite)?;
+            .transaction(&[&self.proof_store], TransactionMode::ReadWrite)?;
         let proofs = tx.store(&self.proof_store)?;
         proofs.delete(y.to_string().into()).await?;
         tx.done().await?;
@@ -163,7 +163,7 @@ impl PocketDB {
         let key = JsValue::from_str(&y.to_string());
         let tx = self
             .db
-            .transaction(&[self.proof_store.clone()], TransactionMode::ReadWrite)?;
+            .transaction(&[&self.proof_store], TransactionMode::ReadWrite)?;
         let proofs = tx.store(&self.proof_store)?;
         let mut proof = proofs
             .get(key.clone())
@@ -183,7 +183,7 @@ impl PocketDB {
     async fn list_entry_keys(&self) -> Result<Vec<cdk01::PublicKey>> {
         let tx = self
             .db
-            .transaction(&[self.proof_store.clone()], TransactionMode::ReadOnly)?;
+            .transaction(&[&self.proof_store], TransactionMode::ReadOnly)?;
         let proof_repo = tx.store(&self.proof_store)?;
         let ys = proof_repo
             .get_all_keys(None, None)
@@ -199,7 +199,7 @@ impl PocketDB {
     async fn list_entries(&self, state: Option<cdk07::State>) -> Result<Vec<ProofEntry>> {
         let tx = self
             .db
-            .transaction(&[self.proof_store.clone()], TransactionMode::ReadOnly)?;
+            .transaction(&[&self.proof_store], TransactionMode::ReadOnly)?;
         let proof_repo = tx.store(&self.proof_store)?;
         let proofs = proof_repo
             .get_all(None, None)
@@ -222,7 +222,7 @@ impl PocketDB {
     async fn counter(&self, kid: cdk02::Id) -> Result<CounterEntry> {
         let tx = self
             .db
-            .transaction(&[self.counter_store.clone()], TransactionMode::ReadWrite)?;
+            .transaction(&[&self.counter_store], TransactionMode::ReadWrite)?;
         let counters_repo = tx.store(&self.counter_store)?;
         let response = counters_repo.get(kid.to_string().into()).await?;
         let entry = if let Some(entry) = response {
@@ -244,7 +244,7 @@ impl PocketDB {
         }
         let tx = self
             .db
-            .transaction(&[self.counter_store.clone()], TransactionMode::ReadWrite)?;
+            .transaction(&[&self.counter_store], TransactionMode::ReadWrite)?;
         let counters_repo = tx.store(&self.counter_store)?;
         let response: Option<CounterEntry> = counters_repo
             .get(old.kid.to_string().into())
@@ -418,14 +418,12 @@ impl std::convert::From<TransactionEntry> for Transaction {
 }
 
 ///////////////////////////////////////////// TransactionDB
-#[allow(dead_code)]
 pub struct TransactionDB {
     db: Rc<Rexie>,
 
     tx_store: String,
 }
 
-#[allow(dead_code)]
 impl TransactionDB {
     const TRANSACTION_BASE_DB_NAME: &'static str = "transactions";
     const TRANSACTION_DB_KEY: &'static str = "tx_id"; // MUST match TransactionDB field
@@ -460,7 +458,7 @@ impl TransactionDB {
         let entry = to_value(&tx_entry)?;
         let tx = self
             .db
-            .transaction(&[self.tx_store.clone()], TransactionMode::ReadWrite)?;
+            .transaction(&[&self.tx_store], TransactionMode::ReadWrite)?;
         let transactions = tx.store(&self.tx_store)?;
         transactions.add(&entry, None).await?;
         tx.done().await?;
@@ -472,7 +470,7 @@ impl TransactionDB {
     async fn load(&self, tx_id: TransactionId) -> Result<Option<TransactionEntry>> {
         let tx = self
             .db
-            .transaction(&[self.tx_store.clone()], TransactionMode::ReadOnly)?;
+            .transaction(&[&self.tx_store], TransactionMode::ReadOnly)?;
         let transactions = tx.store(&self.tx_store)?;
         let js_entry = transactions.get(tx_id.to_string().into()).await?;
         tx.done().await?;
@@ -483,7 +481,7 @@ impl TransactionDB {
     async fn delete(&self, tx_id: TransactionId) -> Result<()> {
         let tx = self
             .db
-            .transaction(&[self.tx_store.clone()], TransactionMode::ReadWrite)?;
+            .transaction(&[&self.tx_store], TransactionMode::ReadWrite)?;
         let transactions = tx.store(&self.tx_store)?;
         transactions.delete(tx_id.to_string().into()).await?;
         tx.done().await?;
@@ -493,7 +491,7 @@ impl TransactionDB {
     async fn list_ids(&self) -> Result<Vec<TransactionId>> {
         let tx = self
             .db
-            .transaction(&[self.tx_store.clone()], TransactionMode::ReadOnly)?;
+            .transaction(&[&self.tx_store], TransactionMode::ReadOnly)?;
         let transactions = tx.store(&self.tx_store)?;
 
         let js_convert = |jsv| from_value::<String>(jsv).map_err(Error::from);
@@ -574,7 +572,6 @@ impl std::convert::From<WalletEntry> for WalletConfig {
 }
 
 ///////////////////////////////////////////// PurseDB
-#[allow(dead_code)]
 pub struct PurseDB {
     db: Rc<Rexie>,
 
@@ -612,7 +609,7 @@ impl PurseDB {
         let entry = to_value(&wallet)?;
         let tx = self
             .db
-            .transaction(&[self.wallet_store.clone()], TransactionMode::ReadWrite)?;
+            .transaction(&[&self.wallet_store], TransactionMode::ReadWrite)?;
         let wallets = tx.store(&self.wallet_store)?;
         wallets.add(&entry, None).await?;
         tx.done().await?;
@@ -622,7 +619,7 @@ impl PurseDB {
     async fn load(&self, w_id: String) -> Result<Option<WalletEntry>> {
         let tx = self
             .db
-            .transaction(&[self.wallet_store.clone()], TransactionMode::ReadOnly)?;
+            .transaction(&[&self.wallet_store], TransactionMode::ReadOnly)?;
         let wallets = tx.store(&self.wallet_store)?;
         let js_entry = wallets.get(w_id.into()).await?;
         tx.done().await?;
@@ -633,7 +630,7 @@ impl PurseDB {
     async fn delete(&self, w_id: String) -> Result<()> {
         let tx = self
             .db
-            .transaction(&[self.wallet_store.clone()], TransactionMode::ReadWrite)?;
+            .transaction(&[&self.wallet_store], TransactionMode::ReadWrite)?;
         let wallets = tx.store(&self.wallet_store)?;
         wallets.delete(w_id.into()).await?;
         tx.done().await?;
@@ -643,7 +640,7 @@ impl PurseDB {
     async fn list_ids(&self) -> Result<Vec<String>> {
         let tx = self
             .db
-            .transaction(&[self.wallet_store.clone()], TransactionMode::ReadOnly)?;
+            .transaction(&[&self.wallet_store], TransactionMode::ReadOnly)?;
         let wallets = tx.store(&self.wallet_store)?;
         let w_ids = wallets
             .get_all_keys(None, None)
