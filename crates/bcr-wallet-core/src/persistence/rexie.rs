@@ -15,6 +15,8 @@ use wasm_bindgen::JsValue;
 use crate::{
     error::{Error, Result},
     pocket::PocketRepository,
+    purse::PurseRepository,
+    types::WalletConfig,
     wallet,
 };
 
@@ -529,6 +531,154 @@ impl wallet::TransactionRepository for TransactionDB {
     }
 
     async fn list_tx_ids(&self) -> Result<Vec<TransactionId>> {
+        self.list_ids().await
+    }
+}
+
+///////////////////////////////////////////// WalletEntry
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct WalletEntry {
+    wallet_id: String,
+    name: String,
+    network: bitcoin::Network,
+    mint: cashu::MintUrl,
+    master: bitcoin::bip32::Xpriv,
+    debit: CurrencyUnit,
+    credit: Option<CurrencyUnit>,
+}
+impl std::convert::From<WalletConfig> for WalletEntry {
+    fn from(wallet: WalletConfig) -> Self {
+        Self {
+            wallet_id: wallet.wallet_id,
+            name: wallet.name,
+            network: wallet.network,
+            mint: wallet.mint,
+            master: wallet.master,
+            debit: wallet.debit,
+            credit: wallet.credit,
+        }
+    }
+}
+impl std::convert::From<WalletEntry> for WalletConfig {
+    fn from(wallet: WalletEntry) -> Self {
+        Self {
+            wallet_id: wallet.wallet_id,
+            name: wallet.name,
+            network: wallet.network,
+            mint: wallet.mint,
+            master: wallet.master,
+            debit: wallet.debit,
+            credit: wallet.credit,
+        }
+    }
+}
+
+///////////////////////////////////////////// PurseDB
+#[allow(dead_code)]
+pub struct PurseDB {
+    db: Rc<Rexie>,
+
+    wallet_store: String,
+}
+
+impl PurseDB {
+    const WALLET_BASE_DB_NAME: &'static str = "wallets";
+    const WALLET_DB_KEY: &'static str = "wallet_id"; // must match WalletEntry field
+
+    fn wallet_store_name() -> String {
+        String::from(Self::WALLET_BASE_DB_NAME)
+    }
+
+    pub fn object_stores() -> Vec<rexie::ObjectStore> {
+        let wallet_store_name = Self::wallet_store_name();
+        vec![
+            rexie::ObjectStore::new(&wallet_store_name)
+                .auto_increment(false)
+                .key_path(Self::WALLET_DB_KEY),
+        ]
+    }
+
+    pub fn new(db: Rc<Rexie>) -> Result<Self> {
+        let wallet_store = Self::wallet_store_name();
+        if !db.store_names().contains(&wallet_store) {
+            return Err(Error::BadPurseDB);
+        }
+
+        let db = PurseDB { db, wallet_store };
+        Ok(db)
+    }
+
+    async fn store(&self, wallet: WalletEntry) -> Result<String> {
+        let entry = to_value(&wallet)?;
+        let tx = self
+            .db
+            .transaction(&[self.wallet_store.clone()], TransactionMode::ReadWrite)?;
+        let wallets = tx.store(&self.wallet_store)?;
+        wallets.add(&entry, None).await?;
+        tx.done().await?;
+        Ok(wallet.wallet_id)
+    }
+
+    async fn load(&self, w_id: String) -> Result<Option<WalletEntry>> {
+        let tx = self
+            .db
+            .transaction(&[self.wallet_store.clone()], TransactionMode::ReadOnly)?;
+        let wallets = tx.store(&self.wallet_store)?;
+        let js_entry = wallets.get(w_id.into()).await?;
+        tx.done().await?;
+        let entry = js_entry.map(from_value::<WalletEntry>).transpose()?;
+        Ok(entry)
+    }
+
+    async fn delete(&self, w_id: String) -> Result<()> {
+        let tx = self
+            .db
+            .transaction(&[self.wallet_store.clone()], TransactionMode::ReadWrite)?;
+        let wallets = tx.store(&self.wallet_store)?;
+        wallets.delete(w_id.into()).await?;
+        tx.done().await?;
+        Ok(())
+    }
+
+    async fn list_ids(&self) -> Result<Vec<String>> {
+        let tx = self
+            .db
+            .transaction(&[self.wallet_store.clone()], TransactionMode::ReadOnly)?;
+        let wallets = tx.store(&self.wallet_store)?;
+        let w_ids = wallets
+            .get_all_keys(None, None)
+            .await?
+            .into_iter()
+            .map(from_value::<String>)
+            .map(|r| r.map_err(Error::from))
+            .collect::<Result<Vec<_>>>()?;
+        tx.done().await?;
+        Ok(w_ids)
+    }
+}
+
+#[async_trait(?Send)]
+impl PurseRepository for PurseDB {
+    async fn store_wallet(&self, wallet: WalletConfig) -> Result<()> {
+        let entry = WalletEntry::from(wallet);
+        self.store(entry).await?;
+        Ok(())
+    }
+    async fn load_wallet(&self, wallet_id: &str) -> Result<WalletConfig> {
+        let wid = String::from(wallet_id);
+        let entry = self
+            .load(wid.clone())
+            .await?
+            .ok_or(Error::WalletIdNotFound(wid))?;
+        let cfg = WalletConfig::from(entry);
+        Ok(cfg)
+    }
+    async fn delete_wallet(&self, wallet_id: &str) -> Result<()> {
+        let wid = String::from(wallet_id);
+        self.delete(wid).await?;
+        Ok(())
+    }
+    async fn list_wallets(&self) -> Result<Vec<String>> {
         self.list_ids().await
     }
 }
