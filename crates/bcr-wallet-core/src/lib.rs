@@ -7,6 +7,7 @@ mod app;
 pub mod error;
 pub mod persistence;
 pub mod pocket;
+mod purse;
 mod types;
 mod utils;
 pub mod wallet;
