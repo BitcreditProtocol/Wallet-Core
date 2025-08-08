@@ -46,6 +46,11 @@ pub trait Pocket {
     -> Result<Vec<cdk01::PublicKey>>;
 }
 
+pub struct RedemptionSummary {
+    pub tstamp: u64,
+    pub amount: Amount,
+}
+
 #[async_trait(?Send)]
 pub trait CreditPocket: Pocket {
     /// returns the amount reclaimed and the proofs that can be redeemed (i.e. unspent proofs with
@@ -61,6 +66,12 @@ pub trait CreditPocket: Pocket {
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
     ) -> Result<Vec<cdk00::Proof>>;
+
+    async fn list_redemptions(
+        &self,
+        keysets_info: &[KeySetInfo],
+        payment_window: std::time::Duration,
+    ) -> Result<Vec<RedemptionSummary>>;
 }
 
 #[async_trait(?Send)]
@@ -127,6 +138,21 @@ where
             swap_fees: pocket_summary.swap_fees,
         };
         Ok((reference, summary))
+    }
+}
+
+impl<Conn, TxRepo, DebtPck> Wallet<Conn, TxRepo, DebtPck>
+where
+    Conn: MintConnector,
+{
+    pub async fn list_redemptions(
+        &self,
+        payment_window: std::time::Duration,
+    ) -> Result<Vec<RedemptionSummary>> {
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
+        self.credit
+            .list_redemptions(&keysets_info, payment_window)
+            .await
     }
 }
 

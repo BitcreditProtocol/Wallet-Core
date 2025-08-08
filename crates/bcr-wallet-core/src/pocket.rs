@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::{
     error::{Error, Result},
     types::PocketSendSummary,
-    wallet::{CreditPocket, DebitPocket, Pocket},
+    wallet::{CreditPocket, DebitPocket, Pocket, RedemptionSummary},
 };
 
 // ----- end imports
@@ -369,6 +369,40 @@ where
         }
         Ok(redeemable)
     }
+
+    async fn list_redemptions(
+        &self,
+        keysets_info: &[KeySetInfo],
+        payment_window: std::time::Duration,
+    ) -> Result<Vec<RedemptionSummary>> {
+        let proofs = self.db.list_unspent().await?;
+        let infos = collect_keyset_infos_from_proofs(proofs.values(), keysets_info)?;
+        let ys_by_kid = group_ys_by_keyset_id(proofs.iter());
+        let mut redemptions: Vec<RedemptionSummary> = Vec::with_capacity(infos.len());
+        for (kid, ys) in ys_by_kid.iter() {
+            let info = infos
+                .get(kid)
+                .expect("infos map is built from proofs keyset_id");
+            if info.final_expiry.is_none() {
+                tracing::warn!(
+                    "CrPocket::list_redemptions: keyset {kid} has no final_expiry, skipping"
+                );
+                continue;
+            }
+            let expiry = info.final_expiry.unwrap() + payment_window.as_secs();
+            let mut amount = Amount::ZERO;
+            for y in ys {
+                let proof = proofs.get(y).expect("proof should be here");
+                amount += proof.amount;
+            }
+            redemptions.push(RedemptionSummary {
+                tstamp: expiry,
+                amount,
+            })
+        }
+        redemptions.sort_by_key(|r| r.tstamp);
+        Ok(redemptions)
+    }
 }
 
 ///////////////////////////////////////////// debit pocket
@@ -641,6 +675,13 @@ impl CreditPocket for DummyPocket {
         _keysets_info: &[KeySetInfo],
         _client: &dyn MintConnector,
     ) -> Result<Vec<cdk00::Proof>> {
+        Ok(Vec::new())
+    }
+    async fn list_redemptions(
+        &self,
+        _keysets_info: &[KeySetInfo],
+        _payment_window: std::time::Duration,
+    ) -> Result<Vec<RedemptionSummary>> {
         Ok(Vec::new())
     }
 }
@@ -1154,6 +1195,57 @@ mod tests {
 
         let response = crpocket.prepare_send(amount, &k_infos).await;
         assert!(matches!(response, Err(Error::InsufficientFunds)));
+    }
+
+    #[tokio::test]
+    async fn credit_list_redemptions() {
+        let mut proofs_map: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
+        let mut k_infos: Vec<KeySetInfo> = vec![];
+        // keyset 1
+        let (mut info, keyset) = keys_test::generate_random_keyset();
+        info.final_expiry = Some(100);
+        let amounts = [Amount::from(32u64), Amount::from(4u64)];
+        let proofs = signatures_test::generate_proofs(&keyset, &amounts);
+        proofs_map.extend(proofs.into_iter().map(|p| {
+            let y = p.y().expect("Hash to curve should not fail");
+            (y, p)
+        }));
+        k_infos.push(KeySetInfo::from(info));
+        // keyset 2
+        let (mut info, keyset) = keys_test::generate_random_keyset();
+        info.final_expiry = Some(10);
+        let amounts = [Amount::from(128u64), Amount::from(16u64)];
+        let proofs = signatures_test::generate_proofs(&keyset, &amounts);
+        proofs_map.extend(proofs.into_iter().map(|p| {
+            let y = p.y().expect("Hash to curve should not fail");
+            (y, p)
+        }));
+        k_infos.push(KeySetInfo::from(info));
+        // keyset 3
+        let (mut info, keyset) = keys_test::generate_keyset();
+        info.final_expiry = None;
+        let amounts = [Amount::from(128u64), Amount::from(16u64)];
+        let proofs = signatures_test::generate_proofs(&keyset, &amounts);
+        proofs_map.extend(proofs.into_iter().map(|p| {
+            let y = p.y().expect("Hash to curve should not fail");
+            (y, p)
+        }));
+        k_infos.push(KeySetInfo::from(info));
+
+        let mut db = MockPocketRepository::new();
+        db.expect_list_unspent()
+            .times(1)
+            .returning(move || Ok(proofs_map.clone()));
+
+        let crpocket = crpocket(db);
+
+        let list = crpocket
+            .list_redemptions(&k_infos, std::time::Duration::from_secs(10))
+            .await
+            .unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].tstamp, 20);
+        assert_eq!(list[1].tstamp, 110);
     }
 
     #[tokio::test]
