@@ -230,6 +230,38 @@ pub async fn wallet_redeem_credit(idx: usize) -> u64 {
     }
 }
 
+// --------------------------------------------------------------- wallet_list_redemptions
+#[wasm_bindgen]
+pub struct RedemptionSummary {
+    #[wasm_bindgen(readonly)]
+    pub tstamp: u32,
+    #[wasm_bindgen(readonly)]
+    pub amount: u64,
+}
+impl std::convert::From<wallet::RedemptionSummary> for RedemptionSummary {
+    fn from(summary: wallet::RedemptionSummary) -> Self {
+        Self {
+            tstamp: summary.tstamp as u32,
+            amount: u64::from(summary.amount),
+        }
+    }
+}
+#[wasm_bindgen]
+pub async fn wallet_list_redemptions(idx: usize, payment_window: u32) -> Vec<RedemptionSummary> {
+    let window = std::time::Duration::from_secs(payment_window as u64);
+    let returned = app::wallet_list_redemptions(idx, window).await;
+    match returned {
+        Ok(redemptions) => redemptions
+            .into_iter()
+            .map(RedemptionSummary::from)
+            .collect(),
+        Err(e) => {
+            tracing::error!("wallet_list_redemptions({idx}, {payment_window}): {e}");
+            Vec::default()
+        }
+    }
+}
+
 // --------------------------------------------------------------- wallet_clean_local_db
 #[wasm_bindgen]
 pub async fn wallet_clean_local_db(idx: usize) -> u32 {
