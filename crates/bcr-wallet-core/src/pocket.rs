@@ -25,9 +25,8 @@ use crate::{
 #[derive(Default, Clone)]
 struct SendReference {
     rid: Uuid,
-    target: Amount,
     send_proofs: Vec<cdk01::PublicKey>,
-    swap_proof: Option<cdk01::PublicKey>,
+    swap_proof: Option<(Amount, cdk01::PublicKey)>,
 }
 
 #[cfg_attr(test, mockall::automock)]
@@ -224,7 +223,6 @@ where
         let summary = PocketSendSummary::new();
         let mut send_ref = SendReference {
             rid: summary.request_id,
-            target,
             ..Default::default()
         };
         for kid in kids {
@@ -232,7 +230,7 @@ where
             for y in kid_ys.unwrap_or(&Vec::new()) {
                 let proof = proofs.get(y).expect("proof should be here");
                 if current_amount + proof.amount > target {
-                    send_ref.swap_proof = Some(*y);
+                    send_ref.swap_proof = Some((target - current_amount, *y));
                     *self.current_send.lock().unwrap() = Some(send_ref.clone());
                     return Ok(summary);
                 } else if current_amount + proof.amount == target {
@@ -264,34 +262,7 @@ where
             }
             locked.take().unwrap()
         };
-        let mut sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
-        let mut current_amount = Amount::ZERO;
-        for y in send_ref.send_proofs {
-            let proof = self.db.mark_as_pendingspent(y).await?;
-            current_amount += proof.amount;
-            sending_proofs.insert(y, proof);
-        }
-
-        if let Some(swap_y) = send_ref.swap_proof {
-            let swap_proof = self.db.mark_as_pendingspent(swap_y).await?;
-            let swap_proof_keyset = client.get_mint_keyset(swap_proof.keyset_id).await?;
-            let target_swapped = swap_proof_to_target(
-                swap_proof,
-                &swap_proof_keyset,
-                send_ref.target - current_amount,
-                self.xpriv,
-                &self.db,
-                client,
-            )
-            .await?;
-            for y in target_swapped.keys() {
-                let proof = self.db.mark_as_pendingspent(*y).await?;
-                current_amount += proof.amount;
-                sending_proofs.insert(*y, proof);
-            }
-        }
-        // this will go once tested thoroughly
-        assert_eq!(current_amount, send_ref.target, "amount should match");
+        let sending_proofs = send_proofs(send_ref, self.xpriv, &self.db, client, None).await?;
         Ok(sending_proofs)
     }
 
@@ -428,19 +399,23 @@ impl<Repo> DbPocket<Repo>
 where
     Repo: PocketRepository,
 {
-    async fn find_active_keyset(
-        &self,
-        keysets_info: &[KeySetInfo],
-        client: &dyn MintConnector,
-    ) -> Result<(KeySetInfo, KeySet)> {
+    fn find_active_keysetid(&self, keysets_info: &[KeySetInfo]) -> Result<cashu::KeySetInfo> {
         let active_info = keysets_info
             .iter()
             .find(|info| info.unit == self.unit && info.active && info.input_fee_ppk == 0);
         let Some(active_info) = active_info else {
             return Err(Error::NoActiveKeyset);
         };
+        Ok(active_info.clone())
+    }
+    async fn find_active_keyset(
+        &self,
+        keysets_info: &[KeySetInfo],
+        client: &dyn MintConnector,
+    ) -> Result<(KeySetInfo, KeySet)> {
+        let active_info = self.find_active_keysetid(keysets_info)?;
         let active_keyset = client.get_mint_keyset(active_info.id).await?;
-        Ok((active_info.clone(), active_keyset))
+        Ok((active_info, active_keyset))
     }
 
     async fn digest_proofs(
@@ -525,7 +500,6 @@ where
         let pocket_summary = PocketSendSummary::new();
         let mut send_ref = SendReference {
             rid: pocket_summary.request_id,
-            target,
             ..Default::default()
         };
         for kid in kids {
@@ -533,7 +507,7 @@ where
             for y in kid_ys {
                 let proof = proofs.get(&y).expect("proof should be here");
                 if current_amount + proof.amount > target {
-                    send_ref.swap_proof = Some(y);
+                    send_ref.swap_proof = Some((target - current_amount, y));
                     *self.current_send.lock().unwrap() = Some(send_ref);
                     return Ok(pocket_summary);
                 } else if current_amount + proof.amount == target {
@@ -565,33 +539,10 @@ where
             }
             locked.take().unwrap()
         };
-        let (_, active_keyset) = self.find_active_keyset(keysets_info, client).await?;
-        let mut sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
-        let mut current_amount = Amount::ZERO;
-        for y in send_ref.send_proofs {
-            let proof = self.db.mark_as_pendingspent(y).await?;
-            current_amount += proof.amount;
-            sending_proofs.insert(y, proof);
-        }
-        if let Some(swap_y) = send_ref.swap_proof {
-            let proof = self.db.mark_as_pendingspent(swap_y).await?;
-            let target_swapped = swap_proof_to_target(
-                proof,
-                &active_keyset,
-                send_ref.target - current_amount,
-                self.xpriv,
-                &self.db,
-                client,
-            )
-            .await?;
-            for y in target_swapped.keys() {
-                let proof = self.db.mark_as_pendingspent(*y).await?;
-                current_amount += proof.amount;
-                sending_proofs.insert(*y, proof);
-            }
-        }
-        // this will go once tested thoroughly
-        assert_eq!(current_amount, send_ref.target, "amount should match");
+        let info = self.find_active_keysetid(keysets_info)?;
+        let sending_proofs =
+            send_proofs(send_ref, self.xpriv, &self.db, client, Some(info.id)).await?;
+
         Ok(sending_proofs)
     }
 
@@ -887,6 +838,45 @@ fn group_ys_by_keyset_id<'a>(
             .or_insert(vec![*y]);
     }
     ys
+}
+
+///////////////////////////////////////////// send_proofs
+async fn send_proofs(
+    send_ref: SendReference,
+    xpriv: btc32::Xpriv,
+    db: &dyn PocketRepository,
+    client: &dyn MintConnector,
+    target_swap_keysetid: Option<cashu::Id>,
+) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
+    let mut current_amount = Amount::ZERO;
+    let mut sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
+    for y in send_ref.send_proofs {
+        let proof = db.mark_as_pendingspent(y).await?;
+        current_amount += proof.amount;
+        sending_proofs.insert(y, proof);
+    }
+    let swapped_to_target = if let Some((swap_target, swap_y)) = send_ref.swap_proof {
+        let swap_proof = db.mark_as_pendingspent(swap_y).await?;
+        let target_kid = target_swap_keysetid.unwrap_or(swap_proof.keyset_id);
+        let swap_proof_keyset = client.get_mint_keyset(target_kid).await?;
+        swap_proof_to_target(
+            swap_proof,
+            &swap_proof_keyset,
+            swap_target,
+            xpriv,
+            db,
+            client,
+        )
+        .await?
+    } else {
+        HashMap::new()
+    };
+    for y in swapped_to_target.keys() {
+        let proof = db.mark_as_pendingspent(*y).await?;
+        current_amount += proof.amount;
+        sending_proofs.insert(*y, proof);
+    }
+    Ok(sending_proofs)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
