@@ -22,9 +22,14 @@ async function run() {
     let wallet_name = await wasmModule.get_wallet_name(wallet_idx);
     let wallet_balance = await wasmModule.get_wallet_balance(wallet_idx);
     let wallet_unit = await wasmModule.get_wallet_currency_unit(wallet_idx);
-    document.getElementById("balance").innerHTML = "Wallet: " + wallet_name + "\n\t" +
-    String(wallet_balance.credit) + " " + wallet_unit.credit + "\n\t" +
-    String(wallet_balance.debit) + " " + wallet_unit.debit;
+    let wallet_redemptions = await wasmModule.wallet_list_redemptions(wallet_idx, 172800);
+    let formatted = `Wallet: ${wallet_name}\n\t${wallet_balance.debit} ${wallet_unit.debit}\n\t${wallet_balance.credit} ${wallet_unit.credit}\n`;
+    formatted += `\tRedemptions plan:\n`;
+    for (let redemption of wallet_redemptions) {
+        let expiry = new Date(redemption.tstamp * 1000);
+        formatted += `\t\t${expiry} - ${redemption.amount}\n`;
+    }
+    document.getElementById("balance").innerHTML = formatted;
   };
 
   let format_past_txs = async () => {

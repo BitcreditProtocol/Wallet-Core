@@ -18,7 +18,7 @@ use crate::{
     SendSummary,
     error::{Error, Result},
     types::WalletConfig,
-    wallet::{CreditPocket, Pocket, WalletBalance},
+    wallet::{self, CreditPocket, Pocket, WalletBalance},
 };
 
 // ----- end imports
@@ -292,6 +292,20 @@ pub async fn wallet_redeem_credit(idx: usize) -> Result<cashu::Amount> {
     let wallet = get_wallet(idx)?;
     let amount_redeemed = wallet.redeem_credit().await?;
     Ok(amount_redeemed)
+}
+
+pub async fn wallet_list_redemptions(
+    idx: usize,
+    payment_window: std::time::Duration,
+) -> Result<Vec<wallet::RedemptionSummary>> {
+    tracing::debug!(
+        "wallet_list_redemptions({idx}, {})",
+        payment_window.as_secs()
+    );
+
+    let wallet = get_wallet(idx)?;
+    let redemptions = wallet.list_redemptions(payment_window).await?;
+    Ok(redemptions)
 }
 
 pub async fn wallet_clean_local_db(idx: usize) -> Result<u32> {
