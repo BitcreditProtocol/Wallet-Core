@@ -37,9 +37,6 @@ jobs:
       - name: Install wasm pack test requirements
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
-      - name: Cargo update
-        run: cargo update --verbose
-
       - name: Check
         run: cargo check --verbose
 
