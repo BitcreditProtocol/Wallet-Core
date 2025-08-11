@@ -1,0 +1,49 @@
+name: wasm release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  release:
+    name: WASM Release and Publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Switch rust version
+        run: rustup default stable
+
+      - name: Update rust
+        run: rustup update
+
+      - name: Install Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+
+      - name: Build with wasm-pack
+        env:
+          RUSTFLAGS: '--cfg getrandom_backend="wasm_js"'
+        run: |
+          cd crates/bcr-wallet-core
+          wasm-pack build --target web --scope bitcredit --out-name index
+
+      - name: Copy LICENSE into pkg/
+        run: |
+          cp LICENSE crates/bcr-wallet-core/pkg/
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_SECRET }}
+        run: |
+          cd crates/bcr-wallet-core/pkg
+          npm publish --access public
