@@ -1,7 +1,7 @@
 // ----- standard library imports
 use std::{
     collections::{HashMap, HashSet},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 // ----- extra library imports
 use anyhow::Error as AnyError;
@@ -49,15 +49,15 @@ pub trait PocketRepository {
 }
 
 ///////////////////////////////////////////// credit pocket
-pub struct CrPocket<Repo> {
+pub struct CrPocket {
     pub unit: cashu::CurrencyUnit,
-    pub db: Repo,
+    pub db: Arc<dyn PocketRepository>,
     pub xpriv: btc32::Xpriv,
 
     current_send: Mutex<Option<SendReference>>,
 }
-impl<Repo> CrPocket<Repo> {
-    pub fn new(unit: CurrencyUnit, db: Repo, xpriv: btc32::Xpriv) -> Self {
+impl CrPocket {
+    pub fn new(unit: CurrencyUnit, db: Arc<dyn PocketRepository>, xpriv: btc32::Xpriv) -> Self {
         Self {
             unit,
             db,
@@ -67,10 +67,7 @@ impl<Repo> CrPocket<Repo> {
     }
 }
 
-impl<Repo> CrPocket<Repo>
-where
-    Repo: PocketRepository,
-{
+impl CrPocket {
     fn validate_keysets<'inf>(
         &self,
         keysets_info: &'inf [KeySetInfo],
@@ -149,7 +146,7 @@ where
             premints,
             keysets,
             client,
-            &self.db,
+            self.db.as_ref(),
         )
         .await?;
         Ok((cashed_in, ys))
@@ -157,10 +154,7 @@ where
 }
 
 #[async_trait(?Send)]
-impl<Repo> Pocket for CrPocket<Repo>
-where
-    Repo: PocketRepository,
-{
+impl Pocket for CrPocket {
     fn unit(&self) -> CurrencyUnit {
         self.unit.clone()
     }
@@ -262,7 +256,8 @@ where
             }
             locked.take().unwrap()
         };
-        let sending_proofs = send_proofs(send_ref, self.xpriv, &self.db, client, None).await?;
+        let sending_proofs =
+            send_proofs(send_ref, self.xpriv, self.db.as_ref(), client, None).await?;
         Ok(sending_proofs)
     }
 
@@ -270,16 +265,13 @@ where
         &self,
         client: &dyn MintConnector,
     ) -> Result<Vec<cdk01::PublicKey>> {
-        let cleaned_ys = clean_local_proofs(&self.db, client).await?;
+        let cleaned_ys = clean_local_proofs(self.db.as_ref(), client).await?;
         Ok(cleaned_ys)
     }
 }
 
 #[async_trait(?Send)]
-impl<Repo> CreditPocket for CrPocket<Repo>
-where
-    Repo: PocketRepository,
-{
+impl CreditPocket for CrPocket {
     async fn reclaim_proofs(
         &self,
         keysets_info: &[KeySetInfo],
@@ -377,15 +369,16 @@ where
 }
 
 ///////////////////////////////////////////// debit pocket
-pub struct DbPocket<Repo> {
+pub struct DbPocket {
     pub unit: cashu::CurrencyUnit,
-    pub db: Repo,
+    pub db: Arc<dyn PocketRepository>,
     pub xpriv: btc32::Xpriv,
 
     current_send: Mutex<Option<SendReference>>,
 }
-impl<Repo> DbPocket<Repo> {
-    pub fn new(unit: CurrencyUnit, db: Repo, xpriv: btc32::Xpriv) -> Self {
+
+impl DbPocket {
+    pub fn new(unit: CurrencyUnit, db: Arc<dyn PocketRepository>, xpriv: btc32::Xpriv) -> Self {
         Self {
             unit,
             db,
@@ -393,12 +386,7 @@ impl<Repo> DbPocket<Repo> {
             current_send: Mutex::new(None),
         }
     }
-}
 
-impl<Repo> DbPocket<Repo>
-where
-    Repo: PocketRepository,
-{
     fn find_active_keysetid(&self, keysets_info: &[KeySetInfo]) -> Result<cashu::KeySetInfo> {
         let active_info = keysets_info
             .iter()
@@ -444,16 +432,21 @@ where
             .await?;
         let premints = HashMap::from([(active_info.id, premint_secrets)]);
         let keysets = HashMap::from([(active_info.id, active_keyset)]);
-        let cashed_in = swap(self.unit(), proofs, premints, keysets, client, &self.db).await?;
+        let cashed_in = swap(
+            self.unit(),
+            proofs,
+            premints,
+            keysets,
+            client,
+            self.db.as_ref(),
+        )
+        .await?;
         Ok((cashed_in, ys))
     }
 }
 
 #[async_trait(?Send)]
-impl<Repo> Pocket for DbPocket<Repo>
-where
-    Repo: PocketRepository,
-{
+impl Pocket for DbPocket {
     fn unit(&self) -> CurrencyUnit {
         self.unit.clone()
     }
@@ -540,8 +533,14 @@ where
             locked.take().unwrap()
         };
         let info = self.find_active_keysetid(keysets_info)?;
-        let sending_proofs =
-            send_proofs(send_ref, self.xpriv, &self.db, client, Some(info.id)).await?;
+        let sending_proofs = send_proofs(
+            send_ref,
+            self.xpriv,
+            self.db.as_ref(),
+            client,
+            Some(info.id),
+        )
+        .await?;
 
         Ok(sending_proofs)
     }
@@ -550,16 +549,13 @@ where
         &self,
         client: &dyn MintConnector,
     ) -> Result<Vec<cdk01::PublicKey>> {
-        let cleaned_ys = clean_local_proofs(&self.db, client).await?;
+        let cleaned_ys = clean_local_proofs(self.db.as_ref(), client).await?;
         Ok(cleaned_ys)
     }
 }
 
 #[async_trait(?Send)]
-impl<Repo> DebitPocket for DbPocket<Repo>
-where
-    Repo: PocketRepository,
-{
+impl DebitPocket for DbPocket {
     async fn reclaim_proofs(
         &self,
         keysets_info: &[KeySetInfo],
@@ -954,14 +950,14 @@ mod tests {
         assert_eq!(proofs.len(), 0);
     }
 
-    fn crpocket<Repo>(db: Repo) -> CrPocket<Repo> {
+    fn crpocket(db: Arc<dyn PocketRepository>) -> CrPocket {
         let unit = CurrencyUnit::Sat;
         let seed = [0u8; 32];
         let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
         CrPocket::new(unit, db, xpriv)
     }
 
-    fn dbpocket<Repo>(db: Repo) -> DbPocket<Repo> {
+    fn dbpocket(db: Arc<dyn PocketRepository>) -> DbPocket {
         let unit = CurrencyUnit::Sat;
         let seed = [0u8; 32];
         let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
@@ -1015,7 +1011,7 @@ mod tests {
             Ok(y)
         });
 
-        let crpocket = crpocket(db);
+        let crpocket = crpocket(Arc::new(db));
 
         let (cashed, _) = crpocket
             .receive_proofs(&connector, &k_infos, proofs)
@@ -1035,7 +1031,7 @@ mod tests {
         let db = MockPocketRepository::new();
         let connector = MockMintConnector::new();
 
-        let crpocket = crpocket(db);
+        let crpocket = crpocket(Arc::new(db));
 
         let result = crpocket.receive_proofs(&connector, &k_infos, proofs).await;
         assert!(matches!(result, Err(Error::InactiveKeyset(_))));
@@ -1052,7 +1048,7 @@ mod tests {
         let db = MockPocketRepository::new();
         let connector = MockMintConnector::new();
 
-        let crpocket = crpocket(db);
+        let crpocket = crpocket(Arc::new(db));
 
         let result = crpocket.receive_proofs(&connector, &k_infos, proofs).await;
         assert!(matches!(result, Err(Error::CurrencyUnitMismatch(_, _))));
@@ -1104,7 +1100,7 @@ mod tests {
             Ok(y)
         });
 
-        let dbpocket = dbpocket(db);
+        let dbpocket = dbpocket(Arc::new(db));
 
         let (cashed, _) = dbpocket
             .receive_proofs(&connector, &k_infos, proofs)
@@ -1131,7 +1127,7 @@ mod tests {
             .times(1)
             .returning(move || Ok(proofs_map.clone()));
 
-        let crpocket = crpocket(db);
+        let crpocket = crpocket(Arc::new(db));
 
         let summary = crpocket.prepare_send(amount, &k_infos).await.unwrap();
         assert_eq!(summary.swap_fees, Amount::ZERO);
@@ -1156,7 +1152,7 @@ mod tests {
             .times(1)
             .returning(move || Ok(proofs_map.clone()));
 
-        let crpocket = crpocket(db);
+        let crpocket = crpocket(Arc::new(db));
 
         let response = crpocket.prepare_send(amount, &k_infos).await;
         assert!(matches!(response, Err(Error::InsufficientFunds)));
@@ -1181,7 +1177,7 @@ mod tests {
             .times(1)
             .returning(move || Ok(proofs_map.clone()));
 
-        let crpocket = crpocket(db);
+        let crpocket = crpocket(Arc::new(db));
 
         let response = crpocket.prepare_send(amount, &k_infos).await;
         assert!(matches!(response, Err(Error::InsufficientFunds)));
@@ -1227,7 +1223,7 @@ mod tests {
             .times(1)
             .returning(move || Ok(proofs_map.clone()));
 
-        let crpocket = crpocket(db);
+        let crpocket = crpocket(Arc::new(db));
 
         let list = crpocket
             .list_redemptions(&k_infos, std::time::Duration::from_secs(10))

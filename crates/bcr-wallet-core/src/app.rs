@@ -1,5 +1,11 @@
 // ----- standard library imports
-use std::{cell::RefCell, collections::HashSet, rc::Rc, str::FromStr, sync::Mutex};
+use std::{
+    cell::RefCell,
+    collections::HashSet,
+    rc::Rc,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 // ----- extra library imports
 use anyhow::Error as AnyError;
 use bcr_wallet_lib::wallet::Token;
@@ -38,8 +44,8 @@ mod prod {
 }
 
 type ProductionConnector = cdk::wallet::HttpClient;
-type ProductionDebitPocket = crate::pocket::DbPocket<prod::ProductionPocketRepository>;
-type ProductionCreditPocket = crate::pocket::CrPocket<prod::ProductionPocketRepository>;
+type ProductionDebitPocket = crate::pocket::DbPocket;
+type ProductionCreditPocket = crate::pocket::CrPocket;
 type ProductionWallet = crate::wallet::Wallet<
     ProductionConnector,
     prod::ProductionTransactionRepository,
@@ -479,11 +485,11 @@ fn build_wallet(
     (debit, credit): (CurrencyUnit, Option<CurrencyUnit>),
 ) -> Result<ProductionWallet> {
     // building the debit pocket
-    let debit_pocket = ProductionDebitPocket::new(debit.clone(), debitdb, master);
+    let debit_pocket = ProductionDebitPocket::new(debit.clone(), Arc::new(debitdb), master);
     // building the credit pocket
     let credit_pocket: Box<dyn CreditPocket> = if let Some(unit) = credit {
         let creditdb = creditdb.expect("Credit pocket DB should be present");
-        let pocket = ProductionCreditPocket::new(unit.clone(), creditdb, master);
+        let pocket = ProductionCreditPocket::new(unit.clone(), Arc::new(creditdb), master);
         Box::new(pocket)
     } else {
         tracing::warn!("app::add_wallet: credit_pocket = DummyPocket");
