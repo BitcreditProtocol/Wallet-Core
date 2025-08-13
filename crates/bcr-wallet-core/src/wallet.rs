@@ -72,7 +72,8 @@ pub trait DebitPocket: Pocket {
     ) -> Result<Amount>;
 }
 
-#[async_trait(?Send)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait TransactionRepository {
     async fn store_tx(&self, tx: Transaction) -> Result<TransactionId>;
     async fn load_tx(&self, tx_id: TransactionId) -> Result<Transaction>;

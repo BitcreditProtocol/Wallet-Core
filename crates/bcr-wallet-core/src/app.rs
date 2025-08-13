@@ -23,18 +23,30 @@ use crate::{
 
 // ----- end imports
 
+#[cfg(target_arch = "wasm32")]
+mod prod {
+    pub type ProductionPocketRepository = crate::persistence::rexie::PocketDB;
+    pub type ProductionPurseRepository = crate::persistence::rexie::PurseDB;
+    pub type ProductionTransactionRepository = crate::persistence::rexie::TransactionDB;
+}
+#[cfg(not(target_arch = "wasm32"))]
+mod prod {
+    pub type ProductionPocketRepository = crate::persistence::inmemory::InMemoryPocketRepository;
+    pub type ProductionPurseRepository = crate::persistence::inmemory::InMemoryPurseRepository;
+    pub type ProductionTransactionRepository =
+        crate::persistence::inmemory::InMemoryTransactionRepository;
+}
+
 type ProductionConnector = cdk::wallet::HttpClient;
-type ProductionTransactionRepository = crate::persistence::rexie::TransactionDB;
-type ProductionPocketRepository = crate::persistence::rexie::PocketDB;
-type ProductionDebitPocket = crate::pocket::DbPocket<ProductionPocketRepository>;
-type ProductionCreditPocket = crate::pocket::CrPocket<ProductionPocketRepository>;
+type ProductionDebitPocket = crate::pocket::DbPocket<prod::ProductionPocketRepository>;
+type ProductionCreditPocket = crate::pocket::CrPocket<prod::ProductionPocketRepository>;
 type ProductionWallet = crate::wallet::Wallet<
     ProductionConnector,
-    ProductionTransactionRepository,
+    prod::ProductionTransactionRepository,
     ProductionDebitPocket,
 >;
-type ProductionPurseRepository = crate::persistence::rexie::PurseDB;
-type ProductionPurse = crate::purse::Purse<ProductionPurseRepository>;
+
+type ProductionPurse = crate::purse::Purse<prod::ProductionPurseRepository>;
 
 pub struct AppState {
     wallets: Vec<Rc<ProductionWallet>>,
@@ -70,7 +82,7 @@ impl AppState {
                 );
                 continue;
             }
-            let rexiedb = build_wallet_db(
+            let (txdb, pocketdbs) = db::build_wallet_dbs(
                 AppState::DB_VERSION,
                 &w_cfg.wallet_id,
                 &w_cfg.debit,
@@ -79,12 +91,12 @@ impl AppState {
             .await?;
             let client = ProductionConnector::new(w_cfg.mint.clone());
             let wallet = build_wallet(
-                &w_cfg.wallet_id,
                 w_cfg.name,
                 w_cfg.mint,
                 w_cfg.master,
                 client,
-                rexiedb,
+                txdb,
+                pocketdbs,
                 (w_cfg.debit, w_cfg.credit),
             )?;
             self.wallets.push(Rc::new(wallet));
@@ -107,14 +119,10 @@ pub async fn initialize_api(network: String) {
     let net = bitcoin::Network::from_str(&network)
         .unwrap_or_else(|_| panic!("invalid network: {network}"));
 
-    let rexie = build_appstate_db(AppState::DB_VERSION)
+    let pursedb = db::build_appstate_db(AppState::DB_VERSION)
         .await
         .expect("Failed to build app state DB");
-    let purse_repo =
-        ProductionPurseRepository::new(rexie.clone()).expect("Failed to create purse repository");
-    let purse = ProductionPurse {
-        wallets: purse_repo,
-    };
+    let purse = ProductionPurse { wallets: pursedb };
 
     let mut appstate = AppState::new(net, Some(Rc::new(purse)));
     appstate
@@ -177,15 +185,15 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
     let mnemonic = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, mnemonic.trim())?;
     let master_xpriv = bitcoin::bip32::Xpriv::new_master(network, &mnemonic.to_seed(""))?;
     let wallet_id = build_wallet_id(&mint_id, &master_xpriv);
-    let rexiedb =
-        build_wallet_db(AppState::DB_VERSION, &wallet_id, debit_unit, credit_unit).await?;
+    let (txdb, pocketdbs) =
+        db::build_wallet_dbs(AppState::DB_VERSION, &wallet_id, debit_unit, credit_unit).await?;
     let wallet = build_wallet(
-        &wallet_id,
         name.clone(),
         mint_url.clone(),
         master_xpriv,
         client,
-        rexiedb,
+        txdb,
+        pocketdbs,
         (debit_unit.clone(), credit_unit.cloned()),
     )?;
     let wallet_cfg = WalletConfig {
@@ -356,61 +364,112 @@ fn build_wallet_id(mint_id: &[u8], master: &btc32::Xpriv) -> String {
         .to_string()
 }
 
-async fn build_appstate_db(db_version: u32) -> Result<Rc<rexie::Rexie>> {
-    let rexie_db_name = "bitcredit_wallet";
-    let mut rexie_builder = rexie::Rexie::builder(rexie_db_name).version(db_version);
-    let purse_stores = ProductionPurseRepository::object_stores();
-    for store in purse_stores {
-        rexie_builder = rexie_builder.add_object_store(store);
-    }
-    let rexie = Rc::new(rexie_builder.build().await?);
-    Ok(rexie)
-}
+#[cfg(target_arch = "wasm32")]
+mod db {
+    use super::*;
 
-async fn build_wallet_db(
-    db_version: u32,
-    wallet_id: &str,
-    debit: &CurrencyUnit,
-    credit: Option<&CurrencyUnit>,
-) -> Result<Rc<rexie::Rexie>> {
-    let rexie_db_name = format!("bitcredit_wallet_{wallet_id}");
-    let transaction_stores = ProductionTransactionRepository::object_stores(wallet_id);
-    let mut rexie_builder = rexie::Rexie::builder(&rexie_db_name).version(db_version);
-    for store in transaction_stores {
-        rexie_builder = rexie_builder.add_object_store(store);
+    pub async fn build_appstate_db(db_version: u32) -> Result<prod::ProductionPurseRepository> {
+        let rexie_db_name = "bitcredit_wallet";
+        let mut rexie_builder = rexie::Rexie::builder(rexie_db_name).version(db_version);
+        let purse_stores = prod::ProductionPurseRepository::object_stores();
+        for store in purse_stores {
+            rexie_builder = rexie_builder.add_object_store(store);
+        }
+        let rexie = Rc::new(rexie_builder.build().await?);
+        let pursedb = prod::ProductionPurseRepository::new(rexie)?;
+        Ok(pursedb)
     }
-    let stores = ProductionPocketRepository::object_stores(debit);
-    for store in stores {
-        rexie_builder = rexie_builder.add_object_store(store);
-    }
-    if let Some(unit) = credit {
-        let stores = ProductionPocketRepository::object_stores(unit);
+
+    pub async fn build_wallet_dbs(
+        db_version: u32,
+        wallet_id: &str,
+        debit: &CurrencyUnit,
+        credit: Option<&CurrencyUnit>,
+    ) -> Result<(
+        prod::ProductionTransactionRepository,
+        (
+            prod::ProductionPocketRepository,
+            Option<prod::ProductionPocketRepository>,
+        ),
+    )> {
+        let rexie_db_name = format!("bitcredit_wallet_{wallet_id}");
+        let transaction_stores = prod::ProductionTransactionRepository::object_stores(wallet_id);
+        let mut rexie_builder = rexie::Rexie::builder(&rexie_db_name).version(db_version);
+        for store in transaction_stores {
+            rexie_builder = rexie_builder.add_object_store(store);
+        }
+        let stores = prod::ProductionPocketRepository::object_stores(debit);
         for store in stores {
             rexie_builder = rexie_builder.add_object_store(store);
         }
+        if let Some(unit) = credit {
+            let stores = prod::ProductionPocketRepository::object_stores(unit);
+            for store in stores {
+                rexie_builder = rexie_builder.add_object_store(store);
+            }
+        }
+        let rexiedb = Rc::new(rexie_builder.build().await?);
+        let tx_repo = prod::ProductionTransactionRepository::new(rexiedb.clone(), wallet_id)?;
+        let debitdb = prod::ProductionPocketRepository::new(rexiedb.clone(), debit.clone())?;
+        let creditdb = if let Some(unit) = credit {
+            Some(prod::ProductionPocketRepository::new(
+                rexiedb.clone(),
+                unit.clone(),
+            )?)
+        } else {
+            None
+        };
+        Ok((tx_repo, (debitdb, creditdb)))
     }
-    let rexie = Rc::new(rexie_builder.build().await?);
-    Ok(rexie)
+}
+#[cfg(not(target_arch = "wasm32"))]
+mod db {
+    use super::*;
+
+    pub async fn build_appstate_db(_db_version: u32) -> Result<prod::ProductionPurseRepository> {
+        Ok(prod::ProductionPurseRepository::default())
+    }
+    pub async fn build_wallet_dbs(
+        _db_version: u32,
+        _wallet_id: &str,
+        _debit: &CurrencyUnit,
+        credit: Option<&CurrencyUnit>,
+    ) -> Result<(
+        prod::ProductionTransactionRepository,
+        (
+            prod::ProductionPocketRepository,
+            Option<prod::ProductionPocketRepository>,
+        ),
+    )> {
+        let txdb = prod::ProductionTransactionRepository::default();
+        let debitdb = prod::ProductionPocketRepository::default();
+        let creditdb = if credit.is_some() {
+            Some(prod::ProductionPocketRepository::default())
+        } else {
+            None
+        };
+        Ok((txdb, (debitdb, creditdb)))
+    }
 }
 
 fn build_wallet(
-    wallet_id: &str,
     name: String,
     mint_url: cashu::MintUrl,
     master: btc32::Xpriv,
     client: ProductionConnector,
-    rexiedb: Rc<rexie::Rexie>,
+    tx_repo: prod::ProductionTransactionRepository,
+    (debitdb, creditdb): (
+        prod::ProductionPocketRepository,
+        Option<prod::ProductionPocketRepository>,
+    ),
     (debit, credit): (CurrencyUnit, Option<CurrencyUnit>),
 ) -> Result<ProductionWallet> {
-    // building the transaction repository
-    let tx_repo = ProductionTransactionRepository::new(rexiedb.clone(), wallet_id)?;
     // building the debit pocket
-    let debitdb = ProductionPocketRepository::new(rexiedb.clone(), debit.clone())?;
     let debit_pocket = ProductionDebitPocket::new(debit.clone(), debitdb, master);
     // building the credit pocket
     let credit_pocket: Box<dyn CreditPocket> = if let Some(unit) = credit {
-        let db = ProductionPocketRepository::new(rexiedb.clone(), unit.clone())?;
-        let pocket = ProductionCreditPocket::new(unit.clone(), db, master);
+        let creditdb = creditdb.expect("Credit pocket DB should be present");
+        let pocket = ProductionCreditPocket::new(unit.clone(), creditdb, master);
         Box::new(pocket)
     } else {
         tracing::warn!("app::add_wallet: credit_pocket = DummyPocket");
