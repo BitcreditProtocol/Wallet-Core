@@ -6,7 +6,8 @@ use crate::{error::Result, types::WalletConfig};
 
 // ----- end imports
 
-#[async_trait(?Send)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait PurseRepository {
     async fn store_wallet(&self, wallet: WalletConfig) -> Result<()>;
     async fn load_wallet(&self, wallet_id: &str) -> Result<WalletConfig>;

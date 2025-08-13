@@ -31,7 +31,8 @@ struct SendReference {
 }
 
 #[cfg_attr(test, mockall::automock)]
-#[async_trait(?Send)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait PocketRepository {
     async fn store_new(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
     async fn store_pendingspent(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
