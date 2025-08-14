@@ -611,7 +611,8 @@ impl PurseDB {
             .db
             .transaction(&[&self.wallet_store], TransactionMode::ReadWrite)?;
         let wallets = tx.store(&self.wallet_store)?;
-        wallets.add(&entry, None).await?;
+        // overwrite if exists
+        wallets.put(&entry, None).await?;
         tx.done().await?;
         Ok(wallet.wallet_id)
     }

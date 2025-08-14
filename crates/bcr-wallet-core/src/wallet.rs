@@ -100,6 +100,7 @@ pub struct Wallet<Conn, TxRepo, DebtPck> {
     pub debit: DebtPck,
     pub credit: Box<dyn CreditPocket>,
     pub name: String,
+    pub id: String,
 
     pub current_send: Mutex<Option<WalletSendSummary>>,
 }
