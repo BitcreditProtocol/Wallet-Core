@@ -93,7 +93,7 @@ impl AppState {
                 w_cfg.network,
                 w_cfg.mint,
                 w_cfg.master,
-                db::LocalDB::Keep,
+                LocalDB::Keep,
             )
             .await?;
             self.wallets.push(Rc::new(wallet));
@@ -151,8 +151,28 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
     let mint_url = MintUrl::from_str(&mint_url)?;
     let mnemonic = bip39::Mnemonic::from_str(&mnemonic)?;
     let master = bitcoin::bip32::Xpriv::new_master(network, &mnemonic.to_seed(""))?;
+    let (wallet, wallet_cfg) = build_wallet(name, network, mint_url, master, LocalDB::Keep).await?;
+    let purse = get_purse()?;
+    purse.store_wallet(wallet_cfg).await?;
+
+    let idx = APP_STATE.with_borrow_mut(|state| {
+        state.wallets.push(Rc::new(wallet));
+        state.wallets.len() - 1
+    });
+    Ok(idx)
+}
+
+/// returns the index of the wallet
+pub async fn restore_wallet(name: String, mint_url: String, mnemonic: String) -> Result<usize> {
+    tracing::debug!("Restoring a new wallet for mint {name}, {mint_url}, {mnemonic}");
+
+    let network = APP_STATE.with_borrow(|state| state.network);
+    let mint_url = MintUrl::from_str(&mint_url)?;
+    let mnemonic = bip39::Mnemonic::from_str(&mnemonic)?;
+    let master = bitcoin::bip32::Xpriv::new_master(network, &mnemonic.to_seed(""))?;
     let (wallet, wallet_cfg) =
-        build_wallet(name, network, mint_url, master, db::LocalDB::Keep).await?;
+        build_wallet(name, network, mint_url, master, LocalDB::Delete).await?;
+    wallet.restore_local_proofs().await?;
     let purse = get_purse()?;
     purse.store_wallet(wallet_cfg).await?;
 
@@ -362,6 +382,11 @@ fn build_wallet_id(mint_id: &[u8], master: &btc32::Xpriv) -> String {
         .to_string()
 }
 
+pub enum LocalDB {
+    Delete,
+    Keep,
+}
+
 #[cfg(target_arch = "wasm32")]
 mod db {
     use super::*;
@@ -376,11 +401,6 @@ mod db {
         let rexie = Rc::new(rexie_builder.build().await?);
         let pursedb = prod::ProductionPurseRepository::new(rexie)?;
         Ok(pursedb)
-    }
-
-    pub enum LocalDB {
-        Delete,
-        Keep,
     }
 
     pub async fn build_wallet_dbs(
@@ -399,6 +419,12 @@ mod db {
         let rexie_db_name = format!("bitcredit_wallet_{wallet_id}");
         let transaction_stores = prod::ProductionTransactionRepository::object_stores(wallet_id);
         let mut rexie_builder = rexie::Rexie::builder(&rexie_db_name).version(db_version);
+        if matches!(local, db::LocalDB::Delete) {
+            rexie_builder.delete().await.unwrap_or_else(|e| {
+                tracing::warn!("Failed to delete existing DB: {e}");
+            });
+            rexie_builder = rexie::Rexie::builder(&rexie_db_name).version(db_version);
+        }
         for store in transaction_stores {
             rexie_builder = rexie_builder.add_object_store(store);
         }
@@ -434,11 +460,6 @@ mod db {
         Ok(prod::ProductionPurseRepository::default())
     }
 
-    pub enum LocalDB {
-        Delete,
-        Keep,
-    }
-
     pub async fn build_wallet_dbs(
         _db_version: u32,
         _wallet_id: &str,
@@ -468,7 +489,7 @@ async fn build_wallet(
     network: bitcoin::Network,
     mint_url: cashu::MintUrl,
     xpriv: btc32::Xpriv,
-    local: db::LocalDB,
+    local: LocalDB,
 ) -> Result<(ProductionWallet, WalletConfig)> {
     // retrieving mint details
     let client = ProductionConnector::new(mint_url.clone());

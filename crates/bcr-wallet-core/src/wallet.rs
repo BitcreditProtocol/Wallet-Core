@@ -44,6 +44,12 @@ pub trait Pocket {
 
     async fn clean_local_proofs(&self, client: &dyn MintConnector)
     -> Result<Vec<cdk01::PublicKey>>;
+
+    async fn restore_local_proofs(
+        &self,
+        keysets_info: &[KeySetInfo],
+        client: &dyn MintConnector,
+    ) -> Result<()>;
 }
 
 pub struct RedemptionSummary {
@@ -248,6 +254,17 @@ where
                 .await?;
             Ok(amount)
         }
+    }
+
+    pub async fn restore_local_proofs(&self) -> Result<()> {
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
+        self.debit
+            .restore_local_proofs(&keysets_info, &self.client)
+            .await?;
+        self.credit
+            .restore_local_proofs(&keysets_info, &self.client)
+            .await?;
+        Ok(())
     }
 }
 
