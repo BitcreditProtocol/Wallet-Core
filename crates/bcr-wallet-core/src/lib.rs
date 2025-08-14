@@ -8,6 +8,7 @@ pub mod error;
 pub mod persistence;
 pub mod pocket;
 mod purse;
+mod restore;
 mod types;
 mod utils;
 pub mod wallet;
@@ -30,6 +31,19 @@ pub async fn add_wallet(mint_url: String, mnemonic: String, name: String) -> u32
         Ok(idx) => idx as u32,
         Err(e) => {
             tracing::error!("add_wallet({mint_url}, {mnemonic}, {name}): {e}");
+            0
+        }
+    }
+}
+
+// --------------------------------------------------------------- restore_wallet
+#[wasm_bindgen]
+pub async fn restore_wallet(mint_url: String, mnemonic: String, name: String) -> u32 {
+    let returned = app::restore_wallet(mint_url.clone(), mnemonic.clone(), name.clone()).await;
+    match returned {
+        Ok(idx) => idx as u32,
+        Err(e) => {
+            tracing::error!("restore_wallet({mint_url}, {mnemonic}, {name}): {e}");
             0
         }
     }

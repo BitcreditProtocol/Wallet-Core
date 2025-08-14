@@ -28,7 +28,9 @@ wasm-bindgen-futures = "0.4"
 [dev-dependencies]
 bcr-wdc-utils = {git = "https://github.com/BitcreditProtocol/wildcat", features = ["test-utils"]}
 cdk-common.workspace = true
+getrandom = {workspace = true, features = ["wasm_js"]}
 mockall = { workspace = true}
+rand = {workspace = true}
 tokio = {workspace = true}
 wasm-bindgen-test = { version = "0.3" }
 

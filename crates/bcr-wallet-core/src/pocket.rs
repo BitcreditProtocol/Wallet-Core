@@ -16,6 +16,7 @@ use uuid::Uuid;
 // ----- local imports
 use crate::{
     error::{Error, Result},
+    restore,
     types::PocketSendSummary,
     wallet::{CreditPocket, DebitPocket, Pocket, RedemptionSummary},
 };
@@ -267,6 +268,24 @@ impl Pocket for CrPocket {
     ) -> Result<Vec<cdk01::PublicKey>> {
         let cleaned_ys = clean_local_proofs(self.db.as_ref(), client).await?;
         Ok(cleaned_ys)
+    }
+
+    async fn restore_local_proofs(
+        &self,
+        keysets_info: &[KeySetInfo],
+        client: &dyn MintConnector,
+    ) -> Result<()> {
+        let kids = keysets_info.iter().filter_map(|info| {
+            if info.unit == self.unit {
+                Some(info.id)
+            } else {
+                None
+            }
+        });
+        for kid in kids {
+            restore::restore_keysetid(self.xpriv, kid, client, self.db.as_ref()).await?;
+        }
+        Ok(())
     }
 }
 
@@ -552,6 +571,24 @@ impl Pocket for DbPocket {
         let cleaned_ys = clean_local_proofs(self.db.as_ref(), client).await?;
         Ok(cleaned_ys)
     }
+
+    async fn restore_local_proofs(
+        &self,
+        keysets_info: &[KeySetInfo],
+        client: &dyn MintConnector,
+    ) -> Result<()> {
+        let kids = keysets_info.iter().filter_map(|info| {
+            if info.unit == self.unit {
+                Some(info.id)
+            } else {
+                None
+            }
+        });
+        for kid in kids {
+            restore::restore_keysetid(self.xpriv, kid, client, self.db.as_ref()).await?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait(?Send)]
@@ -606,6 +643,14 @@ impl Pocket for DummyPocket {
         _client: &dyn MintConnector,
     ) -> Result<Vec<cdk01::PublicKey>> {
         Ok(Vec::new())
+    }
+
+    async fn restore_local_proofs(
+        &self,
+        _keysets_info: &[KeySetInfo],
+        _client: &dyn MintConnector,
+    ) -> Result<()> {
+        Ok(())
     }
 }
 #[async_trait(?Send)]
