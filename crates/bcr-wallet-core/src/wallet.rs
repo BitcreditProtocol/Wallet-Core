@@ -49,7 +49,7 @@ pub trait Pocket {
         &self,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
-    ) -> Result<()>;
+    ) -> Result<usize>;
 }
 
 pub struct RedemptionSummary {
@@ -258,12 +258,13 @@ where
 
     pub async fn restore_local_proofs(&self) -> Result<()> {
         let keysets_info = self.client.get_mint_keysets().await?.keysets;
-        self.debit
-            .restore_local_proofs(&keysets_info, &self.client)
-            .await?;
-        self.credit
-            .restore_local_proofs(&keysets_info, &self.client)
-            .await?;
+        let (debit, credit) = futures::join!(
+            self.debit.restore_local_proofs(&keysets_info, &self.client),
+            self.credit
+                .restore_local_proofs(&keysets_info, &self.client)
+        );
+        debit?;
+        credit?;
         Ok(())
     }
 }

@@ -12,6 +12,7 @@ bip39.workspace = true
 bitcoin.workspace = true
 cashu = { workspace = true, features = ["wallet"] }
 cdk = { workspace = true, features = ["wallet"] }
+futures = {workspace = true}
 rexie.workspace = true
 secp256k1.workspace = true
 serde-wasm-bindgen.workspace = true
