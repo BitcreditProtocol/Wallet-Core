@@ -12,6 +12,7 @@ use cashu::{
     nut03 as cdk03, nut07 as cdk07,
 };
 use cdk::wallet::MintConnector;
+use futures::future::JoinAll;
 use uuid::Uuid;
 // ----- local imports
 use crate::{
@@ -274,7 +275,7 @@ impl Pocket for CrPocket {
         &self,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let kids = keysets_info.iter().filter_map(|info| {
             if info.unit == self.unit {
                 Some(info.id)
@@ -282,10 +283,15 @@ impl Pocket for CrPocket {
                 None
             }
         });
-        for kid in kids {
-            restore::restore_keysetid(self.xpriv, kid, client, self.db.as_ref()).await?;
+        let joined: JoinAll<_> = kids
+            .into_iter()
+            .map(|kid| restore::restore_keysetid(self.xpriv, kid, client, self.db.as_ref()))
+            .collect();
+        let mut total_recovered = 0;
+        for task in joined.await {
+            total_recovered += task?;
         }
-        Ok(())
+        Ok(total_recovered)
     }
 }
 
@@ -576,7 +582,7 @@ impl Pocket for DbPocket {
         &self,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let kids = keysets_info.iter().filter_map(|info| {
             if info.unit == self.unit {
                 Some(info.id)
@@ -584,10 +590,15 @@ impl Pocket for DbPocket {
                 None
             }
         });
-        for kid in kids {
-            restore::restore_keysetid(self.xpriv, kid, client, self.db.as_ref()).await?;
+        let joined: JoinAll<_> = kids
+            .into_iter()
+            .map(|kid| restore::restore_keysetid(self.xpriv, kid, client, self.db.as_ref()))
+            .collect();
+        let mut total_recovered = 0;
+        for task in joined.await {
+            total_recovered += task?;
         }
-        Ok(())
+        Ok(total_recovered)
     }
 }
 
@@ -649,8 +660,8 @@ impl Pocket for DummyPocket {
         &self,
         _keysets_info: &[KeySetInfo],
         _client: &dyn MintConnector,
-    ) -> Result<()> {
-        Ok(())
+    ) -> Result<usize> {
+        Ok(0)
     }
 }
 #[async_trait(?Send)]

@@ -19,15 +19,41 @@ pub async fn restore_keysetid(
     client: &dyn MintConnector,
     db: &dyn PocketRepository,
 ) -> Result<usize> {
+    inner_restore_keysetid(xpriv, kid, client, db, restore_batch).await
+}
+
+async fn inner_restore_keysetid<Restore>(
+    xpriv: btc32::Xpriv,
+    kid: cashu::Id,
+    client: &dyn MintConnector,
+    db: &dyn PocketRepository,
+    restore: Restore,
+) -> Result<usize>
+where
+    Restore: AsyncFn(
+        btc32::Xpriv,
+        &cashu::KeySet,
+        &dyn MintConnector,
+        &dyn PocketRepository,
+        u32,
+        u32,
+    ) -> Result<usize>,
+{
     let keyset = client.get_mint_keyset(kid).await?;
     let mut zero_response_counter = 0;
     let mut total_proofs_restored = 0;
+    let mut dbcursor = db.counter(keyset.id).await?;
+    let mut cursor = dbcursor;
     while zero_response_counter < EMPTY_RESPONSES_BEFORE_ABORT {
-        let restored_proofs = restore_batch(xpriv, &keyset, client, db).await?;
+        let restored_proofs = restore(xpriv, &keyset, client, db, cursor, BATCH_SIZE).await?;
+        cursor += BATCH_SIZE;
         if restored_proofs == 0 {
             zero_response_counter += 1;
         } else {
             zero_response_counter = 0;
+            db.increment_counter(keyset.id, dbcursor, cursor - dbcursor)
+                .await?;
+            dbcursor = cursor;
         }
         total_proofs_restored += restored_proofs;
     }
@@ -39,10 +65,11 @@ async fn restore_batch(
     keyset: &KeySet,
     client: &dyn MintConnector,
     db: &dyn PocketRepository,
+    counter: u32,
+    batch_size: u32,
 ) -> Result<usize> {
-    let counter = db.counter(keyset.id).await?;
     let premints =
-        cdk00::PreMintSecrets::restore_batch(keyset.id, xpriv, counter, counter + BATCH_SIZE - 1)?;
+        cdk00::PreMintSecrets::restore_batch(keyset.id, xpriv, counter, counter + batch_size - 1)?;
     let request = cdk09::RestoreRequest {
         outputs: premints.blinded_messages(),
     };
@@ -88,7 +115,6 @@ async fn restore_batch(
         let y = proof.y()?;
         proofs.insert(y, proof);
     }
-    db.increment_counter(keyset.id, counter, BATCH_SIZE).await?;
     if proofs.is_empty() {
         return Ok(0);
     }
@@ -134,11 +160,7 @@ mod tests {
         let (_, keyset) = keys_test::generate_random_keyset();
         let keyset = KeySet::from(keyset);
         let mut client = MockMintConnector::new();
-        let mut db = MockPocketRepository::new();
-        db.expect_counter()
-            .with(eq(keyset.id))
-            .times(1)
-            .returning(|_| Ok(0));
+        let db = MockPocketRepository::new();
         client.expect_post_restore().times(1).returning(|_| {
             Ok(RestoreResponse {
                 outputs: Default::default(),
@@ -146,12 +168,8 @@ mod tests {
                 promises: Default::default(),
             })
         });
-        db.expect_increment_counter()
-            .with(eq(keyset.id), eq(0), eq(BATCH_SIZE))
-            .times(1)
-            .returning(|_, _, _| Ok(()));
 
-        super::restore_batch(xpriv, &keyset, &client, &db)
+        super::restore_batch(xpriv, &keyset, &client, &db, 0, BATCH_SIZE)
             .await
             .unwrap();
     }
@@ -163,11 +181,7 @@ mod tests {
         let (_, mintkeyset) = keys_test::generate_random_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();
-        let mut db = MockPocketRepository::new();
-        db.expect_counter()
-            .with(eq(keyset.id))
-            .times(1)
-            .returning(|_| Ok(0));
+        let db = MockPocketRepository::new();
         client
             .expect_post_restore()
             .times(1)
@@ -206,12 +220,8 @@ mod tests {
                 let response = cdk07::CheckStateResponse { states };
                 Ok(response)
             });
-        db.expect_increment_counter()
-            .with(eq(keyset.id), eq(0), eq(BATCH_SIZE))
-            .times(1)
-            .returning(|_, _, _| Ok(()));
 
-        super::restore_batch(xpriv, &keyset, &client, &db)
+        super::restore_batch(xpriv, &keyset, &client, &db, 0, BATCH_SIZE)
             .await
             .unwrap();
     }
@@ -224,10 +234,6 @@ mod tests {
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();
         let mut db = MockPocketRepository::new();
-        db.expect_counter()
-            .with(eq(keyset.id))
-            .times(1)
-            .returning(|_| Ok(0));
         client
             .expect_post_restore()
             .times(1)
@@ -266,17 +272,14 @@ mod tests {
                 let response = cdk07::CheckStateResponse { states };
                 Ok(response)
             });
-        db.expect_increment_counter()
-            .with(eq(keyset.id), eq(0), eq(BATCH_SIZE))
-            .times(1)
-            .returning(|_, _, _| Ok(()));
         db.expect_store_new()
             .times(BATCH_SIZE as usize)
             .returning(|p| Ok(p.y().expect("proof should have y")));
 
-        super::restore_batch(xpriv, &keyset, &client, &db)
+        let restored_proofs = super::restore_batch(xpriv, &keyset, &client, &db, 0, BATCH_SIZE)
             .await
             .unwrap();
+        assert_eq!(restored_proofs, BATCH_SIZE as usize);
     }
 
     #[tokio::test]
@@ -287,10 +290,6 @@ mod tests {
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();
         let mut db = MockPocketRepository::new();
-        db.expect_counter()
-            .with(eq(keyset.id))
-            .times(1)
-            .returning(|_| Ok(0));
         client
             .expect_post_restore()
             .times(1)
@@ -329,16 +328,142 @@ mod tests {
                 let response = cdk07::CheckStateResponse { states };
                 Ok(response)
             });
-        db.expect_increment_counter()
-            .with(eq(keyset.id), eq(0), eq(BATCH_SIZE))
-            .times(1)
-            .returning(|_, _, _| Ok(()));
         db.expect_store_pendingspent()
             .times(BATCH_SIZE as usize)
             .returning(|p| Ok(p.y().expect("proof should have y")));
 
-        super::restore_batch(xpriv, &keyset, &client, &db)
+        let restored_proofs = super::restore_batch(xpriv, &keyset, &client, &db, 0, BATCH_SIZE)
             .await
             .unwrap();
+        assert_eq!(restored_proofs, BATCH_SIZE as usize);
+    }
+
+    #[tokio::test]
+    async fn restore_keysetid_1stbatch() {
+        let seed = [0u8; 32];
+        let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
+        let (_, mintkeyset) = keys_test::generate_random_keyset();
+        let keyset = KeySet::from(mintkeyset.clone());
+        let mut client = MockMintConnector::new();
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(keyset.clone()));
+        let mut db = MockPocketRepository::new();
+        db.expect_counter()
+            .times(1)
+            .with(eq(mintkeyset.id))
+            .returning(move |_| Ok(0));
+        db.expect_increment_counter()
+            .times(1)
+            .with(eq(mintkeyset.id), eq(0), eq(100))
+            .returning(|_, _, _| Ok(()));
+
+        let call_counter = std::cell::Cell::new(0);
+        let restore_fn = async |_: btc32::Xpriv,
+                                _: &KeySet,
+                                _: &dyn MintConnector,
+                                _: &dyn PocketRepository,
+                                _: u32,
+                                batch_size: u32| {
+            let counter = call_counter.get();
+            call_counter.replace(counter + 1);
+            if counter == 0 {
+                Ok(batch_size as usize)
+            } else {
+                Ok(0)
+            }
+        };
+        let total_restored = inner_restore_keysetid(xpriv, mintkeyset.id, &client, &db, restore_fn)
+            .await
+            .unwrap();
+        assert_eq!(call_counter.get(), 4);
+        assert_eq!(total_restored, 100);
+    }
+
+    #[tokio::test]
+    async fn restore_keysetid_2ndbatch() {
+        let seed = [0u8; 32];
+        let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
+        let (_, mintkeyset) = keys_test::generate_random_keyset();
+        let keyset = KeySet::from(mintkeyset.clone());
+        let mut client = MockMintConnector::new();
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(keyset.clone()));
+        let mut db = MockPocketRepository::new();
+        db.expect_counter()
+            .times(1)
+            .with(eq(mintkeyset.id))
+            .returning(move |_| Ok(0));
+        db.expect_increment_counter()
+            .times(1)
+            .with(eq(mintkeyset.id), eq(0), eq(200))
+            .returning(|_, _, _| Ok(()));
+
+        let call_counter = std::cell::Cell::new(0);
+        let restore_fn = async |_: btc32::Xpriv,
+                                _: &KeySet,
+                                _: &dyn MintConnector,
+                                _: &dyn PocketRepository,
+                                _: u32,
+                                batch_size: u32| {
+            let counter = call_counter.get();
+            call_counter.replace(counter + 1);
+            if counter == 1 {
+                Ok(batch_size as usize)
+            } else {
+                Ok(0)
+            }
+        };
+        let total_restored = inner_restore_keysetid(xpriv, mintkeyset.id, &client, &db, restore_fn)
+            .await
+            .unwrap();
+        assert_eq!(call_counter.get(), 5);
+        assert_eq!(total_restored, 100);
+    }
+
+    #[tokio::test]
+    async fn restore_keysetid_2ndpartial() {
+        let seed = [0u8; 32];
+        let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
+        let (_, mintkeyset) = keys_test::generate_random_keyset();
+        let keyset = KeySet::from(mintkeyset.clone());
+        let mut client = MockMintConnector::new();
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(keyset.clone()));
+        let mut db = MockPocketRepository::new();
+        db.expect_counter()
+            .times(1)
+            .with(eq(mintkeyset.id))
+            .returning(move |_| Ok(0));
+        db.expect_increment_counter()
+            .times(1)
+            .with(eq(mintkeyset.id), eq(0), eq(200))
+            .returning(|_, _, _| Ok(()));
+
+        let call_counter = std::cell::Cell::new(0);
+        let restore_fn = async |_: btc32::Xpriv,
+                                _: &KeySet,
+                                _: &dyn MintConnector,
+                                _: &dyn PocketRepository,
+                                _: u32,
+                                batch_size: u32| {
+            let counter = call_counter.get();
+            call_counter.replace(counter + 1);
+            if counter == 1 {
+                Ok((batch_size / 3) as usize)
+            } else {
+                Ok(0)
+            }
+        };
+        let total_restored = inner_restore_keysetid(xpriv, mintkeyset.id, &client, &db, restore_fn)
+            .await
+            .unwrap();
+        assert_eq!(call_counter.get(), 5);
+        assert_eq!(total_restored, 33);
     }
 }

@@ -62,12 +62,21 @@ async function run() {
   }
 
   document.getElementById("addbtn").addEventListener("click", async () => {
-    //test
     let name = prompt("Enter wallet name");
     let mint_url = prompt("Enter mint url");
     let mnemonic = prompt("Enter mnemonic");
 
     await wasmModule.add_wallet(name, mint_url, mnemonic);
+    await update_wallets();
+    await format_past_txs();
+  });
+
+  document.getElementById("restorebtn").addEventListener("click", async () => {
+    let name = prompt("Enter wallet name");
+    let mint_url = prompt("Enter mint url");
+    let mnemonic = prompt("Enter mnemonic");
+
+    await wasmModule.restore_wallet(name, mint_url, mnemonic);
     await update_wallets();
     await format_past_txs();
   });
