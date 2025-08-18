@@ -252,8 +252,8 @@ pub struct RedemptionSummary {
     #[wasm_bindgen(readonly)]
     pub amount: u64,
 }
-impl std::convert::From<wallet::RedemptionSummary> for RedemptionSummary {
-    fn from(summary: wallet::RedemptionSummary) -> Self {
+impl std::convert::From<types::RedemptionSummary> for RedemptionSummary {
+    fn from(summary: types::RedemptionSummary) -> Self {
         Self {
             tstamp: summary.tstamp as u32,
             amount: u64::from(summary.amount),
