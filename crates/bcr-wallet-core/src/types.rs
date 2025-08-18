@@ -7,6 +7,11 @@ use uuid::Uuid;
 
 // ----- end imports
 
+pub struct RedemptionSummary {
+    pub tstamp: u64,
+    pub amount: Amount,
+}
+
 #[derive(Default)]
 pub struct SendSummary {
     pub request_id: Uuid,

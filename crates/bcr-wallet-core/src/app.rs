@@ -23,8 +23,8 @@ use cdk::wallet::{
 use crate::{
     SendSummary,
     error::{Error, Result},
-    types::WalletConfig,
-    wallet::{self, CreditPocket, Pocket, WalletBalance},
+    types::{RedemptionSummary, WalletConfig},
+    wallet::{CreditPocket, Pocket, WalletBalance},
 };
 
 // ----- end imports
@@ -44,8 +44,8 @@ mod prod {
 }
 
 type ProductionConnector = cdk::wallet::HttpClient;
-type ProductionDebitPocket = crate::pocket::DbPocket;
-type ProductionCreditPocket = crate::pocket::CrPocket;
+type ProductionDebitPocket = crate::pocket::debit::Pocket;
+type ProductionCreditPocket = crate::pocket::credit::Pocket;
 type ProductionWallet = crate::wallet::Wallet<
     ProductionConnector,
     prod::ProductionTransactionRepository,
@@ -273,7 +273,7 @@ pub async fn wallet_redeem_credit(idx: usize) -> Result<cashu::Amount> {
 pub async fn wallet_list_redemptions(
     idx: usize,
     payment_window: std::time::Duration,
-) -> Result<Vec<wallet::RedemptionSummary>> {
+) -> Result<Vec<RedemptionSummary>> {
     tracing::debug!(
         "wallet_list_redemptions({idx}, {})",
         payment_window.as_secs()
@@ -516,7 +516,7 @@ async fn build_wallet(
         Box::new(pocket)
     } else {
         tracing::warn!("app::add_wallet: credit_pocket = DummyPocket");
-        Box::new(crate::pocket::DummyPocket {})
+        Box::new(crate::pocket::credit::DummyPocket {})
     };
     let wallet_cfg = WalletConfig {
         wallet_id: wallet_id.clone(),

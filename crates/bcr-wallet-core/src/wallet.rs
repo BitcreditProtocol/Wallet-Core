@@ -12,7 +12,7 @@ use uuid::Uuid;
 // ----- local imports
 use crate::{
     error::{Error, Result},
-    types::{PocketSendSummary, SendSummary, WalletSendSummary},
+    types::{PocketSendSummary, RedemptionSummary, SendSummary, WalletSendSummary},
 };
 
 // ----- end imports
@@ -50,11 +50,6 @@ pub trait Pocket {
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
     ) -> Result<usize>;
-}
-
-pub struct RedemptionSummary {
-    pub tstamp: u64,
-    pub amount: Amount,
 }
 
 #[async_trait(?Send)]
@@ -107,7 +102,6 @@ pub struct Wallet<Conn, TxRepo, DebtPck> {
     pub credit: Box<dyn CreditPocket>,
     pub name: String,
     pub id: String,
-
     pub current_send: Mutex<Option<WalletSendSummary>>,
 }
 
