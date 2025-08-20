@@ -10,11 +10,11 @@ use cashu::{
     Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00, nut01 as cdk01,
     nut05 as cdk05, nut23 as cdk23,
 };
-use cdk::{Error as CdkError, wallet::MintConnector};
-use futures::future::JoinAll;
+use cdk::Error as CdkError;
 use uuid::Uuid;
 // ----- local imports
 use crate::{
+    MintConnector,
     error::{Error, Result},
     pocket::*,
     restore,
@@ -36,7 +36,7 @@ struct MeltReference {
 #[cfg_attr(test, mockall::automock)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait MintMeltRepository {
+pub trait MintMeltRepository: sync::SendSync {
     async fn store_melt(
         &self,
         qid: String,
@@ -172,7 +172,8 @@ impl Pocket {
     }
 }
 
-#[async_trait(?Send)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl wallet::Pocket for Pocket {
     fn unit(&self) -> CurrencyUnit {
         self.unit.clone()
@@ -261,19 +262,17 @@ impl wallet::Pocket for Pocket {
                 None
             }
         });
-        let joined: JoinAll<_> = kids
-            .into_iter()
-            .map(|kid| restore::restore_keysetid(self.xpriv, kid, client, self.pdb.as_ref()))
-            .collect();
         let mut total_recovered = 0;
-        for task in joined.await {
-            total_recovered += task?;
+        for kid in kids.into_iter() {
+            total_recovered +=
+                restore::restore_keysetid(self.xpriv, kid, client, self.pdb.as_ref()).await?;
         }
         Ok(total_recovered)
     }
 }
 
-#[async_trait(?Send)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl wallet::DebitPocket for Pocket {
     async fn reclaim_proofs(
         &self,

@@ -3,9 +3,8 @@ use std::collections::HashMap;
 // ----- extra library imports
 use bitcoin::bip32 as btc32;
 use cashu::{KeySet, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09};
-use cdk::wallet::MintConnector;
 // ----- local imports
-use crate::{error::Result, pocket::PocketRepository};
+use crate::{MintConnector, error::Result, pocket::PocketRepository};
 
 // ----- end imports
 
@@ -19,33 +18,13 @@ pub async fn restore_keysetid(
     client: &dyn MintConnector,
     db: &dyn PocketRepository,
 ) -> Result<usize> {
-    inner_restore_keysetid(xpriv, kid, client, db, restore_batch).await
-}
-
-async fn inner_restore_keysetid<Restore>(
-    xpriv: btc32::Xpriv,
-    kid: cashu::Id,
-    client: &dyn MintConnector,
-    db: &dyn PocketRepository,
-    restore: Restore,
-) -> Result<usize>
-where
-    Restore: AsyncFn(
-        btc32::Xpriv,
-        &cashu::KeySet,
-        &dyn MintConnector,
-        &dyn PocketRepository,
-        u32,
-        u32,
-    ) -> Result<usize>,
-{
     let keyset = client.get_mint_keyset(kid).await?;
     let mut zero_response_counter = 0;
     let mut total_proofs_restored = 0;
     let mut dbcursor = db.counter(keyset.id).await?;
     let mut cursor = dbcursor;
     while zero_response_counter < EMPTY_RESPONSES_BEFORE_ABORT {
-        let restored_proofs = restore(xpriv, &keyset, client, db, cursor, BATCH_SIZE).await?;
+        let restored_proofs = restore_batch(xpriv, &keyset, client, db, cursor, BATCH_SIZE).await?;
         cursor += BATCH_SIZE;
         if restored_proofs == 0 {
             zero_response_counter += 1;
@@ -354,31 +333,66 @@ mod tests {
             .times(1)
             .with(eq(mintkeyset.id))
             .returning(move |_| Ok(0));
+        let cloned_mintkeyset = mintkeyset.clone();
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |request| {
+                let cdk09::RestoreRequest { outputs } = request;
+                let signatures = outputs
+                    .iter()
+                    .map(|blind| {
+                        let mut bblind = blind.clone();
+                        bblind.amount = Amount::from(1u64);
+                        keys_utils::sign_with_keys(&cloned_mintkeyset, &bblind)
+                            .expect("signatures should be generated")
+                    })
+                    .collect();
+                let response = cdk09::RestoreResponse {
+                    outputs,
+                    signatures,
+                    promises: Option::default(),
+                };
+                Ok(response)
+            });
+        client
+            .expect_post_check_state()
+            .times(1)
+            .returning(move |request| {
+                let states: Vec<cdk07::ProofState> = request
+                    .ys
+                    .iter()
+                    .map(|y| cdk07::ProofState {
+                        state: cdk07::State::Unspent,
+                        y: *y,
+                        witness: None,
+                    })
+                    .collect();
+                let response = cdk07::CheckStateResponse { states };
+                Ok(response)
+            });
+        db.expect_store_new()
+            .times(BATCH_SIZE as usize)
+            .returning(|p| Ok(p.y().unwrap()));
         db.expect_increment_counter()
             .times(1)
-            .with(eq(mintkeyset.id), eq(0), eq(100))
+            .with(eq(mintkeyset.id), eq(0), eq(BATCH_SIZE))
             .returning(|_, _, _| Ok(()));
-
-        let call_counter = std::cell::Cell::new(0);
-        let restore_fn = async |_: btc32::Xpriv,
-                                _: &KeySet,
-                                _: &dyn MintConnector,
-                                _: &dyn PocketRepository,
-                                _: u32,
-                                batch_size: u32| {
-            let counter = call_counter.get();
-            call_counter.replace(counter + 1);
-            if counter == 0 {
-                Ok(batch_size as usize)
-            } else {
-                Ok(0)
-            }
-        };
-        let total_restored = inner_restore_keysetid(xpriv, mintkeyset.id, &client, &db, restore_fn)
+        client
+            .expect_post_restore()
+            .times(EMPTY_RESPONSES_BEFORE_ABORT)
+            .returning(move |_| {
+                let response = cdk09::RestoreResponse {
+                    outputs: Vec::default(),
+                    signatures: Vec::default(),
+                    promises: Option::default(),
+                };
+                Ok(response)
+            });
+        let total_restored = restore_keysetid(xpriv, mintkeyset.id, &client, &db)
             .await
             .unwrap();
-        assert_eq!(call_counter.get(), 4);
-        assert_eq!(total_restored, 100);
+        assert_eq!(total_restored, BATCH_SIZE as usize);
     }
 
     #[tokio::test]
@@ -397,31 +411,74 @@ mod tests {
             .times(1)
             .with(eq(mintkeyset.id))
             .returning(move |_| Ok(0));
+        client.expect_post_restore().times(1).returning(move |_| {
+            let response = cdk09::RestoreResponse {
+                outputs: Vec::default(),
+                signatures: Vec::default(),
+                promises: Option::default(),
+            };
+            Ok(response)
+        });
+        let cloned_mintkeyset = mintkeyset.clone();
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |request| {
+                let cdk09::RestoreRequest { outputs } = request;
+                let signatures = outputs
+                    .iter()
+                    .map(|blind| {
+                        let mut bblind = blind.clone();
+                        bblind.amount = Amount::from(1u64);
+                        keys_utils::sign_with_keys(&cloned_mintkeyset, &bblind)
+                            .expect("signatures should be generated")
+                    })
+                    .collect();
+                let response = cdk09::RestoreResponse {
+                    outputs,
+                    signatures,
+                    promises: Option::default(),
+                };
+                Ok(response)
+            });
+        client
+            .expect_post_check_state()
+            .times(1)
+            .returning(move |request| {
+                let states: Vec<cdk07::ProofState> = request
+                    .ys
+                    .iter()
+                    .map(|y| cdk07::ProofState {
+                        state: cdk07::State::Unspent,
+                        y: *y,
+                        witness: None,
+                    })
+                    .collect();
+                let response = cdk07::CheckStateResponse { states };
+                Ok(response)
+            });
+        db.expect_store_new()
+            .times(BATCH_SIZE as usize)
+            .returning(|p| Ok(p.y().unwrap()));
         db.expect_increment_counter()
             .times(1)
-            .with(eq(mintkeyset.id), eq(0), eq(200))
+            .with(eq(mintkeyset.id), eq(0), eq(2 * BATCH_SIZE))
             .returning(|_, _, _| Ok(()));
-
-        let call_counter = std::cell::Cell::new(0);
-        let restore_fn = async |_: btc32::Xpriv,
-                                _: &KeySet,
-                                _: &dyn MintConnector,
-                                _: &dyn PocketRepository,
-                                _: u32,
-                                batch_size: u32| {
-            let counter = call_counter.get();
-            call_counter.replace(counter + 1);
-            if counter == 1 {
-                Ok(batch_size as usize)
-            } else {
-                Ok(0)
-            }
-        };
-        let total_restored = inner_restore_keysetid(xpriv, mintkeyset.id, &client, &db, restore_fn)
+        client
+            .expect_post_restore()
+            .times(EMPTY_RESPONSES_BEFORE_ABORT)
+            .returning(move |_| {
+                let response = cdk09::RestoreResponse {
+                    outputs: Vec::default(),
+                    signatures: Vec::default(),
+                    promises: Option::default(),
+                };
+                Ok(response)
+            });
+        let total_restored = restore_keysetid(xpriv, mintkeyset.id, &client, &db)
             .await
             .unwrap();
-        assert_eq!(call_counter.get(), 5);
-        assert_eq!(total_restored, 100);
+        assert_eq!(total_restored, BATCH_SIZE as usize);
     }
 
     #[tokio::test]
@@ -440,30 +497,75 @@ mod tests {
             .times(1)
             .with(eq(mintkeyset.id))
             .returning(move |_| Ok(0));
+        client.expect_post_restore().times(1).returning(move |_| {
+            let response = cdk09::RestoreResponse {
+                outputs: Vec::default(),
+                signatures: Vec::default(),
+                promises: Option::default(),
+            };
+            Ok(response)
+        });
+        let cloned_mintkeyset = mintkeyset.clone();
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |request| {
+                let cdk09::RestoreRequest { mut outputs } = request;
+                outputs.truncate(outputs.len() / 3);
+                let signatures = outputs
+                    .iter()
+                    .map(|blind| {
+                        let mut bblind = blind.clone();
+                        bblind.amount = Amount::from(1u64);
+                        keys_utils::sign_with_keys(&cloned_mintkeyset, &bblind)
+                            .expect("signatures should be generated")
+                    })
+                    .collect();
+                let response = cdk09::RestoreResponse {
+                    outputs,
+                    signatures,
+                    promises: Option::default(),
+                };
+                Ok(response)
+            });
+        client
+            .expect_post_check_state()
+            .times(1)
+            .returning(move |request| {
+                let states: Vec<cdk07::ProofState> = request
+                    .ys
+                    .iter()
+                    .map(|y| cdk07::ProofState {
+                        state: cdk07::State::Unspent,
+                        y: *y,
+                        witness: None,
+                    })
+                    .collect();
+                let response = cdk07::CheckStateResponse { states };
+                Ok(response)
+            });
+        db.expect_store_new()
+            .times((BATCH_SIZE / 3) as usize)
+            .returning(|p| Ok(p.y().unwrap()));
         db.expect_increment_counter()
             .times(1)
-            .with(eq(mintkeyset.id), eq(0), eq(200))
+            .with(eq(mintkeyset.id), eq(0), eq(2 * BATCH_SIZE))
             .returning(|_, _, _| Ok(()));
-
-        let call_counter = std::cell::Cell::new(0);
-        let restore_fn = async |_: btc32::Xpriv,
-                                _: &KeySet,
-                                _: &dyn MintConnector,
-                                _: &dyn PocketRepository,
-                                _: u32,
-                                batch_size: u32| {
-            let counter = call_counter.get();
-            call_counter.replace(counter + 1);
-            if counter == 1 {
-                Ok((batch_size / 3) as usize)
-            } else {
-                Ok(0)
-            }
-        };
-        let total_restored = inner_restore_keysetid(xpriv, mintkeyset.id, &client, &db, restore_fn)
+        client
+            .expect_post_restore()
+            .times(EMPTY_RESPONSES_BEFORE_ABORT)
+            .returning(move |_| {
+                let response = cdk09::RestoreResponse {
+                    outputs: Vec::default(),
+                    signatures: Vec::default(),
+                    promises: Option::default(),
+                };
+                Ok(response)
+            });
+        //
+        let total_restored = restore_keysetid(xpriv, mintkeyset.id, &client, &db)
             .await
             .unwrap();
-        assert_eq!(call_counter.get(), 5);
-        assert_eq!(total_restored, 33);
+        assert_eq!(total_restored, (BATCH_SIZE / 3) as usize);
     }
 }

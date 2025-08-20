@@ -17,6 +17,20 @@ pub mod wallet;
 
 const TEASER_SIZE: usize = 25;
 
+#[cfg(target_arch = "wasm32")]
+mod sync {
+    pub trait SendSync {}
+    impl<T> SendSync for T where T: ?Sized {}
+}
+#[cfg(not(target_arch = "wasm32"))]
+mod sync {
+    pub trait SendSync: Send + Sync {}
+    impl<T> SendSync for T where T: Send + Sync {}
+}
+
+pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {}
+impl<T> MintConnector for T where T: cdk::wallet::MintConnector + sync::SendSync {}
+
 // --------------------------------------------------------------- initialize_api
 #[wasm_bindgen]
 pub async fn initialize_api(network: String) {

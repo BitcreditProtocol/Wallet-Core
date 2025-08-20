@@ -6,15 +6,13 @@ use bcr_wallet_lib::wallet::Token;
 use cashu::{
     Amount, Bolt11Invoice, CurrencyUnit, KeySetInfo, nut00 as cdk00, nut01 as cdk01, nut18 as cdk18,
 };
-use cdk::wallet::{
-    MintConnector,
-    types::{Transaction, TransactionDirection, TransactionId},
-};
+use cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
 use uuid::Uuid;
 // ----- local imports
 use crate::{
+    MintConnector,
     error::{Error, Result},
-    purse,
+    purse, sync,
     types::{
         MeltSummary, PaymentSummary, PaymentType, RedemptionSummary, SendSummary, WalletConfig,
     },
@@ -24,8 +22,9 @@ use crate::{
 
 /// trait that represents a single compartment in our wallet where we store proofs/tokens of the
 /// same currency emitted by the same mint
-#[async_trait(?Send)]
-pub trait Pocket {
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait Pocket: sync::SendSync {
     fn unit(&self) -> CurrencyUnit;
 
     async fn balance(&self) -> Result<Amount>;
@@ -56,7 +55,8 @@ pub trait Pocket {
     ) -> Result<usize>;
 }
 
-#[async_trait(?Send)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait CreditPocket: Pocket {
     fn maybe_unit(&self) -> Option<CurrencyUnit>;
     /// returns the amount reclaimed and the proofs that can be redeemed (i.e. unspent proofs with
@@ -80,7 +80,8 @@ pub trait CreditPocket: Pocket {
     ) -> Result<Vec<RedemptionSummary>>;
 }
 
-#[async_trait(?Send)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait DebitPocket: Pocket {
     async fn reclaim_proofs(
         &self,
