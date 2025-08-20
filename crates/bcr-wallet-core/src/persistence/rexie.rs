@@ -17,7 +17,7 @@ use crate::{
     pocket::PocketRepository,
     purse::PurseRepository,
     types::WalletConfig,
-    wallet,
+    wallet::TransactionRepository,
 };
 
 // ----- end imports
@@ -104,9 +104,9 @@ impl PocketDB {
         ]
     }
 
-    pub fn new(db: Rc<Rexie>, unit: CurrencyUnit) -> Result<Self> {
-        let proof_store = Self::proof_store_name(&unit);
-        let counter_store = Self::counter_store_name(&unit);
+    pub fn new(db: Rc<Rexie>, unit: &CurrencyUnit) -> Result<Self> {
+        let proof_store = Self::proof_store_name(unit);
+        let counter_store = Self::counter_store_name(unit);
         if !db.store_names().contains(&proof_store) {
             return Err(Error::BadPocketDB);
         }
@@ -510,7 +510,7 @@ impl TransactionDB {
 }
 
 #[async_trait(?Send)]
-impl wallet::TransactionRepository for TransactionDB {
+impl TransactionRepository for TransactionDB {
     async fn store_tx(&self, tx: Transaction) -> Result<TransactionId> {
         let tx_entry = TransactionEntry::from(tx);
         self.store(tx_entry).await
@@ -574,7 +574,6 @@ impl std::convert::From<WalletEntry> for WalletConfig {
 ///////////////////////////////////////////// PurseDB
 pub struct PurseDB {
     db: Rc<Rexie>,
-
     wallet_store: String,
 }
 

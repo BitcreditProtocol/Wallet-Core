@@ -31,6 +31,7 @@ pub struct WalletSendSummary {
 #[derive(Default, Clone)]
 pub struct PocketSendSummary {
     pub request_id: Uuid,
+    pub amount: Amount,
     pub swap_fees: Amount,
     pub send_fees: Amount,
 }

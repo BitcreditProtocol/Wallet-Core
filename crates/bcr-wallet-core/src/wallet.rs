@@ -95,6 +95,7 @@ pub trait TransactionRepository {
 }
 
 pub struct Wallet<Conn, TxRepo, DebtPck> {
+    pub network: bitcoin::Network,
     pub client: Conn,
     pub tx_repo: TxRepo,
     pub url: cashu::MintUrl,

@@ -27,7 +27,7 @@ async fn create_pocket_db(test_name: &str) -> PocketDB {
         builder = builder.add_object_store(store);
     }
     let rexie = Rc::new(builder.build().await.unwrap());
-    let proof = PocketDB::new(rexie, unit).unwrap();
+    let proof = PocketDB::new(rexie, &unit).unwrap();
     proof
 }
 

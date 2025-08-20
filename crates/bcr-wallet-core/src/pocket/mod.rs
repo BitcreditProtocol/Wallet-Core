@@ -68,9 +68,9 @@ fn unblind_proofs(
     premint: &cdk00::PreMintSecrets,
 ) -> Vec<cdk00::Proof> {
     let mut proofs: Vec<cdk00::Proof> = Vec::new();
-    if signatures.len() != premint.len() {
+    if signatures.len() > premint.len() {
         tracing::error!(
-            "signatures and premint len mismatch: {} != {}",
+            "signatures and premint len mismatch: {} > {}",
             signatures.len(),
             premint.len()
         )
@@ -85,7 +85,7 @@ fn unblind_proofs(
             );
             continue;
         }
-        if signature.amount != secret.amount {
+        if secret.amount != Amount::ZERO && signature.amount != secret.amount {
             tracing::error!(
                 "amount mismatch in signature: {} != {}",
                 signature.amount,
@@ -248,7 +248,8 @@ fn group_ys_by_keyset_id<'a>(
 
 ///////////////////////////////////////////// send_proofs
 async fn send_proofs(
-    send_ref: SendReference,
+    send_proofs: Vec<cdk01::PublicKey>,
+    swap_proof: Option<(Amount, cdk01::PublicKey)>,
     xpriv: btc32::Xpriv,
     db: &dyn PocketRepository,
     client: &dyn MintConnector,
@@ -256,12 +257,12 @@ async fn send_proofs(
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
     let mut current_amount = Amount::ZERO;
     let mut sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
-    for y in send_ref.send_proofs {
+    for y in send_proofs {
         let proof = db.mark_as_pendingspent(y).await?;
         current_amount += proof.amount;
         sending_proofs.insert(y, proof);
     }
-    let swapped_to_target = if let Some((swap_target, swap_y)) = send_ref.swap_proof {
+    let swapped_to_target = if let Some((swap_target, swap_y)) = swap_proof {
         let swap_proof = db.mark_as_pendingspent(swap_y).await?;
         let target_kid = target_swap_keysetid.unwrap_or(swap_proof.keyset_id);
         let swap_proof_keyset = client.get_mint_keyset(target_kid).await?;

@@ -15,7 +15,7 @@ use crate::{
     pocket::PocketRepository,
     purse::PurseRepository,
     types::WalletConfig,
-    wallet,
+    wallet::TransactionRepository,
 };
 
 // ----- end imports
@@ -149,7 +149,7 @@ pub struct InMemoryTransactionRepository {
 }
 
 #[async_trait]
-impl wallet::TransactionRepository for InMemoryTransactionRepository {
+impl TransactionRepository for InMemoryTransactionRepository {
     async fn store_tx(&self, tx: Transaction) -> Result<TransactionId> {
         let mut transactions = self.transactions.lock().unwrap();
         let tx_id = tx.id();

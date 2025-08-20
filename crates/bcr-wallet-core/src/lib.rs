@@ -15,6 +15,8 @@ pub mod wallet;
 
 // ----- end imports
 
+const TEASER_SIZE: usize = 25;
+
 // --------------------------------------------------------------- initialize_api
 #[wasm_bindgen]
 pub async fn initialize_api(network: String) {
@@ -138,12 +140,12 @@ pub async fn get_wallet_balance(idx: usize) -> WalletBalance {
 // --------------------------------------------------------------- wallet_receive_token
 #[wasm_bindgen]
 pub async fn wallet_receive_token(idx: usize, token: String, tstamp: u32) -> String {
-    let preview_token = token[0..10].to_string();
+    let teaser = token.chars().take(TEASER_SIZE).collect::<String>();
     let returned = app::wallet_receive(idx, token, tstamp as u64).await;
     match returned {
         Ok(tx_id) => tx_id.to_string(),
         Err(e) => {
-            tracing::error!("wallet_receive_token({idx}, {preview_token}...): {e}");
+            tracing::error!("wallet_receive_token({idx}, {teaser}...): {e}");
             String::default()
         }
     }
