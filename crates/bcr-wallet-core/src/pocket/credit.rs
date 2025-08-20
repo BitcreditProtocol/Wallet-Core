@@ -225,10 +225,10 @@ impl wallet::Pocket for Pocket {
         let send_ref = {
             let mut locked = self.current_send.lock().unwrap();
             if locked.is_none() {
-                return Err(Error::NoPrepareSendRef(rid));
+                return Err(Error::NoPrepareRef(rid));
             }
             if locked.as_ref().unwrap().rid != rid {
-                return Err(Error::NoPrepareSendRef(rid));
+                return Err(Error::NoPrepareRef(rid));
             }
             locked.take().unwrap()
         };

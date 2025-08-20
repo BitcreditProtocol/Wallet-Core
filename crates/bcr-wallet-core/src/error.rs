@@ -36,6 +36,8 @@ pub enum Error {
     BadPurseDB,
     #[error("local transaction DB not initialized correctly")]
     BadTransactionDB,
+    #[error("local mint/melt DB not initialized correctly")]
+    BadMintMeltDB,
     #[error("proof in local DB not found: {0}")]
     ProofNotFound(cashu::PublicKey),
     #[error("proof not in desired state: {0}")]
@@ -58,14 +60,26 @@ pub enum Error {
     UnknownCurrencyUnit(cashu::CurrencyUnit),
     #[error("currency unit mismatch: mine {0}, his {1}")]
     CurrencyUnitMismatch(cashu::CurrencyUnit, cashu::CurrencyUnit),
-    #[error("no reference to prepare_send request_id: {0}")]
-    NoPrepareSendRef(uuid::Uuid),
+    #[error("no reference to prepare request_id: {0}")]
+    NoPrepareRef(uuid::Uuid),
     #[error("inactive keyset {0}")]
     InactiveKeyset(cashu::Id),
     #[error("transaction not found {0}")]
     TransactionNotFound(cdk::wallet::types::TransactionId),
     #[error("Mint not supporting debit currency")]
     NoDebitCurrencyInMint(Vec<cashu::CurrencyUnit>),
+    #[error("network mismatch, ours: {0}, theirs: {1}")]
+    InvalidNetwork(bitcoin::Network, bitcoin::Network),
+    #[error("bolt11 invoice, missing amount")]
+    Bolt11MissingAmount,
+    #[error("payment request unknown {0}")]
+    UnknownPaymentRequest(String),
+    #[error("payment {0} expired {1}")]
+    PaymentExpired(uuid::Uuid, u64),
+    #[error("melt op unpaid")]
+    MeltUnpaid(String),
+    #[error("melt op not found: {0}")]
+    MeltNotFound(String),
 
     #[error("internal error: {0}")]
     Internal(String),

@@ -4,7 +4,7 @@ use std::{collections::HashMap, rc::Rc, str::FromStr};
 use anyhow::Error as AnyError;
 use async_trait::async_trait;
 use cashu::{
-    CurrencyUnit, MintUrl, nut00 as cdk00, nut01 as cdk01, nut02 as cdk02, nut07 as cdk07,
+    Amount, CurrencyUnit, MintUrl, nut00 as cdk00, nut01 as cdk01, nut02 as cdk02, nut07 as cdk07,
     nut12 as cdk12, secret::Secret,
 };
 use cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
@@ -15,6 +15,7 @@ use wasm_bindgen::JsValue;
 use crate::{
     error::{Error, Result},
     pocket::PocketRepository,
+    pocket::debit::MintMeltRepository,
     purse::PurseRepository,
     types::WalletConfig,
     wallet::TransactionRepository,
@@ -677,5 +678,169 @@ impl PurseRepository for PurseDB {
     }
     async fn list_wallets(&self) -> Result<Vec<String>> {
         self.list_ids().await
+    }
+}
+
+///////////////////////////////////////////// MeltEntry
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
+struct MeltEntry {
+    quote_id: String,
+    premints: Vec<(
+        cdk00::BlindedMessage,
+        cashu::secret::Secret,
+        cdk01::SecretKey,
+        Amount,
+    )>,
+    kid: Option<cashu::Id>,
+}
+
+fn convert_melt_entry_from(qid: String, premints: Option<cdk00::PreMintSecrets>) -> MeltEntry {
+    let mut entry = MeltEntry {
+        quote_id: qid,
+        ..Default::default()
+    };
+    let Some(premints) = premints else {
+        return entry;
+    };
+    entry.premints = Vec::with_capacity(premints.len());
+    let cdk00::PreMintSecrets { secrets, keyset_id } = premints;
+    entry.kid = Some(keyset_id);
+    for premint in secrets {
+        entry.premints.push((
+            premint.blinded_message,
+            premint.secret,
+            premint.r,
+            premint.amount,
+        ));
+    }
+    entry
+}
+fn convert_melt_entry_to(entry: MeltEntry) -> (String, Option<cdk00::PreMintSecrets>) {
+    let MeltEntry {
+        quote_id,
+        premints,
+        kid,
+    } = entry;
+    if kid.is_none() {
+        return (quote_id, None);
+    }
+    let keyset_id = kid.unwrap();
+    let mut secrets: Vec<cdk00::PreMint> = Vec::with_capacity(premints.len());
+    for premint in premints {
+        let pre = cdk00::PreMint {
+            blinded_message: premint.0,
+            secret: premint.1,
+            r: premint.2,
+            amount: premint.3,
+        };
+        secrets.push(pre);
+    }
+    (quote_id, Some(cdk00::PreMintSecrets { secrets, keyset_id }))
+}
+///////////////////////////////////////////// MintMeltDB
+pub struct MintMeltDB {
+    db: Rc<Rexie>,
+    melt_store: String,
+}
+
+impl MintMeltDB {
+    const MELT_BASE_DB_NAME: &'static str = "melts";
+    const MELT_DB_KEY: &'static str = "quote_id"; // must match MeltEntry field
+
+    fn melt_store_name(unit: &CurrencyUnit) -> String {
+        format!("{unit}_{}", Self::MELT_BASE_DB_NAME)
+    }
+
+    pub fn object_stores(unit: &CurrencyUnit) -> Vec<rexie::ObjectStore> {
+        let melt_store_name = Self::melt_store_name(unit);
+        vec![
+            rexie::ObjectStore::new(&melt_store_name)
+                .auto_increment(false)
+                .key_path(Self::MELT_DB_KEY),
+        ]
+    }
+
+    pub fn new(db: Rc<Rexie>, unit: &CurrencyUnit) -> Result<Self> {
+        let melt_store = Self::melt_store_name(unit);
+        if !db.store_names().contains(&melt_store) {
+            return Err(Error::BadMintMeltDB);
+        }
+        let db = MintMeltDB { db, melt_store };
+        Ok(db)
+    }
+
+    async fn store_melt_entry(&self, melt: MeltEntry) -> Result<String> {
+        let entry = to_value(&melt)?;
+        let tx = self
+            .db
+            .transaction(&[&self.melt_store], TransactionMode::ReadWrite)?;
+        let melts = tx.store(&self.melt_store)?;
+        // overwrite if exists
+        melts.put(&entry, None).await?;
+        tx.done().await?;
+        Ok(melt.quote_id)
+    }
+
+    async fn load_melt_entry(&self, qid: String) -> Result<Option<MeltEntry>> {
+        let tx = self
+            .db
+            .transaction(&[&self.melt_store], TransactionMode::ReadOnly)?;
+        let melts = tx.store(&self.melt_store)?;
+        let js_entry = melts.get(qid.into()).await?;
+        tx.done().await?;
+        let entry = js_entry.map(from_value::<MeltEntry>).transpose()?;
+        Ok(entry)
+    }
+
+    async fn delete_melt_entry(&self, qid: String) -> Result<()> {
+        let tx = self
+            .db
+            .transaction(&[&self.melt_store], TransactionMode::ReadWrite)?;
+        let melts = tx.store(&self.melt_store)?;
+        melts.delete(qid.into()).await?;
+        tx.done().await?;
+        Ok(())
+    }
+
+    async fn list_melts(&self) -> Result<Vec<String>> {
+        let tx = self
+            .db
+            .transaction(&[&self.melt_store], TransactionMode::ReadOnly)?;
+        let melts = tx.store(&self.melt_store)?;
+        let qids = melts
+            .get_all_keys(None, None)
+            .await?
+            .into_iter()
+            .map(from_value::<String>)
+            .map(|r| r.map_err(Error::from))
+            .collect::<Result<Vec<_>>>()?;
+        tx.done().await?;
+        Ok(qids)
+    }
+}
+
+#[async_trait(?Send)]
+impl MintMeltRepository for MintMeltDB {
+    async fn store_melt(
+        &self,
+        qid: String,
+        premints: Option<cdk00::PreMintSecrets>,
+    ) -> Result<String> {
+        let entry = convert_melt_entry_from(qid, premints);
+        self.store_melt_entry(entry).await
+    }
+    async fn load_melt(&self, qid: String) -> Result<cdk00::PreMintSecrets> {
+        let entry = self
+            .load_melt_entry(qid.clone())
+            .await?
+            .ok_or(Error::MeltNotFound(qid.clone()))?;
+        let (qid, premints) = convert_melt_entry_to(entry);
+        premints.ok_or(Error::MeltNotFound(qid))
+    }
+    async fn list_melts(&self) -> Result<Vec<String>> {
+        self.list_melts().await
+    }
+    async fn delete_melt(&self, qid: String) -> Result<()> {
+        self.delete_melt_entry(qid).await
     }
 }

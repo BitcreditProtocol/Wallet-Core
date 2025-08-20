@@ -12,7 +12,7 @@ use cdk::wallet::types::{Transaction, TransactionId};
 // ----- local imports
 use crate::{
     error::{Error, Result},
-    pocket::PocketRepository,
+    pocket::{PocketRepository, debit::MintMeltRepository},
     purse::PurseRepository,
     types::WalletConfig,
     wallet::TransactionRepository,
@@ -176,5 +176,39 @@ impl TransactionRepository for InMemoryTransactionRepository {
             .map(|id| TransactionId::from_str(id).unwrap())
             .collect();
         Ok(tx_ids)
+    }
+}
+
+///////////////////////////////////////////// InMemoryMeltRepository
+#[derive(Default)]
+pub struct InMemoryMintMeltRepository {
+    melts: Arc<Mutex<HashMap<String, Option<cdk00::PreMintSecrets>>>>,
+}
+#[async_trait]
+impl MintMeltRepository for InMemoryMintMeltRepository {
+    async fn store_melt(
+        &self,
+        qid: String,
+        premints: Option<cdk00::PreMintSecrets>,
+    ) -> Result<String> {
+        self.melts.lock().unwrap().insert(qid.clone(), premints);
+        Ok(qid)
+    }
+    async fn load_melt(&self, qid: String) -> Result<cdk00::PreMintSecrets> {
+        let melts = self.melts.lock().unwrap();
+        let value = melts
+            .get(&qid)
+            .cloned()
+            .ok_or_else(|| Error::MeltNotFound(qid.clone()))?;
+        value.ok_or(Error::MeltNotFound(qid))
+    }
+    async fn list_melts(&self) -> Result<Vec<String>> {
+        let melts = self.melts.lock().unwrap();
+        Ok(melts.keys().cloned().collect())
+    }
+    async fn delete_melt(&self, qid: String) -> Result<()> {
+        let mut melts = self.melts.lock().unwrap();
+        melts.remove(&qid);
+        Ok(())
     }
 }
