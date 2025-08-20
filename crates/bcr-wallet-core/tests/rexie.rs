@@ -10,8 +10,8 @@ use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 // ----- local imports
 use bcr_wallet_core::{
     error::Error,
-    persistence::rexie::{PocketDB, TransactionDB},
-    pocket::PocketRepository,
+    persistence::rexie::{MintMeltDB, PocketDB, TransactionDB},
+    pocket::{PocketRepository, debit::MintMeltRepository},
     wallet::TransactionRepository,
 };
 
@@ -27,8 +27,8 @@ async fn create_pocket_db(test_name: &str) -> PocketDB {
         builder = builder.add_object_store(store);
     }
     let rexie = Rc::new(builder.build().await.unwrap());
-    let proof = PocketDB::new(rexie, &unit).unwrap();
-    proof
+    let db = PocketDB::new(rexie, &unit).unwrap();
+    db
 }
 
 #[wasm_bindgen_test]
@@ -157,8 +157,8 @@ async fn create_transaction_db(test_name: &str) -> TransactionDB {
         builder = builder.add_object_store(store);
     }
     let rexie = Rc::new(builder.build().await.unwrap());
-    let proof = TransactionDB::new(rexie, id).unwrap();
-    proof
+    let db = TransactionDB::new(rexie, id).unwrap();
+    db
 }
 
 #[wasm_bindgen_test]
@@ -271,4 +271,65 @@ async fn transaction_list_tx_idxs() {
     assert_eq!(txs.len(), 2);
     assert_eq!(txs[0], txid_old);
     assert_eq!(txs[1], txid_new);
+}
+
+async fn create_mintmelt_db(test_name: &str) -> MintMeltDB {
+    let unit = CurrencyUnit::Custom(String::from("test"));
+    let obj_stores = MintMeltDB::object_stores(&unit);
+    let mut builder = Rexie::builder(test_name).version(1);
+    for store in obj_stores {
+        builder = builder.add_object_store(store);
+    }
+    let rexie = Rc::new(builder.build().await.unwrap());
+    let db = MintMeltDB::new(rexie, &unit).unwrap();
+    db
+}
+
+#[wasm_bindgen_test]
+async fn mintmelt_store_melt() {
+    let qid = String::from("quoteID");
+    let kid = keys_test::generate_random_keysetid();
+    let premints =
+        cashu::PreMintSecrets::random(kid, Amount::from(16u64), &cashu::amount::SplitTarget::None)
+            .unwrap();
+    let mintmeltdb = create_mintmelt_db("mintmelt_store_melt").await;
+    let id = mintmeltdb
+        .store_melt(qid.clone(), Some(premints.clone()))
+        .await
+        .unwrap();
+    assert_eq!(id, qid);
+    let expected = mintmeltdb.load_melt(qid).await.unwrap();
+    assert_eq!(premints, expected);
+}
+
+#[wasm_bindgen_test]
+async fn mintmelt_store_melt_no_premint() {
+    let qid = String::from("quoteID");
+    let mintmeltdb = create_mintmelt_db("mintmelt_store_melt_no_premint").await;
+    let id = mintmeltdb.store_melt(qid.clone(), None).await.unwrap();
+    assert_eq!(id, qid);
+    let result = mintmeltdb.load_melt(qid).await;
+    assert!(result.is_err());
+}
+
+#[wasm_bindgen_test]
+async fn mintmelt_list_ids() {
+    let mintmeltdb = create_mintmelt_db("mintmelt_list_ids").await;
+    mintmeltdb
+        .store_melt(String::from("id1"), None)
+        .await
+        .unwrap();
+    let kid = keys_test::generate_random_keysetid();
+    let premints =
+        cashu::PreMintSecrets::random(kid, Amount::from(16u64), &cashu::amount::SplitTarget::None)
+            .unwrap();
+    mintmeltdb
+        .store_melt(String::from("id2"), Some(premints))
+        .await
+        .unwrap();
+
+    let ids = mintmeltdb.list_melts().await.unwrap();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains(&String::from("id1")));
+    assert!(ids.contains(&String::from("id2")));
 }

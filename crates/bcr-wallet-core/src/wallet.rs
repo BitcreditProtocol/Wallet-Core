@@ -1,9 +1,11 @@
 // ----- standard library imports
-use std::{collections::HashMap, sync::Mutex};
+use std::{collections::HashMap, str::FromStr, sync::Mutex};
 // ----- extra library imports
 use async_trait::async_trait;
 use bcr_wallet_lib::wallet::Token;
-use cashu::{Amount, CurrencyUnit, KeySetInfo, nut00 as cdk00, nut01 as cdk01};
+use cashu::{
+    Amount, Bolt11Invoice, CurrencyUnit, KeySetInfo, nut00 as cdk00, nut01 as cdk01, nut18 as cdk18,
+};
 use cdk::wallet::{
     MintConnector,
     types::{Transaction, TransactionDirection, TransactionId},
@@ -12,7 +14,10 @@ use uuid::Uuid;
 // ----- local imports
 use crate::{
     error::{Error, Result},
-    types::{PocketSendSummary, RedemptionSummary, SendSummary, WalletSendSummary},
+    types::{
+        PaymentType, PocketMeltSummary, PocketSendSummary, RedemptionSummary, SendSummary,
+        WalletPaymentSummary, WalletSendSummary,
+    },
 };
 
 // ----- end imports
@@ -82,6 +87,22 @@ pub trait DebitPocket: Pocket {
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
     ) -> Result<Amount>;
+
+    async fn prepare_melt(
+        &self,
+        invoice: Bolt11Invoice,
+        keysets_info: &[KeySetInfo],
+        client: &dyn MintConnector,
+    ) -> Result<PocketMeltSummary>;
+
+    async fn pay_melt(
+        &self,
+        rid: Uuid,
+        keysets_info: &[KeySetInfo],
+        client: &dyn MintConnector,
+    ) -> Result<Vec<cdk01::PublicKey>>;
+
+    async fn check_pending_melts(&self, client: &dyn MintConnector) -> Result<Amount>;
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -104,6 +125,7 @@ pub struct Wallet<Conn, TxRepo, DebtPck> {
     pub name: String,
     pub id: String,
     pub current_send: Mutex<Option<WalletSendSummary>>,
+    pub current_payment: Mutex<Option<WalletPaymentSummary>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -262,6 +284,10 @@ where
         credit?;
         Ok(())
     }
+
+    pub async fn check_pending_melts(&self) -> Result<Amount> {
+        self.debit.check_pending_melts(&self.client).await
+    }
 }
 
 impl<Conn, TxRepo, DebtPck> Wallet<Conn, TxRepo, DebtPck>
@@ -352,11 +378,11 @@ where
     ) -> Result<(Token, TransactionId)> {
         let current_send = self.current_send.lock().unwrap().take();
         if current_send.is_none() {
-            return Err(Error::NoPrepareSendRef(rid));
+            return Err(Error::NoPrepareRef(rid));
         };
         let current_ref = current_send.unwrap();
         if current_ref.request_id != rid {
-            return Err(Error::NoPrepareSendRef(rid));
+            return Err(Error::NoPrepareRef(rid));
         }
 
         let keysets_info = self.client.get_mint_keysets().await?.keysets;
@@ -405,5 +431,83 @@ where
         };
         let tx_id = self.tx_repo.store_tx(tx).await?;
         Ok((token, tx_id))
+    }
+
+    async fn prepare_nut18_payment(
+        &self,
+        _request: cdk18::PaymentRequest,
+    ) -> Result<WalletPaymentSummary> {
+        todo!()
+    }
+
+    async fn prepare_bolt11_payment(&self, invoice: Bolt11Invoice) -> Result<WalletPaymentSummary> {
+        // preliminary checks
+        if invoice.network() != self.network {
+            return Err(Error::InvalidNetwork(self.network, invoice.network()));
+        }
+        if invoice.amount_milli_satoshis().is_none() {
+            return Err(Error::Bolt11MissingAmount);
+        }
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
+        let pkt_summary = self
+            .debit
+            .prepare_melt(invoice.clone(), &keysets_info, &self.client)
+            .await?;
+        let pay_summary = WalletPaymentSummary {
+            request_id: Uuid::new_v4(),
+            amount: pkt_summary.amount,
+            fees: pkt_summary.fees,
+            reserved_fees: pkt_summary.reserved_fees,
+            unit: self.debit.unit(),
+            expiry: pkt_summary.expiry,
+            internal_rid: pkt_summary.request_id,
+            details: PaymentType::Bolt11(invoice),
+        };
+        Ok(pay_summary)
+    }
+
+    pub async fn prepare_payment(&self, input: String) -> Result<WalletPaymentSummary> {
+        if let Ok(request) = cdk18::PaymentRequest::from_str(&input) {
+            return self.prepare_nut18_payment(request).await;
+        }
+        if let Ok(invoice) = Bolt11Invoice::from_str(&input) {
+            return self.prepare_bolt11_payment(invoice).await;
+        }
+        Err(Error::UnknownPaymentRequest(input))
+    }
+
+    pub async fn pay(&self, rid: Uuid, tstamp: u64) -> Result<TransactionId> {
+        let current_payment = self.current_payment.lock().unwrap().take();
+        let current_payment = current_payment.ok_or(Error::NoPrepareRef(rid))?;
+        if current_payment.request_id != rid {
+            return Err(Error::NoPrepareRef(rid));
+        }
+        if tstamp > current_payment.expiry {
+            return Err(Error::PaymentExpired(
+                current_payment.request_id,
+                current_payment.expiry,
+            ));
+        }
+
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
+        let ys = self
+            .debit
+            .pay_melt(current_payment.internal_rid, &keysets_info, &self.client)
+            .await?;
+
+        let tx = Transaction {
+            amount: current_payment.amount,
+            fee: current_payment.fees + current_payment.reserved_fees,
+            mint_url: self.url.clone(),
+            direction: TransactionDirection::Outgoing,
+            memo: current_payment.details.memo(),
+            metadata: HashMap::new(),
+            timestamp: tstamp,
+            unit: self.debit.unit(),
+            ys,
+        };
+
+        let txid = self.tx_repo.store_tx(tx).await?;
+        Ok(txid)
     }
 }

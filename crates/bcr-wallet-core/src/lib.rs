@@ -332,6 +332,70 @@ pub async fn wallet_load_tx(idx: usize, tx_id: String) -> Transaction {
         }
     }
 }
+// --------------------------------------------------------------- wallet_prepare_payment
+#[wasm_bindgen]
+#[derive(Default)]
+pub struct PaymentSummary {
+    #[wasm_bindgen(getter_with_clone)]
+    pub request_id: String,
+    #[wasm_bindgen(getter_with_clone)]
+    pub unit: String,
+    #[wasm_bindgen(readonly)]
+    pub fees: u64,
+    #[wasm_bindgen(readonly)]
+    pub reserved_fees: u64,
+    #[wasm_bindgen(readonly)]
+    pub expiry: u64,
+}
+impl std::convert::From<types::WalletPaymentSummary> for PaymentSummary {
+    fn from(summary: types::WalletPaymentSummary) -> Self {
+        Self {
+            request_id: summary.request_id.to_string(),
+            unit: summary.unit.to_string(),
+            fees: summary.fees.into(),
+            reserved_fees: summary.reserved_fees.into(),
+            expiry: summary.expiry,
+        }
+    }
+}
+#[wasm_bindgen]
+pub async fn wallet_prepare_payment(idx: usize, input: String) -> PaymentSummary {
+    let teaser = input.chars().take(TEASER_SIZE).collect::<String>();
+    let returned = app::wallet_prepare_payment(idx, input).await;
+    match returned {
+        Ok(summary) => PaymentSummary::from(summary),
+        Err(e) => {
+            tracing::error!("wallet_prepare_payment({idx}, {teaser}): {e}");
+            PaymentSummary::default()
+        }
+    }
+}
+
+// --------------------------------------------------------------- wallet_pay
+#[wasm_bindgen]
+pub async fn wallet_pay(idx: usize, request_id: String, tstamp: u32) -> String {
+    let returned = app::wallet_pay(idx, request_id.clone(), tstamp as u64).await;
+    match returned {
+        Ok(tx_id) => tx_id.to_string(),
+        Err(e) => {
+            tracing::error!("wallet_pay({idx}, {request_id}, {tstamp}): {e}",);
+            String::default()
+        }
+    }
+}
+
+// --------------------------------------------------------------- wallet_check_pending_melts
+#[wasm_bindgen]
+pub async fn wallet_check_pending_melts(idx: usize) -> u64 {
+    let returned = app::wallet_check_pending_melts(idx).await;
+    match returned {
+        Ok(amount) => u64::from(amount),
+        Err(e) => {
+            tracing::error!("wallet_check_pending_melts({idx}): {e}",);
+            0
+        }
+    }
+}
 
 // --------------------------------------------------------------- wallet_list_tx_ids
 #[wasm_bindgen]

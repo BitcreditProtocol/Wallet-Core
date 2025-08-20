@@ -23,7 +23,7 @@ use cdk::wallet::{
 use crate::{
     SendSummary,
     error::{Error, Result},
-    types::{RedemptionSummary, WalletConfig},
+    types::{RedemptionSummary, WalletConfig, WalletPaymentSummary},
     wallet::{CreditPocket, Pocket, WalletBalance},
 };
 
@@ -32,12 +32,15 @@ use crate::{
 #[cfg(target_arch = "wasm32")]
 mod prod {
     pub type ProductionPocketRepository = crate::persistence::rexie::PocketDB;
+    pub type ProductionMintMeltRepository = crate::persistence::rexie::MintMeltDB;
     pub type ProductionPurseRepository = crate::persistence::rexie::PurseDB;
     pub type ProductionTransactionRepository = crate::persistence::rexie::TransactionDB;
 }
 #[cfg(not(target_arch = "wasm32"))]
 mod prod {
     pub type ProductionPocketRepository = crate::persistence::inmemory::InMemoryPocketRepository;
+    pub type ProductionMintMeltRepository =
+        crate::persistence::inmemory::InMemoryMintMeltRepository;
     pub type ProductionPurseRepository = crate::persistence::inmemory::InMemoryPurseRepository;
     pub type ProductionTransactionRepository =
         crate::persistence::inmemory::InMemoryTransactionRepository;
@@ -309,6 +312,30 @@ pub async fn wallet_list_tx_ids(idx: usize) -> Result<Vec<TransactionId>> {
     Ok(tx_ids)
 }
 
+pub async fn wallet_prepare_payment(idx: usize, input: String) -> Result<WalletPaymentSummary> {
+    tracing::debug!("wallet_prepare_payment({idx}, {input})");
+
+    let wallet = get_wallet(idx)?;
+    let summary = wallet.prepare_payment(input).await?;
+    Ok(summary)
+}
+
+pub async fn wallet_pay(idx: usize, rid: String, tstamp: u64) -> Result<TransactionId> {
+    tracing::debug!("wallet_pay({idx}, {rid}, {tstamp})");
+
+    let rid = uuid::Uuid::from_str(&rid)?;
+    let wallet = get_wallet(idx)?;
+    let tx_id = wallet.pay(rid, tstamp).await?;
+    Ok(tx_id)
+}
+
+pub async fn wallet_check_pending_melts(idx: usize) -> Result<cashu::Amount> {
+    tracing::debug!("wallet_check_pending_melts({idx})");
+
+    let wallet = get_wallet(idx)?;
+    wallet.check_pending_melts().await
+}
+
 pub fn wallets_ids() -> Result<Vec<u64>> {
     tracing::debug!("get_wallet_ids");
     let ids = APP_STATE.with_borrow(|state| {
@@ -412,7 +439,10 @@ mod db {
     ) -> Result<(
         prod::ProductionTransactionRepository,
         (
-            prod::ProductionPocketRepository,
+            (
+                prod::ProductionPocketRepository,
+                prod::ProductionMintMeltRepository,
+            ),
             Option<prod::ProductionPocketRepository>,
         ),
     )> {
@@ -432,6 +462,10 @@ mod db {
         for store in stores {
             rexie_builder = rexie_builder.add_object_store(store);
         }
+        let stores = prod::ProductionMintMeltRepository::object_stores(debit);
+        for store in stores {
+            rexie_builder = rexie_builder.add_object_store(store);
+        }
         if let Some(unit) = credit {
             let stores = prod::ProductionPocketRepository::object_stores(unit);
             for store in stores {
@@ -441,6 +475,7 @@ mod db {
         let rexiedb = Rc::new(rexie_builder.build().await?);
         let tx_repo = prod::ProductionTransactionRepository::new(rexiedb.clone(), wallet_id)?;
         let debitdb = prod::ProductionPocketRepository::new(rexiedb.clone(), &debit)?;
+        let mintmeltdb = prod::ProductionMintMeltRepository::new(rexiedb.clone(), &debit)?;
         let creditdb = if let Some(unit) = credit {
             Some(prod::ProductionPocketRepository::new(
                 rexiedb.clone(),
@@ -449,7 +484,7 @@ mod db {
         } else {
             None
         };
-        Ok((tx_repo, (debitdb, creditdb)))
+        Ok((tx_repo, ((debitdb, mintmeltdb), creditdb)))
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
@@ -469,18 +504,22 @@ mod db {
     ) -> Result<(
         prod::ProductionTransactionRepository,
         (
-            prod::ProductionPocketRepository,
+            (
+                prod::ProductionPocketRepository,
+                prod::ProductionMintMeltRepository,
+            ),
             Option<prod::ProductionPocketRepository>,
         ),
     )> {
         let txdb = prod::ProductionTransactionRepository::default();
         let debitdb = prod::ProductionPocketRepository::default();
+        let mintmeltdb = prod::ProductionMintMeltRepository::default();
         let creditdb = if credit.is_some() {
             Some(prod::ProductionPocketRepository::default())
         } else {
             None
         };
-        Ok((txdb, (debitdb, creditdb)))
+        Ok((txdb, ((debitdb, mintmeltdb), creditdb)))
     }
 }
 
@@ -499,7 +538,7 @@ async fn build_wallet(
     let (debit_unit, credit_unit) = find_currency_units(&keyset_infos)?;
     // building wallet dbs
     let wallet_id = build_wallet_id(&mint_id, &xpriv);
-    let (tx_repo, (debitdb, creditdb)) = db::build_wallet_dbs(
+    let (tx_repo, ((debitdb, mintmeltdb), creditdb)) = db::build_wallet_dbs(
         AppState::DB_VERSION,
         &wallet_id,
         &debit_unit,
@@ -508,7 +547,12 @@ async fn build_wallet(
     )
     .await?;
     // building the debit pocket
-    let debit_pocket = ProductionDebitPocket::new(debit_unit.clone(), Arc::new(debitdb), xpriv);
+    let debit_pocket = ProductionDebitPocket::new(
+        debit_unit.clone(),
+        Arc::new(debitdb),
+        Arc::new(mintmeltdb),
+        xpriv,
+    );
     // building the credit pocket
     let credit_pocket: Box<dyn CreditPocket> = if let Some(unit) = &credit_unit {
         let creditdb = creditdb.expect("Credit pocket DB should be present");
@@ -537,6 +581,7 @@ async fn build_wallet(
         name,
         id: wallet_id,
         current_send: Mutex::new(None),
+        current_payment: Mutex::new(None),
     };
     Ok((new_wallet, wallet_cfg))
 }
