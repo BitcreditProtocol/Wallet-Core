@@ -232,8 +232,15 @@ impl wallet::Pocket for Pocket {
             }
             locked.take().unwrap()
         };
-        let sending_proofs =
-            send_proofs(send_ref, self.xpriv, self.db.as_ref(), client, None).await?;
+        let sending_proofs = send_proofs(
+            send_ref.send_proofs,
+            send_ref.swap_proof,
+            self.xpriv,
+            self.db.as_ref(),
+            client,
+            None,
+        )
+        .await?;
         Ok(sending_proofs)
     }
 

@@ -440,11 +440,11 @@ mod db {
         }
         let rexiedb = Rc::new(rexie_builder.build().await?);
         let tx_repo = prod::ProductionTransactionRepository::new(rexiedb.clone(), wallet_id)?;
-        let debitdb = prod::ProductionPocketRepository::new(rexiedb.clone(), debit.clone())?;
+        let debitdb = prod::ProductionPocketRepository::new(rexiedb.clone(), &debit)?;
         let creditdb = if let Some(unit) = credit {
             Some(prod::ProductionPocketRepository::new(
                 rexiedb.clone(),
-                unit.clone(),
+                unit,
             )?)
         } else {
             None
@@ -528,6 +528,7 @@ async fn build_wallet(
         credit: credit_unit,
     };
     let new_wallet: ProductionWallet = ProductionWallet {
+        network,
         client,
         url: mint_url,
         tx_repo,

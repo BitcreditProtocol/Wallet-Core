@@ -196,7 +196,8 @@ impl wallet::Pocket for Pocket {
         };
         let info = self.find_active_keysetid(keysets_info)?;
         let sending_proofs = send_proofs(
-            send_ref,
+            send_ref.send_proofs,
+            send_ref.swap_proof,
             self.xpriv,
             self.db.as_ref(),
             client,
