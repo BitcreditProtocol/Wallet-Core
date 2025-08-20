@@ -7,10 +7,13 @@ use cashu::{
     Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00, nut01 as cdk01,
     nut03 as cdk03, nut07 as cdk07,
 };
-use cdk::wallet::MintConnector;
 use uuid::Uuid;
 // ----- local imports
-use crate::error::{Error, Result};
+use crate::{
+    MintConnector,
+    error::{Error, Result},
+    sync,
+};
 // ----- local modules
 pub mod credit;
 pub mod debit;
@@ -29,7 +32,7 @@ struct SendReference {
 #[cfg_attr(test, mockall::automock)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait PocketRepository {
+pub trait PocketRepository: sync::SendSync {
     async fn store_new(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
     async fn store_pendingspent(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
     async fn load_proof(&self, y: cdk01::PublicKey) -> Result<(cdk00::Proof, cdk07::State)>;

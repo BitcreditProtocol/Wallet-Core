@@ -11,11 +11,10 @@ use cashu::{
     Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00, nut01 as cdk01,
     nut07 as cdk07,
 };
-use cdk::wallet::MintConnector;
-use futures::future::JoinAll;
 use uuid::Uuid;
 // ----- local imports
 use crate::{
+    MintConnector,
     error::{Error, Result},
     pocket::*,
     restore,
@@ -129,7 +128,8 @@ impl Pocket {
     }
 }
 
-#[async_trait(?Send)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl wallet::Pocket for Pocket {
     fn unit(&self) -> CurrencyUnit {
         self.unit.clone()
@@ -264,19 +264,17 @@ impl wallet::Pocket for Pocket {
                 None
             }
         });
-        let joined: JoinAll<_> = kids
-            .into_iter()
-            .map(|kid| restore::restore_keysetid(self.xpriv, kid, client, self.db.as_ref()))
-            .collect();
         let mut total_recovered = 0;
-        for task in joined.await {
-            total_recovered += task?;
+        for kid in kids.into_iter() {
+            total_recovered +=
+                restore::restore_keysetid(self.xpriv, kid, client, self.db.as_ref()).await?;
         }
         Ok(total_recovered)
     }
 }
 
-#[async_trait(?Send)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl wallet::CreditPocket for Pocket {
     fn maybe_unit(&self) -> Option<CurrencyUnit> {
         Some(self.unit.clone())
@@ -380,7 +378,8 @@ impl wallet::CreditPocket for Pocket {
 ///////////////////////////////////////////// dummy pocket
 pub struct DummyPocket {}
 
-#[async_trait(?Send)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl wallet::Pocket for DummyPocket {
     fn unit(&self) -> CurrencyUnit {
         CurrencyUnit::Custom(String::from("dummy"))
@@ -422,7 +421,9 @@ impl wallet::Pocket for DummyPocket {
         Ok(0)
     }
 }
-#[async_trait(?Send)]
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl wallet::CreditPocket for DummyPocket {
     fn maybe_unit(&self) -> Option<CurrencyUnit> {
         None
