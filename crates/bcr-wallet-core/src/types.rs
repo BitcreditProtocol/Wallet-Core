@@ -1,6 +1,5 @@
 // ----- standard library imports
 // ----- extra library imports
-use bitcoin::bip32 as btc32;
 use cashu::{Amount, CurrencyUnit, MintUrl, nut18 as cdk18};
 use uuid::Uuid;
 // ----- local imports
@@ -53,7 +52,7 @@ pub struct WalletConfig {
     pub mint: MintUrl,
     pub debit: CurrencyUnit,
     pub credit: Option<CurrencyUnit>,
-    pub master: btc32::Xpriv,
+    pub mnemonic: bip39::Mnemonic,
 }
 
 #[derive(Default, Clone)]

@@ -2,7 +2,6 @@
 use std::{
     cell::RefCell,
     collections::HashSet,
-    rc::Rc,
     str::FromStr,
     sync::{Arc, Mutex},
 };
@@ -23,7 +22,7 @@ use cdk::wallet::{
 use crate::{
     SendSummary,
     error::{Error, Result},
-    types::{RedemptionSummary, WalletConfig, WalletPaymentSummary},
+    types::{RedemptionSummary, WalletPaymentSummary},
     wallet::{CreditPocket, Pocket, WalletBalance},
 };
 
@@ -54,35 +53,30 @@ type ProductionWallet = crate::wallet::Wallet<
     prod::ProductionTransactionRepository,
     ProductionDebitPocket,
 >;
-
-type ProductionPurse = crate::purse::Purse<prod::ProductionPurseRepository>;
+type ProductionPurse = crate::purse::Purse<prod::ProductionPurseRepository, ProductionWallet>;
 
 pub struct AppState {
-    wallets: Vec<Rc<ProductionWallet>>,
     network: bitcoin::Network,
-    purse: Option<Rc<ProductionPurse>>,
+    purse: Option<Arc<ProductionPurse>>,
 }
 impl AppState {
     pub const DB_VERSION: u32 = 1;
 
-    pub fn new(network: bitcoin::Network, purse: Option<Rc<ProductionPurse>>) -> Self {
+    pub fn new(network: bitcoin::Network, purse: Option<Arc<ProductionPurse>>) -> Self {
         tracing::debug!("Creating new AppState with network: {:?}", network);
-        Self {
-            wallets: Vec::new(),
-            network,
-            purse,
-        }
+        Self { network, purse }
     }
 
     pub async fn load_wallets(&mut self) -> Result<()> {
         tracing::debug!("AppState::load_wallets({})", self.network);
+
         let Some(purse) = &self.purse else {
-            return Err(Error::BadPurseDB);
+            return Err(Error::Initialization);
         };
         let w_ids = purse.list_wallets().await?;
         for wid in w_ids {
             tracing::debug!("Loading wallet with id: {wid}");
-            let w_cfg = purse.load_wallet(&wid).await?;
+            let w_cfg = purse.load_wallet_config(&wid).await?;
             if w_cfg.network != self.network {
                 tracing::info!(
                     "Skipping wallet {wid} with network {:?}, expected {:?}",
@@ -91,15 +85,16 @@ impl AppState {
                 );
                 continue;
             }
-            let (wallet, _) = build_wallet(
+            let wallet = build_wallet(
                 w_cfg.name,
                 w_cfg.network,
                 w_cfg.mint,
-                w_cfg.master,
+                w_cfg.mnemonic,
                 LocalDB::Keep,
+                Self::DB_VERSION,
             )
             .await?;
-            self.wallets.push(Rc::new(wallet));
+            purse.add_wallet(wallet).await?;
         }
         Ok(())
     }
@@ -122,9 +117,9 @@ pub async fn initialize_api(network: String) {
     let pursedb = db::build_appstate_db(AppState::DB_VERSION)
         .await
         .expect("Failed to build app state DB");
-    let purse = ProductionPurse { wallets: pursedb };
 
-    let mut appstate = AppState::new(net, Some(Rc::new(purse)));
+    let purse = ProductionPurse::new(pursedb);
+    let mut appstate = AppState::new(net, Some(Arc::new(purse)));
     appstate
         .load_wallets()
         .await
@@ -132,18 +127,13 @@ pub async fn initialize_api(network: String) {
     APP_STATE.replace(appstate);
 }
 
-fn get_wallet(idx: usize) -> Result<Rc<ProductionWallet>> {
+fn get_wallet(idx: usize) -> Result<Arc<ProductionWallet>> {
     APP_STATE.with_borrow(|state| {
-        state
-            .wallets
-            .get(idx)
-            .cloned()
-            .ok_or(Error::WalletNotFound(idx))
+        let Some(purse) = &state.purse else {
+            return Err(Error::Initialization);
+        };
+        purse.get_wallet(idx).ok_or(Error::WalletNotFound(idx))
     })
-}
-
-fn get_purse() -> Result<Rc<ProductionPurse>> {
-    APP_STATE.with_borrow(|state| state.purse.clone().ok_or(Error::BadPurseDB))
 }
 
 /// returns the index of the wallet
@@ -153,15 +143,24 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
     let network = APP_STATE.with_borrow(|state| state.network);
     let mint_url = MintUrl::from_str(&mint_url)?;
     let mnemonic = bip39::Mnemonic::from_str(&mnemonic)?;
-    let master = bitcoin::bip32::Xpriv::new_master(network, &mnemonic.to_seed(""))?;
-    let (wallet, wallet_cfg) = build_wallet(name, network, mint_url, master, LocalDB::Keep).await?;
-    let purse = get_purse()?;
-    purse.store_wallet(wallet_cfg).await?;
+    let wallet = build_wallet(
+        name,
+        network,
+        mint_url,
+        mnemonic,
+        LocalDB::Keep,
+        AppState::DB_VERSION,
+    )
+    .await?;
 
-    let idx = APP_STATE.with_borrow_mut(|state| {
-        state.wallets.push(Rc::new(wallet));
-        state.wallets.len() - 1
-    });
+    let purse = APP_STATE.with_borrow_mut(|state| {
+        let Some(purse) = &state.purse else {
+            return Err(Error::Initialization);
+        };
+        Ok(Arc::clone(purse))
+    })?;
+    let idx = purse.add_wallet(wallet).await?;
+
     Ok(idx)
 }
 
@@ -172,17 +171,24 @@ pub async fn restore_wallet(name: String, mint_url: String, mnemonic: String) ->
     let network = APP_STATE.with_borrow(|state| state.network);
     let mint_url = MintUrl::from_str(&mint_url)?;
     let mnemonic = bip39::Mnemonic::from_str(&mnemonic)?;
-    let master = bitcoin::bip32::Xpriv::new_master(network, &mnemonic.to_seed(""))?;
-    let (wallet, wallet_cfg) =
-        build_wallet(name, network, mint_url, master, LocalDB::Delete).await?;
+    let wallet = build_wallet(
+        name,
+        network,
+        mint_url,
+        mnemonic,
+        LocalDB::Delete,
+        AppState::DB_VERSION,
+    )
+    .await?;
     wallet.restore_local_proofs().await?;
-    let purse = get_purse()?;
-    purse.store_wallet(wallet_cfg).await?;
 
-    let idx = APP_STATE.with_borrow_mut(|state| {
-        state.wallets.push(Rc::new(wallet));
-        state.wallets.len() - 1
-    });
+    let purse = APP_STATE.with_borrow_mut(|state| {
+        let Some(purse) = &state.purse else {
+            return Err(Error::Initialization);
+        };
+        Ok(Arc::clone(purse))
+    })?;
+    let idx = purse.add_wallet(wallet).await?;
     Ok(idx)
 }
 
@@ -336,77 +342,26 @@ pub async fn wallet_check_pending_melts(idx: usize) -> Result<cashu::Amount> {
     wallet.check_pending_melts().await
 }
 
-pub fn wallets_ids() -> Result<Vec<u64>> {
+pub fn wallets_ids() -> Result<Vec<u32>> {
     tracing::debug!("get_wallet_ids");
     let ids = APP_STATE.with_borrow(|state| {
-        state
-            .wallets
-            .iter()
-            .enumerate()
-            .map(|(i, _)| i as u64)
-            .collect::<Vec<_>>()
-    });
+        let Some(purse) = &state.purse else {
+            return Err(Error::Initialization);
+        };
+        Ok(purse.ids())
+    })?;
     Ok(ids)
 }
 
 pub fn wallets_names() -> Result<Vec<String>> {
     tracing::debug!("get_wallet_names");
     let names = APP_STATE.with_borrow(|state| {
-        state
-            .wallets
-            .iter()
-            .map(|w| w.name.clone())
-            .collect::<Vec<_>>()
-    });
+        let Some(purse) = &state.purse else {
+            return Err(Error::Initialization);
+        };
+        Ok(purse.names())
+    })?;
     Ok(names)
-}
-
-fn build_mint_id(url: &MintUrl, info: &MintInfo) -> Vec<u8> {
-    if let Some(pk) = info.pubkey {
-        pk.to_bytes().to_vec()
-    } else if let Some(name) = &info.name {
-        name.to_string().as_bytes().to_vec()
-    } else {
-        url.to_string().as_bytes().to_vec()
-    }
-}
-
-fn find_currency_units(
-    keyset_infos: &[KeySetInfo],
-) -> Result<(CurrencyUnit, Option<CurrencyUnit>)> {
-    let currencies = keyset_infos
-        .iter()
-        .map(|k| k.unit.clone())
-        .collect::<HashSet<_>>();
-    if currencies.len() > 2 {
-        return Err(Error::Any(AnyError::msg(
-            "Mint supports more than 2 currencies, not supported yet",
-        )));
-    }
-    let credit_unit = currencies
-        .iter()
-        .find(|unit| unit.to_string().starts_with("cr"));
-    let debit_unit = currencies
-        .iter()
-        .find(|unit| !unit.to_string().starts_with("cr"));
-    if debit_unit.is_none() {
-        let currencies = currencies.iter().cloned().collect();
-        return Err(Error::NoDebitCurrencyInMint(currencies));
-    }
-    let debit_unit = debit_unit.unwrap();
-    Ok((debit_unit.clone(), credit_unit.cloned()))
-}
-
-fn build_wallet_id(mint_id: &[u8], master: &btc32::Xpriv) -> String {
-    let secp = secp256k1::Secp256k1::signing_only();
-    let xpub = btc32::Xpub::from_priv(&secp, master);
-    let mut hasher = sha256::HashEngine::default();
-    hasher.input(mint_id);
-    hasher.input(xpub.fingerprint().to_bytes().as_slice());
-    sha256::Hash::from_engine(hasher)
-        .as_byte_array()
-        .as_hex()
-        .to_string()
 }
 
 pub enum LocalDB {
@@ -417,6 +372,7 @@ pub enum LocalDB {
 #[cfg(target_arch = "wasm32")]
 mod db {
     use super::*;
+    use std::rc::Rc;
 
     pub async fn build_appstate_db(db_version: u32) -> Result<prod::ProductionPurseRepository> {
         let rexie_db_name = "bitcredit_wallet";
@@ -523,13 +479,62 @@ mod db {
     }
 }
 
+fn build_mint_id(url: &MintUrl, info: &MintInfo) -> Vec<u8> {
+    if let Some(pk) = info.pubkey {
+        pk.to_bytes().to_vec()
+    } else if let Some(name) = &info.name {
+        name.to_string().as_bytes().to_vec()
+    } else {
+        url.to_string().as_bytes().to_vec()
+    }
+}
+
+fn find_currency_units(
+    keyset_infos: &[KeySetInfo],
+) -> Result<(CurrencyUnit, Option<CurrencyUnit>)> {
+    let currencies = keyset_infos
+        .iter()
+        .map(|k| k.unit.clone())
+        .collect::<HashSet<_>>();
+    if currencies.len() > 2 {
+        return Err(Error::Any(AnyError::msg(
+            "Mint supports more than 2 currencies, not supported yet",
+        )));
+    }
+    let credit_unit = currencies
+        .iter()
+        .find(|unit| unit.to_string().starts_with("cr"));
+    let debit_unit = currencies
+        .iter()
+        .find(|unit| !unit.to_string().starts_with("cr"));
+    if debit_unit.is_none() {
+        let currencies = currencies.iter().cloned().collect();
+        return Err(Error::NoDebitCurrencyInMint(currencies));
+    }
+    let debit_unit = debit_unit.unwrap();
+    Ok((debit_unit.clone(), credit_unit.cloned()))
+}
+
+fn build_wallet_id(mint_id: &[u8], master: &btc32::Xpriv) -> String {
+    let secp = secp256k1::Secp256k1::signing_only();
+    let xpub = btc32::Xpub::from_priv(&secp, master);
+    let mut hasher = sha256::HashEngine::default();
+    hasher.input(mint_id);
+    hasher.input(xpub.fingerprint().to_bytes().as_slice());
+    sha256::Hash::from_engine(hasher)
+        .as_byte_array()
+        .as_hex()
+        .to_string()
+}
 async fn build_wallet(
     name: String,
     network: bitcoin::Network,
     mint_url: cashu::MintUrl,
-    xpriv: btc32::Xpriv,
+    mnemonic: bip39::Mnemonic,
     local: LocalDB,
-) -> Result<(ProductionWallet, WalletConfig)> {
+    db_version: u32,
+) -> Result<ProductionWallet> {
+    let master = bitcoin::bip32::Xpriv::new_master(network, &mnemonic.to_seed(""))?;
     // retrieving mint details
     let client = ProductionConnector::new(mint_url.clone());
     let info = client.get_mint_info().await?;
@@ -537,9 +542,9 @@ async fn build_wallet(
     let keyset_infos = client.get_mint_keysets().await?.keysets;
     let (debit_unit, credit_unit) = find_currency_units(&keyset_infos)?;
     // building wallet dbs
-    let wallet_id = build_wallet_id(&mint_id, &xpriv);
+    let wallet_id = build_wallet_id(&mint_id, &master);
     let (tx_repo, ((debitdb, mintmeltdb), creditdb)) = db::build_wallet_dbs(
-        AppState::DB_VERSION,
+        db_version,
         &wallet_id,
         &debit_unit,
         credit_unit.as_ref(),
@@ -551,28 +556,20 @@ async fn build_wallet(
         debit_unit.clone(),
         Arc::new(debitdb),
         Arc::new(mintmeltdb),
-        xpriv,
+        master,
     );
     // building the credit pocket
     let credit_pocket: Box<dyn CreditPocket> = if let Some(unit) = &credit_unit {
         let creditdb = creditdb.expect("Credit pocket DB should be present");
-        let pocket = ProductionCreditPocket::new(unit.clone(), Arc::new(creditdb), xpriv);
+        let pocket = ProductionCreditPocket::new(unit.clone(), Arc::new(creditdb), master);
         Box::new(pocket)
     } else {
         tracing::warn!("app::add_wallet: credit_pocket = DummyPocket");
         Box::new(crate::pocket::credit::DummyPocket {})
     };
-    let wallet_cfg = WalletConfig {
-        wallet_id: wallet_id.clone(),
-        name: name.clone(),
-        network,
-        mint: mint_url.clone(),
-        master: xpriv,
-        debit: debit_unit,
-        credit: credit_unit,
-    };
     let new_wallet: ProductionWallet = ProductionWallet {
         network,
+        mnemonic,
         client,
         url: mint_url,
         tx_repo,
@@ -583,5 +580,5 @@ async fn build_wallet(
         current_send: Mutex::new(None),
         current_payment: Mutex::new(None),
     };
-    Ok((new_wallet, wallet_cfg))
+    Ok(new_wallet)
 }

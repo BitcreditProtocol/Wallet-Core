@@ -80,6 +80,8 @@ pub enum Error {
     MeltUnpaid(String),
     #[error("melt op not found: {0}")]
     MeltNotFound(String),
+    #[error("missing initialization")]
+    Initialization,
 
     #[error("internal error: {0}")]
     Internal(String),

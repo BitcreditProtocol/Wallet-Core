@@ -14,9 +14,10 @@ use uuid::Uuid;
 // ----- local imports
 use crate::{
     error::{Error, Result},
+    purse,
     types::{
         PaymentType, PocketMeltSummary, PocketSendSummary, RedemptionSummary, SendSummary,
-        WalletPaymentSummary, WalletSendSummary,
+        WalletConfig, WalletPaymentSummary, WalletSendSummary,
     },
 };
 
@@ -59,6 +60,7 @@ pub trait Pocket {
 
 #[async_trait(?Send)]
 pub trait CreditPocket: Pocket {
+    fn maybe_unit(&self) -> Option<CurrencyUnit>;
     /// returns the amount reclaimed and the proofs that can be redeemed (i.e. unspent proofs with
     /// inactive keysets)
     async fn reclaim_proofs(
@@ -124,6 +126,7 @@ pub struct Wallet<Conn, TxRepo, DebtPck> {
     pub credit: Box<dyn CreditPocket>,
     pub name: String,
     pub id: String,
+    pub mnemonic: bip39::Mnemonic,
     pub current_send: Mutex<Option<WalletSendSummary>>,
     pub current_payment: Mutex<Option<WalletPaymentSummary>>,
 }
@@ -509,5 +512,27 @@ where
 
         let txid = self.tx_repo.store_tx(tx).await?;
         Ok(txid)
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+impl<Conn, TxRepo, DebtPck> purse::Wallet for Wallet<Conn, TxRepo, DebtPck>
+where
+    DebtPck: DebitPocket,
+{
+    fn config(&self) -> WalletConfig {
+        WalletConfig {
+            wallet_id: self.id.clone(),
+            name: self.name.clone(),
+            network: self.network,
+            debit: self.debit.unit(),
+            credit: self.credit.maybe_unit(),
+            mint: self.url.clone(),
+            mnemonic: self.mnemonic.clone(),
+        }
+    }
+    fn name(&self) -> String {
+        self.name.clone()
     }
 }

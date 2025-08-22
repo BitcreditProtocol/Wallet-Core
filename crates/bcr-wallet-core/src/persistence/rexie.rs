@@ -541,7 +541,7 @@ struct WalletEntry {
     name: String,
     network: bitcoin::Network,
     mint: cashu::MintUrl,
-    master: bitcoin::bip32::Xpriv,
+    mnemonic: bip39::Mnemonic,
     debit: CurrencyUnit,
     credit: Option<CurrencyUnit>,
 }
@@ -552,7 +552,7 @@ impl std::convert::From<WalletConfig> for WalletEntry {
             name: wallet.name,
             network: wallet.network,
             mint: wallet.mint,
-            master: wallet.master,
+            mnemonic: wallet.mnemonic,
             debit: wallet.debit,
             credit: wallet.credit,
         }
@@ -565,7 +565,7 @@ impl std::convert::From<WalletEntry> for WalletConfig {
             name: wallet.name,
             network: wallet.network,
             mint: wallet.mint,
-            master: wallet.master,
+            mnemonic: wallet.mnemonic,
             debit: wallet.debit,
             credit: wallet.credit,
         }
@@ -605,7 +605,7 @@ impl PurseDB {
         Ok(db)
     }
 
-    async fn store(&self, wallet: WalletEntry) -> Result<String> {
+    async fn _store(&self, wallet: WalletEntry) -> Result<String> {
         let entry = to_value(&wallet)?;
         let tx = self
             .db
@@ -617,7 +617,7 @@ impl PurseDB {
         Ok(wallet.wallet_id)
     }
 
-    async fn load(&self, w_id: String) -> Result<Option<WalletEntry>> {
+    async fn _load(&self, w_id: String) -> Result<Option<WalletEntry>> {
         let tx = self
             .db
             .transaction(&[&self.wallet_store], TransactionMode::ReadOnly)?;
@@ -628,7 +628,7 @@ impl PurseDB {
         Ok(entry)
     }
 
-    async fn delete(&self, w_id: String) -> Result<()> {
+    async fn _delete(&self, w_id: String) -> Result<()> {
         let tx = self
             .db
             .transaction(&[&self.wallet_store], TransactionMode::ReadWrite)?;
@@ -638,7 +638,7 @@ impl PurseDB {
         Ok(())
     }
 
-    async fn list_ids(&self) -> Result<Vec<String>> {
+    async fn _list_ids(&self) -> Result<Vec<String>> {
         let tx = self
             .db
             .transaction(&[&self.wallet_store], TransactionMode::ReadOnly)?;
@@ -657,27 +657,27 @@ impl PurseDB {
 
 #[async_trait(?Send)]
 impl PurseRepository for PurseDB {
-    async fn store_wallet(&self, wallet: WalletConfig) -> Result<()> {
+    async fn store(&self, wallet: WalletConfig) -> Result<()> {
         let entry = WalletEntry::from(wallet);
-        self.store(entry).await?;
+        self._store(entry).await?;
         Ok(())
     }
-    async fn load_wallet(&self, wallet_id: &str) -> Result<WalletConfig> {
+    async fn load(&self, wallet_id: &str) -> Result<WalletConfig> {
         let wid = String::from(wallet_id);
         let entry = self
-            .load(wid.clone())
+            ._load(wid.clone())
             .await?
             .ok_or(Error::WalletIdNotFound(wid))?;
         let cfg = WalletConfig::from(entry);
         Ok(cfg)
     }
-    async fn delete_wallet(&self, wallet_id: &str) -> Result<()> {
+    async fn delete(&self, wallet_id: &str) -> Result<()> {
         let wid = String::from(wallet_id);
-        self.delete(wid).await?;
+        self._delete(wid).await?;
         Ok(())
     }
-    async fn list_wallets(&self) -> Result<Vec<String>> {
-        self.list_ids().await
+    async fn list_ids(&self) -> Result<Vec<String>> {
+        self._list_ids().await
     }
 }
 

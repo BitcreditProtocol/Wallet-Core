@@ -119,24 +119,24 @@ pub struct InMemoryPurseRepository {
 
 #[async_trait]
 impl PurseRepository for InMemoryPurseRepository {
-    async fn store_wallet(&self, wallet: WalletConfig) -> Result<()> {
+    async fn store(&self, wallet: WalletConfig) -> Result<()> {
         let mut wallets = self.wallets.lock().unwrap();
         wallets.insert(wallet.wallet_id.clone(), wallet);
         Ok(())
     }
-    async fn load_wallet(&self, wallet_id: &str) -> Result<WalletConfig> {
+    async fn load(&self, wallet_id: &str) -> Result<WalletConfig> {
         let wallets = self.wallets.lock().unwrap();
         wallets
             .get(wallet_id)
             .cloned()
             .ok_or_else(|| Error::WalletIdNotFound(wallet_id.to_string()))
     }
-    async fn delete_wallet(&self, wallet_id: &str) -> Result<()> {
+    async fn delete(&self, wallet_id: &str) -> Result<()> {
         let mut wallets = self.wallets.lock().unwrap();
         wallets.remove(wallet_id);
         Ok(())
     }
-    async fn list_wallets(&self) -> Result<Vec<String>> {
+    async fn list_ids(&self) -> Result<Vec<String>> {
         let wallets = self.wallets.lock().unwrap();
         Ok(wallets.keys().cloned().collect())
     }
