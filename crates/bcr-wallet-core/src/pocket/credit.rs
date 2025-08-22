@@ -278,6 +278,10 @@ impl wallet::Pocket for Pocket {
 
 #[async_trait(?Send)]
 impl wallet::CreditPocket for Pocket {
+    fn maybe_unit(&self) -> Option<CurrencyUnit> {
+        Some(self.unit.clone())
+    }
+
     async fn reclaim_proofs(
         &self,
         keysets_info: &[KeySetInfo],
@@ -420,6 +424,9 @@ impl wallet::Pocket for DummyPocket {
 }
 #[async_trait(?Send)]
 impl wallet::CreditPocket for DummyPocket {
+    fn maybe_unit(&self) -> Option<CurrencyUnit> {
+        None
+    }
     async fn reclaim_proofs(
         &self,
         _keysets_info: &[KeySetInfo],
