@@ -19,7 +19,7 @@ use crate::{
     error::{Error, Result},
     pocket::*,
     restore,
-    types::{PocketSendSummary, RedemptionSummary},
+    types::{RedemptionSummary, SendSummary},
     wallet,
 };
 
@@ -163,7 +163,7 @@ impl wallet::Pocket for Pocket {
         &self,
         target: Amount,
         keysets_info: &[KeySetInfo],
-    ) -> Result<PocketSendSummary> {
+    ) -> Result<SendSummary> {
         let proofs = self.db.list_unspent().await?;
         let infos = collect_keyset_infos_from_proofs(proofs.values(), keysets_info)?;
         let ys = group_ys_by_keyset_id(proofs.iter());
@@ -190,7 +190,7 @@ impl wallet::Pocket for Pocket {
             }
         }
         let mut current_amount = Amount::ZERO;
-        let summary = PocketSendSummary::new();
+        let summary = SendSummary::new();
         let mut send_ref = SendReference {
             rid: summary.request_id,
             ..Default::default()
@@ -396,7 +396,7 @@ impl wallet::Pocket for DummyPocket {
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
         Ok((Amount::ZERO, Vec::new()))
     }
-    async fn prepare_send(&self, _: Amount, _: &[KeySetInfo]) -> Result<PocketSendSummary> {
+    async fn prepare_send(&self, _: Amount, _: &[KeySetInfo]) -> Result<SendSummary> {
         Err(Error::Any(AnyError::msg("DummyPocket is dummy")))
     }
     async fn send_proofs(

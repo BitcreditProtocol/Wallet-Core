@@ -14,27 +14,12 @@ pub struct RedemptionSummary {
 #[derive(Default)]
 pub struct SendSummary {
     pub request_id: Uuid,
+    pub amount: Amount,
     pub unit: CurrencyUnit,
     pub swap_fees: Amount,
     pub send_fees: Amount,
 }
-
-#[derive(Clone)]
-pub struct WalletSendSummary {
-    pub request_id: Uuid,
-    pub amount: Amount,
-    pub unit: CurrencyUnit,
-    pub internal_rid: Uuid,
-}
-
-#[derive(Default, Clone)]
-pub struct PocketSendSummary {
-    pub request_id: Uuid,
-    pub amount: Amount,
-    pub swap_fees: Amount,
-    pub send_fees: Amount,
-}
-impl PocketSendSummary {
+impl SendSummary {
     pub fn new() -> Self {
         Self {
             request_id: Uuid::new_v4(),
@@ -56,7 +41,7 @@ pub struct WalletConfig {
 }
 
 #[derive(Default, Clone)]
-pub struct PocketMeltSummary {
+pub struct MeltSummary {
     pub request_id: Uuid,
     pub amount: Amount,
     pub fees: Amount,
@@ -64,7 +49,7 @@ pub struct PocketMeltSummary {
     pub expiry: u64,
 }
 
-impl PocketMeltSummary {
+impl MeltSummary {
     pub fn new() -> Self {
         Self {
             request_id: Uuid::new_v4(),
@@ -86,7 +71,7 @@ impl PaymentType {
     }
 }
 
-pub struct WalletPaymentSummary {
+pub struct PaymentSummary {
     pub request_id: Uuid,
     pub unit: CurrencyUnit,
     pub amount: Amount,
