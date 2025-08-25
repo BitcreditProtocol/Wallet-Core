@@ -22,7 +22,7 @@ use cdk::wallet::{
 use crate::{
     SendSummary,
     error::{Error, Result},
-    types::{RedemptionSummary, WalletPaymentSummary},
+    types::{PaymentSummary, RedemptionSummary},
     wallet::{CreditPocket, Pocket, WalletBalance},
 };
 
@@ -318,7 +318,7 @@ pub async fn wallet_list_tx_ids(idx: usize) -> Result<Vec<TransactionId>> {
     Ok(tx_ids)
 }
 
-pub async fn wallet_prepare_payment(idx: usize, input: String) -> Result<WalletPaymentSummary> {
+pub async fn wallet_prepare_payment(idx: usize, input: String) -> Result<PaymentSummary> {
     tracing::debug!("wallet_prepare_payment({idx}, {input})");
 
     let wallet = get_wallet(idx)?;

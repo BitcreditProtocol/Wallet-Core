@@ -347,8 +347,8 @@ pub struct PaymentSummary {
     #[wasm_bindgen(readonly)]
     pub expiry: u64,
 }
-impl std::convert::From<types::WalletPaymentSummary> for PaymentSummary {
-    fn from(summary: types::WalletPaymentSummary) -> Self {
+impl std::convert::From<types::PaymentSummary> for PaymentSummary {
+    fn from(summary: types::PaymentSummary) -> Self {
         Self {
             request_id: summary.request_id.to_string(),
             unit: summary.unit.to_string(),

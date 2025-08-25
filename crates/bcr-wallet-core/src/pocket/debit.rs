@@ -18,7 +18,7 @@ use crate::{
     error::{Error, Result},
     pocket::*,
     restore,
-    types::{PocketMeltSummary, PocketSendSummary},
+    types::{MeltSummary, SendSummary},
     wallet,
 };
 
@@ -136,7 +136,7 @@ impl Pocket {
         &self,
         target: Amount,
         keysets_info: &[KeySetInfo],
-    ) -> Result<(PocketSendSummary, SendReference)> {
+    ) -> Result<(SendSummary, SendReference)> {
         let proofs = self.pdb.list_unspent().await?;
         let infos = collect_keyset_infos_from_proofs(proofs.values(), keysets_info)?;
         let ys = group_ys_by_keyset_id(proofs.iter());
@@ -147,7 +147,7 @@ impl Pocket {
             }
         }
         let mut current_amount = Amount::ZERO;
-        let pocket_summary = PocketSendSummary::new();
+        let pocket_summary = SendSummary::new();
         let mut send_ref = SendReference {
             rid: pocket_summary.request_id,
             ..Default::default()
@@ -205,7 +205,7 @@ impl wallet::Pocket for Pocket {
         &self,
         target: Amount,
         keysets_info: &[KeySetInfo],
-    ) -> Result<PocketSendSummary> {
+    ) -> Result<SendSummary> {
         let (summary, send_ref) = self.compute_send_costs(target, keysets_info).await?;
         *self.current_send.lock().unwrap() = Some(send_ref);
         Ok(summary)
@@ -294,7 +294,7 @@ impl wallet::DebitPocket for Pocket {
         invoice: cashu::Bolt11Invoice,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
-    ) -> Result<PocketMeltSummary> {
+    ) -> Result<MeltSummary> {
         // preliminary checks
         if invoice.amount_milli_satoshis().is_none() {
             return Err(Error::Bolt11MissingAmount);
@@ -308,7 +308,7 @@ impl wallet::DebitPocket for Pocket {
         let total_amount = response.amount + response.fee_reserve;
         let (sendsummary, send_ref) = self.compute_send_costs(total_amount, keysets_info).await?;
 
-        let mut summary = PocketMeltSummary::new();
+        let mut summary = MeltSummary::new();
         summary.amount = sendsummary.amount;
         summary.fees = sendsummary.send_fees + sendsummary.swap_fees;
         summary.reserved_fees = response.fee_reserve;

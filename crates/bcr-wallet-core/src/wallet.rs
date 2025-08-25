@@ -16,8 +16,7 @@ use crate::{
     error::{Error, Result},
     purse,
     types::{
-        PaymentType, PocketMeltSummary, PocketSendSummary, RedemptionSummary, SendSummary,
-        WalletConfig, WalletPaymentSummary, WalletSendSummary,
+        MeltSummary, PaymentSummary, PaymentType, RedemptionSummary, SendSummary, WalletConfig,
     },
 };
 
@@ -38,8 +37,7 @@ pub trait Pocket {
         proofs: Vec<cdk00::Proof>,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)>;
 
-    async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo])
-    -> Result<PocketSendSummary>;
+    async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo]) -> Result<SendSummary>;
 
     async fn send_proofs(
         &self,
@@ -95,7 +93,7 @@ pub trait DebitPocket: Pocket {
         invoice: Bolt11Invoice,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
-    ) -> Result<PocketMeltSummary>;
+    ) -> Result<MeltSummary>;
 
     async fn pay_melt(
         &self,
@@ -117,6 +115,21 @@ pub trait TransactionRepository {
     async fn list_tx_ids(&self) -> Result<Vec<TransactionId>>;
 }
 
+pub struct SendReference {
+    pub request_id: Uuid,
+    pub internal_rid: Uuid,
+    pub amount: Amount,
+    pub unit: CurrencyUnit,
+}
+pub struct PayReference {
+    pub request_id: Uuid,
+    pub internal_rid: Uuid,
+    pub amount: Amount,
+    pub unit: CurrencyUnit,
+    pub fees: Amount,
+    pub expiry: u64,
+    pub details: PaymentType,
+}
 pub struct Wallet<Conn, TxRepo, DebtPck> {
     pub network: bitcoin::Network,
     pub client: Conn,
@@ -127,8 +140,8 @@ pub struct Wallet<Conn, TxRepo, DebtPck> {
     pub name: String,
     pub id: String,
     pub mnemonic: bip39::Mnemonic,
-    pub current_send: Mutex<Option<WalletSendSummary>>,
-    pub current_payment: Mutex<Option<WalletPaymentSummary>>,
+    pub current_send: Mutex<Option<SendReference>>,
+    pub current_payment: Mutex<Option<PayReference>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -150,9 +163,9 @@ where
         amount: Amount,
         keysets_info: &[KeySetInfo],
         pocket: &dyn Pocket,
-    ) -> Result<(WalletSendSummary, SendSummary)> {
+    ) -> Result<(SendReference, SendSummary)> {
         let pocket_summary = pocket.prepare_send(amount, keysets_info).await?;
-        let reference = WalletSendSummary {
+        let reference = SendReference {
             request_id: Uuid::new_v4(),
             amount,
             unit: pocket.unit(),
@@ -160,6 +173,7 @@ where
         };
         let summary = SendSummary {
             request_id: reference.request_id,
+            amount,
             unit: pocket.unit(),
             send_fees: pocket_summary.send_fees,
             swap_fees: pocket_summary.swap_fees,
@@ -439,11 +453,11 @@ where
     async fn prepare_nut18_payment(
         &self,
         _request: cdk18::PaymentRequest,
-    ) -> Result<WalletPaymentSummary> {
+    ) -> Result<PaymentSummary> {
         todo!()
     }
 
-    async fn prepare_bolt11_payment(&self, invoice: Bolt11Invoice) -> Result<WalletPaymentSummary> {
+    async fn prepare_bolt11_payment(&self, invoice: Bolt11Invoice) -> Result<PaymentSummary> {
         // preliminary checks
         if invoice.network() != self.network {
             return Err(Error::InvalidNetwork(self.network, invoice.network()));
@@ -456,7 +470,7 @@ where
             .debit
             .prepare_melt(invoice.clone(), &keysets_info, &self.client)
             .await?;
-        let pay_summary = WalletPaymentSummary {
+        let pay_summary = PaymentSummary {
             request_id: Uuid::new_v4(),
             amount: pkt_summary.amount,
             fees: pkt_summary.fees,
@@ -469,7 +483,7 @@ where
         Ok(pay_summary)
     }
 
-    pub async fn prepare_payment(&self, input: String) -> Result<WalletPaymentSummary> {
+    pub async fn prepare_payment(&self, input: String) -> Result<PaymentSummary> {
         if let Ok(request) = cdk18::PaymentRequest::from_str(&input) {
             return self.prepare_nut18_payment(request).await;
         }
@@ -500,7 +514,7 @@ where
 
         let tx = Transaction {
             amount: current_payment.amount,
-            fee: current_payment.fees + current_payment.reserved_fees,
+            fee: current_payment.fees,
             mint_url: self.url.clone(),
             direction: TransactionDirection::Outgoing,
             memo: current_payment.details.memo(),
