@@ -294,10 +294,6 @@ impl wallet::DebitPocket for Pocket {
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
     ) -> Result<MeltSummary> {
-        // preliminary checks
-        if invoice.amount_milli_satoshis().is_none() {
-            return Err(Error::Bolt11MissingAmount);
-        }
         let request = cdk23::MeltQuoteBolt11Request {
             request: invoice,
             unit: self.unit.clone(),
@@ -328,7 +324,7 @@ impl wallet::DebitPocket for Pocket {
         rid: Uuid,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
-    ) -> Result<Vec<cdk01::PublicKey>> {
+    ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         let melt_ref = self.current_melt.lock().unwrap().take();
         let melt_ref = melt_ref.ok_or(Error::NoPrepareRef(rid))?;
         if melt_ref.rid != rid {
@@ -359,11 +355,9 @@ impl wallet::DebitPocket for Pocket {
         } else {
             None
         };
-        let (ys, proofs): (Vec<cdk01::PublicKey>, Vec<cdk00::Proof>) =
-            sending_proofs.into_iter().unzip();
         let request = cdk05::MeltRequest::new(
             melt_ref.mint_quote,
-            proofs,
+            sending_proofs.values().cloned().collect(),
             premints.clone().map(|p| p.blinded_messages()),
         );
         let response = client.post_melt(request).await?;
@@ -383,7 +377,7 @@ impl wallet::DebitPocket for Pocket {
                 self.pdb.store_new(proof).await?;
             }
         }
-        Ok(ys)
+        Ok(sending_proofs)
     }
 
     async fn check_pending_melts(&self, client: &dyn MintConnector) -> Result<Amount> {
