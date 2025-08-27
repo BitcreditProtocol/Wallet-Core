@@ -1,6 +1,6 @@
 // ----- standard library imports
 // ----- extra library imports
-use cashu::{Amount, CurrencyUnit, MintUrl, nut18 as cdk18};
+use cashu::{Amount, CurrencyUnit, MintUrl};
 use uuid::Uuid;
 // ----- local imports
 
@@ -44,6 +44,7 @@ pub struct WalletConfig {
 pub struct MeltSummary {
     pub request_id: Uuid,
     pub amount: Amount,
+    pub unit: CurrencyUnit,
     pub fees: Amount,
     pub reserved_fees: Amount,
     pub expiry: u64,
@@ -58,19 +59,6 @@ impl MeltSummary {
     }
 }
 
-pub enum PaymentType {
-    Cdk18(cdk18::PaymentRequest),
-    Bolt11(cashu::Bolt11Invoice),
-}
-impl PaymentType {
-    pub fn memo(&self) -> Option<String> {
-        match self {
-            PaymentType::Cdk18(req) => req.description.clone(),
-            PaymentType::Bolt11(invoice) => Some(invoice.description().to_string()),
-        }
-    }
-}
-
 pub struct PaymentSummary {
     pub request_id: Uuid,
     pub unit: CurrencyUnit,
@@ -78,6 +66,30 @@ pub struct PaymentSummary {
     pub fees: Amount,
     pub reserved_fees: Amount,
     pub expiry: u64,
-    pub internal_rid: Uuid,
-    pub details: PaymentType,
+}
+
+impl std::convert::From<SendSummary> for PaymentSummary {
+    fn from(value: SendSummary) -> Self {
+        Self {
+            request_id: value.request_id,
+            unit: value.unit,
+            amount: value.amount,
+            fees: value.send_fees + value.swap_fees,
+            reserved_fees: Amount::ZERO,
+            expiry: 0,
+        }
+    }
+}
+
+impl std::convert::From<MeltSummary> for PaymentSummary {
+    fn from(value: MeltSummary) -> Self {
+        Self {
+            request_id: value.request_id,
+            unit: value.unit,
+            amount: value.amount,
+            fees: value.fees,
+            reserved_fees: value.reserved_fees,
+            expiry: value.expiry,
+        }
+    }
 }

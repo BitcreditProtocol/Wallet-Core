@@ -178,71 +178,85 @@ pub async fn wallet_reclaim_funds(idx: usize) -> WalletBalance {
     }
 }
 
-// --------------------------------------------------------------- wallet_prepare_send
+// --------------------------------------------------------------- wallet_prepare_pay
 #[wasm_bindgen]
 #[derive(Default)]
-pub struct SendSummary {
+pub struct PaySummary {
     #[wasm_bindgen(getter_with_clone)]
     pub request_id: String,
     #[wasm_bindgen(getter_with_clone)]
     pub unit: String,
     #[wasm_bindgen(readonly)]
-    pub send_fees: u64,
-    #[wasm_bindgen(readonly)]
-    pub swap_fees: u64,
+    pub fees: u64,
 }
 
-impl std::convert::From<types::SendSummary> for SendSummary {
-    fn from(summary: types::SendSummary) -> Self {
+impl std::convert::From<types::PaymentSummary> for PaySummary {
+    fn from(summary: types::PaymentSummary) -> Self {
         Self {
             request_id: summary.request_id.to_string(),
             unit: summary.unit.to_string(),
-            send_fees: summary.send_fees.into(),
-            swap_fees: summary.swap_fees.into(),
+            fees: summary.fees.into(),
         }
     }
 }
 
 #[wasm_bindgen]
-pub async fn wallet_prepare_send(idx: usize, amount: u64, unit: String) -> SendSummary {
-    let returned = app::wallet_prepare_send(idx, amount, unit.clone()).await;
+pub async fn wallet_prepare_pay(idx: usize, input: String, now: u32) -> PaySummary {
+    let teaser = input.chars().take(TEASER_SIZE).collect::<String>();
+    let returned = app::wallet_prepare_payment(idx, input, now as u64).await;
     match returned {
-        Ok(summary) => summary,
+        Ok(summary) => PaySummary::from(summary),
         Err(e) => {
-            tracing::error!("wallet_prepare_send({idx}, {amount}, {unit}): {e}");
-            SendSummary::default()
+            tracing::error!("wallet_prepare_pay({idx}, {teaser}): {e}");
+            PaySummary::default()
         }
     }
 }
 
-// --------------------------------------------------------------- wallet_send
+// --------------------------------------------------------------- wallet_pay
 #[wasm_bindgen]
-#[derive(Default)]
-pub struct TokenTxId {
-    #[wasm_bindgen(getter_with_clone)]
-    pub token: String,
-    #[wasm_bindgen(getter_with_clone)]
-    pub tx_id: String,
-}
-#[wasm_bindgen]
-pub async fn wallet_send(
-    idx: usize,
-    request_id: String,
-    tstamp: u32,
-    memo: Option<String>,
-) -> TokenTxId {
-    let returned = app::wallet_send(idx, request_id.clone(), memo.clone(), tstamp as u64).await;
+pub async fn wallet_pay(request_id: String, tstamp: u32) -> String {
+    let returned = app::wallet_pay(request_id.clone(), tstamp as u64).await;
     match returned {
-        Ok((token, tx_id)) => TokenTxId {
-            token: token.to_string(),
-            tx_id: tx_id.to_string(),
-        },
+        Ok(tx_id) => tx_id.to_string(),
+        Err(e) => {
+            tracing::error!("wallet_pay({request_id}, {tstamp}): {e}",);
+            String::default()
+        }
+    }
+}
+
+// --------------------------------------------------------------- wallet_prepare_pay_request
+#[wasm_bindgen]
+pub async fn wallet_prepare_pay_request(
+    idx: usize,
+    amount: u32,
+    unit: String,
+    description: String,
+) -> String {
+    let returned =
+        app::wallet_prepare_pay_request(idx, amount as u64, unit.clone(), description.clone())
+            .await;
+    match returned {
+        Ok(request) => request.to_string(),
         Err(e) => {
             tracing::error!(
-                "wallet_send({idx}, {request_id}, {tstamp}, {:?}): {e}",
-                memo
+                "wallet_prepare_pay_request({idx}, {amount}, {unit}, {description}): {e}",
             );
-            TokenTxId::default()
+            String::default()
+        }
+    }
+}
+
+// --------------------------------------------------------------- wallet_check_received_payment
+#[wasm_bindgen]
+pub async fn wallet_check_received_payment(payment_id: String, tstamp: u32) -> String {
+    let returned = app::wallet_check_received_payment(payment_id.clone(), tstamp as u64).await;
+    match returned {
+        Ok(tx_id) => tx_id.to_string(),
+        Err(e) => {
+            tracing::error!("wallet_check_received_payment({payment_id}, {tstamp}): {e}",);
+            String::default()
         }
     }
 }
@@ -346,57 +360,6 @@ pub async fn wallet_load_tx(idx: usize, tx_id: String) -> Transaction {
         }
     }
 }
-// --------------------------------------------------------------- wallet_prepare_payment
-#[wasm_bindgen]
-#[derive(Default)]
-pub struct PaymentSummary {
-    #[wasm_bindgen(getter_with_clone)]
-    pub request_id: String,
-    #[wasm_bindgen(getter_with_clone)]
-    pub unit: String,
-    #[wasm_bindgen(readonly)]
-    pub fees: u64,
-    #[wasm_bindgen(readonly)]
-    pub reserved_fees: u64,
-    #[wasm_bindgen(readonly)]
-    pub expiry: u64,
-}
-impl std::convert::From<types::PaymentSummary> for PaymentSummary {
-    fn from(summary: types::PaymentSummary) -> Self {
-        Self {
-            request_id: summary.request_id.to_string(),
-            unit: summary.unit.to_string(),
-            fees: summary.fees.into(),
-            reserved_fees: summary.reserved_fees.into(),
-            expiry: summary.expiry,
-        }
-    }
-}
-#[wasm_bindgen]
-pub async fn wallet_prepare_payment(idx: usize, input: String) -> PaymentSummary {
-    let teaser = input.chars().take(TEASER_SIZE).collect::<String>();
-    let returned = app::wallet_prepare_payment(idx, input).await;
-    match returned {
-        Ok(summary) => PaymentSummary::from(summary),
-        Err(e) => {
-            tracing::error!("wallet_prepare_payment({idx}, {teaser}): {e}");
-            PaymentSummary::default()
-        }
-    }
-}
-
-// --------------------------------------------------------------- wallet_pay
-#[wasm_bindgen]
-pub async fn wallet_pay(idx: usize, request_id: String, tstamp: u32) -> String {
-    let returned = app::wallet_pay(idx, request_id.clone(), tstamp as u64).await;
-    match returned {
-        Ok(tx_id) => tx_id.to_string(),
-        Err(e) => {
-            tracing::error!("wallet_pay({idx}, {request_id}, {tstamp}): {e}",);
-            String::default()
-        }
-    }
-}
 
 // --------------------------------------------------------------- wallet_check_pending_melts
 #[wasm_bindgen]
@@ -429,7 +392,7 @@ pub async fn wallet_list_tx_ids(idx: usize) -> Vec<String> {
 pub fn get_wallets_ids() -> Vec<u32> {
     let returned = app::wallets_ids();
     match returned {
-        Ok(indexes) => indexes.into_iter().map(|i| i as u32).collect(),
+        Ok(indexes) => indexes.into_iter().collect(),
         Err(e) => {
             tracing::error!("get_wallets_ids: {e}");
             Vec::default()
