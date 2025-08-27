@@ -7,20 +7,20 @@ use std::{
 };
 // ----- extra library imports
 use anyhow::Error as AnyError;
-use bcr_wallet_lib::wallet::Token;
 use bitcoin::{
     bip32 as btc32,
     hashes::{Hash, HashEngine, sha256},
     hex::DisplayHex,
 };
-use cashu::{CurrencyUnit, KeySetInfo, MintInfo, MintUrl};
+use cashu::{CurrencyUnit, KeySetInfo, MintInfo, MintUrl, nut18 as cdk18};
 use cdk::wallet::{
     MintConnector,
     types::{Transaction, TransactionId},
 };
+use nostr_sdk::nips::nip19::{FromBech32, Nip19Profile};
+use uuid::Uuid;
 // ----- local imports
 use crate::{
-    SendSummary,
     error::{Error, Result},
     types::{PaymentSummary, RedemptionSummary},
     wallet::{CreditPocket, Pocket, WalletBalance},
@@ -118,7 +118,11 @@ pub async fn initialize_api(network: String) {
         .await
         .expect("Failed to build app state DB");
 
-    let purse = ProductionPurse::new(pursedb);
+    let myself = Nip19Profile::from_bech32("nprofile1qqsrhuxx8l9ex335q7he0f09aej04zpazpl0ne2cgukyawd24mayt8gpp4mhxue69uhhytnc9e3k7mgpz4mhxue69uhkg6nzv9ejuumpv34kytnrdaksjlyr9p").expect("Nip19Profile");
+    let nostr = nostr_sdk::ClientBuilder::new().build();
+    let purse = ProductionPurse::new(pursedb, reqwest::Client::new(), nostr, myself)
+        .await
+        .expect("Purse::new");
     let mut appstate = AppState::new(net, Some(Arc::new(purse)));
     appstate
         .load_wallets()
@@ -133,6 +137,15 @@ fn get_wallet(idx: usize) -> Result<Arc<ProductionWallet>> {
             return Err(Error::Initialization);
         };
         purse.get_wallet(idx).ok_or(Error::WalletNotFound(idx))
+    })
+}
+
+fn get_purse() -> Result<Arc<ProductionPurse>> {
+    APP_STATE.with_borrow(|state| {
+        let Some(purse) = &state.purse else {
+            return Err(Error::Initialization);
+        };
+        Ok(Arc::clone(purse))
     })
 }
 
@@ -202,7 +215,7 @@ pub fn wallet_name(idx: usize) -> Result<String> {
 pub fn wallet_mint_url(idx: usize) -> Result<String> {
     tracing::debug!("mint_url for wallet {idx}");
     let wallet = get_wallet(idx)?;
-    Ok(wallet.url.to_string())
+    Ok(wallet.mint_url.to_string())
 }
 
 pub struct WalletCurrencyUnit {
@@ -233,34 +246,6 @@ pub async fn wallet_receive(idx: usize, token: String, tstamp: u64) -> Result<Tr
     let wallet = get_wallet(idx)?;
     let tx_id = wallet.receive_token(token, tstamp).await?;
     Ok(tx_id)
-}
-
-pub async fn wallet_prepare_send(idx: usize, amount: u64, unit: String) -> Result<SendSummary> {
-    tracing::debug!("wallet_prepare_send({idx}, {amount}, {unit})");
-
-    let amount = cashu::Amount::from(amount);
-    let unit = if unit.is_empty() {
-        None
-    } else {
-        Some(cashu::CurrencyUnit::from_str(&unit)?)
-    };
-    let wallet = get_wallet(idx)?;
-    let summary = wallet.prepare_send(amount, unit).await?;
-    Ok(SendSummary::from(summary))
-}
-
-pub async fn wallet_send(
-    idx: usize,
-    request_id: String,
-    memo: Option<String>,
-    tstamp: u64,
-) -> Result<(Token, TransactionId)> {
-    tracing::debug!("wallet_send({idx}, {request_id}, {:?}, {tstamp})", memo);
-
-    let rid = uuid::Uuid::from_str(&request_id)?;
-    let wallet = get_wallet(idx)?;
-    let (token, tx_id) = wallet.send(rid, memo, tstamp).await?;
-    Ok((token, tx_id))
 }
 
 pub async fn wallet_redeem_credit(idx: usize) -> Result<cashu::Amount> {
@@ -310,20 +295,56 @@ pub async fn wallet_list_tx_ids(idx: usize) -> Result<Vec<TransactionId>> {
     Ok(tx_ids)
 }
 
-pub async fn wallet_prepare_payment(idx: usize, input: String) -> Result<PaymentSummary> {
+pub async fn wallet_prepare_payment(idx: usize, input: String, now: u64) -> Result<PaymentSummary> {
     tracing::debug!("wallet_prepare_payment({idx}, {input})");
 
-    let wallet = get_wallet(idx)?;
-    let summary = wallet.prepare_payment(input).await?;
+    let purse = get_purse()?;
+    let summary = purse.prepare_pay(idx, input, now).await?;
     Ok(summary)
 }
 
-pub async fn wallet_pay(idx: usize, rid: String, tstamp: u64) -> Result<TransactionId> {
-    tracing::debug!("wallet_pay({idx}, {rid}, {tstamp})");
+pub async fn wallet_pay(rid: String, tstamp: u64) -> Result<TransactionId> {
+    tracing::debug!("wallet_pay({rid}, {tstamp})");
 
-    let rid = uuid::Uuid::from_str(&rid)?;
-    let wallet = get_wallet(idx)?;
-    let tx_id = wallet.pay(rid, tstamp).await?;
+    let purse = get_purse()?;
+    let rid = Uuid::from_str(&rid)?;
+    let tx_id = purse.pay(rid, tstamp).await?;
+    Ok(tx_id)
+}
+
+pub async fn wallet_prepare_payment_request(
+    idx: usize,
+    amount: u64,
+    unit: String,
+    description: String,
+) -> Result<cdk18::PaymentRequest> {
+    tracing::debug!("wallet_prepare_pay_request({idx}, {amount}, {unit}, {description})");
+
+    let amount = cashu::Amount::from(amount);
+    let unit = if unit.trim().is_empty() {
+        None
+    } else {
+        cashu::CurrencyUnit::from_str(&unit).ok()
+    };
+    let description = if description.trim().is_empty() {
+        None
+    } else {
+        Some(description.trim().to_string())
+    };
+    let purse = get_purse()?;
+    let request = purse.prepare_payment_request(amount, unit, description)?;
+    Ok(request)
+}
+
+pub async fn wallet_check_received_payment(
+    max_wait_sec: u64,
+    p_id: String,
+) -> Result<Option<TransactionId>> {
+    tracing::debug!("wallet_check_received_payment({p_id})");
+
+    let purse = get_purse()?;
+    let max_wait = core::time::Duration::from_secs(max_wait_sec);
+    let tx_id = purse.check_received_payment(max_wait, &p_id).await?;
     Ok(tx_id)
 }
 
@@ -563,13 +584,12 @@ async fn build_wallet(
         network,
         mnemonic,
         client,
-        url: mint_url,
+        mint_url,
         tx_repo,
         debit: debit_pocket,
         credit: credit_pocket,
         name,
         id: wallet_id,
-        current_send: Mutex::new(None),
         current_payment: Mutex::new(None),
     };
     Ok(new_wallet)
