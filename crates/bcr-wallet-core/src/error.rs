@@ -27,6 +27,16 @@ pub enum Error {
     BtcBip32(#[from] bitcoin::bip32::Error),
     #[error("uuid:: {0}")]
     Uuid(#[from] uuid::Error),
+    #[error("nostr::nip19 {0}")]
+    Nip19(#[from] nostr_sdk::nips::nip19::Error),
+    #[error("nostr-sdk::client {0}")]
+    NostrClient(#[from] nostr_sdk::client::Error),
+    #[error("serde_json: {0}")]
+    SerdeJson(#[from] serde_json::Error),
+    #[error("reqwest::Url {0}")]
+    Url(#[from] url::ParseError),
+    #[error("reqwest::Client {0}")]
+    ReqwestClient(#[from] reqwest::Error),
 
     #[error("insufficient funds")]
     InsufficientFunds,
@@ -70,18 +80,24 @@ pub enum Error {
     NoDebitCurrencyInMint(Vec<cashu::CurrencyUnit>),
     #[error("network mismatch, ours: {0}, theirs: {1}")]
     InvalidNetwork(bitcoin::Network, bitcoin::Network),
-    #[error("bolt11 invoice, missing amount")]
-    Bolt11MissingAmount,
+    #[error("payment request, missing amount")]
+    MissingAmount,
     #[error("payment request unknown {0}")]
     UnknownPaymentRequest(String),
-    #[error("payment {0} expired {1}")]
-    PaymentExpired(uuid::Uuid, u64),
+    #[error("payment expired")]
+    PaymentExpired,
     #[error("melt op unpaid")]
     MeltUnpaid(String),
     #[error("melt op not found: {0}")]
     MeltNotFound(String),
     #[error("missing initialization")]
     Initialization,
+    #[error("inter-mint payment not supported yet")]
+    InterMint,
+    #[error("spending conditions not supported yet")]
+    SpendingConditions,
+    #[error("NUT-18 request has no transport")]
+    NoTransport,
 
     #[error("internal error: {0}")]
     Internal(String),

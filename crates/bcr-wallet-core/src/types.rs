@@ -1,7 +1,7 @@
 // ----- standard library imports
 use std::{collections::HashMap, str::FromStr};
 // ----- extra library imports
-use cashu::{Amount, CurrencyUnit, MintUrl, nut18 as cdk18};
+use cashu::{Amount, CurrencyUnit, MintUrl};
 use uuid::Uuid;
 // ----- local imports
 
@@ -45,6 +45,7 @@ pub struct WalletConfig {
 pub struct MeltSummary {
     pub request_id: Uuid,
     pub amount: Amount,
+    pub unit: CurrencyUnit,
     pub fees: Amount,
     pub reserved_fees: Amount,
     pub expiry: u64,
@@ -59,23 +60,12 @@ impl MeltSummary {
     }
 }
 
-#[derive(strum::EnumDiscriminants)]
-#[strum_discriminants(derive(strum::EnumString, strum::Display))]
+#[derive(strum::EnumString, strum::Display)]
 pub enum PaymentType {
     NotApplicable,
     Token,
-    Cdk18(cdk18::PaymentRequest),
-    Bolt11(cashu::Bolt11Invoice),
-}
-impl PaymentType {
-    pub fn memo(&self) -> Option<String> {
-        match self {
-            PaymentType::Token => None,
-            PaymentType::NotApplicable => None,
-            PaymentType::Cdk18(req) => req.description.clone(),
-            PaymentType::Bolt11(invoice) => Some(invoice.description().to_string()),
-        }
-    }
+    Cdk18,
+    Lightning,
 }
 
 pub struct PaymentSummary {
@@ -85,8 +75,7 @@ pub struct PaymentSummary {
     pub fees: Amount,
     pub reserved_fees: Amount,
     pub expiry: u64,
-    pub internal_rid: Uuid,
-    pub details: PaymentType,
+    pub ptype: PaymentType,
 }
 
 #[derive(strum::Display, strum::EnumString, Default)]
@@ -106,9 +95,37 @@ pub fn get_transaction_status(metas: &HashMap<String, String>) -> TransactionSta
 }
 
 pub const PAYMENT_TYPE_METADATA_KEY: &str = "payment_type";
-pub fn get_payment_type(metas: &HashMap<String, String>) -> PaymentTypeDiscriminants {
+pub fn get_payment_type(metas: &HashMap<String, String>) -> PaymentType {
     let Some(ptype) = metas.get(PAYMENT_TYPE_METADATA_KEY) else {
-        return PaymentTypeDiscriminants::NotApplicable;
+        return PaymentType::NotApplicable;
     };
-    PaymentTypeDiscriminants::from_str(ptype).unwrap_or(PaymentTypeDiscriminants::NotApplicable)
+    PaymentType::from_str(ptype).unwrap_or(PaymentType::NotApplicable)
+}
+
+impl std::convert::From<SendSummary> for PaymentSummary {
+    fn from(value: SendSummary) -> Self {
+        Self {
+            request_id: value.request_id,
+            unit: value.unit,
+            amount: value.amount,
+            fees: value.send_fees + value.swap_fees,
+            reserved_fees: Amount::ZERO,
+            expiry: 0,
+            ptype: PaymentType::Token,
+        }
+    }
+}
+
+impl std::convert::From<MeltSummary> for PaymentSummary {
+    fn from(value: MeltSummary) -> Self {
+        Self {
+            request_id: value.request_id,
+            unit: value.unit,
+            amount: value.amount,
+            fees: value.fees,
+            reserved_fees: value.reserved_fees,
+            expiry: value.expiry,
+            ptype: PaymentType::Lightning,
+        }
+    }
 }
