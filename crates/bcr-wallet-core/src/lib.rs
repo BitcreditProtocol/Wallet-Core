@@ -39,6 +39,27 @@ pub async fn initialize_api(network: String) {
     app::initialize_api(network).await;
 }
 
+// --------------------------------------------------------------- generate_random_seed
+#[wasm_bindgen]
+pub async fn generate_random_mnemonic(mnemonic_len: u32) -> String{
+    let mnemonic_len = if mnemonic_len == 0 {12} else {mnemonic_len};
+    info!("Generate random {}-word mnemonic", mnemonic_len);
+
+    const VALID_MNEMONIC_LENGTHS: [u32; 5] = [12, 15, 18, 21, 24];
+    assert!(
+        VALID_MNEMONIC_LENGTHS.contains(&mnemonic_len),
+        "word count must be one of: {VALID_MNEMONIC_LENGTHS:?}"
+    );
+    let returned = bip39::Mnemonic::generate_in(bip39::Language::English, mnemonic_len as usize);
+    match returned {
+        Ok(mnemonic) => mnemonic.to_string(),
+        Err(e) => {
+            tracing::error!("generate_random_mnemonic({mnemonic_len}): {e}");
+            String::default()
+        }
+    }
+}
+
 // --------------------------------------------------------------- add_wallet
 #[wasm_bindgen]
 pub async fn add_wallet(mint_url: String, mnemonic: String, name: String) -> u32 {

@@ -13,6 +13,7 @@ bitcoin.workspace = true
 cashu = { workspace = true, features = ["wallet"] }
 cdk = { workspace = true, features = ["wallet"] }
 futures = {workspace = true}
+getrandom = {workspace = true, features = ["wasm_js"]}
 rexie.workspace = true
 secp256k1.workspace = true
 serde-wasm-bindgen.workspace = true
@@ -29,7 +30,6 @@ wasm-bindgen-futures = "0.4"
 [dev-dependencies]
 bcr-wdc-utils = {git = "https://github.com/BitcreditProtocol/wildcat", features = ["test-utils"]}
 cdk-common.workspace = true
-getrandom = {workspace = true, features = ["wasm_js"]}
 mockall = { workspace = true}
 rand = {workspace = true}
 tokio = {workspace = true}
