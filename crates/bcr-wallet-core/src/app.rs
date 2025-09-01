@@ -17,10 +17,10 @@ use cdk::wallet::{
     MintConnector,
     types::{Transaction, TransactionId},
 };
-use nostr_sdk::nips::nip19::{FromBech32, Nip19Profile};
 use uuid::Uuid;
 // ----- local imports
 use crate::{
+    config::{Config, Settings},
     error::{Error, Result},
     types::{PaymentSummary, RedemptionSummary},
     wallet::{CreditPocket, Pocket, WalletBalance},
@@ -34,6 +34,7 @@ mod prod {
     pub type ProductionMintMeltRepository = crate::persistence::rexie::MintMeltDB;
     pub type ProductionPurseRepository = crate::persistence::rexie::PurseDB;
     pub type ProductionTransactionRepository = crate::persistence::rexie::TransactionDB;
+    pub type ProductionSettingsRepository = crate::persistence::rexie::SettingsDB;
 }
 #[cfg(not(target_arch = "wasm32"))]
 mod prod {
@@ -43,6 +44,8 @@ mod prod {
     pub type ProductionPurseRepository = crate::persistence::inmemory::InMemoryPurseRepository;
     pub type ProductionTransactionRepository =
         crate::persistence::inmemory::InMemoryTransactionRepository;
+    pub type ProductionSettingsRepository =
+        crate::persistence::inmemory::InMemorySettingsRepository;
 }
 
 type ProductionConnector = cdk::wallet::HttpClient;
@@ -56,20 +59,34 @@ type ProductionWallet = crate::wallet::Wallet<
 type ProductionPurse = crate::purse::Purse<prod::ProductionPurseRepository, ProductionWallet>;
 
 pub struct AppState {
-    network: bitcoin::Network,
     purse: Option<Arc<ProductionPurse>>,
+    settings: Option<Arc<prod::ProductionSettingsRepository>>,
 }
 impl AppState {
     pub const DB_VERSION: u32 = 1;
 
-    pub fn new(network: bitcoin::Network, purse: Option<Arc<ProductionPurse>>) -> Self {
-        tracing::debug!("Creating new AppState with network: {:?}", network);
-        Self { network, purse }
+    pub fn new(
+        purse: Option<Arc<ProductionPurse>>,
+        settings: Option<Arc<prod::ProductionSettingsRepository>>,
+    ) -> Self {
+        tracing::debug!("Creating new AppState");
+        Self { purse, settings }
+    }
+
+    pub async fn load_settings(&self) -> Result<Settings> {
+        match &self.settings {
+            Some(db) => db.load().await,
+            None => {
+                tracing::warn!("Settings DB not initialized, returning default settings");
+                Ok(Settings::default())
+            }
+        }
     }
 
     pub async fn load_wallets(&mut self) -> Result<()> {
-        tracing::debug!("AppState::load_wallets({})", self.network);
+        tracing::debug!("AppState::load_wallets()");
 
+        let settings = self.load_settings().await?;
         let Some(purse) = &self.purse else {
             return Err(Error::Initialization);
         };
@@ -77,11 +94,11 @@ impl AppState {
         for wid in w_ids {
             tracing::debug!("Loading wallet with id: {wid}");
             let w_cfg = purse.load_wallet_config(&wid).await?;
-            if w_cfg.network != self.network {
+            if w_cfg.network != settings.network {
                 tracing::info!(
                     "Skipping wallet {wid} with network {:?}, expected {:?}",
                     w_cfg.network,
-                    self.network,
+                    settings.network,
                 );
                 continue;
             }
@@ -101,7 +118,7 @@ impl AppState {
 }
 impl Default for AppState {
     fn default() -> Self {
-        Self::new(bitcoin::Network::Bitcoin, None)
+        Self::new(None, None)
     }
 }
 
@@ -109,26 +126,23 @@ thread_local! {
 static APP_STATE: RefCell<AppState> = RefCell::new(AppState::default());
 }
 
-pub async fn initialize_api(network: String) {
-    tracing::debug!("Initializing API with network: {network}");
-    let net = bitcoin::Network::from_str(&network)
-        .unwrap_or_else(|_| panic!("invalid network: {network}"));
+pub async fn initialize_api() -> Result<()> {
+    tracing::debug!("Initializing API");
 
-    let pursedb = db::build_appstate_db(AppState::DB_VERSION)
-        .await
-        .expect("Failed to build app state DB");
-
-    let myself = Nip19Profile::from_bech32("nprofile1qqsrhuxx8l9ex335q7he0f09aej04zpazpl0ne2cgukyawd24mayt8gpp4mhxue69uhhytnc9e3k7mgpz4mhxue69uhkg6nzv9ejuumpv34kytnrdaksjlyr9p").expect("Nip19Profile");
-    let nostr = nostr_sdk::ClientBuilder::new().build();
-    let purse = ProductionPurse::new(pursedb, reqwest::Client::new(), nostr, myself)
-        .await
-        .expect("Purse::new");
-    let mut appstate = AppState::new(net, Some(Arc::new(purse)));
-    appstate
-        .load_wallets()
-        .await
-        .expect("Failed to load wallets");
+    let pursedb = db::build_pursedb(AppState::DB_VERSION).await?;
+    let settingsdb = db::build_settingsdb(AppState::DB_VERSION).await?;
+    let settings = settingsdb.load().await?;
+    let config = Config::new(settings)?;
+    let nostr_cl = nostr_sdk::Client::new(config.nostr_signer);
+    for relay in &config.relays {
+        nostr_cl.add_relay(relay).await?;
+    }
+    let http_cl = reqwest::Client::new();
+    let purse = ProductionPurse::new(pursedb, http_cl, nostr_cl, config.nprofile).await?;
+    let mut appstate = AppState::new(Some(Arc::new(purse)), Some(Arc::new(settingsdb)));
+    appstate.load_wallets().await?;
     APP_STATE.replace(appstate);
+    Ok(())
 }
 
 fn get_wallet(idx: usize) -> Result<Arc<ProductionWallet>> {
@@ -149,16 +163,25 @@ fn get_purse() -> Result<Arc<ProductionPurse>> {
     })
 }
 
+fn get_settingsdb() -> Result<Arc<prod::ProductionSettingsRepository>> {
+    APP_STATE.with_borrow(|state| {
+        let Some(db) = &state.settings else {
+            return Err(Error::Initialization);
+        };
+        Ok(Arc::clone(db))
+    })
+}
+
 /// returns the index of the wallet
 pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Result<usize> {
     tracing::debug!("Adding a new wallet for mint {name}, {mint_url}, {mnemonic}");
 
-    let network = APP_STATE.with_borrow(|state| state.network);
+    let settings = get_settingsdb()?.load().await?;
     let mint_url = MintUrl::from_str(&mint_url)?;
     let mnemonic = bip39::Mnemonic::from_str(&mnemonic)?;
     let wallet = build_wallet(
         name,
-        network,
+        settings.network,
         mint_url,
         mnemonic,
         LocalDB::Keep,
@@ -181,12 +204,12 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
 pub async fn restore_wallet(name: String, mint_url: String, mnemonic: String) -> Result<usize> {
     tracing::debug!("Restoring a new wallet for mint {name}, {mint_url}, {mnemonic}");
 
-    let network = APP_STATE.with_borrow(|state| state.network);
+    let settings = get_settingsdb()?.load().await?;
     let mint_url = MintUrl::from_str(&mint_url)?;
     let mnemonic = bip39::Mnemonic::from_str(&mnemonic)?;
     let wallet = build_wallet(
         name,
-        network,
+        settings.network,
         mint_url,
         mnemonic,
         LocalDB::Delete,
@@ -387,7 +410,7 @@ mod db {
     use super::*;
     use std::rc::Rc;
 
-    pub async fn build_appstate_db(db_version: u32) -> Result<prod::ProductionPurseRepository> {
+    pub async fn build_pursedb(db_version: u32) -> Result<prod::ProductionPurseRepository> {
         let rexie_db_name = "bitcredit_wallet";
         let mut rexie_builder = rexie::Rexie::builder(rexie_db_name).version(db_version);
         let purse_stores = prod::ProductionPurseRepository::object_stores();
@@ -455,12 +478,24 @@ mod db {
         };
         Ok((tx_repo, ((debitdb, mintmeltdb), creditdb)))
     }
+
+    pub async fn build_settingsdb(db_version: u32) -> Result<prod::ProductionSettingsRepository> {
+        let rexie_db_name = "bitcredit_settings";
+        let mut rexie_builder = rexie::Rexie::builder(rexie_db_name).version(db_version);
+        let settings_stores = prod::ProductionSettingsRepository::object_stores();
+        for store in settings_stores {
+            rexie_builder = rexie_builder.add_object_store(store);
+        }
+        let rexie = Rc::new(rexie_builder.build().await?);
+        let settingsdb = prod::ProductionSettingsRepository::new(rexie)?;
+        Ok(settingsdb)
+    }
 }
 #[cfg(not(target_arch = "wasm32"))]
 mod db {
     use super::*;
 
-    pub async fn build_appstate_db(_db_version: u32) -> Result<prod::ProductionPurseRepository> {
+    pub async fn build_pursedb(_db_version: u32) -> Result<prod::ProductionPurseRepository> {
         Ok(prod::ProductionPurseRepository::default())
     }
 
@@ -489,6 +524,10 @@ mod db {
             None
         };
         Ok((txdb, ((debitdb, mintmeltdb), creditdb)))
+    }
+
+    pub async fn build_settingsdb(_db_version: u32) -> Result<prod::ProductionSettingsRepository> {
+        Ok(prod::ProductionSettingsRepository::default())
     }
 }
 

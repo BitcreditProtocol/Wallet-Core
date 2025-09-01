@@ -29,6 +29,8 @@ pub enum Error {
     Uuid(#[from] uuid::Error),
     #[error("nostr::nip19 {0}")]
     Nip19(#[from] nostr_sdk::nips::nip19::Error),
+    #[error("nostr::nip06 {0}")]
+    Nip06(#[from] nostr_sdk::nips::nip06::Error),
     #[error("nostr-sdk::client {0}")]
     NostrClient(#[from] nostr_sdk::client::Error),
     #[error("serde_json: {0}")]
@@ -48,6 +50,8 @@ pub enum Error {
     BadTransactionDB,
     #[error("local mint/melt DB not initialized correctly")]
     BadMintMeltDB,
+    #[error("local settings DB not initialized correctly")]
+    BadSettingsDB,
     #[error("proof in local DB not found: {0}")]
     ProofNotFound(cashu::PublicKey),
     #[error("proof not in desired state: {0}")]
