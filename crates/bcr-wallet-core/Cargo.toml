@@ -12,6 +12,7 @@ bip39.workspace = true
 bitcoin.workspace = true
 cashu = { workspace = true, features = ["wallet"] }
 cdk = { workspace = true, features = ["wallet"] }
+chrono = {workspace = true}
 futures = {workspace = true}
 getrandom = {workspace = true, features = ["wasm_js"]}
 rexie.workspace = true
