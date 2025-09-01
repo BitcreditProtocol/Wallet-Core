@@ -4,6 +4,7 @@ use tracing::info;
 use wasm_bindgen::prelude::*;
 // ----- local modules
 mod app;
+pub mod config;
 pub mod error;
 pub mod persistence;
 pub mod pocket;
@@ -33,10 +34,13 @@ impl<T> MintConnector for T where T: cdk::wallet::MintConnector + sync::SendSync
 
 // --------------------------------------------------------------- initialize_api
 #[wasm_bindgen]
-pub async fn initialize_api(network: String) {
+pub async fn initialize_api() {
     tracing_wasm::set_as_global_default();
     info!("Tracing setup");
-    app::initialize_api(network).await;
+    let returned = app::initialize_api().await;
+    if let Err(e) = returned {
+        tracing::error!("initialize_api(): {e}");
+    }
 }
 
 // --------------------------------------------------------------- generate_random_seed

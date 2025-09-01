@@ -13,6 +13,7 @@ use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::JsValue;
 // ----- local imports
 use crate::{
+    config::Settings,
     error::{Error, Result},
     pocket::PocketRepository,
     pocket::debit::MintMeltRepository,
@@ -873,5 +874,70 @@ impl MintMeltRepository for MintMeltDB {
     }
     async fn delete_melt(&self, qid: String) -> Result<()> {
         self.delete_melt_entry(qid).await
+    }
+}
+
+///////////////////////////////////////////// SettingEntry
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
+pub struct SettingsEntry {
+    id: String,
+    settings: Settings,
+}
+
+///////////////////////////////////////////// SettingsDB
+pub struct SettingsDB {
+    db: Rc<Rexie>,
+    settings_store: String,
+}
+
+impl SettingsDB {
+    const SETTINGS_DB_NAME: &'static str = "settings";
+    const SETTINGS_DB_KEY: &'static str = "id"; // must match SettingsEntry field
+    const SETTINGS_MAIN_ID: &'static str = "main";
+
+    pub fn object_stores() -> Vec<rexie::ObjectStore> {
+        vec![
+            rexie::ObjectStore::new(Self::SETTINGS_DB_NAME)
+                .auto_increment(false)
+                .key_path(Self::SETTINGS_DB_KEY),
+        ]
+    }
+
+    pub fn new(db: Rc<Rexie>) -> Result<Self> {
+        let settings_store = String::from(Self::SETTINGS_DB_NAME);
+        if !db.store_names().contains(&settings_store) {
+            return Err(Error::BadSettingsDB);
+        }
+        let db = SettingsDB { db, settings_store };
+        Ok(db)
+    }
+
+    pub async fn store(&self, settings: Settings) -> Result<()> {
+        let sentry = SettingsEntry {
+            id: String::from(Self::SETTINGS_MAIN_ID),
+            settings,
+        };
+        let entry = to_value(&sentry)?;
+        let tx = self
+            .db
+            .transaction(&[&self.settings_store], TransactionMode::ReadWrite)?;
+        let settings = tx.store(&self.settings_store)?;
+        // overwrite if exists
+        settings.put(&entry, None).await?;
+        tx.done().await?;
+        Ok(())
+    }
+
+    pub async fn load(&self) -> Result<Settings> {
+        let tx = self
+            .db
+            .transaction(&[&self.settings_store], TransactionMode::ReadOnly)?;
+        let settings = tx.store(&self.settings_store)?;
+        let js_entry = settings
+            .get(String::from(Self::SETTINGS_MAIN_ID).into())
+            .await?;
+        tx.done().await?;
+        let entry = js_entry.map(from_value::<SettingsEntry>).transpose()?;
+        Ok(entry.unwrap_or_default().settings)
     }
 }

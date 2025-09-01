@@ -2,7 +2,7 @@ async function run() {
   const wasmModule = await import("./pkg/bcr_wallet_core.js");
   await wasmModule.default();
 
-  await wasmModule.initialize_api("testnet");
+  await wasmModule.initialize_api();
 
   let update_wallets = async () => {
     let wallets = await wasmModule.get_wallets_names();

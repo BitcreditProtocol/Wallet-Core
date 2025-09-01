@@ -15,7 +15,7 @@ cdk = { workspace = true, features = ["wallet"] }
 chrono = {workspace = true}
 futures = {workspace = true}
 getrandom = {workspace = true, features = ["wasm_js"]}
-nostr-sdk = {workspace =true}
+nostr-sdk = {workspace =true, features = ["nip06"]}
 reqwest = {workspace = true}
 rexie.workspace = true
 secp256k1.workspace = true

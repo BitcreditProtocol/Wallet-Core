@@ -11,6 +11,7 @@ use cashu::{nut00 as cdk00, nut01 as cdk01, nut07 as cdk07};
 use cdk::wallet::types::{Transaction, TransactionId};
 // ----- local imports
 use crate::{
+    config::Settings,
     error::{Error, Result},
     pocket::{PocketRepository, debit::MintMeltRepository},
     purse::PurseRepository,
@@ -223,5 +224,20 @@ impl MintMeltRepository for InMemoryMintMeltRepository {
         let mut melts = self.melts.lock().unwrap();
         melts.remove(&qid);
         Ok(())
+    }
+}
+
+///////////////////////////////////////////// InMemorySettingsRepository
+#[derive(Default)]
+pub struct InMemorySettingsRepository {
+    setting: Arc<Mutex<Settings>>,
+}
+impl InMemorySettingsRepository {
+    pub async fn store(&self, setting: Settings) -> Result<()> {
+        *self.setting.lock().unwrap() = setting;
+        Ok(())
+    }
+    pub async fn load(&self) -> Result<Settings> {
+        Ok(self.setting.lock().unwrap().clone())
     }
 }

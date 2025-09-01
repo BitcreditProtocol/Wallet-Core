@@ -9,8 +9,9 @@ use rexie::Rexie;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 // ----- local imports
 use bcr_wallet_core::{
+    config::Settings,
     error::Error,
-    persistence::rexie::{MintMeltDB, PocketDB, TransactionDB},
+    persistence::rexie::{MintMeltDB, PocketDB, SettingsDB, TransactionDB},
     pocket::{PocketRepository, debit::MintMeltRepository},
     wallet::TransactionRepository,
 };
@@ -212,6 +213,29 @@ async fn transaction_load_tx() {
 }
 
 #[wasm_bindgen_test]
+async fn transaction_load_tx_nonexisting() {
+    let transactiondb = create_transaction_db("transaction_load_tx_nonexisting").await;
+
+    let ys = keys_test::publics()[0..3].to_vec();
+    let tx = Transaction {
+        mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
+        direction: TransactionDirection::Incoming,
+        amount: Amount::from(100u64),
+        fee: Amount::from(1u64),
+        // keep an eye on https://github.com/cashubtc/cdk/issues/908
+        unit: CurrencyUnit::Sat,
+        ys,
+        timestamp: 42,
+        memo: None,
+        metadata: HashMap::new(),
+    };
+    let txid = tx.id();
+
+    let loaded_tx = transactiondb.load_tx(txid).await;
+    assert!(matches!(loaded_tx, Err(Error::TransactionNotFound(..))));
+}
+
+#[wasm_bindgen_test]
 async fn transaction_delete_tx() {
     let transactiondb = create_transaction_db("transaction_load_tx").await;
 
@@ -359,4 +383,33 @@ async fn mintmelt_list_ids() {
     assert_eq!(ids.len(), 2);
     assert!(ids.contains(&String::from("id1")));
     assert!(ids.contains(&String::from("id2")));
+}
+
+async fn create_settings_db(test_name: &str) -> SettingsDB {
+    let obj_stores = SettingsDB::object_stores();
+    let mut builder = Rexie::builder(test_name).version(1);
+    for store in obj_stores {
+        builder = builder.add_object_store(store);
+    }
+    let rexie = Rc::new(builder.build().await.unwrap());
+    let db = SettingsDB::new(rexie).unwrap();
+    db
+}
+
+#[wasm_bindgen_test]
+async fn settings_load_default() {
+    let settingsdb = create_settings_db("settings_load_default").await;
+    settingsdb.load().await.unwrap();
+}
+
+#[wasm_bindgen_test]
+async fn settings_store() {
+    let settingsdb = create_settings_db("settings_store").await;
+    let settings = Settings {
+        network: bitcoin::Network::Signet,
+        ..Default::default()
+    };
+    settingsdb.store(settings).await.unwrap();
+    let cfg = settingsdb.load().await.unwrap();
+    assert_eq!(cfg.network, bitcoin::Network::Signet);
 }
