@@ -12,7 +12,7 @@ members = ["crates/bcr-wallet-core", "crates/bcr-wallet-lib"]
 anyhow = { version = "1" }
 async-trait = { version = "0.1" }
 bcr-wallet-lib = { path = "./crates/bcr-wallet-lib" }
-bip39 = "2.1"
+bip39 = {version = "2.1", features = ["rand"]}
 bitcoin = { version = "0.32" }
 cashu = { version = "0.11", default-features = false }
 cdk = { version = "0.11", default-features = false }
