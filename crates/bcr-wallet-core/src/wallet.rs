@@ -4,7 +4,8 @@ use std::{collections::HashMap, str::FromStr, sync::Mutex};
 use async_trait::async_trait;
 use bcr_wallet_lib::wallet::Token;
 use cashu::{
-    Amount, Bolt11Invoice, CurrencyUnit, KeySetInfo, nut00 as cdk00, nut01 as cdk01, nut18 as cdk18,
+    Amount, Bolt11Invoice, CurrencyUnit, KeySetInfo, nut00 as cdk00, nut01 as cdk01,
+    nut07 as cdk07, nut18 as cdk18,
 };
 use cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
 use uuid::Uuid;
@@ -14,7 +15,8 @@ use crate::{
     error::{Error, Result},
     purse, sync,
     types::{
-        MeltSummary, PaymentSummary, PaymentType, RedemptionSummary, SendSummary, WalletConfig,
+        self, MeltSummary, PaymentSummary, PaymentType, RedemptionSummary, SendSummary,
+        WalletConfig,
     },
 };
 
@@ -114,6 +116,12 @@ pub trait TransactionRepository {
     #[allow(dead_code)]
     async fn delete_tx(&self, tx_id: TransactionId) -> Result<()>;
     async fn list_tx_ids(&self) -> Result<Vec<TransactionId>>;
+    async fn update_metadata(
+        &self,
+        tx_id: TransactionId,
+        key: String,
+        value: String,
+    ) -> Result<Option<String>>;
 }
 
 pub struct SendReference {
@@ -247,26 +255,6 @@ where
         }
     }
 
-    pub async fn reclaim_funds(&self) -> Result<WalletBalance> {
-        let keysets_info = self.client.get_mint_keysets().await?.keysets;
-        let debit_reclaimed = self
-            .debit
-            .reclaim_proofs(&keysets_info, &self.client)
-            .await?;
-        let (credit_reclaimed, reedemable_credit_proofs) = self
-            .credit
-            .reclaim_proofs(&keysets_info, &self.client)
-            .await?;
-        let (debit_redeemed, _) = self
-            .debit
-            .receive_proofs(&self.client, &keysets_info, reedemable_credit_proofs)
-            .await?;
-        Ok(WalletBalance {
-            credit: credit_reclaimed,
-            debit: debit_reclaimed + debit_redeemed,
-        })
-    }
-
     pub async fn clean_local_db(&self) -> Result<u32> {
         let credit_ys = self.credit.clean_local_proofs(&self.client).await?;
         let debit_ys = self.debit.clean_local_proofs(&self.client).await?;
@@ -312,10 +300,6 @@ impl<Conn, TxRepo, DebtPck> Wallet<Conn, TxRepo, DebtPck>
 where
     TxRepo: TransactionRepository,
 {
-    pub async fn load_tx(&self, tx_id: TransactionId) -> Result<Transaction> {
-        self.tx_repo.load_tx(tx_id).await
-    }
-
     pub async fn list_tx_ids(&self) -> Result<Vec<TransactionId>> {
         self.tx_repo.list_tx_ids().await
     }
@@ -327,6 +311,31 @@ where
     TxRepo: TransactionRepository,
     DebtPck: DebitPocket,
 {
+    pub async fn load_tx(&self, tx_id: TransactionId) -> Result<Transaction> {
+        let mut tx = self.tx_repo.load_tx(tx_id).await?;
+        let p_status = types::get_transaction_status(&tx.metadata);
+        if !matches!(p_status, types::TransactionStatus::Pending) {
+            return Ok(tx);
+        }
+        let request = cdk07::CheckStateRequest { ys: tx.ys.clone() };
+        let response = self.client.post_check_state(request).await?;
+        let is_any_spent = response
+            .states
+            .iter()
+            .any(|s| matches!(s.state, cdk07::State::Spent));
+        if is_any_spent {
+            self.tx_repo
+                .update_metadata(
+                    tx_id,
+                    String::from(types::TRANSACTION_STATUS_METADATA_KEY),
+                    types::TransactionStatus::CashedIn.to_string(),
+                )
+                .await?;
+            tx = self.tx_repo.load_tx(tx_id).await?;
+        }
+        Ok(tx)
+    }
+
     pub async fn receive_token(&self, token: Token, tstamp: u64) -> Result<TransactionId> {
         let token_teaser = token.to_string().chars().take(20).collect::<String>();
         if token.mint_url() != self.url {
@@ -379,7 +388,16 @@ where
                 .expect("fee cannot be negative"),
             amount: received_amount,
             memo: token.memo().clone(),
-            metadata: HashMap::new(),
+            metadata: HashMap::from_iter([
+                (
+                    String::from(types::TRANSACTION_STATUS_METADATA_KEY),
+                    types::TransactionStatus::NotApplicable.to_string(),
+                ),
+                (
+                    String::from(types::PAYMENT_TYPE_METADATA_KEY),
+                    types::PaymentTypeDiscriminants::NotApplicable.to_string(),
+                ),
+            ]),
             timestamp: tstamp,
             unit,
             ys,
@@ -445,7 +463,16 @@ where
             ys,
             unit,
             timestamp: tstamp,
-            metadata: HashMap::new(),
+            metadata: HashMap::from_iter([
+                (
+                    String::from(types::TRANSACTION_STATUS_METADATA_KEY),
+                    types::TransactionStatus::Pending.to_string(),
+                ),
+                (
+                    String::from(types::PAYMENT_TYPE_METADATA_KEY),
+                    types::PaymentTypeDiscriminants::Token.to_string(),
+                ),
+            ]),
         };
         let tx_id = self.tx_repo.store_tx(tx).await?;
         Ok((token, tx_id))
@@ -519,7 +546,16 @@ where
             mint_url: self.url.clone(),
             direction: TransactionDirection::Outgoing,
             memo: current_payment.details.memo(),
-            metadata: HashMap::new(),
+            metadata: HashMap::from_iter([
+                (
+                    String::from(types::TRANSACTION_STATUS_METADATA_KEY),
+                    types::TransactionStatus::Pending.to_string(),
+                ),
+                (
+                    String::from(types::PAYMENT_TYPE_METADATA_KEY),
+                    types::PaymentTypeDiscriminants::Bolt11.to_string(),
+                ),
+            ]),
             timestamp: tstamp,
             unit: self.debit.unit(),
             ys,

@@ -177,6 +177,19 @@ impl TransactionRepository for InMemoryTransactionRepository {
             .collect();
         Ok(tx_ids)
     }
+    async fn update_metadata(
+        &self,
+        tx_id: TransactionId,
+        k: String,
+        v: String,
+    ) -> Result<Option<String>> {
+        let mut transactions = self.transactions.lock().unwrap();
+        let tx = transactions
+            .get_mut(&tx_id.to_string())
+            .ok_or_else(|| Error::TransactionNotFound(tx_id))?;
+        let old = tx.metadata.insert(k, v);
+        Ok(old)
+    }
 }
 
 ///////////////////////////////////////////// InMemoryMeltRepository

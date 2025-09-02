@@ -237,7 +237,6 @@ async fn transaction_delete_tx() {
 #[wasm_bindgen_test]
 async fn transaction_list_tx_idxs() {
     let transactiondb = create_transaction_db("transaction_list_tx_idxs").await;
-
     let ys = keys_test::publics()[0..2].to_vec();
     let tx_new = Transaction {
         mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
@@ -271,6 +270,34 @@ async fn transaction_list_tx_idxs() {
     assert_eq!(txs.len(), 2);
     assert_eq!(txs[0], txid_old);
     assert_eq!(txs[1], txid_new);
+}
+
+#[wasm_bindgen_test]
+async fn transaction_update_metadata() {
+    let transactiondb = create_transaction_db("transaction_update_metadata").await;
+    let ys = keys_test::publics()[0..2].to_vec();
+    let tx = Transaction {
+        mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
+        direction: TransactionDirection::Incoming,
+        amount: Amount::from(100u64),
+        fee: Amount::from(1u64),
+        unit: CurrencyUnit::Sat,
+        ys,
+        timestamp: 84,
+        memo: None,
+        metadata: HashMap::new(),
+    };
+    let txid = transactiondb.store_tx(tx).await.unwrap();
+    let oldv = transactiondb
+        .update_metadata(txid, String::from("key"), String::from("value1"))
+        .await
+        .unwrap();
+    assert!(oldv.is_none());
+    let oldv = transactiondb
+        .update_metadata(txid, String::from("key"), String::from("value2"))
+        .await
+        .unwrap();
+    assert_eq!(oldv, Some(String::from("value1")));
 }
 
 async fn create_mintmelt_db(test_name: &str) -> MintMeltDB {

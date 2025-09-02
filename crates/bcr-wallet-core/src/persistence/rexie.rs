@@ -508,6 +508,28 @@ impl TransactionDB {
         tx.done().await?;
         Ok(tx_ids)
     }
+
+    async fn update_meta(
+        &self,
+        tx_id: TransactionId,
+        k: String,
+        v: String,
+    ) -> Result<Option<String>> {
+        let tx = self
+            .db
+            .transaction(&[&self.tx_store], TransactionMode::ReadWrite)?;
+        let transactions = tx.store(&self.tx_store)?;
+        let js_entry = transactions.get(tx_id.to_string().into()).await?;
+        let mut entry = js_entry
+            .map(from_value::<TransactionEntry>)
+            .transpose()?
+            .ok_or(Error::TransactionNotFound(tx_id))?;
+        let old_v = entry.metadata.insert(k, v);
+        let new_entry = to_value(&entry)?;
+        transactions.put(&new_entry, None).await?;
+        tx.done().await?;
+        Ok(old_v)
+    }
 }
 
 #[async_trait(?Send)]
@@ -531,6 +553,15 @@ impl TransactionRepository for TransactionDB {
 
     async fn list_tx_ids(&self) -> Result<Vec<TransactionId>> {
         self.list_ids().await
+    }
+
+    async fn update_metadata(
+        &self,
+        tx_id: TransactionId,
+        k: String,
+        v: String,
+    ) -> Result<Option<String>> {
+        self.update_meta(tx_id, k, v).await
     }
 }
 

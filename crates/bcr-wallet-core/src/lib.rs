@@ -187,19 +187,6 @@ pub async fn wallet_receive_token(idx: u32, token: String) -> String {
     }
 }
 
-// --------------------------------------------------------------- wallet_reclaim_funds
-#[wasm_bindgen]
-pub async fn wallet_reclaim_funds(idx: u32) -> WalletBalance {
-    let returned = app::wallet_reclaim_funds(idx as usize).await;
-    match returned {
-        Ok(balance) => WalletBalance::from(balance),
-        Err(e) => {
-            tracing::error!("wallet_reclaim_funds({idx}): {e}");
-            WalletBalance::default()
-        }
-    }
-}
-
 // --------------------------------------------------------------- wallet_prepare_send
 #[wasm_bindgen]
 #[derive(Default)]
@@ -256,10 +243,7 @@ pub async fn wallet_send(idx: u32, request_id: String, memo: Option<String>) -> 
             tx_id: tx_id.to_string(),
         },
         Err(e) => {
-            tracing::error!(
-                "wallet_send({idx}, {request_id}, {:?}): {e}",
-                memo
-            );
+            tracing::error!("wallet_send({idx}, {request_id}, {:?}): {e}", memo);
             TokenTxId::default()
         }
     }
@@ -325,6 +309,59 @@ pub async fn wallet_clean_local_db(idx: u32) -> u32 {
 
 // --------------------------------------------------------------- wallet_load_tx
 #[wasm_bindgen]
+#[derive(Clone, Copy, Default)]
+pub enum TransactionDirection {
+    #[default]
+    Incoming,
+    Outgoing,
+}
+impl std::convert::From<cdk::wallet::types::TransactionDirection> for TransactionDirection {
+    fn from(dir: cdk::wallet::types::TransactionDirection) -> Self {
+        match dir {
+            cdk::wallet::types::TransactionDirection::Incoming => TransactionDirection::Incoming,
+            cdk::wallet::types::TransactionDirection::Outgoing => TransactionDirection::Outgoing,
+        }
+    }
+}
+#[wasm_bindgen]
+#[derive(Clone, Copy, Default)]
+pub enum PaymentType {
+    #[default]
+    NotApplicable,
+    Token,
+    Cdk18,
+    Bolt11,
+}
+impl std::convert::From<types::PaymentTypeDiscriminants> for PaymentType {
+    fn from(ptype: types::PaymentTypeDiscriminants) -> Self {
+        match ptype {
+            types::PaymentTypeDiscriminants::NotApplicable => PaymentType::NotApplicable,
+            types::PaymentTypeDiscriminants::Token => PaymentType::Token,
+            types::PaymentTypeDiscriminants::Cdk18 => PaymentType::Cdk18,
+            types::PaymentTypeDiscriminants::Bolt11 => PaymentType::Bolt11,
+        }
+    }
+}
+#[wasm_bindgen]
+#[derive(Clone, Copy, Default)]
+pub enum TransactionStatus {
+    #[default]
+    NotApplicable,
+    Pending,
+    CashedIn,
+    Canceled,
+}
+impl std::convert::From<types::TransactionStatus> for TransactionStatus {
+    fn from(status: types::TransactionStatus) -> Self {
+        match status {
+            types::TransactionStatus::NotApplicable => TransactionStatus::NotApplicable,
+            types::TransactionStatus::Pending => TransactionStatus::Pending,
+            types::TransactionStatus::CashedIn => TransactionStatus::CashedIn,
+            types::TransactionStatus::Canceled => TransactionStatus::Canceled,
+        }
+    }
+}
+#[wasm_bindgen]
 #[derive(Default)]
 pub struct Transaction {
     #[wasm_bindgen(readonly)]
@@ -335,20 +372,29 @@ pub struct Transaction {
     pub unit: String,
     #[wasm_bindgen(readonly)]
     pub tstamp: u64,
-    #[wasm_bindgen(getter_with_clone)]
-    pub direction: String,
+    #[wasm_bindgen(readonly)]
+    pub direction: TransactionDirection,
     #[wasm_bindgen(getter_with_clone)]
     pub memo: String,
+    #[wasm_bindgen(readonly)]
+    pub ptype: PaymentType,
+    #[wasm_bindgen(readonly)]
+    pub status: TransactionStatus,
 }
+
 impl std::convert::From<cdk::wallet::types::Transaction> for Transaction {
     fn from(tx: cdk::wallet::types::Transaction) -> Self {
+        let status = TransactionStatus::from(types::get_transaction_status(&tx.metadata));
+        let ptype = PaymentType::from(types::get_payment_type(&tx.metadata));
         Self {
             amount: u64::from(tx.amount),
             fees: u64::from(tx.fee),
             unit: tx.unit.to_string(),
-            direction: tx.direction.to_string(),
+            direction: TransactionDirection::from(tx.direction),
             tstamp: tx.timestamp,
             memo: tx.memo.unwrap_or_default(),
+            ptype,
+            status,
         }
     }
 }
@@ -378,15 +424,19 @@ pub struct PaymentSummary {
     pub reserved_fees: u64,
     #[wasm_bindgen(readonly)]
     pub expiry: u64,
+    #[wasm_bindgen(readonly)]
+    pub ptype: PaymentType,
 }
 impl std::convert::From<types::PaymentSummary> for PaymentSummary {
     fn from(summary: types::PaymentSummary) -> Self {
+        let ptype = PaymentType::from(types::PaymentTypeDiscriminants::from(summary.details));
         Self {
             request_id: summary.request_id.to_string(),
             unit: summary.unit.to_string(),
             fees: summary.fees.into(),
             reserved_fees: summary.reserved_fees.into(),
             expiry: summary.expiry,
+            ptype,
         }
     }
 }

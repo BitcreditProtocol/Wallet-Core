@@ -1,4 +1,5 @@
 // ----- standard library imports
+use std::{collections::HashMap, str::FromStr};
 // ----- extra library imports
 use cashu::{Amount, CurrencyUnit, MintUrl, nut18 as cdk18};
 use uuid::Uuid;
@@ -58,13 +59,19 @@ impl MeltSummary {
     }
 }
 
+#[derive(strum::EnumDiscriminants)]
+#[strum_discriminants(derive(strum::EnumString, strum::Display))]
 pub enum PaymentType {
+    NotApplicable,
+    Token,
     Cdk18(cdk18::PaymentRequest),
     Bolt11(cashu::Bolt11Invoice),
 }
 impl PaymentType {
     pub fn memo(&self) -> Option<String> {
         match self {
+            PaymentType::Token => None,
+            PaymentType::NotApplicable => None,
             PaymentType::Cdk18(req) => req.description.clone(),
             PaymentType::Bolt11(invoice) => Some(invoice.description().to_string()),
         }
@@ -80,4 +87,28 @@ pub struct PaymentSummary {
     pub expiry: u64,
     pub internal_rid: Uuid,
     pub details: PaymentType,
+}
+
+#[derive(strum::Display, strum::EnumString, Default)]
+pub enum TransactionStatus {
+    #[default]
+    NotApplicable,
+    Pending,
+    CashedIn,
+    Canceled,
+}
+pub const TRANSACTION_STATUS_METADATA_KEY: &str = "transaction_status";
+pub fn get_transaction_status(metas: &HashMap<String, String>) -> TransactionStatus {
+    let Some(status) = metas.get(TRANSACTION_STATUS_METADATA_KEY) else {
+        return TransactionStatus::default();
+    };
+    TransactionStatus::from_str(status).unwrap_or_default()
+}
+
+pub const PAYMENT_TYPE_METADATA_KEY: &str = "payment_type";
+pub fn get_payment_type(metas: &HashMap<String, String>) -> PaymentTypeDiscriminants {
+    let Some(ptype) = metas.get(PAYMENT_TYPE_METADATA_KEY) else {
+        return PaymentTypeDiscriminants::NotApplicable;
+    };
+    PaymentTypeDiscriminants::from_str(ptype).unwrap_or(PaymentTypeDiscriminants::NotApplicable)
 }
