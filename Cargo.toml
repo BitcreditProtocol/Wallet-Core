@@ -28,6 +28,7 @@ secp256k1 = { version = "0.29" }
 serde = { version = "1" }
 serde-wasm-bindgen = { version = "0.6" }
 serde_json = { version = "1" }
+strum = {version = "0.27"}
 thiserror = { version = "2" }
 tokio = { version = "1", features = ["macros", "rt"] }
 tokio-util = { version = "0.7" }

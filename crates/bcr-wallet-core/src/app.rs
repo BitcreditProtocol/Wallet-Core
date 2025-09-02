@@ -263,14 +263,6 @@ pub async fn wallet_send(
     Ok((token, tx_id))
 }
 
-pub async fn wallet_reclaim_funds(idx: usize) -> Result<WalletBalance> {
-    tracing::debug!("wallet_reclaim_funds({idx})");
-
-    let wallet = get_wallet(idx)?;
-    let balance = wallet.reclaim_funds().await?;
-    Ok(balance)
-}
-
 pub async fn wallet_redeem_credit(idx: usize) -> Result<cashu::Amount> {
     tracing::debug!("wallet_redeem_credit({idx})");
 
