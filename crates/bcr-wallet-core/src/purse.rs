@@ -5,9 +5,10 @@ use std::{
 };
 // ----- extra library imports
 use async_trait::async_trait;
-use cashu::{Amount, CurrencyUnit, MintUrl, nut00 as cdk00, nut18 as cdk18};
+use cashu::{Amount, CurrencyUnit, MintUrl, PaymentRequest, nut00 as cdk00, nut18 as cdk18};
 use cdk::wallet::types::TransactionId;
 use nostr_sdk::nips::nip19::{Nip19Profile, ToBech32};
+use tokio_with_wasm::alias::time;
 use uuid::Uuid;
 // ----- local imports
 use crate::{
@@ -65,6 +66,7 @@ pub struct Purse<PurseRepo, Wlt> {
     myself: Nip19Profile,
     http_cl: Arc<reqwest::Client>,
     current_payment: Mutex<Option<PaymentReference>>,
+    current_payment_request: Mutex<Option<PaymentRequest>>,
 }
 impl<PurseRepo, Wlt> Purse<PurseRepo, Wlt> {
     pub async fn new(
@@ -80,6 +82,7 @@ impl<PurseRepo, Wlt> Purse<PurseRepo, Wlt> {
             myself,
             http_cl: Arc::new(http_cl),
             current_payment: Mutex::new(None),
+            current_payment_request: Mutex::new(None),
         })
     }
 }
@@ -187,19 +190,34 @@ where
             nut10: None,
             transports: Some(vec![nostr_transport]),
         };
+        *self.current_payment_request.lock().unwrap() = Some(request.clone());
         Ok(request)
     }
 
     pub async fn check_received_payment(
         &self,
         max_wait: core::time::Duration,
-        p_id: &str,
+        p_id: Uuid,
     ) -> Result<Option<TransactionId>> {
+        let current_request = self.current_payment_request.lock().unwrap().take();
+        let Some(req) = current_request else {
+            return Err(Error::NoPrepareRef(p_id));
+        };
+        if req.payment_id != Some(p_id.to_string()) {
+            return Err(Error::NoPrepareRef(p_id));
+        }
         // we split max timeout into 3 intervals.
-        // each interval is split into 2 equally-size sub-intervals: the fetch_events timeout, and
+        // each interval is split into 2 30/70-sized sub-intervals: the fetch_events timeout, and
         // the wait time in-between fetches.
-        const TIMEOUT_SPLIT_SIZE: usize = 3;
-        let interval = max_wait / 3;
+        const TIMEOUT_SPLIT_SIZE: u32 = 3;
+        const TIMEOUT_SUBSPLIT_WAIT: f64 = 0.7;
+        let interval = max_wait
+            .checked_div(TIMEOUT_SPLIT_SIZE)
+            .expect("TIMEOUT_SPLIT_SIZE should be > 0");
+        let sleep_time = interval.mul_f64(TIMEOUT_SUBSPLIT_WAIT);
+        let fetch_timeout = interval
+            .checked_sub(sleep_time)
+            .expect("sleep_time should be < interval");
 
         let filter = nostr_sdk::Filter::new()
             .kind(nostr_sdk::Kind::GiftWrap)
@@ -208,21 +226,16 @@ where
         for _ in 0..TIMEOUT_SPLIT_SIZE {
             let events = self
                 .nostr_cl
-                .fetch_events(filter.clone(), interval / 2)
+                .fetch_events(filter.clone(), fetch_timeout)
                 .await?;
             for event in events {
-                if let Some(txid) = handle_event(
-                    event,
-                    &self.wallets,
-                    p_id,
-                    Amount::ZERO, // we don't check amount here, as we do it in handle_notification
-                )
-                .await?
+                if let Some(txid) =
+                    handle_event(event, &self.wallets, p_id, req.amount.unwrap_or_default()).await?
                 {
                     return Ok(Some(txid));
                 }
-                tokio::time::sleep(interval / 2).await;
             }
+            time::sleep(sleep_time).await;
         }
         Ok(None)
     }
@@ -231,7 +244,7 @@ where
 async fn handle_event(
     event: nostr_sdk::Event,
     wlts: &Mutex<Vec<Arc<impl Wallet>>>,
-    payment_id: &str,
+    payment_id: Uuid,
     expected: Amount,
 ) -> Result<Option<TransactionId>> {
     if event.kind != nostr_sdk::Kind::PrivateDirectMessage {
@@ -240,7 +253,7 @@ async fn handle_event(
     let Ok(payload) = serde_json::from_str::<cdk18::PaymentRequestPayload>(&event.content) else {
         return Ok(None);
     };
-    if payload.id.unwrap_or_default() != payment_id {
+    if payload.id.unwrap_or_default() != payment_id.to_string() {
         return Ok(None);
     }
     let amount = payload

@@ -34,6 +34,7 @@ strum = {version = "0.27"}
 thiserror = { version = "2" }
 tokio = { version = "1", features = ["macros", "rt"] }
 tokio-util = { version = "0.7" }
+tokio_with_wasm = {version = "0.8"}
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3" }
 tracing-wasm = "0.2"

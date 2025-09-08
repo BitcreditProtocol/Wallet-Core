@@ -413,22 +413,33 @@ pub async fn wallet_pay(request_id: String) -> String {
 
 // --------------------------------------------------------------- wallet_prepare_payment_request
 #[wasm_bindgen]
+#[derive(Default)]
+pub struct PaymentRequest {
+    #[wasm_bindgen(getter_with_clone)]
+    pub request: String,
+    #[wasm_bindgen(getter_with_clone)]
+    pub p_id: String,
+}
+#[wasm_bindgen]
 pub async fn wallet_prepare_payment_request(
     idx: usize,
     amount: u32,
     unit: String,
     description: String,
-) -> String {
+) -> PaymentRequest {
     let returned =
         app::wallet_prepare_payment_request(idx, amount as u64, unit.clone(), description.clone())
             .await;
     match returned {
-        Ok(request) => request.to_string(),
+        Ok(request) => PaymentRequest {
+            p_id: request.payment_id.clone().unwrap_or_default(),
+            request: request.to_string(),
+        },
         Err(e) => {
             tracing::error!(
                 "wallet_prepare_payment_request({idx}, {amount}, {unit}, {description}): {e}",
             );
-            String::default()
+            PaymentRequest::default()
         }
     }
 }

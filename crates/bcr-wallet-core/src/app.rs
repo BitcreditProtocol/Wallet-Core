@@ -137,6 +137,7 @@ pub async fn initialize_api() -> Result<()> {
     for relay in &config.relays {
         nostr_cl.add_relay(relay).await?;
     }
+    nostr_cl.connect().await;
     let http_cl = reqwest::Client::new();
     let purse = ProductionPurse::new(pursedb, http_cl, nostr_cl, config.nprofile).await?;
     let mut appstate = AppState::new(Some(Arc::new(purse)), Some(Arc::new(settingsdb)));
@@ -365,9 +366,10 @@ pub async fn wallet_check_received_payment(
 ) -> Result<Option<TransactionId>> {
     tracing::debug!("wallet_check_received_payment({p_id})");
 
+    let p_id = Uuid::from_str(&p_id)?;
     let purse = get_purse()?;
     let max_wait = core::time::Duration::from_secs(max_wait_sec);
-    let tx_id = purse.check_received_payment(max_wait, &p_id).await?;
+    let tx_id = purse.check_received_payment(max_wait, p_id).await?;
     Ok(tx_id)
 }
 

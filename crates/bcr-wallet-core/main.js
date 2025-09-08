@@ -94,31 +94,28 @@ async function run() {
     await update_wallets();
   });
 
-  document.getElementById("importbtn").addEventListener("click", async () => {
+  document.getElementById("receivebtn").addEventListener("click", async () => {
     let ids = await wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
-    let token = prompt("Enter token");
-    let now = Math.floor(Date.now() / 1000);
-    let tx_id = await wasmModule.wallet_receive_token(idx, token, now);
-    await format_tx(idx, tx_id);
-
+    let amount = prompt("Enter import");
+    let payment_request = await wasmModule.wallet_prepare_payment_request(idx, Number(amount), "", "");
+    document.getElementById("output").innerHTML += "\nqr-code:\n" + payment_request.request;
+    let tx_id = await wasmModule.wallet_check_received_payment(30, payment_request.p_id);
     await update_balance();
+    await format_tx(idx, tx_id);
   });
 
-  document.getElementById("exportbtn").addEventListener("click", async () => {
+  document.getElementById("sendbtn").addEventListener("click", async () => {
     let ids = await wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
-    let amount = Math.round(Number(prompt("Enter amount to send")));
-    let summary = await wasmModule.wallet_prepare_send(idx, BigInt(amount), "");
-    let now = Math.floor(Date.now() / 1000);
+    let input = prompt("Enter payment request");
+    let summary = await wasmModule.wallet_prepare_payment(idx, input);
     
-    prompt(`send summary, currency unit: ${summary.unit} total fees: ${summary.send_fees + summary.swap_fees}`);
-    let token_tx = await wasmModule.wallet_send(idx, summary.request_id, now);
+    prompt(`payment summary, currency unit: ${summary.unit} total fees: ${summary.fees + summary.reserved_fees}`);
+    let txid = await wasmModule.wallet_pay(summary.request_id);
 
     await update_balance();
-    await format_tx(idx, token_tx.tx_id);
-
-    document.getElementById("output").innerHTML += "\ntoken:\n" + token_tx.token;
+    await format_tx(idx, txid);
   });
 
   document.getElementById("reclaimbtn").addEventListener("click", async () => {
