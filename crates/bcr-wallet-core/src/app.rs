@@ -48,7 +48,7 @@ mod prod {
         crate::persistence::inmemory::InMemorySettingsRepository;
 }
 
-type ProductionConnector = cdk::wallet::HttpClient;
+type ProductionConnector = crate::mint::HttpClientExt;
 type ProductionDebitPocket = crate::pocket::debit::Pocket;
 type ProductionCreditPocket = crate::pocket::credit::Pocket;
 type ProductionWallet =
