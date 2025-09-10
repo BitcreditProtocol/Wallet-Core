@@ -51,11 +51,8 @@ mod prod {
 type ProductionConnector = cdk::wallet::HttpClient;
 type ProductionDebitPocket = crate::pocket::debit::Pocket;
 type ProductionCreditPocket = crate::pocket::credit::Pocket;
-type ProductionWallet = crate::wallet::Wallet<
-    ProductionConnector,
-    prod::ProductionTransactionRepository,
-    ProductionDebitPocket,
->;
+type ProductionWallet =
+    crate::wallet::Wallet<prod::ProductionTransactionRepository, ProductionDebitPocket>;
 type ProductionPurse = crate::purse::Purse<prod::ProductionPurseRepository, ProductionWallet>;
 
 pub struct AppState {
@@ -590,7 +587,7 @@ async fn build_wallet(
 ) -> Result<ProductionWallet> {
     let master = bitcoin::bip32::Xpriv::new_master(network, &mnemonic.to_seed(""))?;
     // retrieving mint details
-    let client = ProductionConnector::new(mint_url.clone());
+    let client = Box::new(ProductionConnector::new(mint_url.clone()));
     let info = client.get_mint_info().await?;
     let mint_id = build_mint_id(&mint_url, &info);
     let keyset_infos = client.get_mint_keysets().await?.keysets;
