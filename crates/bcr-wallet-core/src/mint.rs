@@ -1,4 +1,5 @@
 // ----- standard library imports
+use std::str::FromStr;
 // ----- extra library imports
 use async_trait::async_trait;
 use cdk::Error as CdkError;
@@ -22,6 +23,7 @@ pub struct ClowderBetasResponse {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {
+    fn mint_url(&self) -> cashu::MintUrl;
     async fn post_intermintswap(
         &self,
         request: IntermintSwapRequest,
@@ -119,6 +121,10 @@ impl cdk::wallet::MintConnector for HttpClientExt {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl MintConnector for HttpClientExt {
+    fn mint_url(&self) -> cashu::MintUrl {
+        cashu::MintUrl::from_str(self.url.as_str()).expect("Invalid mint URL")
+    }
+
     async fn post_intermintswap(
         &self,
         request: IntermintSwapRequest,
