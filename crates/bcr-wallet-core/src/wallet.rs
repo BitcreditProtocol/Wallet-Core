@@ -131,16 +131,16 @@ pub struct PayReference {
     memo: Option<String>,
 }
 pub struct Wallet<TxRepo, DebtPck> {
-    pub network: bitcoin::Network,
-    pub client: Box<dyn MintConnector>,
-    pub tx_repo: TxRepo,
-    pub mint_url: cashu::MintUrl,
-    pub debit: DebtPck,
-    pub credit: Box<dyn CreditPocket>,
-    pub name: String,
-    pub id: String,
-    pub mnemonic: bip39::Mnemonic,
-    pub current_payment: Mutex<Option<PayReference>>,
+    network: bitcoin::Network,
+    client: Box<dyn MintConnector>,
+    tx_repo: TxRepo,
+    debit: DebtPck,
+    credit: Box<dyn CreditPocket>,
+    name: String,
+    id: String,
+    mnemonic: bip39::Mnemonic,
+    current_payment: Mutex<Option<PayReference>>,
+    betas: Vec<cashu::MintUrl>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -150,6 +150,38 @@ pub struct WalletBalance {
 }
 
 impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck> {
+    pub async fn new(
+        network: bitcoin::Network,
+        client: Box<dyn MintConnector>,
+        tx_repo: TxRepo,
+        debit: DebtPck,
+        credit: Box<dyn CreditPocket>,
+        name: String,
+        id: String,
+        mnemonic: bip39::Mnemonic,
+    ) -> Result<Self> {
+        let betas = client.get_clowder_betas().await?;
+        Ok(Self {
+            network,
+            client,
+            tx_repo,
+            debit,
+            credit,
+            name,
+            id,
+            mnemonic,
+            current_payment: Mutex::new(None),
+            betas,
+        })
+    }
+
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+    pub fn credit_unit(&self) -> CurrencyUnit {
+        self.credit.unit()
+    }
+
     pub async fn list_redemptions(
         &self,
         payment_window: std::time::Duration,
@@ -165,6 +197,9 @@ impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck>
 where
     DebtPck: DebitPocket,
 {
+    pub fn debit_unit(&self) -> CurrencyUnit {
+        self.debit.unit()
+    }
     pub async fn balance(&self) -> Result<WalletBalance> {
         let debit = self.debit.balance().await?;
         let credit = self.credit.balance().await?;
@@ -175,10 +210,10 @@ where
         &self,
         req: &cdk18::PaymentRequest,
     ) -> Result<(Amount, CurrencyUnit, cdk18::Transport)> {
-        if let Some(mints) = &req.mints {
-            if !mints.contains(&self.mint_url) {
-                return Err(Error::InterMint);
-            }
+        if let Some(mints) = &req.mints
+            && !mints.contains(&self.client.mint_url())
+        {
+            return Err(Error::InterMint);
         }
         if req.nut10.is_some() {
             return Err(Error::SpendingConditions);
@@ -336,7 +371,7 @@ where
             return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
         };
         let tx = Transaction {
-            mint_url: self.mint_url.clone(),
+            mint_url: self.client.mint_url(),
             direction: TransactionDirection::Incoming,
             fee: received_amount
                 .checked_sub(stored_amount)
@@ -354,7 +389,7 @@ where
 
     pub async fn receive_token(&self, token: Token, tstamp: u64) -> Result<TransactionId> {
         let token_teaser = token.to_string().chars().take(20).collect::<String>();
-        if token.mint_url() != self.mint_url {
+        if token.mint_url() != self.client.mint_url() {
             return Err(Error::InvalidToken(token_teaser));
         }
         let keysets_info = self.client.get_mint_keysets().await?.keysets;
@@ -417,7 +452,7 @@ where
             id: p_id,
             memo: partial_tx.memo.clone(),
             unit: partial_tx.unit.clone(),
-            mint: self.mint_url.clone(),
+            mint: self.client.mint_url(),
             proofs,
         };
         match transport._type {
@@ -461,7 +496,7 @@ where
             network: self.network,
             debit: self.debit.unit(),
             credit: self.credit.maybe_unit(),
-            mint: self.mint_url.clone(),
+            mint: self.client.mint_url(),
             mnemonic: self.mnemonic.clone(),
         }
     }
@@ -469,7 +504,7 @@ where
         self.name.clone()
     }
     fn mint_url(&self) -> cashu::MintUrl {
-        self.mint_url.clone()
+        self.client.mint_url()
     }
     async fn prepare_pay(&self, input: String, now: u64) -> Result<PaymentSummary> {
         let infos = self.client.get_mint_keysets().await?.keysets;
@@ -556,7 +591,7 @@ where
                     .iter()
                     .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
                 let partial_tx = Transaction {
-                    mint_url: self.mint_url.clone(),
+                    mint_url: self.client.mint_url(),
                     fee: fees,
                     direction: TransactionDirection::Outgoing,
                     memo,
@@ -583,7 +618,7 @@ where
                     .iter()
                     .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
                 let partial_tx = Transaction {
-                    mint_url: self.mint_url.clone(),
+                    mint_url: self.client.mint_url(),
                     fee: fees,
                     direction: TransactionDirection::Outgoing,
                     memo,
