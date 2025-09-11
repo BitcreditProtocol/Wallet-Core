@@ -32,6 +32,7 @@ pub trait Pocket: sync::SendSync {
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
         proofs: Vec<cdk00::Proof>,
+        intermint: Option<cashu::MintUrl>,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)>;
     async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo]) -> Result<SendSummary>;
     async fn send_proofs(
@@ -154,13 +155,12 @@ impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck> {
         network: bitcoin::Network,
         client: Box<dyn MintConnector>,
         tx_repo: TxRepo,
-        debit: DebtPck,
-        credit: Box<dyn CreditPocket>,
+        (debit, credit): (DebtPck, Box<dyn CreditPocket>),
         name: String,
         id: String,
         mnemonic: bip39::Mnemonic,
     ) -> Result<Self> {
-        let betas = client.get_clowder_betas().await?;
+        let betas = client.get_clowder_peers().await?;
         Ok(Self {
             network,
             client,
@@ -282,7 +282,7 @@ where
         } else {
             let (amount, _) = self
                 .debit
-                .receive_proofs(self.client.as_ref(), &keysets_info, credit_proofs)
+                .receive_proofs(self.client.as_ref(), &keysets_info, credit_proofs, None)
                 .await?;
             Ok(amount)
         }
@@ -350,22 +350,31 @@ where
         keysets_info: &[KeySetInfo],
         proofs: Vec<cdk00::Proof>,
         unit: CurrencyUnit,
+        mint: cashu::MintUrl,
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,
     ) -> Result<TransactionId> {
+        let mint = if mint == self.client.mint_url() {
+            None
+        } else if self.betas.contains(&mint) {
+            Some(mint)
+        } else {
+            return Err(Error::UnknownMint(mint));
+        };
+
         let received_amount = proofs
             .iter()
             .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
         let (stored_amount, ys) = if unit == self.debit.unit() {
             tracing::debug!("receive into debit pocket");
             self.debit
-                .receive_proofs(self.client.as_ref(), keysets_info, proofs)
+                .receive_proofs(self.client.as_ref(), keysets_info, proofs, mint)
                 .await?
         } else if unit == self.credit.unit() {
             tracing::debug!("receive into credit pocket");
             self.credit
-                .receive_proofs(self.client.as_ref(), keysets_info, proofs)
+                .receive_proofs(self.client.as_ref(), keysets_info, proofs, mint)
                 .await?
         } else {
             return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
@@ -389,9 +398,6 @@ where
 
     pub async fn receive_token(&self, token: Token, tstamp: u64) -> Result<TransactionId> {
         let token_teaser = token.to_string().chars().take(20).collect::<String>();
-        if token.mint_url() != self.client.mint_url() {
-            return Err(Error::InvalidToken(token_teaser));
-        }
         let keysets_info = self.client.get_mint_keysets().await?.keysets;
         let proofs = token.proofs(&keysets_info)?;
         if proofs.is_empty() {
@@ -410,6 +416,7 @@ where
                 &keysets_info,
                 proofs,
                 self.debit.unit(),
+                token.mint_url(),
                 tstamp,
                 token.memo().clone(),
                 HashMap::default(),
@@ -428,6 +435,7 @@ where
                 &keysets_info,
                 proofs,
                 self.credit.unit(),
+                token.mint_url(),
                 tstamp,
                 token.memo().clone(),
                 HashMap::default(),
@@ -637,12 +645,19 @@ where
         &self,
         proofs: Vec<cdk00::Proof>,
         unit: CurrencyUnit,
+        mint: cashu::MintUrl,
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,
     ) -> Result<TransactionId> {
         let keysets_info = self.client.get_mint_keysets().await?.keysets;
-        self._receive_proofs(&keysets_info, proofs, unit, tstamp, memo, metadata)
+        self._receive_proofs(&keysets_info, proofs, unit, mint, tstamp, memo, metadata)
             .await
+    }
+
+    fn mint_urls(&self) -> Vec<cashu::MintUrl> {
+        let mut urls = self.betas.clone();
+        urls.push(self.client.mint_url());
+        urls
     }
 }
