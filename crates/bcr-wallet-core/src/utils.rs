@@ -61,7 +61,7 @@ pub mod tests {
         async fn post_intermintswap(
             &self,
             request: crate::mint::IntermintSwapRequest,
-        ) -> CdkResult<cashu::SwapResponse>;
+        ) -> CdkResult<crate::mint::IntermintSwapResponse>;
         async fn get_clowder_betas(&self) -> CdkResult<Vec<cashu::MintUrl>>;
         fn mint_url(&self) -> cashu::MintUrl;
         }
