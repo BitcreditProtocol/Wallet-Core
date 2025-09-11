@@ -11,8 +11,11 @@ use crate::sync;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct IntermintSwapRequest {
     pub input_mint: cashu::MintUrl,
-    pub inputs: Vec<cashu::Proof>,
-    pub outputs: Vec<cashu::BlindedMessage>,
+    pub input_ids: Vec<cashu::Id>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IntermintSwapResponse {
+    pub output_ids: Vec<cashu::Id>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -27,8 +30,8 @@ pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {
     async fn post_intermintswap(
         &self,
         request: IntermintSwapRequest,
-    ) -> CdkResult<cashu::SwapResponse>;
-    async fn get_clowder_betas(&self) -> CdkResult<Vec<cashu::MintUrl>>;
+    ) -> CdkResult<IntermintSwapResponse>;
+    async fn get_clowder_peers(&self) -> CdkResult<Vec<cashu::MintUrl>>;
 }
 
 #[derive(Debug, Clone)]
@@ -40,7 +43,8 @@ pub struct HttpClientExt {
 
 impl HttpClientExt {
     pub fn new(cdk_url: cashu::MintUrl) -> Self {
-        let mint_url = reqwest::Url::parse(&cdk_url.to_string()).expect("Invalid mint URL");
+        let mint_url = reqwest::Url::parse(&cdk_url.to_string())
+            .expect("cashu::MintUrl is as good as reqwest::Url");
         Self {
             main: cdk::wallet::HttpClient::new(cdk_url),
             url: mint_url,
@@ -122,13 +126,14 @@ impl cdk::wallet::MintConnector for HttpClientExt {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl MintConnector for HttpClientExt {
     fn mint_url(&self) -> cashu::MintUrl {
-        cashu::MintUrl::from_str(self.url.as_str()).expect("Invalid mint URL")
+        cashu::MintUrl::from_str(self.url.as_str())
+            .expect("cashu::MintUrl is as good as reqwest::Url")
     }
 
     async fn post_intermintswap(
         &self,
         request: IntermintSwapRequest,
-    ) -> CdkResult<cashu::SwapResponse> {
+    ) -> CdkResult<IntermintSwapResponse> {
         let url = self
             .url
             .join("intermint_swap")
@@ -140,14 +145,14 @@ impl MintConnector for HttpClientExt {
             .send()
             .await
             .map_err(|e| CdkError::HttpError(e.to_string()))?;
-        let response: cashu::SwapResponse = response
+        let response: IntermintSwapResponse = response
             .json()
             .await
             .map_err(|e| CdkError::Custom(e.to_string()))?;
         Ok(response)
     }
 
-    async fn get_clowder_betas(&self) -> CdkResult<Vec<cashu::MintUrl>> {
+    async fn get_clowder_peers(&self) -> CdkResult<Vec<cashu::MintUrl>> {
         let url = self
             .url
             .join("clowder/urls")
