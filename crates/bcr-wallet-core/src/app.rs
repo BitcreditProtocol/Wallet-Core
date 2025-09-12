@@ -1,10 +1,5 @@
 // ----- standard library imports
-use std::{
-    cell::RefCell,
-    collections::HashSet,
-    str::FromStr,
-    sync::{Arc, Mutex},
-};
+use std::{cell::RefCell, collections::HashSet, str::FromStr, sync::Arc};
 // ----- extra library imports
 use anyhow::Error as AnyError;
 use bitcoin::{
@@ -22,8 +17,9 @@ use uuid::Uuid;
 use crate::{
     config::{Config, Settings},
     error::{Error, Result},
+    purse::Wallet,
     types::{PaymentSummary, RedemptionSummary},
-    wallet::{CreditPocket, Pocket, WalletBalance},
+    wallet::{CreditPocket, WalletBalance},
 };
 
 // ----- end imports
@@ -48,14 +44,11 @@ mod prod {
         crate::persistence::inmemory::InMemorySettingsRepository;
 }
 
-type ProductionConnector = cdk::wallet::HttpClient;
+type ProductionConnector = crate::mint::HttpClientExt;
 type ProductionDebitPocket = crate::pocket::debit::Pocket;
 type ProductionCreditPocket = crate::pocket::credit::Pocket;
-type ProductionWallet = crate::wallet::Wallet<
-    ProductionConnector,
-    prod::ProductionTransactionRepository,
-    ProductionDebitPocket,
->;
+type ProductionWallet =
+    crate::wallet::Wallet<prod::ProductionTransactionRepository, ProductionDebitPocket>;
 type ProductionPurse = crate::purse::Purse<prod::ProductionPurseRepository, ProductionWallet>;
 
 pub struct AppState {
@@ -233,13 +226,13 @@ pub fn wallet_name(idx: usize) -> Result<String> {
     tracing::debug!("name for wallet {idx}");
 
     let wallet = get_wallet(idx)?;
-    Ok(wallet.name.clone())
+    Ok(wallet.name())
 }
 
 pub fn wallet_mint_url(idx: usize) -> Result<String> {
     tracing::debug!("mint_url for wallet {idx}");
     let wallet = get_wallet(idx)?;
-    Ok(wallet.mint_url.to_string())
+    Ok(wallet.mint_url().to_string())
 }
 
 pub struct WalletCurrencyUnit {
@@ -251,8 +244,8 @@ pub fn wallet_currency_unit(idx: usize) -> Result<WalletCurrencyUnit> {
     tracing::debug!("wallet_currency_unit({idx})");
     let wallet = get_wallet(idx)?;
     Ok(WalletCurrencyUnit {
-        credit: wallet.credit.unit().to_string(),
-        debit: wallet.debit.unit().to_string(),
+        credit: wallet.credit_unit().to_string(),
+        debit: wallet.debit_unit().to_string(),
     })
 }
 
@@ -590,7 +583,7 @@ async fn build_wallet(
 ) -> Result<ProductionWallet> {
     let master = bitcoin::bip32::Xpriv::new_master(network, &mnemonic.to_seed(""))?;
     // retrieving mint details
-    let client = ProductionConnector::new(mint_url.clone());
+    let client = Box::new(ProductionConnector::new(mint_url.clone()));
     let info = client.get_mint_info().await?;
     let mint_id = build_mint_id(&mint_url, &info);
     let keyset_infos = client.get_mint_keysets().await?.keysets;
@@ -621,17 +614,16 @@ async fn build_wallet(
         tracing::warn!("app::add_wallet: credit_pocket = DummyPocket");
         Box::new(crate::pocket::credit::DummyPocket {})
     };
-    let new_wallet: ProductionWallet = ProductionWallet {
+    let new_wallet: ProductionWallet = ProductionWallet::new(
         network,
-        mnemonic,
         client,
-        mint_url,
         tx_repo,
-        debit: debit_pocket,
-        credit: credit_pocket,
+        debit_pocket,
+        credit_pocket,
         name,
-        id: wallet_id,
-        current_payment: Mutex::new(None),
-    };
+        wallet_id,
+        mnemonic,
+    )
+    .await?;
     Ok(new_wallet)
 }

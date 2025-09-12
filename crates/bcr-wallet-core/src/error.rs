@@ -72,6 +72,8 @@ pub enum Error {
     UnknownKeysetId(cashu::Id),
     #[error("unknown currency unit: {0}")]
     UnknownCurrencyUnit(cashu::CurrencyUnit),
+    #[error("unknown mint: {0}")]
+    UnknownMint(cashu::MintUrl),
     #[error("currency unit mismatch: mine {0}, his {1}")]
     CurrencyUnitMismatch(cashu::CurrencyUnit, cashu::CurrencyUnit),
     #[error("no reference to prepare request_id: {0}")]

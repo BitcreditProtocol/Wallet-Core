@@ -35,6 +35,7 @@ pub trait Wallet: sync::SendSync {
     fn config(&self) -> WalletConfig;
     fn name(&self) -> String;
     fn mint_url(&self) -> MintUrl;
+    fn mint_urls(&self) -> Vec<MintUrl>;
     async fn prepare_pay(&self, input: String, now: u64) -> Result<PaymentSummary>;
     async fn pay(
         &self,
@@ -48,6 +49,7 @@ pub trait Wallet: sync::SendSync {
         &self,
         proofs: Vec<cdk00::Proof>,
         unit: CurrencyUnit,
+        mint: MintUrl,
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,
@@ -171,7 +173,7 @@ where
             let wlts = self.wallets.lock().unwrap();
             let mut mints = Vec::with_capacity(wlts.len());
             for wlt in wlts.iter() {
-                mints.push(wlt.mint_url());
+                mints.extend(wlt.mint_urls());
             }
             mints
         };
@@ -241,12 +243,15 @@ where
     }
 }
 
-async fn handle_event(
+async fn handle_event<T>(
     event: nostr_sdk::Event,
-    wlts: &Mutex<Vec<Arc<impl Wallet>>>,
+    wlts: &Mutex<Vec<Arc<T>>>,
     payment_id: Uuid,
     expected: Amount,
-) -> Result<Option<TransactionId>> {
+) -> Result<Option<TransactionId>>
+where
+    T: Wallet,
+{
     if event.kind != nostr_sdk::Kind::PrivateDirectMessage {
         return Ok(None);
     }
@@ -270,14 +275,20 @@ async fn handle_event(
     }
     let wlt = {
         let locked = wlts.lock().unwrap();
-        let found = locked
-            .iter()
-            .find(|w| w.mint_url() == payload.mint)
-            .cloned();
-        if found.is_none() {
-            return Ok(None);
+        let mut best_wlt: Option<Arc<T>> = None;
+        for wlt in locked.iter() {
+            if wlt.mint_url() == payload.mint {
+                best_wlt.replace(wlt.clone());
+                break;
+            }
+            if wlt.mint_urls().contains(&payload.mint) {
+                best_wlt.replace(wlt.clone());
+            }
         }
-        found.expect("should be found")
+        if best_wlt.is_none() {
+            return Err(Error::UnknownMint(payload.mint));
+        }
+        best_wlt.expect("should be found")
     };
     let meta = HashMap::from([
         (String::from("sender"), event.pubkey.to_string()),
@@ -288,6 +299,7 @@ async fn handle_event(
         .receive_proofs(
             payload.proofs,
             payload.unit,
+            payload.mint,
             event.created_at.as_u64(),
             payload.memo,
             meta,

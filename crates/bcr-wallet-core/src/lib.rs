@@ -6,6 +6,7 @@ use wasm_bindgen::prelude::*;
 mod app;
 pub mod config;
 pub mod error;
+mod mint;
 pub mod persistence;
 pub mod pocket;
 mod purse;
@@ -29,9 +30,7 @@ mod sync {
     impl<T> SendSync for T where T: Send + Sync {}
 }
 
-pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {}
-impl<T> MintConnector for T where T: cdk::wallet::MintConnector + sync::SendSync {}
-
+pub use crate::mint::MintConnector;
 // --------------------------------------------------------------- initialize_api
 #[wasm_bindgen]
 pub async fn initialize_api() {
