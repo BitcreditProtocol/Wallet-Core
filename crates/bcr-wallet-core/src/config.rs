@@ -19,7 +19,7 @@ impl Default for Settings {
             network: bitcoin::Network::Testnet,
             mnemonic: bip39::Mnemonic::generate(12).expect("Failed to generate default mnemonic"),
             nostr_relays: vec![
-                RelayUrl::parse("wss://bitcr-cloud-run-05-550030097098.europe-west1.run.app")
+                RelayUrl::parse("wss://bcr-relay-dev.minibill.tech")
                     .expect("Invalid default relay URL"),
             ],
         }
