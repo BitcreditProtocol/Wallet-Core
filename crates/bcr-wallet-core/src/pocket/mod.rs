@@ -2,7 +2,6 @@
 use std::collections::{HashMap, HashSet};
 // ----- extra library imports
 use async_trait::async_trait;
-use bitcoin::bip32 as btc32;
 use cashu::{
     Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00, nut01 as cdk01,
     nut03 as cdk03, nut07 as cdk07,
@@ -180,14 +179,14 @@ async fn swap_proof_to_target(
     proof: cdk00::Proof,
     target_keyset: &KeySet,
     target_amount: Amount,
-    xpriv: btc32::Xpriv,
+    seed: &[u8; 64],
     db: &dyn PocketRepository,
     client: &dyn MintConnector,
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
     let target = SplitTarget::Value(target_amount);
     let counter = db.counter(target_keyset.id).await?;
     let premint =
-        cdk00::PreMintSecrets::from_xpriv(target_keyset.id, counter, xpriv, proof.amount, &target)?;
+        cdk00::PreMintSecrets::from_seed(target_keyset.id, counter, seed, proof.amount, &target)?;
     let blinds = premint.blinded_messages();
     let request = cdk03::SwapRequest::new(vec![proof], blinds);
     db.increment_counter(target_keyset.id, counter, premint.len() as u32)
@@ -253,7 +252,7 @@ fn group_ys_by_keyset_id<'a>(
 async fn send_proofs(
     send_proofs: Vec<cdk01::PublicKey>,
     swap_proof: Option<(Amount, cdk01::PublicKey)>,
-    xpriv: btc32::Xpriv,
+    seed: &[u8; 64],
     db: &dyn PocketRepository,
     client: &dyn MintConnector,
     target_swap_keysetid: Option<cashu::Id>,
@@ -273,7 +272,7 @@ async fn send_proofs(
             swap_proof,
             &swap_proof_keyset,
             swap_target,
-            xpriv,
+            seed,
             db,
             client,
         )
@@ -366,9 +365,8 @@ mod tests {
         // 16 --> 13 ==> ( 8 + 4 + 1 ) + 2 + 1
         let amount = Amount::from(16u64);
         let target = Amount::from(13u64);
-        let proof = signatures_test::generate_proofs(&keyset, &[amount])[0].clone();
-        let seed = [0u8; 32];
-        let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
+        let proof = core_tests::generate_random_ecash_proofs(&keyset, &[amount])[0].clone();
+        let seed = [0u8; 64];
         let mut mockdb = MockPocketRepository::new();
         let mut mockclient = MockMintConnector::new();
         mockdb
@@ -405,7 +403,7 @@ mod tests {
             proof,
             &KeySet::from(keyset),
             target,
-            xpriv,
+            &seed,
             &mockdb,
             &mockclient,
         )

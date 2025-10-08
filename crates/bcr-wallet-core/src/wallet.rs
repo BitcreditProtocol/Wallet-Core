@@ -231,9 +231,8 @@ where
         } else {
             self.debit.unit()
         };
-        let empty = vec![];
-        let transports = req.transports.as_ref().unwrap_or(&empty);
-        let (nostr_transports, http_transports): (Vec<_>, Vec<_>) = transports
+        let (nostr_transports, http_transports): (Vec<_>, Vec<_>) = req
+            .transports
             .iter()
             .partition(|t| matches!(t._type, cdk18::TransportType::Nostr));
         if !http_transports.is_empty() {
@@ -354,6 +353,7 @@ where
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,
+        quote_id: Option<String>,
     ) -> Result<TransactionId> {
         let mint = if mint == self.client.mint_url() {
             None
@@ -391,6 +391,7 @@ where
             timestamp: tstamp,
             unit,
             ys,
+            quote_id,
         };
         let txid = self.tx_repo.store_tx(tx).await?;
         Ok(txid)
@@ -420,6 +421,7 @@ where
                 tstamp,
                 token.memo().clone(),
                 HashMap::default(),
+                None,
             )
             .await?
         } else if matches!(token, Token::BitcrV4(..)) {
@@ -439,6 +441,7 @@ where
                 tstamp,
                 token.memo().clone(),
                 HashMap::default(),
+                None,
             )
             .await?
         } else {
@@ -615,6 +618,7 @@ where
                     amount,
                     // payments might need to fill some extra metadata later
                     metadata: HashMap::default(),
+                    quote_id: None,
                 };
                 let tx_id = self
                     .pay_nut18(proofs, nostr_cl, http_cl, transport, id, partial_tx)
@@ -641,6 +645,7 @@ where
                     ys,
                     amount,
                     metadata: HashMap::default(),
+                    quote_id: None,
                 };
                 let tx_id = self.tx_repo.store_tx(partial_tx).await?;
                 return Ok(tx_id);
@@ -655,10 +660,20 @@ where
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,
+        quote_id: Option<String>,
     ) -> Result<TransactionId> {
         let keysets_info = self.client.get_mint_keysets().await?.keysets;
-        self._receive_proofs(&keysets_info, proofs, unit, mint, tstamp, memo, metadata)
-            .await
+        self._receive_proofs(
+            &keysets_info,
+            proofs,
+            unit,
+            mint,
+            tstamp,
+            memo,
+            metadata,
+            quote_id,
+        )
+        .await
     }
 
     fn mint_urls(&self) -> Vec<cashu::MintUrl> {

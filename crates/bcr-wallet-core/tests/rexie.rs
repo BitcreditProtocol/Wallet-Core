@@ -177,6 +177,7 @@ async fn transaction_store_tx() {
         timestamp: 42,
         memo: None,
         metadata: HashMap::new(),
+        quote_id: None,
     };
     transactiondb.store_tx(tx).await.unwrap();
 }
@@ -197,6 +198,7 @@ async fn transaction_load_tx() {
         timestamp: 42,
         memo: None,
         metadata: HashMap::new(),
+        quote_id: None,
     };
     let txid = transactiondb.store_tx(tx.clone()).await.unwrap();
 
@@ -228,6 +230,7 @@ async fn transaction_load_tx_nonexisting() {
         timestamp: 42,
         memo: None,
         metadata: HashMap::new(),
+        quote_id: None,
     };
     let txid = tx.id();
 
@@ -251,6 +254,7 @@ async fn transaction_delete_tx() {
         timestamp: 42,
         memo: None,
         metadata: HashMap::new(),
+        quote_id: None,
     };
     let txid = transactiondb.store_tx(tx.clone()).await.unwrap();
     transactiondb.delete_tx(txid).await.unwrap();
@@ -287,6 +291,7 @@ async fn transaction_list_tx_idxs() {
         timestamp: 42,
         memo: None,
         metadata: HashMap::new(),
+        quote_id: None,
     };
     let txid_old = transactiondb.store_tx(tx_old).await.unwrap();
     assert!(txid_new < txid_old); // otherwise test does not make sense
@@ -310,6 +315,7 @@ async fn transaction_update_metadata() {
         timestamp: 84,
         memo: None,
         metadata: HashMap::new(),
+        quote_id: None,
     };
     let txid = transactiondb.store_tx(tx).await.unwrap();
     let oldv = transactiondb

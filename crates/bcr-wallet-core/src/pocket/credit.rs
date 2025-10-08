@@ -6,7 +6,6 @@ use std::{
 // ----- extra library imports
 use anyhow::Error as AnyError;
 use async_trait::async_trait;
-use bitcoin::bip32 as btc32;
 use cashu::{
     Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00, nut01 as cdk01,
     nut07 as cdk07,
@@ -29,16 +28,16 @@ use crate::{
 pub struct Pocket {
     pub unit: cashu::CurrencyUnit,
     pub db: Arc<dyn PocketRepository>,
-    pub xpriv: btc32::Xpriv,
+    seed: [u8; 64],
     current_send: Mutex<Option<SendReference>>,
 }
 
 impl Pocket {
-    pub fn new(unit: CurrencyUnit, db: Arc<dyn PocketRepository>, xpriv: btc32::Xpriv) -> Self {
+    pub fn new(unit: CurrencyUnit, db: Arc<dyn PocketRepository>, seed: [u8; 64]) -> Self {
         Self {
             unit,
             db,
-            xpriv,
+            seed,
             current_send: Mutex::new(None),
         }
     }
@@ -121,10 +120,10 @@ impl Pocket {
                 .expect("their_kid should be in kids_map");
             let total = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
             let counter = self.db.counter(*our_kid).await?;
-            let premint = cdk00::PreMintSecrets::from_xpriv(
+            let premint = cdk00::PreMintSecrets::from_seed(
                 *our_kid,
                 counter,
-                self.xpriv,
+                &self.seed,
                 total,
                 &SplitTarget::None,
             )?;
@@ -180,10 +179,10 @@ impl Pocket {
         for (kid, proofs) in old_proofs.iter() {
             let total = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
             let counter = self.db.counter(*kid).await?;
-            let premint = cdk00::PreMintSecrets::from_xpriv(
+            let premint = cdk00::PreMintSecrets::from_seed(
                 *kid,
                 counter,
-                self.xpriv,
+                &self.seed,
                 total,
                 &SplitTarget::None,
             )?;
@@ -324,7 +323,7 @@ impl wallet::Pocket for Pocket {
         let sending_proofs = send_proofs(
             send_ref.send_proofs,
             send_ref.swap_proof,
-            self.xpriv,
+            &self.seed,
             self.db.as_ref(),
             client,
             None,
@@ -356,7 +355,7 @@ impl wallet::Pocket for Pocket {
         let mut total_recovered = 0;
         for kid in kids.into_iter() {
             total_recovered +=
-                restore::restore_keysetid(self.xpriv, kid, client, self.db.as_ref()).await?;
+                restore::restore_keysetid(&self.seed, kid, client, self.db.as_ref()).await?;
         }
         Ok(total_recovered)
     }
@@ -553,9 +552,8 @@ mod tests {
 
     fn pocket(db: Arc<dyn PocketRepository>) -> super::Pocket {
         let unit = CurrencyUnit::Sat;
-        let seed = [0u8; 32];
-        let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
-        super::Pocket::new(unit, db, xpriv)
+        let seed = [0u8; 64];
+        super::Pocket::new(unit, db, seed)
     }
 
     #[tokio::test]

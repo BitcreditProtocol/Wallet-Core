@@ -3,7 +3,6 @@ use std::{cell::RefCell, collections::HashSet, str::FromStr, sync::Arc};
 // ----- extra library imports
 use anyhow::Error as AnyError;
 use bitcoin::{
-    bip32 as btc32,
     hashes::{Hash, HashEngine, sha256},
     hex::DisplayHex,
 };
@@ -562,12 +561,10 @@ fn find_currency_units(
     Ok((debit_unit.clone(), credit_unit.cloned()))
 }
 
-fn build_wallet_id(mint_id: &[u8], master: &btc32::Xpriv) -> String {
-    let secp = secp256k1::Secp256k1::signing_only();
-    let xpub = btc32::Xpub::from_priv(&secp, master);
+fn build_wallet_id(mint_id: &[u8], seed: &[u8; 64]) -> String {
     let mut hasher = sha256::HashEngine::default();
     hasher.input(mint_id);
-    hasher.input(xpub.fingerprint().to_bytes().as_slice());
+    hasher.input(seed);
     sha256::Hash::from_engine(hasher)
         .as_byte_array()
         .as_hex()
@@ -581,7 +578,7 @@ async fn build_wallet(
     local: LocalDB,
     db_version: u32,
 ) -> Result<ProductionWallet> {
-    let master = bitcoin::bip32::Xpriv::new_master(network, &mnemonic.to_seed(""))?;
+    let seed = mnemonic.to_seed("");
     // retrieving mint details
     let client = Box::new(ProductionConnector::new(mint_url.clone()));
     let info = client.get_mint_info().await?;
@@ -589,7 +586,7 @@ async fn build_wallet(
     let keyset_infos = client.get_mint_keysets().await?.keysets;
     let (debit_unit, credit_unit) = find_currency_units(&keyset_infos)?;
     // building wallet dbs
-    let wallet_id = build_wallet_id(&mint_id, &master);
+    let wallet_id = build_wallet_id(&mint_id, &seed);
     let (tx_repo, ((debitdb, mintmeltdb), creditdb)) = db::build_wallet_dbs(
         db_version,
         &wallet_id,
@@ -603,12 +600,12 @@ async fn build_wallet(
         debit_unit.clone(),
         Arc::new(debitdb),
         Arc::new(mintmeltdb),
-        master,
+        seed,
     );
     // building the credit pocket
     let credit_pocket: Box<dyn CreditPocket> = if let Some(unit) = &credit_unit {
         let creditdb = creditdb.expect("Credit pocket DB should be present");
-        let pocket = ProductionCreditPocket::new(unit.clone(), Arc::new(creditdb), master);
+        let pocket = ProductionCreditPocket::new(unit.clone(), Arc::new(creditdb), seed);
         Box::new(pocket)
     } else {
         tracing::warn!("app::add_wallet: credit_pocket = DummyPocket");

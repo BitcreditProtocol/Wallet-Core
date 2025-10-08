@@ -53,6 +53,7 @@ pub trait Wallet: sync::SendSync {
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,
+        quote_id: Option<String>,
     ) -> Result<TransactionId>;
 }
 
@@ -196,7 +197,7 @@ where
             single_use: Some(true),
             description,
             nut10: None,
-            transports: Some(vec![nostr_transport]),
+            transports: vec![nostr_transport],
         };
         *self.current_payment_request.lock().unwrap() = Some(request.clone());
         Ok(request)
@@ -309,6 +310,7 @@ where
             event.created_at.as_u64(),
             payload.memo,
             meta,
+            None,
         )
         .await;
     match response {

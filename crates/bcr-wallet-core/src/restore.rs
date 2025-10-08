@@ -1,7 +1,6 @@
 /// ----- standard library imports
 use std::collections::HashMap;
 // ----- extra library imports
-use bitcoin::bip32 as btc32;
 use cashu::{nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09};
 // ----- local imports
 use crate::{MintConnector, error::Result, pocket::PocketRepository};
@@ -13,7 +12,7 @@ const EMPTY_RESPONSES_BEFORE_ABORT: usize = 3;
 const BATCH_SIZE: u32 = 100;
 
 pub async fn restore_keysetid(
-    xpriv: btc32::Xpriv,
+    seed: &[u8; 64],
     kid: cashu::Id,
     client: &dyn MintConnector,
     db: &dyn PocketRepository,
@@ -23,7 +22,7 @@ pub async fn restore_keysetid(
     let mut dbcursor = db.counter(kid).await?;
     let mut cursor = dbcursor;
     while zero_response_counter < EMPTY_RESPONSES_BEFORE_ABORT {
-        let restored_proofs = restore_batch(xpriv, kid, client, db, cursor, BATCH_SIZE).await?;
+        let restored_proofs = restore_batch(seed, kid, client, db, cursor, BATCH_SIZE).await?;
         cursor += BATCH_SIZE;
         if restored_proofs == 0 {
             zero_response_counter += 1;
@@ -39,7 +38,7 @@ pub async fn restore_keysetid(
 }
 
 async fn restore_batch(
-    xpriv: btc32::Xpriv,
+    seed: &[u8; 64],
     kid: cashu::Id,
     client: &dyn MintConnector,
     db: &dyn PocketRepository,
@@ -47,7 +46,7 @@ async fn restore_batch(
     batch_size: u32,
 ) -> Result<usize> {
     let premints =
-        cdk00::PreMintSecrets::restore_batch(kid, xpriv, counter, counter + batch_size - 1)?;
+        cdk00::PreMintSecrets::restore_batch(kid, seed, counter, counter + batch_size - 1)?;
     let request = cdk09::RestoreRequest {
         outputs: premints.blinded_messages(),
     };
@@ -130,16 +129,15 @@ async fn restore_batch(
 mod tests {
     use super::*;
     use crate::{pocket::MockPocketRepository, utils::tests::MockMintConnector};
-    use bcr_wdc_utils::{keys as keys_utils, keys::test_utils as keys_test};
+    use bcr_common::{core::signature, core_tests};
     use cashu::{Amount, KeySet, RestoreResponse, nut07 as cdk07};
     use mockall::predicate::eq;
     use rand::Rng;
 
     #[tokio::test]
     async fn restore_batch_empty_response() {
-        let seed = [0u8; 32];
-        let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
-        let (_, keyset) = keys_test::generate_random_keyset();
+        let seed = [0u8; 64];
+        let (_, keyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(keyset);
         let mut client = MockMintConnector::new();
         let db = MockPocketRepository::new();
@@ -151,16 +149,15 @@ mod tests {
             })
         });
 
-        super::restore_batch(xpriv, keyset.id, &client, &db, 0, BATCH_SIZE)
+        super::restore_batch(&seed, keyset.id, &client, &db, 0, BATCH_SIZE)
             .await
             .unwrap();
     }
 
     #[tokio::test]
     async fn restore_batch_all_spent() {
-        let seed = [0u8; 32];
-        let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
-        let (_, mintkeyset) = keys_test::generate_random_keyset();
+        let seed = [0u8; 64];
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();
         let db = MockPocketRepository::new();
@@ -208,16 +205,15 @@ mod tests {
                 Ok(response)
             });
 
-        super::restore_batch(xpriv, keyset.id, &client, &db, 0, BATCH_SIZE)
+        super::restore_batch(&seed, keyset.id, &client, &db, 0, BATCH_SIZE)
             .await
             .unwrap();
     }
 
     #[tokio::test]
     async fn restore_batch_all_unspent() {
-        let seed = [0u8; 32];
-        let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
-        let (_, mintkeyset) = keys_test::generate_random_keyset();
+        let seed = [0u8; 64];
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();
         let mut db = MockPocketRepository::new();
@@ -268,7 +264,7 @@ mod tests {
             .times(BATCH_SIZE as usize)
             .returning(|p| Ok(p.y().expect("proof should have y")));
 
-        let restored_proofs = super::restore_batch(xpriv, keyset.id, &client, &db, 0, BATCH_SIZE)
+        let restored_proofs = super::restore_batch(&seed, keyset.id, &client, &db, 0, BATCH_SIZE)
             .await
             .unwrap();
         assert_eq!(restored_proofs, BATCH_SIZE as usize);
@@ -276,9 +272,8 @@ mod tests {
 
     #[tokio::test]
     async fn restore_batch_all_pending() {
-        let seed = [0u8; 32];
-        let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
-        let (_, mintkeyset) = keys_test::generate_random_keyset();
+        let seed = [0u8; 64];
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();
         let mut db = MockPocketRepository::new();
@@ -329,7 +324,7 @@ mod tests {
             .times(BATCH_SIZE as usize)
             .returning(|p| Ok(p.y().expect("proof should have y")));
 
-        let restored_proofs = super::restore_batch(xpriv, keyset.id, &client, &db, 0, BATCH_SIZE)
+        let restored_proofs = super::restore_batch(&seed, keyset.id, &client, &db, 0, BATCH_SIZE)
             .await
             .unwrap();
         assert_eq!(restored_proofs, BATCH_SIZE as usize);
@@ -337,9 +332,8 @@ mod tests {
 
     #[tokio::test]
     async fn restore_keysetid_1stbatch() {
-        let seed = [0u8; 32];
-        let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
-        let (_, mintkeyset) = keys_test::generate_random_keyset();
+        let seed = [0u8; 64];
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();
         client
@@ -407,7 +401,7 @@ mod tests {
                 };
                 Ok(response)
             });
-        let total_restored = restore_keysetid(xpriv, mintkeyset.id, &client, &db)
+        let total_restored = restore_keysetid(&seed, mintkeyset.id, &client, &db)
             .await
             .unwrap();
         assert_eq!(total_restored, BATCH_SIZE as usize);
@@ -415,9 +409,8 @@ mod tests {
 
     #[tokio::test]
     async fn restore_keysetid_2ndbatch() {
-        let seed = [0u8; 32];
-        let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
-        let (_, mintkeyset) = keys_test::generate_random_keyset();
+        let seed = [0u8; 64];
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();
         client
@@ -493,7 +486,7 @@ mod tests {
                 };
                 Ok(response)
             });
-        let total_restored = restore_keysetid(xpriv, mintkeyset.id, &client, &db)
+        let total_restored = restore_keysetid(&seed, mintkeyset.id, &client, &db)
             .await
             .unwrap();
         assert_eq!(total_restored, BATCH_SIZE as usize);
@@ -501,9 +494,8 @@ mod tests {
 
     #[tokio::test]
     async fn restore_keysetid_2ndpartial() {
-        let seed = [0u8; 32];
-        let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
-        let (_, mintkeyset) = keys_test::generate_random_keyset();
+        let seed = [0u8; 64];
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();
         client

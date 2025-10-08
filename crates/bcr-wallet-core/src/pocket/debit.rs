@@ -5,7 +5,6 @@ use std::{
 };
 // ----- extra library imports
 use async_trait::async_trait;
-use bitcoin::bip32 as btc32;
 use cashu::{
     Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00, nut01 as cdk01,
     nut05 as cdk05, nut23 as cdk23,
@@ -52,7 +51,7 @@ pub struct Pocket {
     pub unit: cashu::CurrencyUnit,
     pub pdb: Arc<dyn PocketRepository>,
     pub mdb: Arc<dyn MintMeltRepository>,
-    pub xpriv: btc32::Xpriv,
+    seed: [u8; 64],
 
     current_send: Mutex<Option<SendReference>>,
     current_melt: Mutex<Option<MeltReference>>,
@@ -63,13 +62,13 @@ impl Pocket {
         unit: CurrencyUnit,
         pdb: Arc<dyn PocketRepository>,
         mdb: Arc<dyn MintMeltRepository>,
-        xpriv: btc32::Xpriv,
+        seed: [u8; 64],
     ) -> Self {
         Self {
             unit,
             pdb,
             mdb,
-            xpriv,
+            seed,
             current_send: Mutex::new(None),
             current_melt: Mutex::new(None),
         }
@@ -108,10 +107,10 @@ impl Pocket {
         let (ys, proofs): (Vec<cdk01::PublicKey>, Vec<cdk00::Proof>) = inputs.into_iter().unzip();
         let counter = self.pdb.counter(active_info.id).await?;
         let total_amount = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
-        let premint_secrets = cdk00::PreMintSecrets::from_xpriv(
+        let premint_secrets = cdk00::PreMintSecrets::from_seed(
             active_info.id,
             counter,
-            self.xpriv,
+            &self.seed,
             total_amount,
             &SplitTarget::None,
         )?;
@@ -145,10 +144,10 @@ impl Pocket {
         let (ys, proofs): (Vec<cdk01::PublicKey>, Vec<cdk00::Proof>) = inputs.into_iter().unzip();
         let counter = self.pdb.counter(active_info.id).await?;
         let total_amount = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
-        let premint_secrets = cdk00::PreMintSecrets::from_xpriv(
+        let premint_secrets = cdk00::PreMintSecrets::from_seed(
             active_info.id,
             counter,
-            self.xpriv,
+            &self.seed,
             total_amount,
             &SplitTarget::None,
         )?;
@@ -277,7 +276,7 @@ impl wallet::Pocket for Pocket {
         let sending_proofs = send_proofs(
             send_ref.send_proofs,
             send_ref.swap_proof,
-            self.xpriv,
+            &self.seed,
             self.pdb.as_ref(),
             client,
             Some(info.id),
@@ -310,7 +309,7 @@ impl wallet::Pocket for Pocket {
         let mut total_recovered = 0;
         for kid in kids.into_iter() {
             total_recovered +=
-                restore::restore_keysetid(self.xpriv, kid, client, self.pdb.as_ref()).await?;
+                restore::restore_keysetid(&self.seed, kid, client, self.pdb.as_ref()).await?;
         }
         Ok(total_recovered)
     }
@@ -380,7 +379,7 @@ impl wallet::DebitPocket for Pocket {
         let sending_proofs = send_proofs(
             melt_ref.send_proofs,
             melt_ref.swap_proof,
-            self.xpriv,
+            &self.seed,
             self.pdb.as_ref(),
             client,
             Some(info.id),
@@ -388,11 +387,12 @@ impl wallet::DebitPocket for Pocket {
         .await?;
         let premints = if melt_ref.reserved_fees != Amount::ZERO {
             let counter = self.pdb.counter(info.id).await?;
-            let premints = cdk00::PreMintSecrets::from_xpriv_blank(
+            let premints = cdk00::PreMintSecrets::from_seed(
                 info.id,
                 counter,
-                self.xpriv,
+                &self.seed,
                 melt_ref.reserved_fees,
+                &SplitTarget::None,
             )?;
             self.pdb
                 .increment_counter(info.id, counter, premints.len() as u32)
@@ -487,9 +487,8 @@ mod tests {
 
     fn pocket(pdb: Arc<dyn PocketRepository>, mdb: Arc<dyn MintMeltRepository>) -> super::Pocket {
         let unit = CurrencyUnit::Sat;
-        let seed = [0u8; 32];
-        let xpriv = btc32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
-        super::Pocket::new(unit, pdb, mdb, xpriv)
+        let seed = [0u8; 64];
+        super::Pocket::new(unit, pdb, mdb, seed)
     }
     #[tokio::test]
     async fn debit_receive_proofs() {

@@ -16,54 +16,74 @@ pub mod tests {
     type CdkResult<T> = Result<T, CDKError>;
 
     mockall::mock! {
-        pub MintConnector {
-        }
-        impl std::fmt::Debug for MintConnector {
-            fn fmt<'a>(&self, f: &mut std::fmt::Formatter<'a>) -> std::fmt::Result;
-        }
+            pub MintConnector {
+            }
+            impl std::fmt::Debug for MintConnector {
+                fn fmt<'a>(&self, f: &mut std::fmt::Formatter<'a>) -> std::fmt::Result;
+            }
 
-        #[async_trait]
-        impl cdk::wallet::MintConnector for MintConnector {
-        async fn get_mint_keys(&self) -> CdkResult<Vec<cdk02::KeySet>>;
-        async fn get_mint_keyset(&self, keyset_id: cdk02::Id) -> CdkResult<cdk02::KeySet>;
-        async fn get_mint_keysets(&self) -> CdkResult<cdk02::KeysetResponse>;
-        async fn post_mint_quote(
+            #[async_trait]
+            impl cdk::wallet::MintConnector for MintConnector {
+            async fn get_mint_keys(&self) -> CdkResult<Vec<cdk02::KeySet>>;
+            async fn get_mint_keyset(&self, keyset_id: cdk02::Id) -> CdkResult<cdk02::KeySet>;
+            async fn get_mint_keysets(&self) -> CdkResult<cdk02::KeysetResponse>;
+            async fn post_mint_quote(
+                &self,
+                request: cdk23::MintQuoteBolt11Request,
+            ) -> CdkResult<cdk23::MintQuoteBolt11Response<String>>;
+            async fn get_mint_quote_status(
+                &self,
+                quote_id: &str,
+            ) -> CdkResult<cdk23::MintQuoteBolt11Response<String>>;
+            async fn post_mint(&self, request: cdk04::MintRequest<String>) -> CdkResult<cdk04::MintResponse>;
+            async fn post_melt_quote(
+                &self,
+                request: cdk23::MeltQuoteBolt11Request,
+            ) -> CdkResult<cdk23::MeltQuoteBolt11Response<String>>;
+            async fn get_melt_quote_status(
+                &self,
+                quote_id: &str,
+            ) -> CdkResult<cdk23::MeltQuoteBolt11Response<String>>;
+            async fn post_melt(
+                &self,
+                request: cdk05::MeltRequest<String>,
+            ) -> CdkResult<cdk23::MeltQuoteBolt11Response<String>>;
+            async fn post_swap(&self, request: cdk03::SwapRequest) -> CdkResult<cdk03::SwapResponse>;
+            async fn get_mint_info(&self) -> CdkResult<cdk06::MintInfo>;
+            async fn post_check_state(
+                &self,
+                request: cdk07::CheckStateRequest,
+            ) -> CdkResult<cdk07::CheckStateResponse>;
+            async fn post_restore(&self, request: cdk09::RestoreRequest) -> CdkResult<cdk09::RestoreResponse>;
+    async fn post_mint_bolt12_quote(
             &self,
-            request: cdk23::MintQuoteBolt11Request,
-        ) -> CdkResult<cdk23::MintQuoteBolt11Response<String>>;
-        async fn get_mint_quote_status(
+            request: cashu::MintQuoteBolt12Request,
+        ) -> CdkResult<cashu::MintQuoteBolt12Response<String>>;
+        async fn get_mint_quote_bolt12_status(
             &self,
             quote_id: &str,
-        ) -> CdkResult<cdk23::MintQuoteBolt11Response<String>>;
-        async fn post_mint(&self, request: cdk04::MintRequest<String>) -> CdkResult<cdk04::MintResponse>;
-        async fn post_melt_quote(
+        ) -> CdkResult<cashu::MintQuoteBolt12Response<String>>;
+        async fn post_melt_bolt12_quote(
             &self,
-            request: cdk23::MeltQuoteBolt11Request,
-        ) -> CdkResult<cdk23::MeltQuoteBolt11Response<String>>;
-        async fn get_melt_quote_status(
+            request: cashu::MeltQuoteBolt12Request,
+        ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>>;
+        async fn get_melt_bolt12_quote_status(
             &self,
             quote_id: &str,
-        ) -> CdkResult<cdk23::MeltQuoteBolt11Response<String>>;
-        async fn post_melt(
+        ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>>;
+        async fn post_melt_bolt12(
             &self,
-            request: cdk05::MeltRequest<String>,
-        ) -> CdkResult<cdk23::MeltQuoteBolt11Response<String>>;
-        async fn post_swap(&self, request: cdk03::SwapRequest) -> CdkResult<cdk03::SwapResponse>;
-        async fn get_mint_info(&self) -> CdkResult<cdk06::MintInfo>;
-        async fn post_check_state(
-            &self,
-            request: cdk07::CheckStateRequest,
-        ) -> CdkResult<cdk07::CheckStateResponse>;
-        async fn post_restore(&self, request: cdk09::RestoreRequest) -> CdkResult<cdk09::RestoreResponse>;
+            request: cashu::MeltRequest<String>,
+        ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>>;
+            }
+            #[async_trait]
+            impl crate::MintConnector for MintConnector {
+            async fn post_intermintswap(
+                &self,
+                request: crate::mint::IntermintSwapRequest,
+            ) -> CdkResult<crate::mint::IntermintSwapResponse>;
+            async fn get_clowder_peers(&self) -> CdkResult<Vec<cashu::MintUrl>>;
+            fn mint_url(&self) -> cashu::MintUrl;
+            }
         }
-        #[async_trait]
-        impl crate::MintConnector for MintConnector {
-        async fn post_intermintswap(
-            &self,
-            request: crate::mint::IntermintSwapRequest,
-        ) -> CdkResult<crate::mint::IntermintSwapResponse>;
-        async fn get_clowder_peers(&self) -> CdkResult<Vec<cashu::MintUrl>>;
-        fn mint_url(&self) -> cashu::MintUrl;
-        }
-    }
 }
