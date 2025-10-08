@@ -547,7 +547,7 @@ mod tests {
         utils::tests::MockMintConnector,
         wallet::{CreditPocket, Pocket},
     };
-    use bcr_wdc_utils::{keys::test_utils as keys_test, signatures::test_utils as signatures_test};
+    use bcr_common::core_tests;
     use mockall::predicate::*;
 
     fn pocket(db: Arc<dyn PocketRepository>) -> super::Pocket {
@@ -558,11 +558,11 @@ mod tests {
 
     #[tokio::test]
     async fn credit_receive_proofs() {
-        let (info, keyset) = keys_test::generate_keyset();
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
         let k_infos = vec![KeySetInfo::from(info)];
         let amounts = [Amount::from(8u64), Amount::from(16u64)];
-        let proofs = signatures_test::generate_proofs(&keyset, &amounts);
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
         let mut db = MockPocketRepository::new();
         let mut connector = MockMintConnector::new();
         let cloned_keyset = keyset.clone();
@@ -588,7 +588,7 @@ mod tests {
                     .iter()
                     .map(|b| b.amount)
                     .collect::<Vec<_>>();
-                let signatures = signatures_test::generate_signatures(&keyset, &amounts);
+                let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
                 let response = cdk03::SwapResponse { signatures };
                 Ok(response)
             });
@@ -606,11 +606,11 @@ mod tests {
 
     #[tokio::test]
     async fn credit_receive_proofs_inactive_keyset() {
-        let (mut info, keyset) = keys_test::generate_keyset();
+        let (mut info, keyset) = core_tests::generate_random_ecash_keyset();
         info.active = false;
         let k_infos = vec![KeySetInfo::from(info)];
         let amounts = [Amount::from(8u64), Amount::from(16u64)];
-        let proofs = signatures_test::generate_proofs(&keyset, &amounts);
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
         let db = MockPocketRepository::new();
         let connector = MockMintConnector::new();
         let crpocket = pocket(Arc::new(db));
@@ -622,11 +622,11 @@ mod tests {
 
     #[tokio::test]
     async fn credit_receive_proofs_currency_mismatch() {
-        let (mut info, keyset) = keys_test::generate_keyset();
+        let (mut info, keyset) = core_tests::generate_random_ecash_keyset();
         info.unit = CurrencyUnit::Usd;
         let k_infos = vec![KeySetInfo::from(info)];
         let amounts = [Amount::from(8u64), Amount::from(16u64)];
-        let proofs = signatures_test::generate_proofs(&keyset, &amounts);
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
         let db = MockPocketRepository::new();
         let connector = MockMintConnector::new();
         let crpocket = pocket(Arc::new(db));
@@ -638,11 +638,11 @@ mod tests {
 
     #[tokio::test]
     async fn credit_prepare_send() {
-        let (info, keyset) = keys_test::generate_keyset();
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let k_infos = vec![KeySetInfo::from(info)];
         let amount = Amount::from(16u64);
         let amounts = [Amount::from(32u64), Amount::from(16u64)];
-        let proofs = signatures_test::generate_proofs(&keyset, &amounts);
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
         let proofs_map: HashMap<cdk01::PublicKey, cdk00::Proof> =
             HashMap::from_iter(proofs.into_iter().map(|p| {
                 let y = p.y().expect("Hash to curve should not fail");
@@ -660,11 +660,11 @@ mod tests {
 
     #[tokio::test]
     async fn credit_prepare_send_no_funds() {
-        let (info, keyset) = keys_test::generate_keyset();
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let k_infos = vec![KeySetInfo::from(info)];
         let amount = Amount::from(16u64);
         let amounts = [Amount::from(8u64), Amount::from(4u64)];
-        let proofs = signatures_test::generate_proofs(&keyset, &amounts);
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
         let proofs_map: HashMap<cdk01::PublicKey, cdk00::Proof> =
             HashMap::from_iter(proofs.into_iter().map(|p| {
                 let y = p.y().expect("Hash to curve should not fail");
@@ -681,12 +681,12 @@ mod tests {
 
     #[tokio::test]
     async fn credit_prepare_send_inactive_keyset() {
-        let (mut info, keyset) = keys_test::generate_keyset();
+        let (mut info, keyset) = core_tests::generate_random_ecash_keyset();
         info.active = false;
         let k_infos = vec![KeySetInfo::from(info)];
         let amount = Amount::from(16u64);
         let amounts = [Amount::from(32u64), Amount::from(4u64)];
-        let proofs = signatures_test::generate_proofs(&keyset, &amounts);
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
         let proofs_map: HashMap<cdk01::PublicKey, cdk00::Proof> =
             HashMap::from_iter(proofs.into_iter().map(|p| {
                 let y = p.y().expect("Hash to curve should not fail");
@@ -706,30 +706,30 @@ mod tests {
         let mut proofs_map: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
         let mut k_infos: Vec<KeySetInfo> = vec![];
         // keyset 1
-        let (mut info, keyset) = keys_test::generate_random_keyset();
+        let (mut info, keyset) = core_tests::generate_random_ecash_keyset();
         info.final_expiry = Some(100);
         let amounts = [Amount::from(32u64), Amount::from(4u64)];
-        let proofs = signatures_test::generate_proofs(&keyset, &amounts);
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
         proofs_map.extend(proofs.into_iter().map(|p| {
             let y = p.y().expect("Hash to curve should not fail");
             (y, p)
         }));
         k_infos.push(KeySetInfo::from(info));
         // keyset 2
-        let (mut info, keyset) = keys_test::generate_random_keyset();
+        let (mut info, keyset) = core_tests::generate_random_ecash_keyset();
         info.final_expiry = Some(10);
         let amounts = [Amount::from(128u64), Amount::from(16u64)];
-        let proofs = signatures_test::generate_proofs(&keyset, &amounts);
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
         proofs_map.extend(proofs.into_iter().map(|p| {
             let y = p.y().expect("Hash to curve should not fail");
             (y, p)
         }));
         k_infos.push(KeySetInfo::from(info));
         // keyset 3
-        let (mut info, keyset) = keys_test::generate_keyset();
+        let (mut info, keyset) = core_tests::generate_random_ecash_keyset();
         info.final_expiry = None;
         let amounts = [Amount::from(128u64), Amount::from(16u64)];
-        let proofs = signatures_test::generate_proofs(&keyset, &amounts);
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
         proofs_map.extend(proofs.into_iter().map(|p| {
             let y = p.y().expect("Hash to curve should not fail");
             (y, p)

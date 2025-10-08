@@ -174,7 +174,7 @@ mod tests {
                         let mut bblind = blind.clone();
                         let num = rng.random_range(..10);
                         bblind.amount = Amount::from(2u64.pow(num));
-                        keys_utils::sign_with_keys(&cloned, &bblind)
+                        signature::sign_ecash(&cloned, &bblind)
                             .expect("signatures should be generated")
                     })
                     .collect();
@@ -230,7 +230,7 @@ mod tests {
                         let mut bblind = blind.clone();
                         let num = rng.random_range(..10);
                         bblind.amount = Amount::from(2u64.pow(num));
-                        keys_utils::sign_with_keys(&cloned_mintkeyset, &bblind)
+                        signature::sign_ecash(&cloned_mintkeyset, &bblind)
                             .expect("signatures should be generated")
                     })
                     .collect();
@@ -290,7 +290,7 @@ mod tests {
                         let mut bblind = blind.clone();
                         let num = rng.random_range(..10);
                         bblind.amount = Amount::from(2u64.pow(num));
-                        keys_utils::sign_with_keys(&cloned_mintkeyset, &bblind)
+                        signature::sign_ecash(&cloned_mintkeyset, &bblind)
                             .expect("signatures should be generated")
                     })
                     .collect();
@@ -356,7 +356,7 @@ mod tests {
                     .map(|blind| {
                         let mut bblind = blind.clone();
                         bblind.amount = Amount::from(1u64);
-                        keys_utils::sign_with_keys(&cloned_mintkeyset, &bblind)
+                        signature::sign_ecash(&cloned_mintkeyset, &bblind)
                             .expect("signatures should be generated")
                     })
                     .collect();
@@ -441,7 +441,7 @@ mod tests {
                     .map(|blind| {
                         let mut bblind = blind.clone();
                         bblind.amount = Amount::from(1u64);
-                        keys_utils::sign_with_keys(&cloned_mintkeyset, &bblind)
+                        signature::sign_ecash(&cloned_mintkeyset, &bblind)
                             .expect("signatures should be generated")
                     })
                     .collect();
@@ -527,7 +527,7 @@ mod tests {
                     .map(|blind| {
                         let mut bblind = blind.clone();
                         bblind.amount = Amount::from(1u64);
-                        keys_utils::sign_with_keys(&cloned_mintkeyset, &bblind)
+                        signature::sign_ecash(&cloned_mintkeyset, &bblind)
                             .expect("signatures should be generated")
                     })
                     .collect();
@@ -573,7 +573,7 @@ mod tests {
                 Ok(response)
             });
         //
-        let total_restored = restore_keysetid(xpriv, mintkeyset.id, &client, &db)
+        let total_restored = restore_keysetid(&seed, mintkeyset.id, &client, &db)
             .await
             .unwrap();
         assert_eq!(total_restored, (BATCH_SIZE / 3) as usize);

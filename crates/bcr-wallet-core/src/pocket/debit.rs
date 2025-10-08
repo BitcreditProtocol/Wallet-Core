@@ -482,7 +482,7 @@ impl wallet::DebitPocket for Pocket {
 mod tests {
     use super::*;
     use crate::{utils::tests::MockMintConnector, wallet::Pocket};
-    use bcr_wdc_utils::{keys::test_utils as keys_test, signatures::test_utils as signatures_test};
+    use bcr_common::core_tests;
     use mockall::predicate::*;
 
     fn pocket(pdb: Arc<dyn PocketRepository>, mdb: Arc<dyn MintMeltRepository>) -> super::Pocket {
@@ -492,11 +492,11 @@ mod tests {
     }
     #[tokio::test]
     async fn debit_receive_proofs() {
-        let (info, keyset) = keys_test::generate_keyset();
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
         let k_infos = vec![KeySetInfo::from(info)];
         let amounts = [Amount::from(8u64), Amount::from(16u64)];
-        let proofs = signatures_test::generate_proofs(&keyset, &amounts);
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
@@ -524,7 +524,7 @@ mod tests {
                     .iter()
                     .map(|b| b.amount)
                     .collect::<Vec<_>>();
-                let signatures = signatures_test::generate_signatures(&keyset, &amounts);
+                let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
                 let response = cdk03::SwapResponse { signatures };
                 Ok(response)
             });

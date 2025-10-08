@@ -2,7 +2,7 @@
 // ----- standard library imports
 use std::{collections::HashMap, matches, rc::Rc, str::FromStr};
 // ----- extra library imports
-use bcr_wdc_utils::{keys::test_utils as keys_test, signatures::test_utils as signatures_test};
+use bcr_common::core_tests;
 use cashu::{Amount, CurrencyUnit, MintUrl, nut07 as cdk07};
 use cdk::wallet::types::{Transaction, TransactionDirection};
 use rexie::Rexie;
@@ -20,6 +20,22 @@ use bcr_wallet_core::{
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+pub const RANDOMS: [&str; 6] = [
+    "0244e4420934530b2bdf5161f4c88b3c4f923db158741da51f3bb22b579495862e",
+    "03244bce3f2ea7b12acd2004a6c629acf9d01e7eceadfd7f4ce6f7a09134a84474",
+    "0212612cddd9e1aa368c500654538c71ebdf70d5bc4a1b642f9c963269505514cc",
+    "0292abc8e9eb2935f0ae6fcf7c491ea124a5860ed954e339a0b7f549cd8c190500",
+    "02cc8e0448596f0aaec2c62ef02e5a36f53a4e8b7d5a9e906d2c1f8d5cd738ccae",
+    "027a238c992c4a5ea59502b2d6b52e6466bf2a775191cbfaf29b9311e8352d99dc",
+];
+
+pub fn publics() -> Vec<cashu::PublicKey> {
+    RANDOMS
+        .iter()
+        .map(|key| cashu::PublicKey::from_hex(key).unwrap())
+        .collect()
+}
+
 async fn create_pocket_db(test_name: &str) -> PocketDB {
     let unit = CurrencyUnit::Custom(String::from("test"));
     let obj_stores = PocketDB::object_stores(&unit);
@@ -36,8 +52,8 @@ async fn create_pocket_db(test_name: &str) -> PocketDB {
 async fn pocket_store_new() {
     let proofdb = create_pocket_db("pocket_store_new").await;
 
-    let (_, keyset) = keys_test::generate_keyset();
-    let proof = signatures_test::generate_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
+    let (_, keyset) = core_tests::generate_random_ecash_keyset();
+    let proof = core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
     proofdb.store_new(proof).await.unwrap();
 }
 
@@ -45,8 +61,8 @@ async fn pocket_store_new() {
 async fn pocket_load_proof() {
     let proofdb = create_pocket_db("pocket_load_proof").await;
 
-    let (_, keyset) = keys_test::generate_keyset();
-    let proof = signatures_test::generate_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
+    let (_, keyset) = core_tests::generate_random_ecash_keyset();
+    let proof = core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
     let dbkey = proofdb.store_new(proof.clone()).await.unwrap();
 
     let (loaded_proof, state) = proofdb.load_proof(dbkey).await.unwrap();
@@ -59,11 +75,12 @@ async fn pocket_load_proof() {
 async fn pocket_list_unspent() {
     let proofdb = create_pocket_db("pocket_list_unspent").await;
 
-    let (_, keyset) = keys_test::generate_keyset();
-    let new = signatures_test::generate_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
+    let (_, keyset) = core_tests::generate_random_ecash_keyset();
+    let new = core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
     proofdb.store_new(new.clone()).await.unwrap();
 
-    let pending = signatures_test::generate_proofs(&keyset, &[Amount::from(16u64)])[0].clone();
+    let pending =
+        core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(16u64)])[0].clone();
     proofdb.store_pendingspent(pending).await.unwrap();
 
     let proofs_map = proofdb.list_unspent().await.unwrap();
@@ -76,10 +93,11 @@ async fn pocket_list_unspent() {
 async fn pocket_list_all() {
     let proofdb = create_pocket_db("pocket_list_all").await;
 
-    let (_, keyset) = keys_test::generate_keyset();
-    let new = signatures_test::generate_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
+    let (_, keyset) = core_tests::generate_random_ecash_keyset();
+    let new = core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
     let new_y = proofdb.store_new(new.clone()).await.unwrap();
-    let pending = signatures_test::generate_proofs(&keyset, &[Amount::from(16u64)])[0].clone();
+    let pending =
+        core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(16u64)])[0].clone();
     let pending_y = proofdb.store_pendingspent(pending).await.unwrap();
 
     let ys = proofdb.list_all().await.unwrap();
@@ -92,8 +110,8 @@ async fn pocket_list_all() {
 async fn pocket_mark_pending() {
     let proofdb = create_pocket_db("pocket_mark_pending").await;
 
-    let (_, keyset) = keys_test::generate_keyset();
-    let proof = signatures_test::generate_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
+    let (_, keyset) = core_tests::generate_random_ecash_keyset();
+    let proof = core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
     let y =
         cashu::dhke::hash_to_curve(proof.secret.as_bytes()).expect("Hash to curve should not fail");
     proofdb.store_new(proof.clone()).await.unwrap();
@@ -106,8 +124,8 @@ async fn pocket_mark_pending() {
 async fn pocket_mark_pending_twice_is_error() {
     let proofdb = create_pocket_db("pocket_mark_pending").await;
 
-    let (_, keyset) = keys_test::generate_keyset();
-    let proof = signatures_test::generate_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
+    let (_, keyset) = core_tests::generate_random_ecash_keyset();
+    let proof = core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8u64)])[0].clone();
     let y =
         cashu::dhke::hash_to_curve(proof.secret.as_bytes()).expect("Hash to curve should not fail");
     proofdb.store_new(proof.clone()).await.unwrap();
@@ -123,7 +141,7 @@ async fn pocket_mark_pending_twice_is_error() {
 async fn pocket_new_counter() {
     let proofdb = create_pocket_db("pocket_new_counter").await;
 
-    let kid = keys_test::generate_random_keysetid();
+    let kid = core_tests::generate_random_ecash_keyset().0.id;
     let counter = proofdb.counter(kid).await.unwrap();
     assert_eq!(counter, 0);
 }
@@ -132,7 +150,7 @@ async fn pocket_new_counter() {
 async fn pocket_increment_counter() {
     let proofdb = create_pocket_db("pocket_increment_counter").await;
 
-    let kid = keys_test::generate_random_keysetid();
+    let kid = core_tests::generate_random_ecash_keyset().0.id;
     let counter = proofdb.counter(kid).await.unwrap();
     assert_eq!(counter, 0);
 
@@ -145,7 +163,7 @@ async fn pocket_increment_counter() {
 async fn pocket_increment_nonexisting_counter() {
     let proofdb = create_pocket_db("pocket_increment_nonexisting_counter").await;
 
-    let kid = keys_test::generate_random_keysetid();
+    let kid = core_tests::generate_random_ecash_keyset().0.id;
     let result = proofdb.increment_counter(kid, 0, 10).await;
     assert!(result.is_err());
 }
@@ -166,7 +184,7 @@ async fn create_transaction_db(test_name: &str) -> TransactionDB {
 async fn transaction_store_tx() {
     let transactiondb = create_transaction_db("transaction_store_tx").await;
 
-    let ys = keys_test::publics()[0..3].to_vec();
+    let ys = publics()[0..3].to_vec();
     let tx = Transaction {
         mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
         direction: TransactionDirection::Incoming,
@@ -186,7 +204,7 @@ async fn transaction_store_tx() {
 async fn transaction_load_tx() {
     let transactiondb = create_transaction_db("transaction_load_tx").await;
 
-    let ys = keys_test::publics()[0..3].to_vec();
+    let ys = publics()[0..3].to_vec();
     let tx = Transaction {
         mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
         direction: TransactionDirection::Incoming,
@@ -218,7 +236,7 @@ async fn transaction_load_tx() {
 async fn transaction_load_tx_nonexisting() {
     let transactiondb = create_transaction_db("transaction_load_tx_nonexisting").await;
 
-    let ys = keys_test::publics()[0..3].to_vec();
+    let ys = publics()[0..3].to_vec();
     let tx = Transaction {
         mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
         direction: TransactionDirection::Incoming,
@@ -242,7 +260,7 @@ async fn transaction_load_tx_nonexisting() {
 async fn transaction_delete_tx() {
     let transactiondb = create_transaction_db("transaction_load_tx").await;
 
-    let ys = keys_test::publics()[0..3].to_vec();
+    let ys = publics()[0..3].to_vec();
     let tx = Transaction {
         mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
         direction: TransactionDirection::Incoming,
@@ -265,7 +283,7 @@ async fn transaction_delete_tx() {
 #[wasm_bindgen_test]
 async fn transaction_list_tx_idxs() {
     let transactiondb = create_transaction_db("transaction_list_tx_idxs").await;
-    let ys = keys_test::publics()[0..2].to_vec();
+    let ys = publics()[0..2].to_vec();
     let tx_new = Transaction {
         mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
         direction: TransactionDirection::Incoming,
@@ -277,9 +295,10 @@ async fn transaction_list_tx_idxs() {
         timestamp: 84,
         memo: None,
         metadata: HashMap::new(),
+        quote_id: None,
     };
     let txid_new = transactiondb.store_tx(tx_new).await.unwrap();
-    let ys = keys_test::publics()[1..3].to_vec();
+    let ys = publics()[1..3].to_vec();
     let tx_old = Transaction {
         mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
         direction: TransactionDirection::Incoming,
@@ -304,7 +323,7 @@ async fn transaction_list_tx_idxs() {
 #[wasm_bindgen_test]
 async fn transaction_update_metadata() {
     let transactiondb = create_transaction_db("transaction_update_metadata").await;
-    let ys = keys_test::publics()[0..2].to_vec();
+    let ys = publics()[0..2].to_vec();
     let tx = Transaction {
         mint_url: MintUrl::from_str("https://test.com/mint").expect("Valid mint URL"),
         direction: TransactionDirection::Incoming,
@@ -345,7 +364,7 @@ async fn create_mintmelt_db(test_name: &str) -> MintMeltDB {
 #[wasm_bindgen_test]
 async fn mintmelt_store_melt() {
     let qid = String::from("quoteID");
-    let kid = keys_test::generate_random_keysetid();
+    let kid = core_tests::generate_random_ecash_keyset().0.id;
     let premints =
         cashu::PreMintSecrets::random(kid, Amount::from(16u64), &cashu::amount::SplitTarget::None)
             .unwrap();
@@ -376,7 +395,7 @@ async fn mintmelt_list_ids() {
         .store_melt(String::from("id1"), None)
         .await
         .unwrap();
-    let kid = keys_test::generate_random_keysetid();
+    let kid = core_tests::generate_random_ecash_keyset().0.id;
     let premints =
         cashu::PreMintSecrets::random(kid, Amount::from(16u64), &cashu::amount::SplitTarget::None)
             .unwrap();

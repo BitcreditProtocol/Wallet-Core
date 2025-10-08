@@ -11,6 +11,7 @@ members = ["crates/bcr-wallet-core", "crates/bcr-wallet-lib"]
 [workspace.dependencies]
 anyhow = { version = "1" }
 async-trait = { version = "0.1" }
+bcr-common = {git = "https://github.com/BitcreditProtocol/bcr-common.git", tag = "v0.3.0"}
 bcr-wallet-lib = { path = "./crates/bcr-wallet-lib" }
 bip39 = {version = "2.1", features = ["rand"]}
 bitcoin = { version = "0.32" }
