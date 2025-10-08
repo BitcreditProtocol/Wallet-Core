@@ -292,37 +292,34 @@ async fn send_proofs(
 mod tests {
     use super::*;
     use crate::utils::tests::MockMintConnector;
-    use bcr_wdc_utils::{
-        keys::{self as keys_utils, test_utils as keys_test},
-        signatures::test_utils as signatures_test,
-    };
+    use bcr_common::{core::signature, core_tests};
     use cashu::nut02 as cdk02;
     use mockall::predicate::*;
 
     #[test]
     fn unblind_proofs() {
         let amounts = [Amount::from(8u64)];
-        let (_, mintkeyset) = keys_test::generate_keyset();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = cdk02::KeySet::from(mintkeyset.clone());
         let premint =
             cdk00::PreMintSecrets::random(keyset.id, amounts[0], &SplitTarget::None).unwrap();
         assert!(premint.blinded_messages().len() == 1);
         let blind = premint.blinded_messages()[0].clone();
-        let signature = keys_utils::sign_with_keys(&mintkeyset, &blind).unwrap();
+        let signature = signature::sign_ecash(&mintkeyset, &blind).unwrap();
         let proofs = super::unblind_proofs(&keyset, &[signature], &premint);
         assert_eq!(proofs.len(), 1);
-        keys_utils::verify_with_keys(&mintkeyset, &proofs[0]).unwrap();
+        signature::verify_ecash(&mintkeyset, &proofs[0]).unwrap();
     }
 
     #[test]
     fn unblind_proofs_len_mismatch() {
-        let (_, mintkeyset) = keys_test::generate_keyset();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = cdk02::KeySet::from(mintkeyset.clone());
         let premint =
             cdk00::PreMintSecrets::random(keyset.id, Amount::from(8u64), &SplitTarget::None)
                 .unwrap();
         assert_eq!(premint.blinded_messages().len(), 1);
-        let signatures = signatures_test::generate_signatures(
+        let signatures = core_tests::generate_ecash_signatures(
             &mintkeyset,
             &[Amount::from(8u64), Amount::from(32u64)],
         );
@@ -332,13 +329,13 @@ mod tests {
 
     #[test]
     fn unblind_proofs_amount_mismatch() {
-        let (_, mintkeyset) = keys_test::generate_keyset();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = cdk02::KeySet::from(mintkeyset.clone());
         let premint =
             cdk00::PreMintSecrets::random(keyset.id, Amount::from(40u64), &SplitTarget::None)
                 .unwrap();
         assert_eq!(premint.blinded_messages().len(), 2);
-        let signatures = signatures_test::generate_signatures(
+        let signatures = core_tests::generate_ecash_signatures(
             &mintkeyset,
             &[Amount::from(16u64), Amount::from(4u64)],
         );
@@ -348,20 +345,20 @@ mod tests {
 
     #[test]
     fn unblind_proofs_kid_mismatch() {
-        let (_, mintkeyset) = keys_test::generate_keyset();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = cdk02::KeySet::from(mintkeyset.clone());
-        let kid2 = keys_test::generate_random_keysetid();
+        let kid2 = core_tests::generate_random_ecash_keyset().0.id;
         let premint =
             cdk00::PreMintSecrets::random(kid2, Amount::from(16u64), &SplitTarget::None).unwrap();
         assert_eq!(premint.blinded_messages().len(), 1);
-        let signatures = signatures_test::generate_signatures(&mintkeyset, &[Amount::from(16u64)]);
+        let signatures = core_tests::generate_ecash_signatures(&mintkeyset, &[Amount::from(16u64)]);
         let proofs = super::unblind_proofs(&keyset, &signatures, &premint);
         assert_eq!(proofs.len(), 0);
     }
 
     #[tokio::test]
     async fn swap_proof_to_target() {
-        let (_, keyset) = keys_test::generate_keyset();
+        let (_, keyset) = core_tests::generate_random_ecash_keyset();
         // 16 --> 13 ==> ( 8 + 4 + 1 ) + 2 + 1
         let amount = Amount::from(16u64);
         let target = Amount::from(13u64);
@@ -390,7 +387,7 @@ mod tests {
                     .map(|b| b.amount)
                     .collect::<Vec<_>>();
                 let mock_signatures =
-                    signatures_test::generate_signatures(&cloned_keyset, &amounts);
+                    core_tests::generate_ecash_signatures(&cloned_keyset, &amounts);
                 Ok(cdk03::SwapResponse {
                     signatures: mock_signatures,
                 })
@@ -418,10 +415,10 @@ mod tests {
 
     #[tokio::test]
     async fn swap() {
-        let (info, keyset) = keys_test::generate_random_keyset();
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let amounts = [Amount::from(8u64), Amount::from(16u64)];
         let unit = CurrencyUnit::Sat;
-        let inputs = signatures_test::generate_proofs(&keyset, &amounts);
+        let inputs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
         let premints = HashMap::from_iter([(
             info.id,
             cdk00::PreMintSecrets::random(info.id, Amount::from(24u64), &SplitTarget::None)
@@ -439,7 +436,7 @@ mod tests {
                     .iter()
                     .map(|b| b.amount)
                     .collect::<Vec<_>>();
-                let signatures = signatures_test::generate_signatures(&keyset, &amounts);
+                let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
                 Ok(cdk03::SwapResponse { signatures })
             });
         mockdb.expect_store_new().times(2).returning(|p| {
