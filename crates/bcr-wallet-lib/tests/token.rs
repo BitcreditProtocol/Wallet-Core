@@ -49,8 +49,8 @@ fn test_token_str_round_trip_2() {
     );
     assert_eq!(
         inner.unit.clone(),
-        cashu::CurrencyUnit::Custom(String::from("CRSAT"))
-    ); // this should be Custom("crsat")
+        cashu::CurrencyUnit::Custom(String::from("crsat"))
+    );
 
     let encoded = &inner.to_string();
 

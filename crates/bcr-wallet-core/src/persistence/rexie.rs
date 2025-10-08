@@ -384,6 +384,7 @@ struct TransactionEntry {
     pub timestamp: u64,
     pub memo: Option<String>,
     pub metadata: HashMap<String, String>,
+    pub quote_id: Option<String>,
 }
 
 impl std::convert::From<Transaction> for TransactionEntry {
@@ -400,6 +401,7 @@ impl std::convert::From<Transaction> for TransactionEntry {
             timestamp: tx.timestamp,
             memo: tx.memo,
             metadata: tx.metadata,
+            quote_id: tx.quote_id,
         }
     }
 }
@@ -415,6 +417,7 @@ impl std::convert::From<TransactionEntry> for Transaction {
             timestamp: entry.timestamp,
             memo: entry.memo,
             metadata: entry.metadata,
+            quote_id: entry.quote_id,
         }
     }
 }

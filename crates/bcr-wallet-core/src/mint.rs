@@ -120,6 +120,37 @@ impl cdk::wallet::MintConnector for HttpClientExt {
     ) -> CdkResult<cashu::MintQuoteBolt11Response<String>> {
         self.main.get_mint_quote_status(quote_id).await
     }
+
+    async fn post_mint_bolt12_quote(
+        &self,
+        request: cashu::MintQuoteBolt12Request,
+    ) -> CdkResult<cashu::MintQuoteBolt12Response<String>> {
+        self.main.post_mint_bolt12_quote(request).await
+    }
+    async fn get_mint_quote_bolt12_status(
+        &self,
+        quote_id: &str,
+    ) -> CdkResult<cashu::MintQuoteBolt12Response<String>> {
+        self.main.get_mint_quote_bolt12_status(quote_id).await
+    }
+    async fn post_melt_bolt12_quote(
+        &self,
+        request: cashu::MeltQuoteBolt12Request,
+    ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        self.main.post_melt_bolt12_quote(request).await
+    }
+    async fn get_melt_bolt12_quote_status(
+        &self,
+        quote_id: &str,
+    ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        self.main.get_melt_bolt12_quote_status(quote_id).await
+    }
+    async fn post_melt_bolt12(
+        &self,
+        request: cashu::MeltRequest<String>,
+    ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        self.main.post_melt_bolt12(request).await
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -144,7 +175,7 @@ impl MintConnector for HttpClientExt {
             .json(&request)
             .send()
             .await
-            .map_err(|e| CdkError::HttpError(e.to_string()))?;
+            .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
         let response: IntermintSwapResponse = response
             .json()
             .await
@@ -162,7 +193,7 @@ impl MintConnector for HttpClientExt {
             .get(url)
             .send()
             .await
-            .map_err(|e| CdkError::HttpError(e.to_string()))?;
+            .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
         let response: ClowderBetasResponse = response
             .json()
             .await
