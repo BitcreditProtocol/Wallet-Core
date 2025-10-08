@@ -149,9 +149,15 @@ where
     pub async fn pay(&self, p_id: Uuid, tstamp: u64) -> Result<TransactionId> {
         let p_ref = self.current_payment.lock().unwrap().take();
         let Some(pref) = p_ref else {
+            tracing::error!("No current payment reference found");
             return Err(Error::NoPrepareRef(p_id));
         };
         if pref.payment_ref != p_id {
+            tracing::error!(
+                "Payment reference ID mismatch: expected {}, got {}",
+                pref.payment_ref,
+                p_id
+            );
             return Err(Error::NoPrepareRef(p_id));
         }
         let Some(wlt) = self.wallets.lock().unwrap().get(pref.wallet_idx).cloned() else {

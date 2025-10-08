@@ -129,7 +129,7 @@ async function run() {
   document.getElementById("recoverbtn").addEventListener("click", async () => {
     let ids = await wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
-    // await wasmModule.recover(idx);
+    await wasmModule.recover(idx);
 
     await update_balance();
   });

@@ -567,9 +567,15 @@ where
     ) -> Result<TransactionId> {
         let p_ref = self.current_payment.lock().unwrap().take();
         let Some(p_ref) = p_ref else {
+            tracing::error!("wallet: No current payment reference found");
             return Err(Error::NoPrepareRef(p_id));
         };
         if p_ref.request_id != p_id {
+            tracing::error!(
+                "wallet: Payment reference ID mismatch: expected {}, got {}",
+                p_ref.request_id,
+                p_id
+            );
             return Err(Error::NoPrepareRef(p_id));
         }
         let infos = self.client.get_mint_keysets().await?.keysets;
