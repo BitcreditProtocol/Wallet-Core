@@ -40,52 +40,49 @@ jobs:
           echo "After cleanup:"
           df -h
 
+      - name: Install system tools
+        run: sudo apt-get install -y protobuf-compiler firefox
+
       - name: Switch rust version
         run: rustup default stable
 
       - name: Update rust
         run: rustup update
 
-      - name: Install firefox
-        run: sudo apt-get install -y firefox
+      - name: Add rustup components
+        run: rustup component add clippy rustfmt
 
-      - name: Install wasm pack test requirements
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Activate cache
+        uses: Swatinem/rust-cache@v2.8.0
+        with:
+          prefix-key: "wallet-01"
 
-      - name: Check
-        run: cargo check --verbose
-
-      - name: Test
-        run: cargo test
-        continue-on-error: true
-
-      - name: Build
-        run: cargo build --verbose
-
-      - name: Install required cargo
-        run: cargo install clippy-sarif sarif-fmt
-
-      - name: Add clippy
-        run: rustup component add clippy
-
-      - name: Add fmt
-        run: rustup component add rustfmt
-
-      - name: Add cargo deny
-        run: cargo install cargo-deny
+      - name: Install required cargo tools
+        run: cargo install cargo-deny clippy-sarif sarif-fmt wasm-pack
 
       - name: Check formatting
         run: cargo fmt -- --check
 
+      - name: Cargo deny
+        run: cargo deny check
+        continue-on-error: true
+
       - name: Clippy
-        run: cargo clippy
+        run:
+          cargo clippy
           --all-features
           --message-format=json | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
         continue-on-error: true
 
-      - name: Cargo deny
-        run: cargo deny check
-        continue-on-error: true
+      - name: Check
+        run: cargo check
+
+      - name: Test
+        run: cargo test
+
+      - run: |
+          cd crates/bcr-wallet-core/
+          wasm-pack test --headless --firefox
 
       - name: Upload analysis results to GitHub
         uses: github/codeql-action/upload-sarif@v3
@@ -94,7 +91,3 @@ jobs:
           sarif_file: rust-clippy-results.sarif
           wait-for-processing: true
 
-      - run: cargo test
-      - run: |
-          cd crates/bcr-wallet-core/
-          wasm-pack test --headless --firefox
