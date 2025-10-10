@@ -254,7 +254,6 @@ impl MintConnector for HttpClientExt {
         &self,
         origin_mint_url: cashu::MintUrl,
     ) -> CdkResult<ConnectedMintsResponse> {
-        tracing::info!("post v1/path");
         let url = self.url.join("v1/path").expect("get clowder id url error");
         let request = PathRequest { origin_mint_url };
         let response = self

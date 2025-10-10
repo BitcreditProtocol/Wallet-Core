@@ -121,7 +121,7 @@ async function run() {
     let ids = await wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
     let token = prompt("Enter token");
-    let payment_request = await wasmModule.wallet_receive_token(idx, token);
+    let tx_id = await wasmModule.wallet_receive_token(idx, token);
     await update_balance();
     await format_tx(idx, tx_id);
   });

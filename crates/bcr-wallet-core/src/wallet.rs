@@ -468,7 +468,7 @@ where
     ) -> Result<Vec<Proof>> {
         // Ephemeral P2PK secret
 
-        tracing::info!(alpha_url=?alpha_url, "intermint exchange");
+        tracing::debug!(alpha_url=?alpha_url, "intermint exchange");
 
         let wallet_pk = cashu::SecretKey::generate();
 
@@ -480,10 +480,10 @@ where
 
         // Require all intermediate mints to sign
         // Exclude alpha origin from p2pk lock as it doesn't need to sign its own eCash
-        tracing::info!("Origin {}", path.node_ids[0]);
+        tracing::debug!("Origin {}", path.node_ids[0]);
         let key_locks: Vec<bitcoin::secp256k1::PublicKey> =
             path.node_ids.clone().into_iter().skip(1).collect();
-        tracing::info!(
+        tracing::debug!(
             "Key locks {}",
             key_locks
                 .iter()
@@ -552,7 +552,7 @@ where
                 signatures: Some(signatures),
             }));
         }
-        tracing::info!("Returning same mint proofs");
+        tracing::debug!("Returning same mint proofs");
         Ok(beta_proofs)
     }
 
@@ -564,7 +564,9 @@ where
         } else {
             let alpha_client = crate::mint::HttpClientExt::new(token.mint_url());
             let alpha_infos = alpha_client.get_mint_keysets().await?.keysets;
-            token.proofs(&alpha_infos)?
+            let same_token = token.proofs(&alpha_infos)?;
+            tracing::debug!("Exchanged into same mint token {}", token);
+            same_token
         };
         if proofs.is_empty() {
             return Err(Error::EmptyToken(token_teaser));
