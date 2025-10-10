@@ -418,9 +418,10 @@ where
 
         // total hops * time per hop + 2 hops buffer
         let lock_time =
-            utc_now + (key_locks.len() as u64 + 2) * crate::config::LOCK_REDUCTION_TIME_PER_HOP;
+            utc_now + (key_locks.len() as u64 + 2) * crate::config::LOCK_REDUCTION_SECONDS_PER_HOP;
 
         let infos = client.get_mint_keysets().await?.keysets;
+
         let active_keyset_id = if is_credit {
             proofs.first().ok_or(Error::NoActiveKeyset)?.keyset_id
         } else {
@@ -432,7 +433,7 @@ where
         };
 
         let n = key_locks.len() as u64;
-        let p2pk = cashu::nuts::Conditions::new(
+        let p2pk = cashu::Conditions::new(
             Some(lock_time),
             Some(key_locks),
             Some(vec![wallet_pubkey.into()]),
@@ -440,15 +441,10 @@ where
             None,
             Some(1),
         )?;
-        let htlc =
-            cashu::nuts::SpendingConditions::new_htlc_hash(&hash_lock.to_string(), Some(p2pk))?;
+        let htlc = cashu::SpendingConditions::new_htlc_hash(&hash_lock.to_string(), Some(p2pk))?;
         let split_target = cashu::amount::SplitTarget::None;
-        let premints = cashu::nuts::PreMintSecrets::with_conditions(
-            active_keyset_id,
-            amount,
-            &split_target,
-            &htlc,
-        )?;
+        let premints =
+            cashu::PreMintSecrets::with_conditions(active_keyset_id, amount, &split_target, &htlc)?;
 
         let swap_request = cashu::SwapRequest::new(proofs, premints.blinded_messages());
         let swap = client.post_swap(swap_request).await?;
@@ -466,10 +462,9 @@ where
         unit: CurrencyUnit,
         tstamp: u64,
     ) -> Result<Vec<Proof>> {
-        // Ephemeral P2PK secret
-
         tracing::debug!(alpha_url=?alpha_url, "intermint exchange");
 
+        // Ephemeral P2PK secret
         let wallet_pk = cashu::SecretKey::generate();
 
         // TODO make factory
@@ -495,7 +490,7 @@ where
         let preimage = format!("CLWDR {}", cashu::SecretKey::generate().to_secret_hex());
         let hash_lock = bitcoin::hashes::sha256::Hash::hash(preimage.as_bytes());
 
-        let is_credit = unit == CurrencyUnit::Custom("crsat".into());
+        let is_credit = unit == self.credit.unit();
 
         let locked_alpha_proofs = Self::htlc_lock(
             unit,
@@ -524,10 +519,10 @@ where
                     .await
                 {
                     Ok(proofs) => break Ok(proofs),
-                    Err(err) if attempts < 3 => {
+                    Err(err) if attempts < crate::config::MAX_INTERMINT_ATTEMPTS => {
                         tracing::warn!("Failed to exchange HTLC proofs: {}", err);
-                        // TODO
-                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        tokio_with_wasm::alias::time::sleep(std::time::Duration::from_secs(1))
+                            .await;
                     }
                     // TODO - Store the proofs and refund after time lock
                     Err(err) => {

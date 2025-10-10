@@ -193,7 +193,7 @@ impl MintConnector for HttpClientExt {
         let url = self
             .url
             .join("v1/betas")
-            .expect("get_clowder_urls url error");
+            .expect("get_clowder_betas url error");
         let response = self
             .secondary
             .get(url)
@@ -215,7 +215,7 @@ impl MintConnector for HttpClientExt {
         let url = self
             .url
             .join("v1/exchange")
-            .expect("post clowder exchange url error");
+            .expect("post_clowder_exchange url error");
         let request = ExchangeRequest {
             exchange_path,
             alpha_proofs,
@@ -235,7 +235,7 @@ impl MintConnector for HttpClientExt {
     }
 
     async fn get_clowder_id(&self) -> CdkResult<bitcoin::secp256k1::PublicKey> {
-        let url = self.url.join("v1/id").expect("get clowder id url error");
+        let url = self.url.join("v1/id").expect("get_clowder_id url error");
 
         let response = self
             .secondary
@@ -254,7 +254,10 @@ impl MintConnector for HttpClientExt {
         &self,
         origin_mint_url: cashu::MintUrl,
     ) -> CdkResult<ConnectedMintsResponse> {
-        let url = self.url.join("v1/path").expect("get clowder id url error");
+        let url = self
+            .url
+            .join("v1/path")
+            .expect("post_clowder_path url error");
         let request = PathRequest { origin_mint_url };
         let response = self
             .secondary

@@ -6,7 +6,8 @@ use crate::error::Result;
 
 // ----- end imports
 
-pub const LOCK_REDUCTION_TIME_PER_HOP: u64 = 600;
+pub const LOCK_REDUCTION_SECONDS_PER_HOP: u64 = 600;
+pub const MAX_INTERMINT_ATTEMPTS: u64 = 3;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
