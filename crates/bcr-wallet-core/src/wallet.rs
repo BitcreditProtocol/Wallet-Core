@@ -400,31 +400,6 @@ where
         Ok(txid)
     }
 
-    // pub async fn receive_token(&self, token: Token, tstamp: u64) -> Result<TransactionId> {
-    //     let token = if token.mint_url() != self.client.mint_url() {
-    //         // Intermint swap into same mint first
-    //         tracing::info!("Intermint exchange");
-    //         let alpha_url = token.mint_url();
-    //         let alpha_client = crate::mint::HttpClientExt::new(alpha_url.clone());
-    //         let infos = alpha_client.get_mint_keysets().await?.keysets;
-    //         let alpha_proofs = token.proofs(&infos)?.clone();
-    //         let Some(unit) = token.unit() else {
-    //             return Err(Error::MissingCurrencyUnit);
-    //         };
-    //         let proofs = self
-    //             .exchange_intermint_proofs(alpha_proofs, alpha_url, unit.clone(), tstamp)
-    //             .await?;
-    //         let wallet_mint_url = self.client.mint_url();
-
-    //         Token::new_bitcr(wallet_mint_url, proofs, None, unit)
-    //     } else {
-    //         token
-    //     };
-    //     tracing::info!(token=?token,"Receiving token");
-
-    //     self.receive_samemint_token(token, tstamp).await
-    // }
-
     async fn htlc_lock(
         unit: CurrencyUnit,
         utc_now: u64,
