@@ -147,6 +147,7 @@ impl wallet::Pocket for Pocket {
         keysets_info: &[KeySetInfo],
         inputs: Vec<cdk00::Proof>,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
+        self.validate_keysets(keysets_info, &inputs)?;
         // storing proofs in pending state
         let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
             HashMap::with_capacity(inputs.len());
