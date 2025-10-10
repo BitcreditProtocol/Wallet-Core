@@ -17,17 +17,20 @@ async function run() {
   let update_balance = async () => {
     let wallet_idx = get_wallet_idx();
     if (wallet_idx < 0) {
-        return;
+      return;
     }
     let wallet_name = await wasmModule.get_wallet_name(wallet_idx);
     let wallet_balance = await wasmModule.get_wallet_balance(wallet_idx);
     let wallet_unit = await wasmModule.get_wallet_currency_unit(wallet_idx);
-    let wallet_redemptions = await wasmModule.wallet_list_redemptions(wallet_idx, 172800);
+    let wallet_redemptions = await wasmModule.wallet_list_redemptions(
+      wallet_idx,
+      172800,
+    );
     let formatted = `Wallet: ${wallet_name}\n\t${wallet_balance.debit} ${wallet_unit.debit}\n\t${wallet_balance.credit} ${wallet_unit.credit}\n`;
     formatted += `\tRedemptions plan:\n`;
     for (let redemption of wallet_redemptions) {
-        let expiry = new Date(redemption.tstamp * 1000);
-        formatted += `\t\t${expiry} - ${redemption.amount}\n`;
+      let expiry = new Date(redemption.tstamp * 1000);
+      formatted += `\t\t${expiry} - ${redemption.amount}\n`;
     }
     document.getElementById("balance").innerHTML = formatted;
   };
@@ -44,7 +47,7 @@ async function run() {
       console.log("format_past_txs txid: " + txid);
       await format_tx(wallet_idx, txid);
     }
-  }
+  };
 
   async function format_tx(idx, tx_id) {
     console.log("format_tx txid: " + tx_id);
@@ -94,13 +97,31 @@ async function run() {
     await update_wallets();
   });
 
-  document.getElementById("receivebtn").addEventListener("click", async () => {
+  document.getElementById("requestbtn").addEventListener("click", async () => {
     let ids = await wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
     let amount = prompt("Enter import");
-    let payment_request = await wasmModule.wallet_prepare_payment_request(idx, Number(amount), "", "");
-    document.getElementById("output").innerHTML += "\nqr-code:\n" + payment_request.request;
-    let tx_id = await wasmModule.wallet_check_received_payment(30, payment_request.p_id);
+    let payment_request = await wasmModule.wallet_prepare_payment_request(
+      idx,
+      Number(amount),
+      "",
+      "",
+    );
+    document.getElementById("output").innerHTML +=
+      "\nqr-code:\n" + payment_request.request;
+    let tx_id = await wasmModule.wallet_check_received_payment(
+      30,
+      payment_request.p_id,
+    );
+    await update_balance();
+    await format_tx(idx, tx_id);
+  });
+
+  document.getElementById("receivebtn").addEventListener("click", async () => {
+    let ids = await wasmModule.get_wallets_ids();
+    let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
+    let token = prompt("Enter token");
+    let payment_request = await wasmModule.wallet_receive_token(idx, token);
     await update_balance();
     await format_tx(idx, tx_id);
   });
@@ -110,8 +131,10 @@ async function run() {
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
     let input = prompt("Enter payment request");
     let summary = await wasmModule.wallet_prepare_payment(idx, input);
-    
-    prompt(`payment summary, currency unit: ${summary.unit} total fees: ${summary.fees + summary.reserved_fees}`);
+
+    prompt(
+      `payment summary, currency unit: ${summary.unit} total fees: ${summary.fees + summary.reserved_fees}`,
+    );
     let txid = await wasmModule.wallet_pay(summary.request_id);
 
     await update_balance();

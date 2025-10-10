@@ -64,7 +64,7 @@ async fn clean_local_proofs(
 }
 
 ///////////////////////////////////////////// unblind_proofs
-fn unblind_proofs(
+pub(crate) fn unblind_proofs(
     keyset: &KeySet,
     signatures: &[cdk00::BlindSignature],
     premint: &cdk00::PreMintSecrets,

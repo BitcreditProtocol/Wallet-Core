@@ -19,8 +19,14 @@ pub enum Error {
     Bip39(#[from] bip39::Error),
     #[error("cashu::nut00: {0}")]
     Cdk00(#[from] cashu::nut00::Error),
+    #[error("cashu::nut01: {0}")]
+    Cdk01(#[from] cashu::nut01::Error),
     #[error("cashu::nut13: {0}")]
     Cdk13(#[from] cashu::nut13::Error),
+    #[error("cashu::nut11: {0}")]
+    Cdk11(#[from] cashu::nut11::Error),
+    #[error("cashu::nut10: {0}")]
+    Cdk10(#[from] cashu::nut10::Error),
     #[error("cashu::amount: {0}")]
     CdkAmount(#[from] cashu::amount::Error),
     #[error("bitcoin::bip32 {0}")]
@@ -104,6 +110,10 @@ pub enum Error {
     SpendingConditions,
     #[error("NUT-18 request has no transport")]
     NoTransport,
+    #[error("Maximum Exchange attempts reached")]
+    MaxExchangeAttempts,
+    #[error("Missing currency unit")]
+    MissingCurrencyUnit,
 
     #[error("internal error: {0}")]
     Internal(String),

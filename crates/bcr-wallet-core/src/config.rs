@@ -6,6 +6,8 @@ use crate::error::Result;
 
 // ----- end imports
 
+pub const LOCK_REDUCTION_TIME_PER_HOP: u64 = 600;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     pub network: bitcoin::Network,
