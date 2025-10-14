@@ -49,7 +49,7 @@ pub trait Wallet: sync::SendSync {
         &self,
         proofs: Vec<cdk00::Proof>,
         unit: CurrencyUnit,
-        mint: MintUrl,
+        mint: Option<MintUrl>,
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,
@@ -268,6 +268,7 @@ where
     if payload.id.unwrap_or_default() != payment_id.to_string() {
         return Ok(None);
     }
+
     let amount = payload
         .proofs
         .iter()
@@ -306,7 +307,7 @@ where
         .receive_proofs(
             payload.proofs,
             payload.unit,
-            payload.mint,
+            Some(payload.mint),
             event.created_at.as_u64(),
             payload.memo,
             meta,

@@ -93,44 +93,6 @@ impl Pocket {
         Ok((active_info, active_keyset))
     }
 
-    async fn digest_intermint_proofs(
-        &self,
-        client: &dyn MintConnector,
-        (active_info, active_keyset): (cashu::KeySetInfo, cashu::KeySet),
-        inputs: HashMap<cdk01::PublicKey, cdk00::Proof>,
-        _input_mint: cashu::MintUrl,
-    ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
-        if inputs.is_empty() {
-            tracing::warn!("DbPocket::digest_intermint_proofs: empty inputs");
-            return Ok((Amount::ZERO, Vec::new()));
-        }
-        let (ys, proofs): (Vec<cdk01::PublicKey>, Vec<cdk00::Proof>) = inputs.into_iter().unzip();
-        let counter = self.pdb.counter(active_info.id).await?;
-        let total_amount = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
-        let premint_secrets = cdk00::PreMintSecrets::from_seed(
-            active_info.id,
-            counter,
-            &self.seed,
-            total_amount,
-            &SplitTarget::None,
-        )?;
-        self.pdb
-            .increment_counter(active_info.id, counter, premint_secrets.len() as u32)
-            .await?;
-        let premints = HashMap::from([(active_info.id, premint_secrets)]);
-        let keysets = HashMap::from([(active_info.id, active_keyset)]);
-        let cashed_in = swap(
-            self.unit.clone(),
-            proofs,
-            premints,
-            keysets,
-            client,
-            self.pdb.as_ref(),
-        )
-        .await?;
-        Ok((cashed_in, ys))
-    }
-
     async fn digest_proofs(
         &self,
         client: &dyn MintConnector,
@@ -228,7 +190,6 @@ impl wallet::Pocket for Pocket {
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
         inputs: Vec<cdk00::Proof>,
-        intermint: Option<cashu::MintUrl>,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
         // storing proofs in pending state
         let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
@@ -238,12 +199,7 @@ impl wallet::Pocket for Pocket {
             proofs.insert(y, input);
         }
         let active_keys = self.find_active_keyset(keysets_info, client).await?;
-        if let Some(other_mint) = intermint {
-            self.digest_intermint_proofs(client, active_keys, proofs, other_mint)
-                .await
-        } else {
-            self.digest_proofs(client, active_keys, proofs).await
-        }
+        self.digest_proofs(client, active_keys, proofs).await
     }
 
     async fn prepare_send(
@@ -534,7 +490,7 @@ mod tests {
         });
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
         let (cashed, _) = pocket
-            .receive_proofs(&connector, &k_infos, proofs, None)
+            .receive_proofs(&connector, &k_infos, proofs)
             .await
             .unwrap();
         assert_eq!(cashed, Amount::from(24u64));

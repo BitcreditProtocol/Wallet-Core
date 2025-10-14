@@ -2,20 +2,40 @@
 use std::str::FromStr;
 // ----- extra library imports
 use async_trait::async_trait;
+use cashu::Proof;
 use cdk::Error as CdkError;
 // ----- local imports
 use crate::sync;
 
 // ----- end imports
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct IntermintSwapRequest {
-    pub input_mint: cashu::MintUrl,
-    pub input_ids: Vec<cashu::Id>,
+//* Clowder Models, TODO - later obtain from shared library such
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConnectedMintsResponse {
+    pub mint_urls: Vec<cashu::MintUrl>,
+    pub clowder_urls: Vec<reqwest::Url>,
+    pub node_ids: Vec<bitcoin::secp256k1::PublicKey>,
 }
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct IntermintSwapResponse {
-    pub output_ids: Vec<cashu::Id>,
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PathRequest {
+    pub origin_mint_url: cashu::MintUrl,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExchangeRequest {
+    pub alpha_proofs: Vec<cashu::Proof>,
+    pub exchange_path: Vec<bitcoin::secp256k1::PublicKey>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExchangeResponse {
+    pub beta_proofs: Vec<cashu::Proof>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PublicKeyResponse {
+    pub public_key: bitcoin::secp256k1::PublicKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -27,11 +47,19 @@ pub struct ClowderBetasResponse {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {
     fn mint_url(&self) -> cashu::MintUrl;
-    async fn post_intermintswap(
+
+    async fn get_clowder_betas(&self) -> CdkResult<Vec<cashu::MintUrl>>;
+
+    async fn post_exchange(
         &self,
-        request: IntermintSwapRequest,
-    ) -> CdkResult<IntermintSwapResponse>;
-    async fn get_clowder_peers(&self) -> CdkResult<Vec<cashu::MintUrl>>;
+        alpha_proofs: Vec<Proof>,
+        exchange_path: Vec<bitcoin::secp256k1::PublicKey>,
+    ) -> CdkResult<Vec<Proof>>;
+    async fn get_clowder_id(&self) -> CdkResult<bitcoin::secp256k1::PublicKey>;
+    async fn post_clowder_path(
+        &self,
+        origin_mint_url: cashu::MintUrl,
+    ) -> CdkResult<ConnectedMintsResponse>;
 }
 
 #[derive(Debug, Clone)]
@@ -161,14 +189,37 @@ impl MintConnector for HttpClientExt {
             .expect("cashu::MintUrl is as good as reqwest::Url")
     }
 
-    async fn post_intermintswap(
-        &self,
-        request: IntermintSwapRequest,
-    ) -> CdkResult<IntermintSwapResponse> {
+    async fn get_clowder_betas(&self) -> CdkResult<Vec<cashu::MintUrl>> {
         let url = self
             .url
-            .join("intermint_swap")
-            .expect("post_intermintswap url error");
+            .join("v1/betas")
+            .expect("get_clowder_betas url error");
+        let response = self
+            .secondary
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
+        let response: ConnectedMintsResponse = response
+            .json()
+            .await
+            .map_err(|e| CdkError::Custom(e.to_string()))?;
+        Ok(response.mint_urls)
+    }
+
+    async fn post_exchange(
+        &self,
+        alpha_proofs: Vec<Proof>,
+        exchange_path: Vec<bitcoin::secp256k1::PublicKey>,
+    ) -> CdkResult<Vec<Proof>> {
+        let url = self
+            .url
+            .join("v1/exchange")
+            .expect("post_clowder_exchange url error");
+        let request = ExchangeRequest {
+            exchange_path,
+            alpha_proofs,
+        };
         let response = self
             .secondary
             .post(url)
@@ -176,28 +227,49 @@ impl MintConnector for HttpClientExt {
             .send()
             .await
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
-        let response: IntermintSwapResponse = response
+        let response: ExchangeResponse = response
             .json()
             .await
             .map_err(|e| CdkError::Custom(e.to_string()))?;
-        Ok(response)
+        Ok(response.beta_proofs)
     }
 
-    async fn get_clowder_peers(&self) -> CdkResult<Vec<cashu::MintUrl>> {
-        let url = self
-            .url
-            .join("clowder/urls")
-            .expect("get_clowder_urls url error");
+    async fn get_clowder_id(&self) -> CdkResult<bitcoin::secp256k1::PublicKey> {
+        let url = self.url.join("v1/id").expect("get_clowder_id url error");
+
         let response = self
             .secondary
             .get(url)
             .send()
             .await
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
-        let response: ClowderBetasResponse = response
+        let response: PublicKeyResponse = response
             .json()
             .await
             .map_err(|e| CdkError::Custom(e.to_string()))?;
-        Ok(response.betas)
+        Ok(response.public_key)
+    }
+
+    async fn post_clowder_path(
+        &self,
+        origin_mint_url: cashu::MintUrl,
+    ) -> CdkResult<ConnectedMintsResponse> {
+        let url = self
+            .url
+            .join("v1/path")
+            .expect("post_clowder_path url error");
+        let request = PathRequest { origin_mint_url };
+        let response = self
+            .secondary
+            .post(url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
+        let response: ConnectedMintsResponse = response
+            .json()
+            .await
+            .map_err(|e| CdkError::Custom(e.to_string()))?;
+        Ok(response)
     }
 }

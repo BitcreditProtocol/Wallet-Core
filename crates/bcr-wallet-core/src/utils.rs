@@ -76,14 +76,22 @@ pub mod tests {
             request: cashu::MeltRequest<String>,
         ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>>;
             }
-            #[async_trait]
-            impl crate::MintConnector for MintConnector {
-            async fn post_intermintswap(
-                &self,
-                request: crate::mint::IntermintSwapRequest,
-            ) -> CdkResult<crate::mint::IntermintSwapResponse>;
-            async fn get_clowder_peers(&self) -> CdkResult<Vec<cashu::MintUrl>>;
-            fn mint_url(&self) -> cashu::MintUrl;
-            }
+        #[async_trait]
+        impl crate::MintConnector for MintConnector {
+        async fn get_clowder_betas(&self) -> CdkResult<Vec<cashu::MintUrl>>;
+        fn mint_url(&self) -> cashu::MintUrl;
+
+        async fn post_exchange(
+            &self,
+            alpha_proofs: Vec<cashu::Proof>,
+            exchange_path: Vec<bitcoin::secp256k1::PublicKey>,
+        ) -> CdkResult<Vec<cashu::Proof>>;
+        async fn get_clowder_id(&self) -> CdkResult<bitcoin::secp256k1::PublicKey>;
+        async fn post_clowder_path(
+            &self,
+            origin_mint_url: cashu::MintUrl,
+        ) -> CdkResult<crate::mint::ConnectedMintsResponse>;
+
         }
+    }
 }

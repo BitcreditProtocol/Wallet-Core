@@ -3,10 +3,12 @@ use std::{collections::HashMap, str::FromStr, sync::Mutex};
 // ----- extra library imports
 use async_trait::async_trait;
 use bcr_wallet_lib::wallet::Token;
+use bitcoin::hashes::Hash;
 use cashu::{
-    Amount, Bolt11Invoice, CurrencyUnit, KeySetInfo, nut00 as cdk00, nut01 as cdk01,
-    nut07 as cdk07, nut18 as cdk18,
+    Amount, Bolt11Invoice, CurrencyUnit, KeySetInfo, MintUrl, Proof, nut00 as cdk00,
+    nut01 as cdk01, nut07 as cdk07, nut18 as cdk18,
 };
+use cdk::wallet::MintConnector as _;
 use cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
 use nostr_sdk::nips::nip19::{FromBech32, Nip19Profile};
 use uuid::Uuid;
@@ -14,7 +16,8 @@ use uuid::Uuid;
 use crate::{
     MintConnector,
     error::{Error, Result},
-    purse, sync,
+    purse::{self},
+    sync,
     types::{self, MeltSummary, PaymentSummary, RedemptionSummary, SendSummary, WalletConfig},
 };
 
@@ -32,7 +35,6 @@ pub trait Pocket: sync::SendSync {
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
         proofs: Vec<cdk00::Proof>,
-        intermint: Option<cashu::MintUrl>,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)>;
     async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo]) -> Result<SendSummary>;
     async fn send_proofs(
@@ -160,7 +162,7 @@ impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck> {
         id: String,
         mnemonic: bip39::Mnemonic,
     ) -> Result<Self> {
-        let betas = client.get_clowder_peers().await?;
+        let betas = client.get_clowder_betas().await?;
         Ok(Self {
             network,
             client,
@@ -281,7 +283,7 @@ where
         } else {
             let (amount, _) = self
                 .debit
-                .receive_proofs(self.client.as_ref(), &keysets_info, credit_proofs, None)
+                .receive_proofs(self.client.as_ref(), &keysets_info, credit_proofs)
                 .await?;
             Ok(amount)
         }
@@ -349,19 +351,20 @@ where
         keysets_info: &[KeySetInfo],
         proofs: Vec<cdk00::Proof>,
         unit: CurrencyUnit,
-        mint: cashu::MintUrl,
+        mint: Option<MintUrl>,
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,
         quote_id: Option<String>,
     ) -> Result<TransactionId> {
-        let mint = if mint == self.client.mint_url() {
-            None
-        } else if self.betas.contains(&mint) {
-            Some(mint)
-        } else {
-            return Err(Error::UnknownMint(mint));
-        };
+        let mut proofs = proofs;
+        if let Some(mint) = mint
+            && mint != self.client.mint_url()
+        {
+            proofs = self
+                .exchange_intermint_proofs(proofs, mint, unit.clone(), tstamp)
+                .await?;
+        }
 
         let received_amount = proofs
             .iter()
@@ -369,12 +372,12 @@ where
         let (stored_amount, ys) = if unit == self.debit.unit() {
             tracing::debug!("receive into debit pocket");
             self.debit
-                .receive_proofs(self.client.as_ref(), keysets_info, proofs, mint)
+                .receive_proofs(self.client.as_ref(), keysets_info, proofs)
                 .await?
         } else if unit == self.credit.unit() {
             tracing::debug!("receive into credit pocket");
             self.credit
-                .receive_proofs(self.client.as_ref(), keysets_info, proofs, mint)
+                .receive_proofs(self.client.as_ref(), keysets_info, proofs)
                 .await?
         } else {
             return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
@@ -397,47 +400,195 @@ where
         Ok(txid)
     }
 
+    async fn htlc_lock(
+        unit: CurrencyUnit,
+        utc_now: u64,
+        client: &dyn MintConnector,
+        is_credit: bool,
+        proofs: Vec<cashu::Proof>,
+        hash_lock: bitcoin::hashes::sha256::Hash,
+        key_locks: Vec<bitcoin::secp256k1::PublicKey>,
+        wallet_pubkey: bitcoin::secp256k1::PublicKey,
+    ) -> Result<Vec<cashu::Proof>> {
+        let amount = proofs
+            .iter()
+            .fold(cashu::Amount::ZERO, |acc, x| acc + x.amount);
+
+        let key_locks: Vec<cashu::PublicKey> = key_locks.into_iter().map(|k| k.into()).collect();
+
+        // total hops * time per hop + 2 hops buffer
+        let lock_time =
+            utc_now + (key_locks.len() as u64 + 2) * crate::config::LOCK_REDUCTION_SECONDS_PER_HOP;
+
+        let infos = client.get_mint_keysets().await?.keysets;
+
+        let active_keyset_id = if is_credit {
+            proofs.first().ok_or(Error::NoActiveKeyset)?.keyset_id
+        } else {
+            infos
+                .iter()
+                .find(|info| info.active && info.unit == unit)
+                .ok_or(Error::NoActiveKeyset)?
+                .id
+        };
+
+        let n = key_locks.len() as u64;
+        let p2pk = cashu::Conditions::new(
+            Some(lock_time),
+            Some(key_locks),
+            Some(vec![wallet_pubkey.into()]),
+            Some(n),
+            None,
+            Some(1),
+        )?;
+        let htlc = cashu::SpendingConditions::new_htlc_hash(&hash_lock.to_string(), Some(p2pk))?;
+        let split_target = cashu::amount::SplitTarget::None;
+        let premints =
+            cashu::PreMintSecrets::with_conditions(active_keyset_id, amount, &split_target, &htlc)?;
+
+        let swap_request = cashu::SwapRequest::new(proofs, premints.blinded_messages());
+        let swap = client.post_swap(swap_request).await?;
+
+        let keyset = client.get_mint_keyset(active_keyset_id).await?;
+        let proofs = crate::pocket::unblind_proofs(&keyset, &swap.signatures, &premints);
+
+        Ok(proofs)
+    }
+
+    pub async fn exchange_intermint_proofs(
+        &self,
+        alpha_proofs: Vec<cashu::Proof>,
+        alpha_url: MintUrl,
+        unit: CurrencyUnit,
+        tstamp: u64,
+    ) -> Result<Vec<Proof>> {
+        tracing::debug!(alpha_url=?alpha_url, "intermint exchange");
+
+        // Ephemeral P2PK secret
+        let wallet_pk = cashu::SecretKey::generate();
+
+        // TODO make factory
+        let alpha_client = crate::mint::HttpClientExt::new(alpha_url.clone());
+
+        // Determine path from current mint to origin
+        let path = self.client.post_clowder_path(alpha_url.clone()).await?;
+
+        // Require all intermediate mints to sign
+        // Exclude alpha origin from p2pk lock as it doesn't need to sign its own eCash
+        tracing::debug!("Origin {}", path.node_ids[0]);
+        let key_locks: Vec<bitcoin::secp256k1::PublicKey> =
+            path.node_ids.clone().into_iter().skip(1).collect();
+        tracing::debug!(
+            "Key locks {}",
+            key_locks
+                .iter()
+                .map(|k| k.to_string())
+                .collect::<Vec<String>>()
+                .join(",")
+        );
+
+        let preimage = format!("CLWDR {}", cashu::SecretKey::generate().to_secret_hex());
+        let hash_lock = bitcoin::hashes::sha256::Hash::hash(preimage.as_bytes());
+
+        let is_credit = unit == self.credit.unit();
+
+        let locked_alpha_proofs = Self::htlc_lock(
+            unit,
+            tstamp,
+            &alpha_client,
+            is_credit,
+            alpha_proofs,
+            hash_lock,
+            key_locks,
+            *wallet_pk.public_key(),
+        )
+        .await?;
+
+        let mut exchange_path = path.node_ids.clone();
+        // Include wallet pubkey as last to be p2pk
+        exchange_path.push(*wallet_pk.public_key());
+
+        // Multiple attempts as beta might not immediately have the signatures recorded
+        let mut beta_proofs = {
+            let mut attempts = 0;
+            loop {
+                attempts += 1;
+                match self
+                    .client
+                    .post_exchange(locked_alpha_proofs.clone(), exchange_path.clone())
+                    .await
+                {
+                    Ok(proofs) => break Ok(proofs),
+                    Err(err) if attempts < crate::config::MAX_INTERMINT_ATTEMPTS => {
+                        tracing::warn!("Failed to exchange HTLC proofs: {}", err);
+                        tokio_with_wasm::alias::time::sleep(std::time::Duration::from_secs(1))
+                            .await;
+                    }
+                    // TODO - Store the proofs and refund after time lock
+                    Err(err) => {
+                        tracing::error!(
+                            "Failed to exchange HTLC proofs after max attempts: {}",
+                            err
+                        );
+                        break Err(Error::MaxExchangeAttempts);
+                    }
+                }
+            }
+        }?;
+
+        for proof in beta_proofs.iter_mut() {
+            let msg: Vec<u8> = proof.secret.to_bytes();
+            let signature: bitcoin::secp256k1::schnorr::Signature = wallet_pk.sign(&msg)?;
+
+            let signatures = vec![signature.to_string()];
+
+            proof.witness = Some(cashu::Witness::HTLCWitness(cashu::HTLCWitness {
+                preimage: preimage.to_string(),
+                signatures: Some(signatures),
+            }));
+        }
+        tracing::debug!("Returning same mint proofs");
+        Ok(beta_proofs)
+    }
+
     pub async fn receive_token(&self, token: Token, tstamp: u64) -> Result<TransactionId> {
         let token_teaser = token.to_string().chars().take(20).collect::<String>();
         let keysets_info = self.client.get_mint_keysets().await?.keysets;
-        let proofs = token.proofs(&keysets_info)?;
+        let proofs = if token.mint_url() == self.client.mint_url() {
+            token.proofs(&keysets_info)?
+        } else {
+            let alpha_client = crate::mint::HttpClientExt::new(token.mint_url());
+            let alpha_infos = alpha_client.get_mint_keysets().await?.keysets;
+            let same_token = token.proofs(&alpha_infos)?;
+            tracing::debug!("Exchanged into same mint token {}", token);
+            same_token
+        };
         if proofs.is_empty() {
             return Err(Error::EmptyToken(token_teaser));
         }
 
-        let tx_id = if matches!(token, Token::CashuV4(..)) {
+        let tx_id = if token.unit().is_some() && token.unit() == Some(self.debit.unit()) {
             tracing::debug!("import debit token");
-            if token.unit().is_some() && token.unit() != Some(self.debit.unit()) {
-                return Err(Error::CurrencyUnitMismatch(
-                    token.unit().unwrap(),
-                    self.debit.unit(),
-                ));
-            }
+
             self._receive_proofs(
                 &keysets_info,
                 proofs,
                 self.debit.unit(),
-                token.mint_url(),
+                Some(token.mint_url()),
                 tstamp,
                 token.memo().clone(),
                 HashMap::default(),
                 None,
             )
             .await?
-        } else if matches!(token, Token::BitcrV4(..)) {
+        } else if token.unit().is_some() && token.unit() == Some(self.credit.unit()) {
             tracing::debug!("import credit token");
-            if token.unit().is_some() && token.unit() != Some(self.credit.unit()) {
-                return Err(Error::CurrencyUnitMismatch(
-                    token.unit().unwrap(),
-                    self.credit.unit(),
-                ));
-            }
 
             self._receive_proofs(
                 &keysets_info,
                 proofs,
                 self.credit.unit(),
-                token.mint_url(),
+                Some(token.mint_url()),
                 tstamp,
                 token.memo().clone(),
                 HashMap::default(),
@@ -656,7 +807,7 @@ where
         &self,
         proofs: Vec<cdk00::Proof>,
         unit: CurrencyUnit,
-        mint: cashu::MintUrl,
+        mint: Option<MintUrl>,
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,

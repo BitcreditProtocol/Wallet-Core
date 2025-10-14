@@ -15,7 +15,6 @@ use uuid::Uuid;
 use crate::{
     MintConnector,
     error::{Error, Result},
-    mint::IntermintSwapRequest,
     pocket::*,
     restore,
     types::{RedemptionSummary, SendSummary},
@@ -67,86 +66,6 @@ impl Pocket {
             }
         }
         Ok(infos)
-    }
-
-    async fn digest_intermint_proofs(
-        &self,
-        client: &dyn MintConnector,
-        inputs: HashMap<cdk01::PublicKey, cdk00::Proof>,
-        input_mint: cashu::MintUrl,
-    ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
-        if inputs.is_empty() {
-            tracing::warn!("CrPocket::digest_intermint_proofs: empty inputs");
-            return Ok((Amount::ZERO, Vec::new()));
-        }
-        let ys = inputs.keys().cloned().collect();
-        // reshaping inputs into keyset_id -> proofs
-        let mut old_proofs: HashMap<cashu::Id, Vec<cdk00::Proof>> = HashMap::new();
-        for (_, proof) in inputs.into_iter() {
-            old_proofs
-                .entry(proof.keyset_id)
-                .and_modify(|v| v.push(proof.clone()))
-                .or_insert_with(|| vec![proof]);
-        }
-        // fix the keysetIDs
-        let kids = old_proofs.keys().cloned().collect::<Vec<_>>();
-        let request = IntermintSwapRequest {
-            input_mint,
-            input_ids: kids.clone(),
-        };
-        let response = client.post_intermintswap(request).await?;
-        if response.output_ids.len() != kids.len() {
-            return Err(Error::Any(AnyError::msg(
-                "intermint swap response ids length mismatch",
-            )));
-        }
-        let kids_map: HashMap<cashu::Id, cashu::Id> = HashMap::from_iter(
-            kids.iter()
-                .cloned()
-                .zip(response.output_ids.iter().cloned()),
-        );
-        // collecting the keysets first as we dont't want any failure once the swap request
-        // has been made
-        let mut keysets: HashMap<cashu::Id, KeySet> = HashMap::new();
-        for kid in response.output_ids {
-            let keyset = client.get_mint_keyset(kid).await?;
-            keysets.insert(kid, keyset);
-        }
-        // preparing the premints
-        let mut premints: HashMap<cashu::Id, cdk00::PreMintSecrets> = HashMap::new();
-        for (their_kid, proofs) in old_proofs.iter() {
-            let our_kid = kids_map
-                .get(their_kid)
-                .expect("their_kid should be in kids_map");
-            let total = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
-            let counter = self.db.counter(*our_kid).await?;
-            let premint = cdk00::PreMintSecrets::from_seed(
-                *our_kid,
-                counter,
-                &self.seed,
-                total,
-                &SplitTarget::None,
-            )?;
-            let increment = premint.len() as u32;
-            premints.insert(*our_kid, premint);
-            self.db
-                .increment_counter(*our_kid, counter, increment)
-                .await?;
-        }
-        let mut proofs_in_request: Vec<cdk00::Proof> = Vec::new();
-        for (_, proofs) in old_proofs.into_iter() {
-            proofs_in_request.extend(proofs);
-        }
-        let cashed_in = swap(
-            self.unit.clone(),
-            proofs_in_request,
-            premints,
-            keysets,
-            client,
-            self.db.as_ref(),
-        )
-        .await?;
-        Ok((cashed_in, ys))
     }
 
     async fn digest_proofs(
@@ -227,11 +146,8 @@ impl wallet::Pocket for Pocket {
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
         inputs: Vec<cdk00::Proof>,
-        intermint: Option<cashu::MintUrl>,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
-        if intermint.is_none() {
-            self.validate_keysets(keysets_info, &inputs)?;
-        }
+        self.validate_keysets(keysets_info, &inputs)?;
         // storing proofs in pending state
         let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
             HashMap::with_capacity(inputs.len());
@@ -239,12 +155,7 @@ impl wallet::Pocket for Pocket {
             let y = input.y()?;
             proofs.insert(y, input);
         }
-        if let Some(other_mint) = intermint {
-            self.digest_intermint_proofs(client, proofs, other_mint)
-                .await
-        } else {
-            self.digest_proofs(client, proofs).await
-        }
+        self.digest_proofs(client, proofs).await
     }
 
     async fn prepare_send(
@@ -480,7 +391,6 @@ impl wallet::Pocket for DummyPocket {
         _client: &dyn MintConnector,
         _keysets_info: &[KeySetInfo],
         _proofs: Vec<cdk00::Proof>,
-        _intermint: Option<cashu::MintUrl>,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
         Ok((Amount::ZERO, Vec::new()))
     }
@@ -598,7 +508,7 @@ mod tests {
         });
         let pocket = pocket(Arc::new(db));
         let (cashed, _) = pocket
-            .receive_proofs(&connector, &k_infos, proofs, None)
+            .receive_proofs(&connector, &k_infos, proofs)
             .await
             .unwrap();
         assert_eq!(cashed, Amount::from(24u64));
@@ -614,9 +524,7 @@ mod tests {
         let db = MockPocketRepository::new();
         let connector = MockMintConnector::new();
         let crpocket = pocket(Arc::new(db));
-        let result = crpocket
-            .receive_proofs(&connector, &k_infos, proofs, None)
-            .await;
+        let result = crpocket.receive_proofs(&connector, &k_infos, proofs).await;
         assert!(matches!(result, Err(Error::InactiveKeyset(_))));
     }
 
@@ -630,9 +538,7 @@ mod tests {
         let db = MockPocketRepository::new();
         let connector = MockMintConnector::new();
         let crpocket = pocket(Arc::new(db));
-        let result = crpocket
-            .receive_proofs(&connector, &k_infos, proofs, None)
-            .await;
+        let result = crpocket.receive_proofs(&connector, &k_infos, proofs).await;
         assert!(matches!(result, Err(Error::CurrencyUnitMismatch(_, _))));
     }
 
