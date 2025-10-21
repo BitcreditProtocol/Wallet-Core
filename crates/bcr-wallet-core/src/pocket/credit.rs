@@ -147,6 +147,11 @@ impl wallet::Pocket for Pocket {
         keysets_info: &[KeySetInfo],
         inputs: Vec<cdk00::Proof>,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
+        tracing::info!(
+            "Credit receive proofs keyset {:?} proofs {:?}",
+            keysets_info,
+            inputs
+        );
         self.validate_keysets(keysets_info, &inputs)?;
         // storing proofs in pending state
         let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
@@ -155,6 +160,7 @@ impl wallet::Pocket for Pocket {
             let y = input.y()?;
             proofs.insert(y, input);
         }
+        tracing::info!("credit digest proofs");
         self.digest_proofs(client, proofs).await
     }
 

@@ -12,7 +12,7 @@ pub mod pocket;
 mod purse;
 mod restore;
 mod types;
-mod utils;
+pub mod utils;
 pub mod wallet;
 
 // ----- end imports

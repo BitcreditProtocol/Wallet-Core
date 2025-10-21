@@ -114,6 +114,8 @@ pub enum Error {
     MaxExchangeAttempts,
     #[error("Missing currency unit")]
     MissingCurrencyUnit,
+    #[error("Invalid Clowder Path for foreign eCash")]
+    InvalidClowderPath,
 
     #[error("internal error: {0}")]
     Internal(String),

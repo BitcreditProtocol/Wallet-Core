@@ -2,45 +2,68 @@
 use std::str::FromStr;
 // ----- extra library imports
 use async_trait::async_trait;
-use cashu::Proof;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::secp256k1::PublicKey;
+use cashu::{BlindSignature, Proof, ProofDleq};
 use cdk::Error as CdkError;
+use serde::{Deserialize, Serialize};
 // ----- local imports
 use crate::sync;
 
 // ----- end imports
 
-//* Clowder Models, TODO - later obtain from shared library such
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+//* Clowder Models, TODO - later obtain from shared library
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectedMintsResponse {
     pub mint_urls: Vec<cashu::MintUrl>,
     pub clowder_urls: Vec<reqwest::Url>,
     pub node_ids: Vec<bitcoin::secp256k1::PublicKey>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PathRequest {
     pub origin_mint_url: cashu::MintUrl,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExchangeRequest {
     pub alpha_proofs: Vec<cashu::Proof>,
     pub exchange_path: Vec<bitcoin::secp256k1::PublicKey>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExchangeResponse {
     pub beta_proofs: Vec<cashu::Proof>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicKeyResponse {
     pub public_key: bitcoin::secp256k1::PublicKey,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ClowderBetasResponse {
-    pub betas: Vec<cashu::MintUrl>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretlessProof {
+    pub signature: BlindSignature,
+    pub y: bitcoin::secp256k1::PublicKey,
+    pub dleq: ProofDleq,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubstituteExchangeRequest {
+    pub proofs: Vec<SecretlessProof>,
+    pub locks: Vec<Sha256>,
+    pub wallet_pubkey: PublicKey,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubstituteExchangeResponse {
+    pub outputs: Vec<Proof>,
+    pub signature: bitcoin::secp256k1::schnorr::Signature,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OfflineResponse {
+    pub offline: bool,
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -60,6 +83,19 @@ pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {
         &self,
         origin_mint_url: cashu::MintUrl,
     ) -> CdkResult<ConnectedMintsResponse>;
+    async fn get_alpha_keysets(
+        &self,
+        alpha_id: bitcoin::secp256k1::PublicKey,
+    ) -> CdkResult<Vec<cashu::KeySet>>;
+
+    async fn get_alpha_offline(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<bool>;
+
+    async fn post_exchange_substitute(
+        &self,
+        proofs: Vec<SecretlessProof>,
+        locks: Vec<bitcoin::hashes::sha256::Hash>,
+        wallet_pubkey: bitcoin::secp256k1::PublicKey,
+    ) -> CdkResult<Vec<Proof>>;
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +225,41 @@ impl MintConnector for HttpClientExt {
             .expect("cashu::MintUrl is as good as reqwest::Url")
     }
 
+    /// Active alpha keysets
+    async fn get_alpha_keysets(
+        &self,
+        alpha_id: bitcoin::secp256k1::PublicKey,
+    ) -> CdkResult<Vec<cashu::KeySet>> {
+        let url = self.url.join(&format!("v1/alpha/keysets/{alpha_id}"))?;
+        let response = self
+            .secondary
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
+        let response: cashu::nuts::KeysResponse = response
+            .json()
+            .await
+            .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
+        Ok(response.keysets)
+    }
+
+    /// Is Alpha Offline
+    async fn get_alpha_offline(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<bool> {
+        let url = self.url.join(&format!("v1/alpha/offline/{alpha_id}"))?;
+        let response = self
+            .secondary
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
+        let response: OfflineResponse = response
+            .json()
+            .await
+            .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
+        Ok(response.offline)
+    }
+
     async fn get_clowder_betas(&self) -> CdkResult<Vec<cashu::MintUrl>> {
         let url = self
             .url
@@ -205,6 +276,33 @@ impl MintConnector for HttpClientExt {
             .await
             .map_err(|e| CdkError::Custom(e.to_string()))?;
         Ok(response.mint_urls)
+    }
+
+    async fn post_exchange_substitute(
+        &self,
+        proofs: Vec<SecretlessProof>,
+        locks: Vec<bitcoin::hashes::sha256::Hash>,
+        wallet_pubkey: bitcoin::secp256k1::PublicKey,
+    ) -> CdkResult<Vec<Proof>> {
+        let url = self.url.join("v1/exchange/substitute")?;
+        let request = SubstituteExchangeRequest {
+            proofs,
+            locks,
+            wallet_pubkey,
+        };
+
+        let response = self
+            .secondary
+            .post(url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
+        let response: SubstituteExchangeResponse = response
+            .json()
+            .await
+            .map_err(|e| CdkError::Custom(e.to_string()))?;
+        Ok(response.outputs)
     }
 
     async fn post_exchange(
