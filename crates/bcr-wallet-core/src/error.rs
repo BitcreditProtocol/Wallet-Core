@@ -1,6 +1,7 @@
 // ----- standard library imports
 // ----- extra library imports
 use anyhow::Error as AnyError;
+use bitcoin::hashes::sha256::Hash as Sha256;
 use thiserror::Error;
 // ----- local imports
 
@@ -72,6 +73,8 @@ pub enum Error {
     EmptyToken(String),
     #[error("invalid token: {0}")]
     InvalidToken(String),
+    #[error("Invalid Hash Lock on Beta Proofs, expected {0} got {1}")]
+    InvalidHashLock(Sha256, Sha256),
     #[error("no active keyset")]
     NoActiveKeyset,
     #[error("unknown keyset ID")]

@@ -514,10 +514,19 @@ where
             .map(|secret| Sha256::hash(&secret.to_bytes()))
             .collect();
         let mut beta_proofs = substitute_client
-            .post_exchange_substitute(secretless.clone(), hash_locks, *wallet_pk.public_key())
+            .post_exchange_substitute(
+                secretless.clone(),
+                hash_locks.clone(),
+                *wallet_pk.public_key(),
+            )
             .await?;
-        for (p, s) in beta_proofs.iter_mut().zip(secrets) {
+        // TODO - Verify Beta Proofs don't have additional locks preventing the wallet from using it
+        for ((p, h), s) in beta_proofs.iter_mut().zip(hash_locks).zip(secrets) {
             let msg: Vec<u8> = p.secret.to_bytes();
+            let hashed = Sha256::hash(&msg);
+            if hashed != h {
+                return Err(Error::InvalidHashLock(h, hashed));
+            }
             let signature: bitcoin::secp256k1::schnorr::Signature = wallet_pk.sign(&msg)?;
             let signatures = vec![signature.to_string()];
 
