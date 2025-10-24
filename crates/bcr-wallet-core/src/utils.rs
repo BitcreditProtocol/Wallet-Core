@@ -5,7 +5,6 @@ use bitcoin::secp256k1::{PublicKey, SECP256K1};
 use cashu::{BlindSignature, Proof};
 use cdk::Error as CdkError;
 // ----- local imports
-use crate::mint::MintConnector;
 use crate::mint::SecretlessProof;
 // ----- end imports
 
@@ -63,6 +62,47 @@ pub async fn proofs_to_secretless(
     }
 
     Ok((secret_less, secrets))
+}
+
+pub fn validate_offline_conditions(
+    wallet_pubkey: PublicKey,
+    conditions: &cashu::Conditions,
+    tstamp: u64,
+) -> CdkResult<u64> {
+    tracing::info!("Verifying spending conditions {:?}", conditions);
+
+    let lock_time = conditions.locktime.ok_or(CdkError::LocktimeNotProvided)?;
+    let num_sigs = conditions.num_sigs.ok_or(CdkError::PubkeyRequired)?;
+    let pubkeys = conditions
+        .pubkeys
+        .as_ref()
+        .ok_or(CdkError::PubkeyRequired)?;
+    let refund_len = conditions
+        .refund_keys
+        .as_ref()
+        .map(|r| r.len())
+        .unwrap_or(0);
+
+    if pubkeys.len() != 1 || num_sigs != 1 {
+        return Err(CdkError::PubkeyRequired);
+    }
+    if refund_len != 0 {
+        return Err(CdkError::InvalidSpendConditions(
+            "Beta proofs refund not allowed".into(),
+        ));
+    }
+    if *pubkeys[0] != wallet_pubkey {
+        return Err(CdkError::InvalidSpendConditions(
+            "Pubkey must be wallet pubkey".into(),
+        ));
+    }
+    if lock_time < tstamp + crate::config::LOCK_REDUCTION_SECONDS_PER_HOP {
+        return Err(CdkError::InvalidSpendConditions(
+            "Lock time too short".into(),
+        ));
+    }
+
+    Ok(lock_time)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

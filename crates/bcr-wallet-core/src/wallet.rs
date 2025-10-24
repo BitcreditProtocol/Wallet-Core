@@ -392,7 +392,7 @@ where
             } else {
                 tracing::debug!("Offline exchange");
                 let substitute_proofs = self
-                    .offline_exchange(alpha_id, &substitute_client, proofs)
+                    .offline_exchange(alpha_id, &substitute_client, proofs, tstamp)
                     .await?;
                 // Alpha proofs -> Beta proofs is done, so we only need the path from Beta to the Wallet Mint
                 let path = path.node_ids[1..].to_vec();
@@ -445,7 +445,7 @@ where
 
     async fn htlc_lock(
         unit: CurrencyUnit,
-        utc_now: u64,
+        tstamp: u64,
         client: &dyn MintConnector,
         is_credit: bool,
         proofs: Vec<cashu::Proof>,
@@ -461,7 +461,7 @@ where
 
         // total hops * time per hop + 2 hops buffer
         let lock_time =
-            utc_now + (key_locks.len() as u64 + 2) * crate::config::LOCK_REDUCTION_SECONDS_PER_HOP;
+            tstamp + (key_locks.len() as u64 + 2) * crate::config::LOCK_REDUCTION_SECONDS_PER_HOP;
 
         let infos = client.get_mint_keysets().await?.keysets;
 
@@ -503,6 +503,7 @@ where
         alpha_id: bitcoin::secp256k1::PublicKey,
         substitute_client: &dyn MintConnector,
         proofs: Vec<Proof>,
+        tstamp: u64,
     ) -> Result<Vec<Proof>> {
         // Ephemeral P2PK secret
         let wallet_pk = cashu::SecretKey::generate();
@@ -523,10 +524,28 @@ where
         // TODO - Verify Beta Proofs don't have additional locks preventing the wallet from using it
         for ((p, h), s) in beta_proofs.iter_mut().zip(hash_locks).zip(secrets) {
             let msg: Vec<u8> = p.secret.to_bytes();
+
+            // Verify spending conditions
             let hashed = Sha256::hash(&msg);
             if hashed != h {
                 return Err(Error::InvalidHashLock(h, hashed));
             }
+            let secret: cashu::nuts::nut10::Secret = p
+                .secret
+                .clone()
+                .try_into()
+                .map_err(|_| Error::SpendingConditions)?;
+            let conditions: cashu::Conditions = secret
+                .secret_data()
+                .tags()
+                .and_then(|c| c.clone().try_into().ok())
+                .ok_or(Error::SpendingConditions)?;
+            crate::utils::validate_offline_conditions(
+                *wallet_pk.public_key(),
+                &conditions,
+                tstamp,
+            )?;
+
             let signature: bitcoin::secp256k1::schnorr::Signature = wallet_pk.sign(&msg)?;
             let signatures = vec![signature.to_string()];
 
