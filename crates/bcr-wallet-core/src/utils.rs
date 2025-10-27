@@ -1,11 +1,111 @@
-#![cfg(not(target_arch = "wasm32"))]
 // ----- standard library imports
+use std::collections::HashMap;
 // ----- extra library imports
+use bitcoin::secp256k1::{PublicKey, SECP256K1};
+use cashu::{BlindSignature, Proof};
+use cdk::Error as CdkError;
 // ----- local imports
-
+use crate::mint::SecretlessProof;
 // ----- end imports
 
-#[cfg(test)]
+type CdkResult<T> = std::result::Result<T, cdk::Error>;
+
+pub async fn proofs_to_secretless(
+    alpha_id: PublicKey,
+    substitute_client: &dyn crate::mint::MintConnector,
+    proofs: Vec<Proof>,
+) -> CdkResult<(Vec<SecretlessProof>, Vec<cashu::secret::Secret>)> {
+    let alpha_keysets = substitute_client
+        .get_alpha_keysets(alpha_id)
+        .await
+        .map_err(|err| CdkError::HttpError(None, err.to_string()))?;
+
+    let keys: HashMap<cashu::Id, cashu::KeySet> = alpha_keysets
+        .iter()
+        .map(|keyset| (keyset.id, keyset.clone()))
+        .collect();
+
+    let mut secrets = Vec::with_capacity(proofs.len());
+    let mut secret_less = Vec::with_capacity(proofs.len());
+
+    for p in proofs.iter() {
+        let pubkey = keys
+            .get(&p.keyset_id)
+            .ok_or(CdkError::UnknownKeySet)?
+            .keys
+            .amount_key(p.amount)
+            .ok_or(CdkError::AmountKey)?;
+
+        let dleq = p.dleq.as_ref().ok_or(CdkError::DleqProofNotProvided)?;
+        let r = bitcoin::secp256k1::Scalar::from(*dleq.r);
+        let r_bigk: PublicKey = pubkey
+            .mul_tweak(SECP256K1, &r)
+            .map_err(|err| CdkError::Custom(err.to_string()))?;
+        let signature =
+            p.c.combine(&r_bigk)
+                .map_err(|err| CdkError::Custom(err.to_string()))?;
+
+        let dleq = p.dleq.clone().ok_or(CdkError::DleqProofNotProvided)?;
+        secrets.push(p.secret.clone());
+
+        let signature = BlindSignature {
+            amount: p.amount,
+            keyset_id: p.keyset_id,
+            c: signature.into(),
+            dleq: None,
+        };
+        secret_less.push(SecretlessProof {
+            signature,
+            dleq,
+            y: *p.y()?,
+        });
+    }
+
+    Ok((secret_less, secrets))
+}
+
+pub fn validate_offline_conditions(
+    wallet_pubkey: PublicKey,
+    conditions: &cashu::Conditions,
+    tstamp: u64,
+) -> CdkResult<u64> {
+    tracing::info!("Verifying spending conditions {:?}", conditions);
+
+    let lock_time = conditions.locktime.ok_or(CdkError::LocktimeNotProvided)?;
+    let num_sigs = conditions.num_sigs.ok_or(CdkError::PubkeyRequired)?;
+    let pubkeys = conditions
+        .pubkeys
+        .as_ref()
+        .ok_or(CdkError::PubkeyRequired)?;
+    let refund_len = conditions
+        .refund_keys
+        .as_ref()
+        .map(|r| r.len())
+        .unwrap_or(0);
+
+    if pubkeys.len() != 1 || num_sigs != 1 {
+        return Err(CdkError::PubkeyRequired);
+    }
+    if refund_len != 0 {
+        return Err(CdkError::InvalidSpendConditions(
+            "Beta proofs refund not allowed".into(),
+        ));
+    }
+    if *pubkeys[0] != wallet_pubkey {
+        return Err(CdkError::InvalidSpendConditions(
+            "Pubkey must be wallet pubkey".into(),
+        ));
+    }
+    if lock_time < tstamp + crate::config::LOCK_REDUCTION_SECONDS_PER_HOP {
+        return Err(CdkError::InvalidSpendConditions(
+            "Lock time too short".into(),
+        ));
+    }
+
+    Ok(lock_time)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub mod tests {
     use async_trait::async_trait;
     use cashu::{
@@ -13,6 +113,8 @@ pub mod tests {
         nut07 as cdk07, nut09 as cdk09, nut23 as cdk23,
     };
     use cdk_common::Error as CDKError;
+
+    use crate::mint::SecretlessProof;
     type CdkResult<T> = Result<T, CDKError>;
 
     mockall::mock! {
@@ -91,6 +193,19 @@ pub mod tests {
             &self,
             origin_mint_url: cashu::MintUrl,
         ) -> CdkResult<crate::mint::ConnectedMintsResponse>;
+        async fn get_alpha_keysets(
+            &self,
+            alpha_id: bitcoin::secp256k1::PublicKey,
+        ) -> CdkResult<Vec<cashu::KeySet>>;
+
+        async fn get_alpha_offline(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<bool>;
+
+        async fn post_exchange_substitute(
+            &self,
+            proofs: Vec<SecretlessProof>,
+            locks: Vec<bitcoin::hashes::sha256::Hash>,
+            wallet_pubkey: bitcoin::secp256k1::PublicKey,
+        ) -> CdkResult<Vec<cashu::Proof>>;
 
         }
     }
