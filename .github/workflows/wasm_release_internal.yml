@@ -4,8 +4,6 @@ on:
   push:
     tags:
       - "v*.*.*"
-    #test workflow
-    branches: ["**"]
 
 env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
