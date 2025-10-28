@@ -1,4 +1,4 @@
-name: wasm release
+name: wasm release internal
 
 on:
   push:
@@ -10,9 +10,12 @@ env:
 
 jobs:
   release:
-    environment: release-npmjs
+    environment: release-github
     name: WASM Release and Publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -39,11 +42,12 @@ jobs:
       - name: Update rust
         run: rustup update
 
-      - name: Install Node.js
+      - name: Install Node.js and setup registry
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 20
-          registry-url: "https://registry.npmjs.org"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@bitcreditprotocol"
 
       - name: Install wasm-pack
         run: cargo install wasm-pack
@@ -53,15 +57,15 @@ jobs:
           RUSTFLAGS: '--cfg getrandom_backend="wasm_js"'
         run: |
           cd crates/bcr-wallet-core
-          wasm-pack build --target web --scope bitcredit --out-name index
+          wasm-pack build --target web --scope bitcreditprotocol --out-name index
 
       - name: Copy LICENSE into pkg/
         run: |
           cp LICENSE crates/bcr-wallet-core/pkg/
 
-      - name: Publish to npm
+      - name: Publish to GitHub Packages
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_SECRET }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd crates/bcr-wallet-core/pkg
-          npm publish --access public
+          npm publish
