@@ -35,6 +35,10 @@ pub trait Wallet: sync::SendSync {
     fn config(&self) -> WalletConfig;
     fn name(&self) -> String;
     fn mint_url(&self) -> MintUrl;
+    #[allow(dead_code)]
+    fn betas(&self) -> Vec<MintUrl>;
+    #[allow(dead_code)]
+    fn clowder_id(&self) -> bitcoin::secp256k1::PublicKey;
     fn mint_urls(&self) -> Vec<MintUrl>;
     async fn prepare_pay(&self, input: String, now: u64) -> Result<PaymentSummary>;
     async fn pay(

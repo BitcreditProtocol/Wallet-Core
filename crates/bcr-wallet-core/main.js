@@ -5,7 +5,7 @@ async function run() {
   await wasmModule.initialize_api();
 
   let update_wallets = async () => {
-    let wallets = await wasmModule.get_wallets_names();
+    let wallets = wasmModule.get_wallets_names();
 
     document.getElementById("walletlist").innerHTML = wallets
       .map((name, idx) => `<option value="${idx}">${name}</option>`)
@@ -19,9 +19,9 @@ async function run() {
     if (wallet_idx < 0) {
       return;
     }
-    let wallet_name = await wasmModule.get_wallet_name(wallet_idx);
+    let wallet_name = wasmModule.get_wallet_name(wallet_idx);
     let wallet_balance = await wasmModule.get_wallet_balance(wallet_idx);
-    let wallet_unit = await wasmModule.get_wallet_currency_unit(wallet_idx);
+    let wallet_unit = wasmModule.get_wallet_currency_unit(wallet_idx);
     let wallet_redemptions = await wasmModule.wallet_list_redemptions(
       wallet_idx,
       172800,
@@ -89,7 +89,7 @@ async function run() {
   });
 
   document.getElementById("redeembtn").addEventListener("click", async () => {
-    let ids = await wasmModule.get_wallets_ids();
+    let ids = wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
 
     let amount_redeemed = await wasmModule.wallet_redeem_credit(idx);
@@ -98,7 +98,7 @@ async function run() {
   });
 
   document.getElementById("requestbtn").addEventListener("click", async () => {
-    let ids = await wasmModule.get_wallets_ids();
+    let ids = wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
     let amount = prompt("Enter import");
     let payment_request = await wasmModule.wallet_prepare_payment_request(
@@ -127,7 +127,7 @@ async function run() {
   });
 
   document.getElementById("sendbtn").addEventListener("click", async () => {
-    let ids = await wasmModule.get_wallets_ids();
+    let ids = wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
     let input = prompt("Enter payment request");
     let summary = await wasmModule.wallet_prepare_payment(idx, input);

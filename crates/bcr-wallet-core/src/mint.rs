@@ -4,7 +4,7 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::PublicKey;
-use cashu::{BlindSignature, Proof, ProofDleq};
+use cashu::{Proof, ProofDleq};
 use cdk::Error as CdkError;
 use serde::{Deserialize, Serialize};
 // ----- local imports
@@ -42,15 +42,18 @@ pub struct PublicKeyResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SecretlessProof {
-    pub signature: BlindSignature,
-    pub y: bitcoin::secp256k1::PublicKey,
-    pub dleq: ProofDleq,
+pub struct ProofFingerprint {
+    pub amount: cashu::Amount,
+    pub keyset_id: cashu::Id,
+    pub c: cashu::PublicKey,
+    pub y: cashu::PublicKey,
+    pub dleq: Option<ProofDleq>,
+    pub witness: Option<cashu::Witness>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubstituteExchangeRequest {
-    pub proofs: Vec<SecretlessProof>,
+    pub proofs: Vec<ProofFingerprint>,
     pub locks: Vec<Sha256>,
     pub wallet_pubkey: PublicKey,
 }
@@ -92,7 +95,7 @@ pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {
 
     async fn post_exchange_substitute(
         &self,
-        proofs: Vec<SecretlessProof>,
+        proofs: Vec<ProofFingerprint>,
         locks: Vec<bitcoin::hashes::sha256::Hash>,
         wallet_pubkey: bitcoin::secp256k1::PublicKey,
     ) -> CdkResult<Vec<Proof>>;
@@ -280,7 +283,7 @@ impl MintConnector for HttpClientExt {
 
     async fn post_exchange_substitute(
         &self,
-        proofs: Vec<SecretlessProof>,
+        proofs: Vec<ProofFingerprint>,
         locks: Vec<bitcoin::hashes::sha256::Hash>,
         wallet_pubkey: bitcoin::secp256k1::PublicKey,
     ) -> CdkResult<Vec<Proof>> {
