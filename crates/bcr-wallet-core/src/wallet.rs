@@ -542,7 +542,7 @@ where
                 .and_then(|c| c.clone().try_into().ok())
                 .ok_or(Error::SpendingConditions)?;
 
-            if secret.secret_data().data().to_string() != h.to_string() {
+            if secret.secret_data().data() != h.to_string() {
                 return Err(Error::InvalidHashLock(
                     h,
                     secret.secret_data().data().to_string(),
