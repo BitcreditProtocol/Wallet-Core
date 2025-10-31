@@ -74,7 +74,7 @@ pub enum Error {
     #[error("invalid token: {0}")]
     InvalidToken(String),
     #[error("Invalid Hash Lock on Beta Proofs, expected {0} got {1}")]
-    InvalidHashLock(Sha256, Sha256),
+    InvalidHashLock(Sha256, String),
     #[error("no active keyset")]
     NoActiveKeyset,
     #[error("unknown keyset ID")]

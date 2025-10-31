@@ -527,10 +527,10 @@ where
             let msg: Vec<u8> = p.secret.to_bytes();
 
             // Verify spending conditions
-            let hashed = Sha256::hash(&msg);
-            if hashed != h {
-                return Err(Error::InvalidHashLock(h, hashed));
-            }
+            // let hashed = Sha256::hash(&msg);
+            // if hashed != h {
+            //     return Err(Error::InvalidHashLock(h, hashed));
+            // }
             let secret: cashu::nuts::nut10::Secret = p
                 .secret
                 .clone()
@@ -541,6 +541,14 @@ where
                 .tags()
                 .and_then(|c| c.clone().try_into().ok())
                 .ok_or(Error::SpendingConditions)?;
+
+            if secret.secret_data().data().to_string() != h.to_string() {
+                return Err(Error::InvalidHashLock(
+                    h,
+                    secret.secret_data().data().to_string(),
+                ));
+            }
+
             crate::utils::validate_offline_conditions(
                 *wallet_pk.public_key(),
                 &conditions,
