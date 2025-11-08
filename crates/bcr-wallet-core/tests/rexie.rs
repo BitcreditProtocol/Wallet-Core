@@ -258,7 +258,7 @@ async fn transaction_load_tx_nonexisting() {
 
 #[wasm_bindgen_test]
 async fn transaction_delete_tx() {
-    let transactiondb = create_transaction_db("transaction_load_tx").await;
+    let transactiondb = create_transaction_db("transaction_delete_tx").await;
 
     let ys = publics()[0..3].to_vec();
     let tx = Transaction {
