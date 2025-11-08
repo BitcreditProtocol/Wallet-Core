@@ -1,67 +1,27 @@
 // ----- standard library imports
-use std::collections::HashMap;
 // ----- extra library imports
-use bitcoin::secp256k1::{PublicKey, SECP256K1};
-use cashu::{BlindSignature, Proof};
+use bitcoin::secp256k1::PublicKey;
+use cashu::Proof;
 use cdk::Error as CdkError;
 // ----- local imports
-use crate::mint::SecretlessProof;
+use crate::mint::ProofFingerprint;
 // ----- end imports
 
 type CdkResult<T> = std::result::Result<T, cdk::Error>;
 
-pub async fn proofs_to_secretless(
-    alpha_id: PublicKey,
-    substitute_client: &dyn crate::mint::MintConnector,
+pub fn proofs_to_fingerprints(
     proofs: Vec<Proof>,
-) -> CdkResult<(Vec<SecretlessProof>, Vec<cashu::secret::Secret>)> {
-    let alpha_keysets = substitute_client
-        .get_alpha_keysets(alpha_id)
-        .await
-        .map_err(|err| CdkError::HttpError(None, err.to_string()))?;
-
-    let keys: HashMap<cashu::Id, cashu::KeySet> = alpha_keysets
-        .iter()
-        .map(|keyset| (keyset.id, keyset.clone()))
-        .collect();
-
+) -> CdkResult<(Vec<ProofFingerprint>, Vec<cashu::secret::Secret>)> {
     let mut secrets = Vec::with_capacity(proofs.len());
-    let mut secret_less = Vec::with_capacity(proofs.len());
+    let mut fingerprints = Vec::with_capacity(proofs.len());
 
     for p in proofs.iter() {
-        let pubkey = keys
-            .get(&p.keyset_id)
-            .ok_or(CdkError::UnknownKeySet)?
-            .keys
-            .amount_key(p.amount)
-            .ok_or(CdkError::AmountKey)?;
-
-        let dleq = p.dleq.as_ref().ok_or(CdkError::DleqProofNotProvided)?;
-        let r = bitcoin::secp256k1::Scalar::from(*dleq.r);
-        let r_bigk: PublicKey = pubkey
-            .mul_tweak(SECP256K1, &r)
-            .map_err(|err| CdkError::Custom(err.to_string()))?;
-        let signature =
-            p.c.combine(&r_bigk)
-                .map_err(|err| CdkError::Custom(err.to_string()))?;
-
-        let dleq = p.dleq.clone().ok_or(CdkError::DleqProofNotProvided)?;
         secrets.push(p.secret.clone());
 
-        let signature = BlindSignature {
-            amount: p.amount,
-            keyset_id: p.keyset_id,
-            c: signature.into(),
-            dleq: None,
-        };
-        secret_less.push(SecretlessProof {
-            signature,
-            dleq,
-            y: *p.y()?,
-        });
+        fingerprints.push(p.clone().try_into()?);
     }
 
-    Ok((secret_less, secrets))
+    Ok((fingerprints, secrets))
 }
 
 pub fn validate_offline_conditions(
@@ -105,6 +65,21 @@ pub fn validate_offline_conditions(
     Ok(lock_time)
 }
 
+impl TryFrom<Proof> for ProofFingerprint {
+    type Error = CdkError;
+
+    fn try_from(proof: Proof) -> Result<Self, Self::Error> {
+        Ok(ProofFingerprint {
+            amount: proof.amount,
+            keyset_id: proof.keyset_id,
+            c: proof.c,
+            dleq: proof.dleq.clone(),
+            witness: proof.witness.clone(),
+            y: proof.y()?,
+        })
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub mod tests {
     use async_trait::async_trait;
@@ -114,7 +89,7 @@ pub mod tests {
     };
     use cdk_common::Error as CDKError;
 
-    use crate::mint::SecretlessProof;
+    use crate::mint::ProofFingerprint;
     type CdkResult<T> = Result<T, CDKError>;
 
     mockall::mock! {
@@ -202,7 +177,7 @@ pub mod tests {
 
         async fn post_exchange_substitute(
             &self,
-            proofs: Vec<SecretlessProof>,
+            proofs: Vec<ProofFingerprint>,
             locks: Vec<bitcoin::hashes::sha256::Hash>,
             wallet_pubkey: bitcoin::secp256k1::PublicKey,
         ) -> CdkResult<Vec<cashu::Proof>>;

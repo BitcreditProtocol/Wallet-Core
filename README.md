@@ -1,2 +1,2 @@
-# Wallet-Core
-Bitcredit wallet core in Rust/WASM 
+# Wallet Core
+Bitcredit wallet core in Rust/WASM

@@ -1,7 +1,7 @@
 // ----- standard library imports
 use std::{collections::HashMap, str::FromStr, sync::Mutex};
 // ----- extra library imports
-use crate::utils::proofs_to_secretless;
+use crate::utils::proofs_to_fingerprints;
 use async_trait::async_trait;
 use bcr_wallet_lib::wallet::Token;
 use bitcoin::hashes::{Hash, sha256::Hash as Sha256};
@@ -145,6 +145,7 @@ pub struct Wallet<TxRepo, DebtPck> {
     mnemonic: bip39::Mnemonic,
     current_payment: Mutex<Option<PayReference>>,
     betas: Vec<cashu::MintUrl>,
+    clowder_id: bitcoin::secp256k1::PublicKey,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -164,6 +165,7 @@ impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck> {
         mnemonic: bip39::Mnemonic,
     ) -> Result<Self> {
         let betas = client.get_clowder_betas().await?;
+        let clowder_id = client.get_clowder_id().await?;
         Ok(Self {
             network,
             client,
@@ -175,6 +177,7 @@ impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck> {
             mnemonic,
             current_payment: Mutex::new(None),
             betas,
+            clowder_id,
         })
     }
 
@@ -392,7 +395,7 @@ where
             } else {
                 tracing::debug!("Offline exchange");
                 let substitute_proofs = self
-                    .offline_exchange(alpha_id, &substitute_client, proofs, tstamp)
+                    .offline_exchange(&substitute_client, proofs, tstamp)
                     .await?;
                 // Alpha proofs -> Beta proofs is done, so we only need the path from Beta to the Wallet Mint
                 let path = path.node_ids[1..].to_vec();
@@ -500,7 +503,6 @@ where
 
     async fn offline_exchange(
         &self,
-        alpha_id: bitcoin::secp256k1::PublicKey,
         substitute_client: &dyn MintConnector,
         proofs: Vec<Proof>,
         tstamp: u64,
@@ -508,15 +510,14 @@ where
         // Ephemeral P2PK secret
         let wallet_pk = cashu::SecretKey::generate();
 
-        let (secretless, secrets) =
-            proofs_to_secretless(alpha_id, substitute_client, proofs).await?;
+        let (fingerprints, secrets) = proofs_to_fingerprints(proofs)?;
         let hash_locks: Vec<Sha256> = secrets
             .iter()
             .map(|secret| Sha256::hash(&secret.to_bytes()))
             .collect();
         let mut beta_proofs = substitute_client
             .post_exchange_substitute(
-                secretless.clone(),
+                fingerprints.clone(),
                 hash_locks.clone(),
                 *wallet_pk.public_key(),
             )
@@ -526,10 +527,10 @@ where
             let msg: Vec<u8> = p.secret.to_bytes();
 
             // Verify spending conditions
-            let hashed = Sha256::hash(&msg);
-            if hashed != h {
-                return Err(Error::InvalidHashLock(h, hashed));
-            }
+            // let hashed = Sha256::hash(&msg);
+            // if hashed != h {
+            //     return Err(Error::InvalidHashLock(h, hashed));
+            // }
             let secret: cashu::nuts::nut10::Secret = p
                 .secret
                 .clone()
@@ -540,6 +541,14 @@ where
                 .tags()
                 .and_then(|c| c.clone().try_into().ok())
                 .ok_or(Error::SpendingConditions)?;
+
+            if secret.secret_data().data() != h.to_string() {
+                return Err(Error::InvalidHashLock(
+                    h,
+                    secret.secret_data().data().to_string(),
+                ));
+            }
+
             crate::utils::validate_offline_conditions(
                 *wallet_pk.public_key(),
                 &conditions,
@@ -955,5 +964,13 @@ where
         let mut urls = self.betas.clone();
         urls.push(self.client.mint_url());
         urls
+    }
+
+    fn betas(&self) -> Vec<cashu::MintUrl> {
+        self.betas.clone()
+    }
+
+    fn clowder_id(&self) -> bitcoin::secp256k1::PublicKey {
+        self.clowder_id
     }
 }
