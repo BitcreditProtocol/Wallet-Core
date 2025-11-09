@@ -2,72 +2,18 @@
 use std::str::FromStr;
 // ----- extra library imports
 use async_trait::async_trait;
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::PublicKey;
-use cashu::{Proof, ProofDleq};
+use cashu::Proof;
 use cdk::Error as CdkError;
-use serde::{Deserialize, Serialize};
 // ----- local imports
-use crate::sync;
-
+use crate::{
+    clowder_models::{
+        AlphaState, ConnectedMintResponse, ConnectedMintsResponse, ExchangeRequest,
+        ExchangeResponse, OfflineResponse, PathRequest, ProofFingerprint, PublicKeyResponse,
+        SubstituteExchangeRequest, SubstituteExchangeResponse,
+    },
+    sync,
+};
 // ----- end imports
-
-//* Clowder Models, TODO - later obtain from shared library
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectedMintsResponse {
-    pub mint_urls: Vec<cashu::MintUrl>,
-    pub clowder_urls: Vec<reqwest::Url>,
-    pub node_ids: Vec<bitcoin::secp256k1::PublicKey>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PathRequest {
-    pub origin_mint_url: cashu::MintUrl,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExchangeRequest {
-    pub alpha_proofs: Vec<cashu::Proof>,
-    pub exchange_path: Vec<bitcoin::secp256k1::PublicKey>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExchangeResponse {
-    pub beta_proofs: Vec<cashu::Proof>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PublicKeyResponse {
-    pub public_key: bitcoin::secp256k1::PublicKey,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProofFingerprint {
-    pub amount: cashu::Amount,
-    pub keyset_id: cashu::Id,
-    pub c: cashu::PublicKey,
-    pub y: cashu::PublicKey,
-    pub dleq: Option<ProofDleq>,
-    pub witness: Option<cashu::Witness>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubstituteExchangeRequest {
-    pub proofs: Vec<ProofFingerprint>,
-    pub locks: Vec<Sha256>,
-    pub wallet_pubkey: PublicKey,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubstituteExchangeResponse {
-    pub outputs: Vec<Proof>,
-    pub signature: bitcoin::secp256k1::schnorr::Signature,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OfflineResponse {
-    pub offline: bool,
-}
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -92,6 +38,14 @@ pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {
     ) -> CdkResult<Vec<cashu::KeySet>>;
 
     async fn get_alpha_offline(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<bool>;
+    async fn get_alpha_status(
+        &self,
+        alpha_id: bitcoin::secp256k1::PublicKey,
+    ) -> CdkResult<AlphaState>;
+    async fn get_alpha_substitute(
+        &self,
+        alpha_id: bitcoin::secp256k1::PublicKey,
+    ) -> CdkResult<ConnectedMintResponse>;
 
     async fn post_exchange_substitute(
         &self,
@@ -261,6 +215,42 @@ impl MintConnector for HttpClientExt {
             .await
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
         Ok(response.offline)
+    }
+
+    /// Determines the status of the a mint from the view of the requested Beta
+    async fn get_alpha_status(
+        &self,
+        alpha_id: bitcoin::secp256k1::PublicKey,
+    ) -> CdkResult<AlphaState> {
+        let url = self.url.join(&format!("v1/alpha/status/{alpha_id}"))?;
+        let response = self
+            .secondary
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
+        Ok(response
+            .json()
+            .await
+            .map_err(|e| CdkError::HttpError(None, e.to_string()))?)
+    }
+
+    /// Determines the status of the a mint from the view of the requested Beta
+    async fn get_alpha_substitute(
+        &self,
+        alpha_id: bitcoin::secp256k1::PublicKey,
+    ) -> CdkResult<ConnectedMintResponse> {
+        let url = self.url.join(&format!("v1/alpha/substitute/{alpha_id}"))?;
+        let response = self
+            .secondary
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
+        Ok(response
+            .json()
+            .await
+            .map_err(|e| CdkError::HttpError(None, e.to_string()))?)
     }
 
     async fn get_clowder_betas(&self) -> CdkResult<Vec<cashu::MintUrl>> {

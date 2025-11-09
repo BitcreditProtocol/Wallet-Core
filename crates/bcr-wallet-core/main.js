@@ -142,7 +142,15 @@ async function run() {
   });
 
   document.getElementById("reclaimbtn").addEventListener("click", async () => {
-    let ids = await wasmModule.get_wallets_ids();
+    let ids = wasmModule.get_wallets_ids();
+    let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
+    await wasmModule.wallet_reclaim_funds(idx);
+
+    await update_balance();
+  });
+
+  document.getElementById("migratebtn").addEventListener("click", async () => {
+    let ids = wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
     await wasmModule.wallet_reclaim_funds(idx);
 
@@ -150,7 +158,7 @@ async function run() {
   });
 
   document.getElementById("recoverbtn").addEventListener("click", async () => {
-    let ids = await wasmModule.get_wallets_ids();
+    let ids = wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
     await wasmModule.recover(idx);
 
@@ -158,7 +166,7 @@ async function run() {
   });
 
   document.getElementById("cleanbtn").addEventListener("click", async () => {
-    let ids = await wasmModule.get_wallets_ids();
+    let ids = wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
     let proofs_removed = await wasmModule.wallet_clean_local_db(idx);
     console.log("proofs removed: " + proofs_removed);
@@ -167,14 +175,14 @@ async function run() {
   document
     .getElementById("walletlist")
     .addEventListener("change", async (event) => {
-      let ids = await wasmModule.get_wallets_ids();
+      let ids = wasmModule.get_wallets_ids();
       if (ids.length > 0) {
         let idx = Number(
           ids[document.getElementById("walletlist").selectedIndex],
         );
 
-        let wallet_name = await wasmModule.get_wallet_name(idx);
-        let wallet_url = await wasmModule.get_wallet_mint_url(idx);
+        let wallet_name = wasmModule.get_wallet_name(idx);
+        let wallet_url = wasmModule.get_wallet_mint_url(idx);
         document.getElementById("walletname").innerHTML =
           "[" + wallet_name + "] " + String(idx) + " @ " + wallet_url + "  ";
 

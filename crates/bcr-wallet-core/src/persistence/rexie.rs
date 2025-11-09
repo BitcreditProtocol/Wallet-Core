@@ -296,7 +296,7 @@ impl PocketRepository for PocketDB {
         Ok(proof_state)
     }
 
-    async fn delete_proof(&self, y: cdk01::PublicKey) -> Result<()> {
+    async fn delete_proof(&self, y: cdk01::PublicKey) -> Result<Option<Proof>> {
         self.delete_entry(y).await
     }
 

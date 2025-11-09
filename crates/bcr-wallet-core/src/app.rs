@@ -148,7 +148,7 @@ fn get_wallet(idx: usize) -> Result<Arc<ProductionWallet>> {
 }
 
 fn get_purse() -> Result<Arc<ProductionPurse>> {
-    APP_STATE.with_borrow(|state| {
+    APP_STATE.with_borrow_mut(|state| {
         let Some(purse) = &state.purse else {
             return Err(Error::Initialization);
         };
@@ -292,6 +292,15 @@ pub async fn wallet_clean_local_db(idx: usize) -> Result<u32> {
     let wallet = get_wallet(idx)?;
     let deleted = wallet.clean_local_db().await?;
     Ok(deleted)
+}
+
+pub async fn purse_migrate_rabid(tstamp: u64) -> Result<()> {
+    tracing::debug!("purse_migrate_rabid");
+
+    let purse = get_purse()?;
+    purse.migrate_rabid_wallets(tstamp).await?;
+
+    Ok(())
 }
 
 pub async fn wallet_load_tx(idx: usize, tx_id: &str) -> Result<Transaction> {
@@ -613,7 +622,7 @@ async fn build_wallet(
     };
     let new_wallet: ProductionWallet = ProductionWallet::new(
         network,
-        client,
+        RefCell::new(client),
         tx_repo,
         (debit_pocket, credit_pocket),
         name,

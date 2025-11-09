@@ -1,3 +1,5 @@
+use std::sync::PoisonError;
+
 // ----- standard library imports
 // ----- extra library imports
 use anyhow::Error as AnyError;
@@ -46,7 +48,6 @@ pub enum Error {
     Url(#[from] url::ParseError),
     #[error("reqwest::Client {0}")]
     ReqwestClient(#[from] reqwest::Error),
-
     #[error("insufficient funds")]
     InsufficientFunds,
     #[error("local pocket DB not initialized correctly")]

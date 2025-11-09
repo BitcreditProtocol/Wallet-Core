@@ -12,6 +12,7 @@ use tokio_with_wasm::alias::time;
 use uuid::Uuid;
 // ----- local imports
 use crate::{
+    MintConnector,
     error::{Error, Result},
     sync,
     types::{PaymentSummary, WalletConfig},
@@ -41,6 +42,8 @@ pub trait Wallet: sync::SendSync {
     fn clowder_id(&self) -> bitcoin::secp256k1::PublicKey;
     fn mint_urls(&self) -> Vec<MintUrl>;
     async fn prepare_pay(&self, input: String, now: u64) -> Result<PaymentSummary>;
+    async fn is_wallet_mint_rabid(&self) -> Result<bool>;
+    async fn mint_substitute(&self) -> Result<Option<MintUrl>>;
     async fn pay(
         &self,
         p_id: Uuid,
@@ -48,6 +51,12 @@ pub trait Wallet: sync::SendSync {
         http_cl: &reqwest::Client,
         tstamp: u64,
     ) -> Result<TransactionId>;
+
+    async fn migrate_pockets_substitute(
+        &self,
+        substitute: Box<dyn MintConnector>,
+        tstamp: u64,
+    ) -> Result<()>;
 
     async fn receive_proofs(
         &self,
@@ -251,6 +260,34 @@ where
             time::sleep(sleep_time).await;
         }
         Ok(None)
+    }
+
+    pub async fn migrate_rabid_wallets(&mut self, tstamp: u64) -> Result<()> {
+        // Step 1 find rabid wallets
+        // For each rabid wallet
+        // Step 2.1 Determine substitute Beta
+        // Step 2.2 Create Beta wallet
+        // Step 2.3 Offline intermint exchange alpha eCash to Beta wallet
+        // Step 2.4 Delete Alpha wallet on successful migration
+
+        let mut wlts = self.wallets.lock().unwrap();
+
+        for wlt in wlts.iter_mut() {
+            //empty
+            let is_rabid = wlt.is_wallet_mint_rabid().await?;
+
+            if is_rabid {
+                if let Some(substitute_url) = wlt.mint_substitute().await? {
+                    tracing::info!("Wallet is found rabid, migrating to substitute beta");
+                    let substitute_client = crate::mint::HttpClientExt::new(substitute_url);
+                    wlt.migrate_pockets_substitute(Box::new(substitute_client), tstamp)
+                        .await?;
+                    self.repo.store(wlt.config()).await?;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
