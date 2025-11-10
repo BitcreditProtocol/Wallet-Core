@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use cashu::{Amount, CurrencyUnit, MintUrl, PaymentRequest, nut00 as cdk00, nut18 as cdk18};
 use cdk::wallet::types::TransactionId;
 use nostr_sdk::nips::nip19::{Nip19Profile, ToBech32};
+use parking_lot::RwLock;
 use tokio_with_wasm::alias::time;
 use uuid::Uuid;
 // ----- local imports
@@ -33,14 +34,14 @@ pub trait PurseRepository: sync::SendSync {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait Wallet: sync::SendSync {
-    fn config(&self) -> WalletConfig;
+    fn config(&self) -> Result<WalletConfig>;
     fn name(&self) -> String;
-    fn mint_url(&self) -> MintUrl;
+    fn mint_url(&self) -> Result<MintUrl>;
     #[allow(dead_code)]
     fn betas(&self) -> Vec<MintUrl>;
     #[allow(dead_code)]
     fn clowder_id(&self) -> bitcoin::secp256k1::PublicKey;
-    fn mint_urls(&self) -> Vec<MintUrl>;
+    fn mint_urls(&self) -> Result<Vec<MintUrl>>;
     async fn prepare_pay(&self, input: String, now: u64) -> Result<PaymentSummary>;
     async fn is_wallet_mint_rabid(&self) -> Result<bool>;
     async fn mint_substitute(&self) -> Result<Option<MintUrl>>;
@@ -53,7 +54,7 @@ pub trait Wallet: sync::SendSync {
     ) -> Result<TransactionId>;
 
     async fn migrate_pockets_substitute(
-        &self,
+        &mut self,
         substitute: Box<dyn MintConnector>,
         tstamp: u64,
     ) -> Result<()>;
@@ -77,7 +78,7 @@ struct PaymentReference {
 
 pub struct Purse<PurseRepo, Wlt> {
     pub repo: PurseRepo,
-    pub wallets: Arc<Mutex<Vec<Arc<Wlt>>>>,
+    pub wallets: Arc<Mutex<Vec<Arc<RwLock<Wlt>>>>>,
     nostr_cl: Arc<nostr_sdk::Client>,
     myself: Nip19Profile,
     http_cl: Arc<reqwest::Client>,
@@ -114,8 +115,9 @@ where
         self.repo.list_ids().await
     }
 
-    pub fn get_wallet(&self, idx: usize) -> Option<Arc<Wlt>> {
+    pub fn get_wallet(&self, idx: usize) -> Option<Arc<RwLock<Wlt>>> {
         let wallets = self.wallets.lock().unwrap();
+
         wallets.get(idx).cloned()
     }
 
@@ -131,7 +133,7 @@ where
 {
     pub fn names(&self) -> Vec<String> {
         let wallets = self.wallets.lock().unwrap();
-        wallets.iter().map(|w| w.name()).collect()
+        wallets.iter().map(|w| w.read().name()).collect()
     }
 }
 
@@ -141,9 +143,9 @@ where
     Wlt: Wallet,
 {
     pub async fn add_wallet(&self, wallet: Wlt) -> Result<usize> {
-        self.repo.store(wallet.config()).await?;
+        self.repo.store(wallet.config()?).await?;
         let mut wallets = self.wallets.lock().unwrap();
-        wallets.push(Arc::new(wallet));
+        wallets.push(Arc::new(RwLock::new(wallet)));
         Ok(wallets.len() - 1)
     }
 
@@ -151,7 +153,7 @@ where
         let Some(wlt) = self.wallets.lock().unwrap().get(idx).cloned() else {
             return Err(Error::WalletNotFound(idx));
         };
-        let summary = wlt.prepare_pay(input, now).await?;
+        let summary = wlt.read().prepare_pay(input, now).await?;
         let pref = PaymentReference {
             payment_ref: summary.request_id,
             wallet_idx: idx,
@@ -179,7 +181,10 @@ where
                 "Wallet not found for payment",
             )));
         };
-        let txid = wlt.pay(p_id, &self.nostr_cl, &self.http_cl, tstamp).await?;
+        let txid = wlt
+            .read()
+            .pay(p_id, &self.nostr_cl, &self.http_cl, tstamp)
+            .await?;
         Ok(txid)
     }
 
@@ -193,7 +198,7 @@ where
             let wlts = self.wallets.lock().unwrap();
             let mut mints = Vec::with_capacity(wlts.len());
             for wlt in wlts.iter() {
-                mints.extend(wlt.mint_urls());
+                mints.extend(wlt.read().mint_urls()?);
             }
             mints
         };
@@ -262,7 +267,7 @@ where
         Ok(None)
     }
 
-    pub async fn migrate_rabid_wallets(&mut self, tstamp: u64) -> Result<()> {
+    pub async fn migrate_rabid_wallets(&self, tstamp: u64) -> Result<()> {
         // Step 1 find rabid wallets
         // For each rabid wallet
         // Step 2.1 Determine substitute Beta
@@ -274,15 +279,16 @@ where
 
         for wlt in wlts.iter_mut() {
             //empty
-            let is_rabid = wlt.is_wallet_mint_rabid().await?;
+            let is_rabid = wlt.read().is_wallet_mint_rabid().await?;
 
             if is_rabid {
-                if let Some(substitute_url) = wlt.mint_substitute().await? {
+                if let Some(substitute_url) = wlt.read().mint_substitute().await? {
                     tracing::info!("Wallet is found rabid, migrating to substitute beta");
                     let substitute_client = crate::mint::HttpClientExt::new(substitute_url);
-                    wlt.migrate_pockets_substitute(Box::new(substitute_client), tstamp)
+                    wlt.write()
+                        .migrate_pockets_substitute(Box::new(substitute_client), tstamp)
                         .await?;
-                    self.repo.store(wlt.config()).await?;
+                    self.repo.store(wlt.read().config()?).await?;
                 }
             }
         }
@@ -293,7 +299,7 @@ where
 
 async fn handle_event<T>(
     event: nostr_sdk::Event,
-    wlts: &Mutex<Vec<Arc<T>>>,
+    wlts: &Mutex<Vec<Arc<RwLock<T>>>>,
     payment_id: Uuid,
     expected: Amount,
 ) -> Result<Option<TransactionId>>
@@ -324,13 +330,13 @@ where
     }
     let wlt = {
         let locked = wlts.lock().unwrap();
-        let mut best_wlt: Option<Arc<T>> = None;
+        let mut best_wlt: Option<Arc<RwLock<T>>> = None;
         for wlt in locked.iter() {
-            if wlt.mint_url() == payload.mint {
+            if wlt.read().mint_url()? == payload.mint {
                 best_wlt.replace(wlt.clone());
                 break;
             }
-            if wlt.mint_urls().contains(&payload.mint) {
+            if wlt.read().mint_urls()?.contains(&payload.mint) {
                 best_wlt.replace(wlt.clone());
             }
         }
@@ -345,6 +351,7 @@ where
         (String::from("nostr_event_id"), event.id.to_string()),
     ]);
     let response = wlt
+        .read()
         .receive_proofs(
             payload.proofs,
             payload.unit,

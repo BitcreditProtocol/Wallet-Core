@@ -1,10 +1,5 @@
 // ----- standard library imports
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    str::FromStr,
-    sync::{Mutex, RwLock},
-};
+use std::{collections::HashMap, str::FromStr, sync::Mutex};
 // ----- extra library imports
 use crate::{clowder_models::AlphaState, utils::proofs_to_fingerprints};
 use async_trait::async_trait;
@@ -142,7 +137,7 @@ pub struct PayReference {
 }
 pub struct Wallet<TxRepo, DebtPck> {
     network: bitcoin::Network,
-    client: RefCell<Box<dyn MintConnector>>,
+    client: Box<dyn MintConnector>,
     // beta_clients: HashMap<cashu::MintUrl, Box<dyn MintConnector>>,
     tx_repo: TxRepo,
     debit: DebtPck,
@@ -164,15 +159,15 @@ pub struct WalletBalance {
 impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck> {
     pub async fn new(
         network: bitcoin::Network,
-        client: RefCell<Box<dyn MintConnector>>,
+        client: Box<dyn MintConnector>,
         tx_repo: TxRepo,
         (debit, credit): (DebtPck, Box<dyn CreditPocket>),
         name: String,
         id: String,
         mnemonic: bip39::Mnemonic,
     ) -> Result<Self> {
-        let betas = client.borrow().get_clowder_betas().await?;
-        let clowder_id = client.borrow().get_clowder_id().await?;
+        let betas = client.get_clowder_betas().await?;
+        let clowder_id = client.get_clowder_id().await?;
         Ok(Self {
             network,
             client,
@@ -199,7 +194,7 @@ impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck> {
         &self,
         payment_window: std::time::Duration,
     ) -> Result<Vec<RedemptionSummary>> {
-        let keysets_info = self.client.borrow().get_mint_keysets().await?.keysets;
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
         self.credit
             .list_redemptions(&keysets_info, payment_window)
             .await
@@ -224,7 +219,7 @@ where
         req: &cdk18::PaymentRequest,
     ) -> Result<(Amount, CurrencyUnit, cdk18::Transport)> {
         if let Some(mints) = &req.mints
-            && !mints.contains(&self.client.borrow().mint_url())
+            && !mints.contains(&self.client.mint_url())
         {
             return Err(Error::InterMint);
         }
@@ -277,43 +272,36 @@ where
     DebtPck: DebitPocket,
 {
     pub async fn clean_local_db(&self) -> Result<u32> {
-        let credit_ys = self
-            .credit
-            .clean_local_proofs(self.client.borrow().as_ref())
-            .await?;
-        let debit_ys = self
-            .debit
-            .clean_local_proofs(self.client.borrow().as_ref())
-            .await?;
+        let credit_ys = self.credit.clean_local_proofs(self.client.as_ref()).await?;
+        let debit_ys = self.debit.clean_local_proofs(self.client.as_ref()).await?;
         let total = credit_ys.len() + debit_ys.len();
         Ok(total as u32)
     }
 
     pub async fn redeem_credit(&self) -> Result<Amount> {
-        let keysets_info = self.client.borrow().get_mint_keysets().await?.keysets;
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
         let credit_proofs: Vec<cdk00::Proof> = self
             .credit
-            .get_redeemable_proofs(&keysets_info, self.client.borrow().as_ref())
+            .get_redeemable_proofs(&keysets_info, self.client.as_ref())
             .await?;
         if credit_proofs.is_empty() {
             Ok(Amount::ZERO)
         } else {
             let (amount, _) = self
                 .debit
-                .receive_proofs(self.client.borrow().as_ref(), &keysets_info, credit_proofs)
+                .receive_proofs(self.client.as_ref(), &keysets_info, credit_proofs)
                 .await?;
             Ok(amount)
         }
     }
 
     pub async fn restore_local_proofs(&self) -> Result<()> {
-        let keysets_info = self.client.borrow().get_mint_keysets().await?.keysets;
-        let client = self.client.borrow();
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
         let (debit, credit) = futures::join!(
             self.debit
-                .restore_local_proofs(&keysets_info, client.as_ref()),
+                .restore_local_proofs(&keysets_info, self.client.as_ref()),
             self.credit
-                .restore_local_proofs(&keysets_info, client.as_ref())
+                .restore_local_proofs(&keysets_info, self.client.as_ref())
         );
         debit?;
         credit?;
@@ -321,9 +309,7 @@ where
     }
 
     pub async fn check_pending_melts(&self) -> Result<Amount> {
-        self.debit
-            .check_pending_melts(self.client.borrow().as_ref())
-            .await
+        self.debit.check_pending_melts(self.client.as_ref()).await
     }
 }
 
@@ -348,7 +334,7 @@ where
             return Ok(tx);
         }
         let request = cdk07::CheckStateRequest { ys: tx.ys.clone() };
-        let response = self.client.borrow().post_check_state(request).await?;
+        let response = self.client.post_check_state(request).await?;
         let is_any_spent = response
             .states
             .iter()
@@ -379,10 +365,10 @@ where
     ) -> Result<TransactionId> {
         let mut proofs = proofs;
         if let Some(mint) = mint
-            && mint != self.client.borrow().mint_url()
+            && mint != self.client.mint_url()
         {
             // Determine path from current mint to origin
-            let path = self.client.borrow().post_clowder_path(mint.clone()).await?;
+            let path = self.client.post_clowder_path(mint.clone()).await?;
             tracing::debug!("Receive intermint proofs path {:?}", path);
             if path.node_ids.len() < 3 {
                 return Err(Error::InvalidClowderPath);
@@ -435,18 +421,18 @@ where
         let (stored_amount, ys) = if unit == self.debit.unit() {
             tracing::debug!("receive into debit pocket");
             self.debit
-                .receive_proofs(self.client.borrow().as_ref(), keysets_info, proofs)
+                .receive_proofs(self.client.as_ref(), keysets_info, proofs)
                 .await?
         } else if unit == self.credit.unit() {
             tracing::debug!("receive into credit pocket");
             self.credit
-                .receive_proofs(self.client.borrow().as_ref(), keysets_info, proofs)
+                .receive_proofs(self.client.as_ref(), keysets_info, proofs)
                 .await?
         } else {
             return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
         };
         let tx = Transaction {
-            mint_url: self.client.borrow().mint_url(),
+            mint_url: self.client.mint_url(),
             direction: TransactionDirection::Incoming,
             fee: received_amount
                 .checked_sub(stored_amount)
@@ -641,7 +627,6 @@ where
                 attempts += 1;
                 match self
                     .client
-                    .borrow()
                     .post_exchange(locked_alpha_proofs.clone(), exchange_path.clone())
                     .await
                 {
@@ -680,15 +665,11 @@ where
 
     pub async fn receive_token(&self, token: Token, tstamp: u64) -> Result<TransactionId> {
         let token_teaser = token.to_string().chars().take(20).collect::<String>();
-        let keysets_info = self.client.borrow().get_mint_keysets().await?.keysets;
-        let proofs = if token.mint_url() == self.client.borrow().mint_url() {
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
+        let proofs = if token.mint_url() == self.client.mint_url() {
             token.proofs(&keysets_info)?
         } else {
-            let path = self
-                .client
-                .borrow()
-                .post_clowder_path(token.mint_url())
-                .await?;
+            let path = self.client.post_clowder_path(token.mint_url()).await?;
             tracing::debug!("Receive intermint proofs path {:?}", path);
             if path.node_ids.len() < 3 {
                 return Err(Error::InvalidClowderPath);
@@ -769,7 +750,7 @@ where
             id: p_id,
             memo: partial_tx.memo.clone(),
             unit: partial_tx.unit.clone(),
-            mint: self.client.borrow().mint_url(),
+            mint: self.client.mint_url(),
             proofs,
         };
         match transport._type {
@@ -806,25 +787,26 @@ where
     TxRepo: TransactionRepository,
     DebtPck: DebitPocket,
 {
-    fn config(&self) -> WalletConfig {
-        WalletConfig {
+    fn config(&self) -> Result<WalletConfig> {
+        Ok(WalletConfig {
             wallet_id: self.id.clone(),
             name: self.name.clone(),
             network: self.network,
             debit: self.debit.unit(),
             credit: self.credit.maybe_unit(),
-            mint: self.client.borrow().mint_url(),
+            mint: self.client.mint_url(),
             mnemonic: self.mnemonic.clone(),
-        }
+        })
     }
     fn name(&self) -> String {
         self.name.clone()
     }
-    fn mint_url(&self) -> cashu::MintUrl {
-        self.client.borrow().mint_url()
+    fn mint_url(&self) -> Result<cashu::MintUrl> {
+        Ok(self.client.mint_url())
     }
     async fn prepare_pay(&self, input: String, now: u64) -> Result<PaymentSummary> {
-        let infos = self.client.borrow().get_mint_keysets().await?.keysets;
+        let infos = { self.client.get_mint_keysets() }.await?.keysets;
+
         if let Ok(request) = cdk18::PaymentRequest::from_str(&input) {
             let (amount, unit, transport) = self.check_nut18_request(&request).await?;
             let s_summary = if self.credit.unit() == unit {
@@ -887,7 +869,7 @@ where
             );
             return Err(Error::NoPrepareRef(p_id));
         }
-        let infos = self.client.borrow().get_mint_keysets().await?.keysets;
+        let infos = self.client.get_mint_keysets().await?.keysets;
         let PayReference {
             request_id,
             unit,
@@ -903,7 +885,7 @@ where
                         .await?
                 } else if unit == self.debit.unit() {
                     self.debit
-                        .send_proofs(request_id, &infos, self.client.borrow().as_ref())
+                        .send_proofs(request_id, &infos, self.client.as_ref())
                         .await?
                 } else {
                     return Err(Error::Internal(String::from("currency unit mismatch")));
@@ -914,7 +896,7 @@ where
                     .iter()
                     .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
                 let partial_tx = Transaction {
-                    mint_url: self.client.borrow().mint_url(),
+                    mint_url: self.client.mint_url(),
                     fee: fees,
                     direction: TransactionDirection::Outgoing,
                     memo,
@@ -934,7 +916,7 @@ where
             PaymentType::Bolt11 => {
                 let proofs = self
                     .debit
-                    .pay_melt(request_id, &infos, self.client.borrow().as_ref())
+                    .pay_melt(request_id, &infos, self.client.as_ref())
                     .await?;
                 let (ys, proofs): (Vec<cdk01::PublicKey>, Vec<cdk00::Proof>) =
                     proofs.into_iter().unzip();
@@ -942,7 +924,7 @@ where
                     .iter()
                     .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
                 let partial_tx = Transaction {
-                    mint_url: self.client.borrow().mint_url(),
+                    mint_url: self.client.mint_url(),
                     fee: fees,
                     direction: TransactionDirection::Outgoing,
                     memo,
@@ -968,7 +950,7 @@ where
         metadata: HashMap<String, String>,
         quote_id: Option<String>,
     ) -> Result<TransactionId> {
-        let keysets_info = self.client.borrow().get_mint_keysets().await?.keysets;
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
         self._receive_proofs(
             &keysets_info,
             proofs,
@@ -1016,10 +998,10 @@ where
         Ok(None)
     }
 
-    fn mint_urls(&self) -> Vec<cashu::MintUrl> {
+    fn mint_urls(&self) -> Result<Vec<cashu::MintUrl>> {
         let mut urls = self.betas.clone();
-        urls.push(self.client.borrow().mint_url());
-        urls
+        urls.push(self.client.mint_url());
+        Ok(urls)
     }
 
     fn betas(&self) -> Vec<cashu::MintUrl> {
@@ -1031,7 +1013,7 @@ where
     }
 
     async fn migrate_pockets_substitute(
-        &self,
+        &mut self,
         substitute: Box<dyn MintConnector>,
         tstamp: u64,
     ) -> Result<()> {
@@ -1050,7 +1032,7 @@ where
                 .await?;
             exchanged_debit.extend(exchanged);
         }
-        let keysets_info = self.client.borrow().get_mint_keysets().await?.keysets;
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
         self.debit
             .receive_proofs(substitute.as_ref(), &keysets_info, exchanged_debit)
             .await?;
@@ -1065,7 +1047,7 @@ where
             .receive_proofs(substitute.as_ref(), &keysets_info, exchanged_credit)
             .await?;
 
-        *self.client.borrow_mut() = substitute;
+        self.client = substitute;
         Ok(())
     }
 }

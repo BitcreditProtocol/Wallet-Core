@@ -1,5 +1,3 @@
-use std::sync::PoisonError;
-
 // ----- standard library imports
 // ----- extra library imports
 use anyhow::Error as AnyError;
@@ -120,6 +118,8 @@ pub enum Error {
     MissingCurrencyUnit,
     #[error("Invalid Clowder Path for foreign eCash")]
     InvalidClowderPath,
+    #[error("lock poisoned")]
+    LockPoisoned,
 
     #[error("internal error: {0}")]
     Internal(String),
