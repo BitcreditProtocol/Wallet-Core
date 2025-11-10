@@ -535,10 +535,6 @@ where
             let msg: Vec<u8> = p.secret.to_bytes();
 
             // Verify spending conditions
-            // let hashed = Sha256::hash(&msg);
-            // if hashed != h {
-            //     return Err(Error::InvalidHashLock(h, hashed));
-            // }
             let secret: cashu::nuts::nut10::Secret = p
                 .secret
                 .clone()
@@ -813,7 +809,7 @@ where
         Ok(self.client.mint_url())
     }
     async fn prepare_pay(&self, input: String, now: u64) -> Result<PaymentSummary> {
-        let infos = { self.client.get_mint_keysets() }.await?.keysets;
+        let infos = self.client.get_mint_keysets().await?.keysets;
 
         if let Ok(request) = cdk18::PaymentRequest::from_str(&input) {
             let (amount, unit, transport) = self.check_nut18_request(&request).await?;
@@ -1020,7 +1016,7 @@ where
     }
 
     fn betas(&self) -> Vec<cashu::MintUrl> {
-        self.beta_clients.iter().map(|(k, _v)| k.clone()).collect()
+        self.beta_clients.keys().cloned().collect()
     }
 
     fn clowder_id(&self) -> bitcoin::secp256k1::PublicKey {
@@ -1047,22 +1043,24 @@ where
                 .await?;
             exchanged_debit.extend(exchanged);
         }
-        let keysets_info = self.client.get_mint_keysets().await?.keysets;
-        self.debit
-            .receive_proofs(substitute.as_ref(), &keysets_info, exchanged_debit)
-            .await?;
-
         for (_, proofs) in credit_proofs.iter() {
             let exchanged = self
                 .offline_exchange(substitute.as_ref(), proofs.clone(), tstamp)
                 .await?;
             exchanged_credit.extend(exchanged);
         }
-        self.credit
-            .receive_proofs(substitute.as_ref(), &keysets_info, exchanged_credit)
-            .await?;
 
         self.client = substitute;
+
+        // Swap intermint exchanged proofs
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
+        self.debit
+            .receive_proofs(self.client.as_ref(), &keysets_info, exchanged_debit)
+            .await?;
+        self.credit
+            .receive_proofs(self.client.as_ref(), &keysets_info, exchanged_credit)
+            .await?;
+
         Ok(())
     }
 }

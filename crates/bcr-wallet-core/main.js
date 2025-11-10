@@ -118,7 +118,7 @@ async function run() {
   });
 
   document.getElementById("receivebtn").addEventListener("click", async () => {
-    let ids = await wasmModule.get_wallets_ids();
+    let ids = wasmModule.get_wallets_ids();
     let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
     let token = prompt("Enter token");
     let tx_id = await wasmModule.wallet_receive_token(idx, token);
@@ -150,11 +150,8 @@ async function run() {
   });
 
   document.getElementById("migratebtn").addEventListener("click", async () => {
-    let ids = wasmModule.get_wallets_ids();
-    let idx = Number(ids[document.getElementById("walletlist").selectedIndex]);
-    await wasmModule.wallet_reclaim_funds(idx);
-
-    await update_balance();
+    await wasmModule.purse_migrate_rabid();
+    await update_wallets();
   });
 
   document.getElementById("recoverbtn").addEventListener("click", async () => {

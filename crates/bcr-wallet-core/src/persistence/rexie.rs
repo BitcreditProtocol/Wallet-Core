@@ -4,8 +4,8 @@ use std::{collections::HashMap, rc::Rc, str::FromStr};
 use anyhow::Error as AnyError;
 use async_trait::async_trait;
 use cashu::{
-    Amount, CurrencyUnit, MintUrl, nut00 as cdk00, nut01 as cdk01, nut02 as cdk02, nut07 as cdk07,
-    nut12 as cdk12, secret::Secret,
+    Amount, CurrencyUnit, MintUrl, Proof, nut00 as cdk00, nut01 as cdk01, nut02 as cdk02,
+    nut07 as cdk07, nut12 as cdk12, secret::Secret,
 };
 use cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
 use rexie::{Rexie, TransactionMode};
@@ -151,9 +151,10 @@ impl PocketDB {
             .db
             .transaction(&[&self.proof_store], TransactionMode::ReadWrite)?;
         let proofs = tx.store(&self.proof_store)?;
-        proofs.delete(y.to_string().into()).await?;
+        let deleted = proofs.delete(y.to_string().into()).await?;
+
         tx.done().await?;
-        Ok(())
+        Ok(deleted)
     }
 
     async fn update_entry_state(
@@ -297,7 +298,11 @@ impl PocketRepository for PocketDB {
     }
 
     async fn delete_proof(&self, y: cdk01::PublicKey) -> Result<Option<Proof>> {
-        self.delete_entry(y).await
+        let Ok((proof, _)) = self.load_proof(y).await else {
+            return Ok(None);
+        };
+        self.delete_entry(y).await?;
+        Ok(Some(proof))
     }
 
     async fn list_all(&self) -> Result<Vec<cdk01::PublicKey>> {

@@ -250,7 +250,8 @@ pub async fn wallet_clean_local_db(idx: u32) -> u32 {
 
 // --------------------------------------------------------------- purse_migrate_rabid
 #[wasm_bindgen]
-pub async fn purse_migrate_rabid(tstamp: u64) {
+pub async fn purse_migrate_rabid() {
+    let tstamp = chrono::Utc::now().timestamp() as u64;
     match app::purse_migrate_rabid(tstamp).await {
         Ok(_) => tracing::info!("Sucessfully migrated"),
         Err(e) => tracing::info!("Error migrating wallet {}", e),

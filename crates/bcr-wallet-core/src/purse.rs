@@ -268,28 +268,18 @@ where
     }
 
     pub async fn migrate_rabid_wallets(&self, tstamp: u64) -> Result<()> {
-        // Step 1 find rabid wallets
-        // For each rabid wallet
-        // Step 2.1 Determine substitute Beta
-        // Step 2.2 Create Beta wallet
-        // Step 2.3 Offline intermint exchange alpha eCash to Beta wallet
-        // Step 2.4 Delete Alpha wallet on successful migration
-
         let mut wlts = self.wallets.lock().unwrap();
 
         for wlt in wlts.iter_mut() {
-            //empty
             let is_rabid = wlt.read().is_wallet_mint_rabid().await?;
 
-            if is_rabid {
-                if let Some(substitute_url) = wlt.read().mint_substitute().await? {
-                    tracing::info!("Wallet is found rabid, migrating to substitute beta");
-                    let substitute_client = crate::mint::HttpClientExt::new(substitute_url);
-                    wlt.write()
-                        .migrate_pockets_substitute(Box::new(substitute_client), tstamp)
-                        .await?;
-                    self.repo.store(wlt.read().config()?).await?;
-                }
+            if is_rabid && let Some(substitute_url) = wlt.read().mint_substitute().await? {
+                tracing::info!("Wallet is found rabid, migrating to substitute beta");
+                let substitute_client = crate::mint::HttpClientExt::new(substitute_url);
+                wlt.write()
+                    .migrate_pockets_substitute(Box::new(substitute_client), tstamp)
+                    .await?;
+                self.repo.store(wlt.read().config()?).await?;
             }
         }
 
