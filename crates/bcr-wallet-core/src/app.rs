@@ -1,5 +1,5 @@
 // ----- standard library imports
-use std::{cell::RefCell, collections::HashSet, str::FromStr, sync::Arc};
+use std::{cell::RefCell, collections::HashMap, collections::HashSet, str::FromStr, sync::Arc};
 // ----- extra library imports
 use anyhow::Error as AnyError;
 use bitcoin::{
@@ -14,6 +14,7 @@ use cdk::wallet::{
 use parking_lot::RwLock;
 use uuid::Uuid;
 // ----- local imports
+use crate::mint::MintConnector as MintCon;
 use crate::{
     config::{Config, Settings},
     error::{Error, Result},
@@ -21,7 +22,6 @@ use crate::{
     types::{PaymentSummary, RedemptionSummary},
     wallet::{CreditPocket, WalletBalance},
 };
-
 // ----- end imports
 
 #[cfg(target_arch = "wasm32")]
@@ -621,6 +621,14 @@ async fn build_wallet(
         tracing::warn!("app::add_wallet: credit_pocket = DummyPocket");
         Box::new(crate::pocket::credit::DummyPocket {})
     };
+
+    let mut beta_clients = HashMap::<cashu::MintUrl, Box<dyn MintCon>>::new();
+
+    for beta in client.as_ref().get_clowder_betas().await? {
+        let beta_client = crate::mint::HttpClientExt::new(beta.clone());
+        beta_clients.insert(beta, Box::new(beta_client));
+    }
+
     let new_wallet: ProductionWallet = ProductionWallet::new(
         network,
         client,
@@ -629,6 +637,7 @@ async fn build_wallet(
         name,
         wallet_id,
         mnemonic,
+        beta_clients,
     )
     .await?;
     Ok(new_wallet)

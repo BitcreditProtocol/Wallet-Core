@@ -120,6 +120,8 @@ pub enum Error {
     InvalidClowderPath,
     #[error("lock poisoned")]
     LockPoisoned,
+    #[error("Beta not found")]
+    BetaNotFound(cashu::MintUrl),
 
     #[error("internal error: {0}")]
     Internal(String),
