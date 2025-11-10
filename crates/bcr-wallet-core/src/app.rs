@@ -638,6 +638,7 @@ async fn build_wallet(
         wallet_id,
         mnemonic,
         beta_clients,
+        Box::new(|url| Box::new(crate::mint::HttpClientExt::new(url))),
     )
     .await?;
     Ok(new_wallet)

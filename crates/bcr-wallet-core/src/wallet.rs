@@ -147,6 +147,7 @@ pub struct Wallet<TxRepo, DebtPck> {
     mnemonic: bip39::Mnemonic,
     current_payment: Mutex<Option<PayReference>>,
     clowder_id: bitcoin::secp256k1::PublicKey,
+    client_factory: Box<dyn Fn(cashu::MintUrl) -> Box<dyn MintConnector> + Send + Sync>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -165,6 +166,7 @@ impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck> {
         id: String,
         mnemonic: bip39::Mnemonic,
         beta_clients: HashMap<cashu::MintUrl, Box<dyn MintConnector>>,
+        client_factory: Box<dyn Fn(cashu::MintUrl) -> Box<dyn MintConnector> + Send + Sync>,
     ) -> Result<Self> {
         let clowder_id = client.get_clowder_id().await?;
         Ok(Self {
@@ -179,6 +181,7 @@ impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck> {
             current_payment: Mutex::new(None),
             beta_clients,
             clowder_id,
+            client_factory,
         })
     }
 
@@ -374,7 +377,7 @@ where
             }
             let alpha_id = path.node_ids[0];
 
-            let alpha_client = crate::mint::HttpClientExt::new(mint.clone());
+            let alpha_client = (self.client_factory)(mint.clone());
             // The path goes through the substitute Beta if the Alpha origin mint is offline
             let beta_mint = path.mint_urls[1].clone();
             // Replace Beta instantiation here with stored MintConnectors for each Beta
@@ -391,7 +394,7 @@ where
                     .online_exchange(
                         proofs,
                         mint,
-                        &alpha_client,
+                        alpha_client.as_ref(),
                         path.node_ids,
                         unit.clone(),
                         tstamp,
@@ -970,7 +973,6 @@ where
     }
 
     async fn is_wallet_mint_rabid(&self) -> Result<bool> {
-        let mint_id = self.clowder_id;
         let mut rabid_count = 0;
         for beta in self.betas() {
             let beta_client = self
@@ -978,7 +980,7 @@ where
                 .get(&beta)
                 .ok_or(Error::BetaNotFound(beta))?;
 
-            let status = beta_client.get_alpha_status(mint_id).await?;
+            let status = beta_client.get_alpha_status(self.clowder_id).await?;
             if matches!(status, AlphaState::Rabid(..)) {
                 rabid_count += 1;
             }
