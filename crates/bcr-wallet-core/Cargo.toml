@@ -32,7 +32,6 @@ url = {workspace = true}
 uuid = {workspace = true }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-parking_lot.workspace = true
 
 [dev-dependencies]
 bcr-common = {workspace = true, features = ["test-utils"]}

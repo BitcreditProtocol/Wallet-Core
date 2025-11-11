@@ -126,3 +126,9 @@ pub enum Error {
     #[error("internal error: {0}")]
     Internal(String),
 }
+
+impl<T> From<std::sync::PoisonError<T>> for Error {
+    fn from(_: std::sync::PoisonError<T>) -> Self {
+        Error::LockPoisoned
+    }
+}
