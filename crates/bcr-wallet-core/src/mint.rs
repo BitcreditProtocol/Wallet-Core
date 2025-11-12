@@ -217,7 +217,7 @@ impl MintConnector for HttpClientExt {
         Ok(response.offline)
     }
 
-    /// Determines the status of the a mint from the view of the requested Beta
+    /// Determines the status of a mint from the view of the requested Beta
     async fn get_alpha_status(
         &self,
         alpha_id: bitcoin::secp256k1::PublicKey,
@@ -235,7 +235,7 @@ impl MintConnector for HttpClientExt {
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?)
     }
 
-    /// Determines the status of the a mint from the view of the requested Beta
+    /// Determines the substitute beta of an alpha mint
     async fn get_alpha_substitute(
         &self,
         alpha_id: bitcoin::secp256k1::PublicKey,

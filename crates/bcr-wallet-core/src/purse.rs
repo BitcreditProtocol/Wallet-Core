@@ -134,7 +134,7 @@ where
         let wallets = self.wallets.lock().unwrap();
         let mut names = Vec::with_capacity(wallets.len());
         for w in wallets.iter() {
-            names.push(w.read()?.name());
+            names.push(w.read().expect("Poisoned").name());
         }
         Ok(names)
     }
@@ -156,7 +156,11 @@ where
         let Some(wlt) = self.wallets.lock().unwrap().get(idx).cloned() else {
             return Err(Error::WalletNotFound(idx));
         };
-        let summary = wlt.read()?.prepare_pay(input, now).await?;
+        let summary = wlt
+            .read()
+            .expect("Poisoned")
+            .prepare_pay(input, now)
+            .await?;
         let pref = PaymentReference {
             payment_ref: summary.request_id,
             wallet_idx: idx,
@@ -185,7 +189,8 @@ where
             )));
         };
         let txid = wlt
-            .read()?
+            .read()
+            .expect("Poisoned")
             .pay(p_id, &self.nostr_cl, &self.http_cl, tstamp)
             .await?;
         Ok(txid)
@@ -201,7 +206,7 @@ where
             let wlts = self.wallets.lock().unwrap();
             let mut mints = Vec::with_capacity(wlts.len());
             for wlt in wlts.iter() {
-                mints.extend(wlt.read()?.mint_urls()?);
+                mints.extend(wlt.read().expect("Poisoned").mint_urls()?);
             }
             mints
         };
@@ -274,15 +279,21 @@ where
         let mut wlts = self.wallets.lock().unwrap();
 
         for wlt in wlts.iter_mut() {
-            let is_rabid = wlt.read()?.is_wallet_mint_rabid().await?;
+            let is_rabid = wlt.read().expect("Poisoned").is_wallet_mint_rabid().await?;
 
-            if is_rabid && let Some(substitute_url) = wlt.read()?.mint_substitute().await? {
+            if is_rabid
+                && let Some(substitute_url) =
+                    wlt.read().expect("Poisoned").mint_substitute().await?
+            {
                 tracing::info!("Wallet is found rabid, migrating to substitute beta");
                 let substitute_client = crate::mint::HttpClientExt::new(substitute_url);
-                wlt.write()?
+                wlt.write()
+                    .expect("Poisoned")
                     .migrate_pockets_substitute(Box::new(substitute_client), tstamp)
                     .await?;
-                self.repo.store(wlt.read()?.config()?).await?;
+                self.repo
+                    .store(wlt.read().expect("Poisoned").config()?)
+                    .await?;
             }
         }
 
@@ -325,11 +336,16 @@ where
         let locked = wlts.lock().unwrap();
         let mut best_wlt: Option<Arc<RwLock<T>>> = None;
         for wlt in locked.iter() {
-            if wlt.read()?.mint_url()? == payload.mint {
+            if wlt.read().expect("Poisoned").mint_url()? == payload.mint {
                 best_wlt.replace(wlt.clone());
                 break;
             }
-            if wlt.read()?.mint_urls()?.contains(&payload.mint) {
+            if wlt
+                .read()
+                .expect("Poisoned")
+                .mint_urls()?
+                .contains(&payload.mint)
+            {
                 best_wlt.replace(wlt.clone());
             }
         }
@@ -344,7 +360,8 @@ where
         (String::from("nostr_event_id"), event.id.to_string()),
     ]);
     let response = wlt
-        .read()?
+        .read()
+        .expect("Poisoned")
         .receive_proofs(
             payload.proofs,
             payload.unit,
