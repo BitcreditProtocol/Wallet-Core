@@ -276,6 +276,22 @@ impl wallet::Pocket for Pocket {
         }
         Ok(total_recovered)
     }
+    async fn delete_proofs(&self) -> Result<HashMap<cashu::Id, Vec<cdk00::Proof>>> {
+        let proofs = self.db.list_all().await?;
+
+        let mut proofs_by_keyset = HashMap::<cashu::Id, Vec<cdk00::Proof>>::new();
+
+        for y in proofs.iter() {
+            if let Some(proof) = self.db.delete_proof(*y).await? {
+                proofs_by_keyset
+                    .entry(proof.keyset_id)
+                    .or_default()
+                    .push(proof);
+            }
+        }
+
+        Ok(proofs_by_keyset)
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -416,6 +432,9 @@ impl wallet::Pocket for DummyPocket {
         _client: &dyn MintConnector,
     ) -> Result<Vec<cdk01::PublicKey>> {
         Ok(Vec::new())
+    }
+    async fn delete_proofs(&self) -> Result<HashMap<cashu::Id, Vec<cdk00::Proof>>> {
+        Ok(HashMap::new())
     }
 
     async fn restore_local_proofs(

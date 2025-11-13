@@ -1,5 +1,8 @@
 // ----- standard library imports
-use std::{cell::RefCell, collections::HashSet, str::FromStr, sync::Arc};
+use std::{
+    cell::RefCell, collections::HashMap, collections::HashSet, str::FromStr, sync::Arc,
+    sync::RwLock,
+};
 // ----- extra library imports
 use anyhow::Error as AnyError;
 use bitcoin::{
@@ -13,6 +16,7 @@ use cdk::wallet::{
 };
 use uuid::Uuid;
 // ----- local imports
+use crate::mint::MintConnector as MintCon;
 use crate::{
     config::{Config, Settings},
     error::{Error, Result},
@@ -20,7 +24,6 @@ use crate::{
     types::{PaymentSummary, RedemptionSummary},
     wallet::{CreditPocket, WalletBalance},
 };
-
 // ----- end imports
 
 #[cfg(target_arch = "wasm32")]
@@ -138,7 +141,7 @@ pub async fn initialize_api() -> Result<()> {
     Ok(())
 }
 
-fn get_wallet(idx: usize) -> Result<Arc<ProductionWallet>> {
+fn get_wallet(idx: usize) -> Result<Arc<RwLock<ProductionWallet>>> {
     APP_STATE.with_borrow(|state| {
         let Some(purse) = &state.purse else {
             return Err(Error::Initialization);
@@ -148,7 +151,7 @@ fn get_wallet(idx: usize) -> Result<Arc<ProductionWallet>> {
 }
 
 fn get_purse() -> Result<Arc<ProductionPurse>> {
-    APP_STATE.with_borrow(|state| {
+    APP_STATE.with_borrow_mut(|state| {
         let Some(purse) = &state.purse else {
             return Err(Error::Initialization);
         };
@@ -225,13 +228,13 @@ pub fn wallet_name(idx: usize) -> Result<String> {
     tracing::debug!("name for wallet {idx}");
 
     let wallet = get_wallet(idx)?;
-    Ok(wallet.name())
+    Ok(wallet.read().expect("Poisoned").name())
 }
 
 pub fn wallet_mint_url(idx: usize) -> Result<String> {
     tracing::debug!("mint_url for wallet {idx}");
     let wallet = get_wallet(idx)?;
-    Ok(wallet.mint_url().to_string())
+    Ok(wallet.read().expect("Poisoned").mint_url()?.to_string())
 }
 
 pub struct WalletCurrencyUnit {
@@ -243,8 +246,8 @@ pub fn wallet_currency_unit(idx: usize) -> Result<WalletCurrencyUnit> {
     tracing::debug!("wallet_currency_unit({idx})");
     let wallet = get_wallet(idx)?;
     Ok(WalletCurrencyUnit {
-        credit: wallet.credit_unit().to_string(),
-        debit: wallet.debit_unit().to_string(),
+        credit: wallet.read().expect("Poisoned").credit_unit().to_string(),
+        debit: wallet.read().expect("Poisoned").debit_unit().to_string(),
     })
 }
 
@@ -252,7 +255,7 @@ pub async fn wallet_balance(idx: usize) -> Result<WalletBalance> {
     tracing::debug!("wallet_balance({idx})");
 
     let wallet = get_wallet(idx)?;
-    wallet.balance().await
+    wallet.read().expect("Poisoned").balance().await
 }
 
 pub async fn wallet_receive(idx: usize, token: String, tstamp: u64) -> Result<TransactionId> {
@@ -260,7 +263,11 @@ pub async fn wallet_receive(idx: usize, token: String, tstamp: u64) -> Result<Tr
 
     let token = bcr_wallet_lib::wallet::Token::from_str(&token)?;
     let wallet = get_wallet(idx)?;
-    let tx_id = wallet.receive_token(token, tstamp).await?;
+    let tx_id = wallet
+        .read()
+        .expect("Poisoned")
+        .receive_token(token, tstamp)
+        .await?;
     Ok(tx_id)
 }
 
@@ -268,7 +275,7 @@ pub async fn wallet_redeem_credit(idx: usize) -> Result<cashu::Amount> {
     tracing::debug!("wallet_redeem_credit({idx})");
 
     let wallet = get_wallet(idx)?;
-    let amount_redeemed = wallet.redeem_credit().await?;
+    let amount_redeemed = wallet.read().expect("Poisoned").redeem_credit().await?;
     Ok(amount_redeemed)
 }
 
@@ -282,7 +289,11 @@ pub async fn wallet_list_redemptions(
     );
 
     let wallet = get_wallet(idx)?;
-    let redemptions = wallet.list_redemptions(payment_window).await?;
+    let redemptions = wallet
+        .read()
+        .expect("Poisoned")
+        .list_redemptions(payment_window)
+        .await?;
     Ok(redemptions)
 }
 
@@ -290,8 +301,17 @@ pub async fn wallet_clean_local_db(idx: usize) -> Result<u32> {
     tracing::debug!("wallet_clean_local_db({idx})");
 
     let wallet = get_wallet(idx)?;
-    let deleted = wallet.clean_local_db().await?;
+    let deleted = wallet.read().expect("Poisoned").clean_local_db().await?;
     Ok(deleted)
+}
+
+pub async fn purse_migrate_rabid(tstamp: u64) -> Result<()> {
+    tracing::debug!("purse_migrate_rabid");
+
+    let purse = get_purse()?;
+    purse.migrate_rabid_wallets(tstamp).await?;
+
+    Ok(())
 }
 
 pub async fn wallet_load_tx(idx: usize, tx_id: &str) -> Result<Transaction> {
@@ -299,7 +319,7 @@ pub async fn wallet_load_tx(idx: usize, tx_id: &str) -> Result<Transaction> {
 
     let tx_id = TransactionId::from_str(tx_id)?;
     let wallet = get_wallet(idx)?;
-    let tx = wallet.load_tx(tx_id).await?;
+    let tx = wallet.read().expect("Poisoned").load_tx(tx_id).await?;
     Ok(tx)
 }
 
@@ -307,7 +327,7 @@ pub async fn wallet_list_tx_ids(idx: usize) -> Result<Vec<TransactionId>> {
     tracing::debug!("wallet_list_tx_ids({idx})");
 
     let wallet = get_wallet(idx)?;
-    let tx_ids = wallet.list_tx_ids().await?;
+    let tx_ids = wallet.read().expect("Poisoned").list_tx_ids().await?;
     Ok(tx_ids)
 }
 
@@ -369,7 +389,7 @@ pub async fn wallet_check_pending_melts(idx: usize) -> Result<cashu::Amount> {
     tracing::debug!("wallet_check_pending_melts({idx})");
 
     let wallet = get_wallet(idx)?;
-    wallet.check_pending_melts().await
+    wallet.read().expect("Poisoned").check_pending_melts().await
 }
 
 pub fn wallets_ids() -> Result<Vec<u32>> {
@@ -389,7 +409,7 @@ pub fn wallets_names() -> Result<Vec<String>> {
         let Some(purse) = &state.purse else {
             return Err(Error::Initialization);
         };
-        Ok(purse.names())
+        Ok(purse.names()?)
     })?;
     Ok(names)
 }
@@ -611,6 +631,14 @@ async fn build_wallet(
         tracing::warn!("app::add_wallet: credit_pocket = DummyPocket");
         Box::new(crate::pocket::credit::DummyPocket {})
     };
+
+    let mut beta_clients = HashMap::<cashu::MintUrl, Box<dyn MintCon>>::new();
+
+    for beta in client.as_ref().get_clowder_betas().await? {
+        let beta_client = crate::mint::HttpClientExt::new(beta.clone());
+        beta_clients.insert(beta, Box::new(beta_client));
+    }
+
     let new_wallet: ProductionWallet = ProductionWallet::new(
         network,
         client,
@@ -619,6 +647,8 @@ async fn build_wallet(
         name,
         wallet_id,
         mnemonic,
+        beta_clients,
+        Box::new(|url| Box::new(crate::mint::HttpClientExt::new(url))),
     )
     .await?;
     Ok(new_wallet)

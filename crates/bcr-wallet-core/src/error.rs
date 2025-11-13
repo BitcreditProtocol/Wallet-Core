@@ -46,7 +46,6 @@ pub enum Error {
     Url(#[from] url::ParseError),
     #[error("reqwest::Client {0}")]
     ReqwestClient(#[from] reqwest::Error),
-
     #[error("insufficient funds")]
     InsufficientFunds,
     #[error("local pocket DB not initialized correctly")]
@@ -119,6 +118,8 @@ pub enum Error {
     MissingCurrencyUnit,
     #[error("Invalid Clowder Path for foreign eCash")]
     InvalidClowderPath,
+    #[error("Beta not found")]
+    BetaNotFound(cashu::MintUrl),
 
     #[error("internal error: {0}")]
     Internal(String),

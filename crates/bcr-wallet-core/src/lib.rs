@@ -4,6 +4,7 @@ use tracing::info;
 use wasm_bindgen::prelude::*;
 // ----- local modules
 mod app;
+mod clowder_models;
 pub mod config;
 pub mod error;
 mod mint;
@@ -14,7 +15,6 @@ mod restore;
 mod types;
 pub mod utils;
 pub mod wallet;
-
 // ----- end imports
 
 const TEASER_SIZE: usize = 25;
@@ -245,6 +245,16 @@ pub async fn wallet_clean_local_db(idx: u32) -> u32 {
             tracing::error!("wallet_clean_local_db({idx}): {e}");
             0
         }
+    }
+}
+
+// --------------------------------------------------------------- purse_migrate_rabid
+#[wasm_bindgen]
+pub async fn purse_migrate_rabid() {
+    let tstamp = chrono::Utc::now().timestamp() as u64;
+    match app::purse_migrate_rabid(tstamp).await {
+        Ok(_) => tracing::info!("Sucessfully migrated"),
+        Err(e) => tracing::info!("Error migrating wallet {}", e),
     }
 }
 

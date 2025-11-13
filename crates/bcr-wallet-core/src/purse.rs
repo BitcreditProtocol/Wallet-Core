@@ -1,7 +1,7 @@
 // ----- standard library imports
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
 };
 // ----- extra library imports
 use async_trait::async_trait;
@@ -12,6 +12,7 @@ use tokio_with_wasm::alias::time;
 use uuid::Uuid;
 // ----- local imports
 use crate::{
+    MintConnector,
     error::{Error, Result},
     sync,
     types::{PaymentSummary, WalletConfig},
@@ -32,15 +33,17 @@ pub trait PurseRepository: sync::SendSync {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait Wallet: sync::SendSync {
-    fn config(&self) -> WalletConfig;
+    fn config(&self) -> Result<WalletConfig>;
     fn name(&self) -> String;
-    fn mint_url(&self) -> MintUrl;
+    fn mint_url(&self) -> Result<MintUrl>;
     #[allow(dead_code)]
     fn betas(&self) -> Vec<MintUrl>;
     #[allow(dead_code)]
     fn clowder_id(&self) -> bitcoin::secp256k1::PublicKey;
-    fn mint_urls(&self) -> Vec<MintUrl>;
+    fn mint_urls(&self) -> Result<Vec<MintUrl>>;
     async fn prepare_pay(&self, input: String, now: u64) -> Result<PaymentSummary>;
+    async fn is_wallet_mint_rabid(&self) -> Result<bool>;
+    async fn mint_substitute(&self) -> Result<Option<MintUrl>>;
     async fn pay(
         &self,
         p_id: Uuid,
@@ -48,6 +51,12 @@ pub trait Wallet: sync::SendSync {
         http_cl: &reqwest::Client,
         tstamp: u64,
     ) -> Result<TransactionId>;
+
+    async fn migrate_pockets_substitute(
+        &mut self,
+        substitute: Box<dyn MintConnector>,
+        tstamp: u64,
+    ) -> Result<()>;
 
     async fn receive_proofs(
         &self,
@@ -68,7 +77,7 @@ struct PaymentReference {
 
 pub struct Purse<PurseRepo, Wlt> {
     pub repo: PurseRepo,
-    pub wallets: Arc<Mutex<Vec<Arc<Wlt>>>>,
+    pub wallets: Arc<Mutex<Vec<Arc<RwLock<Wlt>>>>>,
     nostr_cl: Arc<nostr_sdk::Client>,
     myself: Nip19Profile,
     http_cl: Arc<reqwest::Client>,
@@ -105,8 +114,9 @@ where
         self.repo.list_ids().await
     }
 
-    pub fn get_wallet(&self, idx: usize) -> Option<Arc<Wlt>> {
+    pub fn get_wallet(&self, idx: usize) -> Option<Arc<RwLock<Wlt>>> {
         let wallets = self.wallets.lock().unwrap();
+
         wallets.get(idx).cloned()
     }
 
@@ -120,9 +130,13 @@ impl<PurseRepo, Wlt> Purse<PurseRepo, Wlt>
 where
     Wlt: Wallet,
 {
-    pub fn names(&self) -> Vec<String> {
+    pub fn names(&self) -> Result<Vec<String>> {
         let wallets = self.wallets.lock().unwrap();
-        wallets.iter().map(|w| w.name()).collect()
+        let mut names = Vec::with_capacity(wallets.len());
+        for w in wallets.iter() {
+            names.push(w.read().expect("Poisoned").name());
+        }
+        Ok(names)
     }
 }
 
@@ -132,9 +146,9 @@ where
     Wlt: Wallet,
 {
     pub async fn add_wallet(&self, wallet: Wlt) -> Result<usize> {
-        self.repo.store(wallet.config()).await?;
+        self.repo.store(wallet.config()?).await?;
         let mut wallets = self.wallets.lock().unwrap();
-        wallets.push(Arc::new(wallet));
+        wallets.push(Arc::new(RwLock::new(wallet)));
         Ok(wallets.len() - 1)
     }
 
@@ -142,7 +156,11 @@ where
         let Some(wlt) = self.wallets.lock().unwrap().get(idx).cloned() else {
             return Err(Error::WalletNotFound(idx));
         };
-        let summary = wlt.prepare_pay(input, now).await?;
+        let summary = wlt
+            .read()
+            .expect("Poisoned")
+            .prepare_pay(input, now)
+            .await?;
         let pref = PaymentReference {
             payment_ref: summary.request_id,
             wallet_idx: idx,
@@ -170,7 +188,11 @@ where
                 "Wallet not found for payment",
             )));
         };
-        let txid = wlt.pay(p_id, &self.nostr_cl, &self.http_cl, tstamp).await?;
+        let txid = wlt
+            .read()
+            .expect("Poisoned")
+            .pay(p_id, &self.nostr_cl, &self.http_cl, tstamp)
+            .await?;
         Ok(txid)
     }
 
@@ -184,7 +206,7 @@ where
             let wlts = self.wallets.lock().unwrap();
             let mut mints = Vec::with_capacity(wlts.len());
             for wlt in wlts.iter() {
-                mints.extend(wlt.mint_urls());
+                mints.extend(wlt.read().expect("Poisoned").mint_urls()?);
             }
             mints
         };
@@ -252,11 +274,36 @@ where
         }
         Ok(None)
     }
+
+    pub async fn migrate_rabid_wallets(&self, tstamp: u64) -> Result<()> {
+        let mut wlts = self.wallets.lock().unwrap();
+
+        for wlt in wlts.iter_mut() {
+            let is_rabid = wlt.read().expect("Poisoned").is_wallet_mint_rabid().await?;
+
+            if is_rabid
+                && let Some(substitute_url) =
+                    wlt.read().expect("Poisoned").mint_substitute().await?
+            {
+                tracing::info!("Wallet is found rabid, migrating to substitute beta");
+                let substitute_client = crate::mint::HttpClientExt::new(substitute_url);
+                wlt.write()
+                    .expect("Poisoned")
+                    .migrate_pockets_substitute(Box::new(substitute_client), tstamp)
+                    .await?;
+                self.repo
+                    .store(wlt.read().expect("Poisoned").config()?)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 async fn handle_event<T>(
     event: nostr_sdk::Event,
-    wlts: &Mutex<Vec<Arc<T>>>,
+    wlts: &Mutex<Vec<Arc<RwLock<T>>>>,
     payment_id: Uuid,
     expected: Amount,
 ) -> Result<Option<TransactionId>>
@@ -287,13 +334,18 @@ where
     }
     let wlt = {
         let locked = wlts.lock().unwrap();
-        let mut best_wlt: Option<Arc<T>> = None;
+        let mut best_wlt: Option<Arc<RwLock<T>>> = None;
         for wlt in locked.iter() {
-            if wlt.mint_url() == payload.mint {
+            if wlt.read().expect("Poisoned").mint_url()? == payload.mint {
                 best_wlt.replace(wlt.clone());
                 break;
             }
-            if wlt.mint_urls().contains(&payload.mint) {
+            if wlt
+                .read()
+                .expect("Poisoned")
+                .mint_urls()?
+                .contains(&payload.mint)
+            {
                 best_wlt.replace(wlt.clone());
             }
         }
@@ -308,6 +360,8 @@ where
         (String::from("nostr_event_id"), event.id.to_string()),
     ]);
     let response = wlt
+        .read()
+        .expect("Poisoned")
         .receive_proofs(
             payload.proofs,
             payload.unit,

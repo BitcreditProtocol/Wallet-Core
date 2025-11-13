@@ -55,14 +55,16 @@ impl PocketRepository for InMemoryPocketRepository {
         }
         Err(Error::ProofNotFound(y))
     }
-    async fn delete_proof(&self, y: cdk01::PublicKey) -> Result<()> {
+    async fn delete_proof(&self, y: cdk01::PublicKey) -> Result<Option<cdk00::Proof>> {
         let mut unspent = self.unspent.lock().unwrap();
-        if unspent.remove(&y).is_some() {
-            return Ok(());
+        if let Some(unspent) = unspent.remove(&y) {
+            return Ok(Some(unspent));
         }
         let mut pending = self.pending.lock().unwrap();
-        pending.remove(&y);
-        Ok(())
+        if let Some(pending) = pending.remove(&y) {
+            return Ok(Some(pending));
+        }
+        Ok(None)
     }
     async fn list_unspent(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         let unspent = self.unspent.lock().unwrap();

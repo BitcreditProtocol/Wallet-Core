@@ -4,7 +4,7 @@ use bitcoin::secp256k1::PublicKey;
 use cashu::Proof;
 use cdk::Error as CdkError;
 // ----- local imports
-use crate::mint::ProofFingerprint;
+use crate::clowder_models::ProofFingerprint;
 // ----- end imports
 
 type CdkResult<T> = std::result::Result<T, cdk::Error>;
@@ -89,7 +89,9 @@ pub mod tests {
     };
     use cdk_common::Error as CDKError;
 
-    use crate::mint::ProofFingerprint;
+    use crate::clowder_models::{
+        AlphaState, ConnectedMintResponse, ConnectedMintsResponse, ProofFingerprint,
+    };
     type CdkResult<T> = Result<T, CDKError>;
 
     mockall::mock! {
@@ -167,13 +169,15 @@ pub mod tests {
         async fn post_clowder_path(
             &self,
             origin_mint_url: cashu::MintUrl,
-        ) -> CdkResult<crate::mint::ConnectedMintsResponse>;
+        ) -> CdkResult<ConnectedMintsResponse>;
         async fn get_alpha_keysets(
             &self,
             alpha_id: bitcoin::secp256k1::PublicKey,
         ) -> CdkResult<Vec<cashu::KeySet>>;
 
         async fn get_alpha_offline(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<bool>;
+        async fn get_alpha_status(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<AlphaState>;
+        async fn get_alpha_substitute(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<ConnectedMintResponse>;
 
         async fn post_exchange_substitute(
             &self,
