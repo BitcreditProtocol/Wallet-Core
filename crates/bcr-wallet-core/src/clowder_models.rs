@@ -108,3 +108,8 @@ pub enum AlphaState {
     /// Post Rabid
     ConfiscatedRabid(bitcoin::Txid, RabidReason),
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlphaStateResponse {
+    pub state: AlphaState,
+}

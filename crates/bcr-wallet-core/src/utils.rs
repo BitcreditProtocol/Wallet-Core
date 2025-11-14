@@ -90,7 +90,7 @@ pub mod tests {
     use cdk_common::Error as CDKError;
 
     use crate::clowder_models::{
-        AlphaState, ConnectedMintResponse, ConnectedMintsResponse, ProofFingerprint,
+        AlphaStateResponse, ConnectedMintResponse, ConnectedMintsResponse, ProofFingerprint,
     };
     type CdkResult<T> = Result<T, CDKError>;
 
@@ -176,7 +176,7 @@ pub mod tests {
         ) -> CdkResult<Vec<cashu::KeySet>>;
 
         async fn get_alpha_offline(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<bool>;
-        async fn get_alpha_status(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<AlphaState>;
+        async fn get_alpha_status(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<AlphaStateResponse>;
         async fn get_alpha_substitute(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<ConnectedMintResponse>;
 
         async fn post_exchange_substitute(
