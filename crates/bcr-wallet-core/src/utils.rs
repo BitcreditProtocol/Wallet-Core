@@ -10,7 +10,7 @@ use crate::clowder_models::ProofFingerprint;
 type CdkResult<T> = std::result::Result<T, cdk::Error>;
 
 pub fn proofs_to_fingerprints(
-    proofs: Vec<Proof>,
+    proofs: &[Proof],
 ) -> CdkResult<(Vec<ProofFingerprint>, Vec<cashu::secret::Secret>)> {
     let mut secrets = Vec::with_capacity(proofs.len());
     let mut fingerprints = Vec::with_capacity(proofs.len());
@@ -18,7 +18,7 @@ pub fn proofs_to_fingerprints(
     for p in proofs.iter() {
         secrets.push(p.secret.clone());
 
-        fingerprints.push(p.clone().try_into()?);
+        fingerprints.push(p.try_into()?);
     }
 
     Ok((fingerprints, secrets))
@@ -65,10 +65,10 @@ pub fn validate_offline_conditions(
     Ok(lock_time)
 }
 
-impl TryFrom<Proof> for ProofFingerprint {
+impl TryFrom<&Proof> for ProofFingerprint {
     type Error = CdkError;
 
-    fn try_from(proof: Proof) -> Result<Self, Self::Error> {
+    fn try_from(proof: &Proof) -> Result<Self, Self::Error> {
         Ok(ProofFingerprint {
             amount: proof.amount,
             keyset_id: proof.keyset_id,
@@ -90,7 +90,7 @@ pub mod tests {
     use cdk_common::Error as CDKError;
 
     use crate::clowder_models::{
-        AlphaState, ConnectedMintResponse, ConnectedMintsResponse, ProofFingerprint,
+        AlphaStateResponse, ConnectedMintResponse, ConnectedMintsResponse, ProofFingerprint,
     };
     type CdkResult<T> = Result<T, CDKError>;
 
@@ -176,7 +176,7 @@ pub mod tests {
         ) -> CdkResult<Vec<cashu::KeySet>>;
 
         async fn get_alpha_offline(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<bool>;
-        async fn get_alpha_status(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<AlphaState>;
+        async fn get_alpha_status(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<AlphaStateResponse>;
         async fn get_alpha_substitute(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<ConnectedMintResponse>;
 
         async fn post_exchange_substitute(

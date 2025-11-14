@@ -9,7 +9,6 @@ use cashu::{
     Amount, Bolt11Invoice, CurrencyUnit, KeySetInfo, MintUrl, Proof, nut00 as cdk00,
     nut01 as cdk01, nut07 as cdk07, nut18 as cdk18,
 };
-// use cdk::wallet::MintConnector as _;
 use cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
 use nostr_sdk::nips::nip19::{FromBech32, Nip19Profile};
 use uuid::Uuid;
@@ -518,7 +517,8 @@ where
         // Ephemeral P2PK secret
         let wallet_pk = cashu::SecretKey::generate();
 
-        let (fingerprints, secrets) = proofs_to_fingerprints(proofs)?;
+        let (fingerprints, secrets) = proofs_to_fingerprints(&proofs)?;
+
         let hash_locks: Vec<Sha256> = secrets
             .iter()
             .map(|secret| Sha256::hash(&secret.to_bytes()))
@@ -976,7 +976,7 @@ where
                 .get(&beta)
                 .ok_or(Error::BetaNotFound(beta))?;
 
-            let status = beta_client.get_alpha_status(self.clowder_id).await?;
+            let status = beta_client.get_alpha_status(self.clowder_id).await?.state;
             if matches!(status, AlphaState::Rabid(..)) {
                 rabid_count += 1;
             }
@@ -1037,12 +1037,15 @@ where
 
         // TODO, handle partial exchanges
 
+        tracing::info!("Exchanging debit offline");
         for (_, proofs) in debit_proofs.iter() {
             let exchanged = self
                 .offline_exchange(substitute.as_ref(), proofs.clone(), tstamp)
                 .await?;
             exchanged_debit.extend(exchanged);
         }
+
+        tracing::info!("Exchanging credit offline");
         for (_, proofs) in credit_proofs.iter() {
             let exchanged = self
                 .offline_exchange(substitute.as_ref(), proofs.clone(), tstamp)
@@ -1051,8 +1054,17 @@ where
         }
 
         self.client = substitute;
+        self.clowder_id = self.client.get_clowder_id().await?;
+        let mut beta_clients = HashMap::<cashu::MintUrl, Box<dyn MintConnector>>::new();
+
+        for beta in self.client.as_ref().get_clowder_betas().await? {
+            let beta_client = (self.client_factory)(beta.clone());
+            beta_clients.insert(beta, beta_client);
+        }
+        self.beta_clients = beta_clients;
 
         // Swap intermint exchanged proofs
+        tracing::info!("Swapping exchanged proofs");
         let keysets_info = self.client.get_mint_keysets().await?.keysets;
         self.debit
             .receive_proofs(self.client.as_ref(), &keysets_info, exchanged_debit)
@@ -1060,6 +1072,13 @@ where
         self.credit
             .receive_proofs(self.client.as_ref(), &keysets_info, exchanged_credit)
             .await?;
+
+        let debit_balance = self.debit.balance().await?;
+        let credit_balance = self.credit.balance().await?;
+
+        tracing::info!(
+            "Migration successful balance credit {credit_balance} debit {debit_balance}"
+        );
 
         Ok(())
     }

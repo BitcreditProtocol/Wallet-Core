@@ -581,9 +581,8 @@ fn find_currency_units(
     Ok((debit_unit.clone(), credit_unit.cloned()))
 }
 
-fn build_wallet_id(mint_id: &[u8], seed: &[u8; 64]) -> String {
+fn build_wallet_id(seed: &[u8; 64]) -> String {
     let mut hasher = sha256::HashEngine::default();
-    hasher.input(mint_id);
     hasher.input(seed);
     sha256::Hash::from_engine(hasher)
         .as_byte_array()
@@ -601,12 +600,10 @@ async fn build_wallet(
     let seed = mnemonic.to_seed("");
     // retrieving mint details
     let client = Box::new(ProductionConnector::new(mint_url.clone()));
-    let info = client.get_mint_info().await?;
-    let mint_id = build_mint_id(&mint_url, &info);
     let keyset_infos = client.get_mint_keysets().await?.keysets;
     let (debit_unit, credit_unit) = find_currency_units(&keyset_infos)?;
     // building wallet dbs
-    let wallet_id = build_wallet_id(&mint_id, &seed);
+    let wallet_id = build_wallet_id(&seed);
     let (tx_repo, ((debitdb, mintmeltdb), creditdb)) = db::build_wallet_dbs(
         db_version,
         &wallet_id,

@@ -7,7 +7,7 @@ use cdk::Error as CdkError;
 // ----- local imports
 use crate::{
     clowder_models::{
-        AlphaState, ConnectedMintResponse, ConnectedMintsResponse, ExchangeRequest,
+        AlphaStateResponse, ConnectedMintResponse, ConnectedMintsResponse, ExchangeRequest,
         ExchangeResponse, OfflineResponse, PathRequest, ProofFingerprint, PublicKeyResponse,
         SubstituteExchangeRequest, SubstituteExchangeResponse,
     },
@@ -41,7 +41,7 @@ pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {
     async fn get_alpha_status(
         &self,
         alpha_id: bitcoin::secp256k1::PublicKey,
-    ) -> CdkResult<AlphaState>;
+    ) -> CdkResult<AlphaStateResponse>;
     async fn get_alpha_substitute(
         &self,
         alpha_id: bitcoin::secp256k1::PublicKey,
@@ -221,7 +221,7 @@ impl MintConnector for HttpClientExt {
     async fn get_alpha_status(
         &self,
         alpha_id: bitcoin::secp256k1::PublicKey,
-    ) -> CdkResult<AlphaState> {
+    ) -> CdkResult<AlphaStateResponse> {
         let url = self.url.join(&format!("v1/alpha/status/{alpha_id}"))?;
         let response = self
             .secondary

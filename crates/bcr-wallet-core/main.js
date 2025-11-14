@@ -181,12 +181,9 @@ async function run() {
         let wallet_name = wasmModule.get_wallet_name(idx);
         let wallet_url = wasmModule.get_wallet_mint_url(idx);
         document.getElementById("walletname").innerHTML =
-          "[" + wallet_name + "] " + String(idx) + " @ " + wallet_url + "  ";
+          "[" + wallet_name + "] " + " @ " + wallet_url + "  ";
 
         await update_balance();
-
-        // let keyset_info = await wasmModule.list_keysets(idx);
-        // document.getElementById("keyset").innerHTML = keyset_info;
       }
     });
 

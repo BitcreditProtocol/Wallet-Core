@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 // ----- extra library imports
 use async_trait::async_trait;
 use cashu::{
-    Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00, nut01 as cdk01,
-    nut03 as cdk03, nut07 as cdk07,
+    Amount, CurrencyUnit, KeySet, KeySetInfo, ProofDleq, amount::SplitTarget, nut00 as cdk00,
+    nut01 as cdk01, nut03 as cdk03, nut07 as cdk07,
 };
 use uuid::Uuid;
 // ----- local imports
@@ -112,12 +112,18 @@ pub(crate) fn unblind_proofs(
             );
             continue;
         };
-        let proof = cdk00::Proof::new(
+        let mut proof = cdk00::Proof::new(
             signature.amount,
             signature.keyset_id,
             secret.secret.clone(),
             c,
         );
+
+        proof.dleq = signature
+            .dleq
+            .as_ref()
+            .map(|dleq| ProofDleq::new(dleq.e.clone(), dleq.s.clone(), secret.r.clone()));
+
         proofs.push(proof);
     }
     proofs
@@ -161,6 +167,7 @@ async fn swap(
         let premint = premints.get(kid).expect("premint should be here");
         let keyset = keysets.get(kid).expect("keyset should be here");
         let proofs = unblind_proofs(keyset, signatures, premint);
+
         for proof in proofs {
             let amount = proof.amount;
             let response = db.store_new(proof).await;
