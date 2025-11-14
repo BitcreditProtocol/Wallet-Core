@@ -13,8 +13,10 @@ use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::JsValue;
 // ----- local imports
 use crate::{
+    TStamp,
     config::Settings,
     error::{Error, Result},
+    persistence::Commitment,
     pocket::PocketRepository,
     pocket::debit::MintMeltRepository,
     purse::PurseRepository,
@@ -78,6 +80,7 @@ pub struct PocketDB {
 
     proof_store: String,
     counter_store: String,
+    commitment_store: String,
 }
 
 impl PocketDB {
@@ -85,6 +88,8 @@ impl PocketDB {
     const PROOF_DB_KEY: &'static str = "y";
     const COUNTER_BASE_DB_NAME: &'static str = "counters";
     const COUNTER_DB_KEY: &'static str = "kid";
+    const COMMITMENT_BASE_DB_NAME: &'static str = "commitments";
+    const COMMITMENT_DB_KEY: &'static str = "commitment";
 
     fn proof_store_name(unit: &CurrencyUnit) -> String {
         format!("{unit}_{}", Self::PROOF_BASE_DB_NAME)
@@ -93,9 +98,14 @@ impl PocketDB {
         format!("{unit}_{}", Self::COUNTER_BASE_DB_NAME)
     }
 
+    fn commitment_store_name(unit: &CurrencyUnit) -> String {
+        format!("{unit}_{}", Self::COMMITMENT_BASE_DB_NAME)
+    }
+
     pub fn object_stores(unit: &CurrencyUnit) -> Vec<rexie::ObjectStore> {
         let proof_store_name = Self::proof_store_name(unit);
         let counter_store_name = Self::counter_store_name(unit);
+        let commitment_store_name = Self::commitment_store_name(unit);
         vec![
             rexie::ObjectStore::new(&proof_store_name)
                 .auto_increment(false)
@@ -103,16 +113,23 @@ impl PocketDB {
             rexie::ObjectStore::new(&counter_store_name)
                 .auto_increment(false)
                 .key_path(Self::COUNTER_DB_KEY),
+            rexie::ObjectStore::new(&commitment_store_name)
+                .auto_increment(false)
+                .key_path(Self::COMMITMENT_DB_KEY),
         ]
     }
 
     pub fn new(db: Rc<Rexie>, unit: &CurrencyUnit) -> Result<Self> {
         let proof_store = Self::proof_store_name(unit);
         let counter_store = Self::counter_store_name(unit);
+        let commitment_store = Self::commitment_store_name(unit);
         if !db.store_names().contains(&proof_store) {
             return Err(Error::BadPocketDB);
         }
         if !db.store_names().contains(&counter_store) {
+            return Err(Error::BadPocketDB);
+        }
+        if !db.store_names().contains(&commitment_store) {
             return Err(Error::BadPocketDB);
         }
 
@@ -120,6 +137,7 @@ impl PocketDB {
             db,
             proof_store,
             counter_store,
+            commitment_store,
         };
         Ok(db)
     }
@@ -372,6 +390,29 @@ impl PocketRepository for PocketDB {
             counter: old.counter + increment,
         };
         self.update_counter(old, new).await?;
+        Ok(())
+    }
+
+    async fn store_commitment(
+        &self,
+        inputs: Vec<cashu::PublicKey>,
+        outputs: Vec<cashu::BlindedMessage>,
+        expiration: TStamp,
+        commitment: secp256k1::schnorr::Signature,
+    ) -> Result<()> {
+        let entry = Commitment {
+            inputs,
+            outputs,
+            expiration,
+            commitment,
+        };
+        let entry = to_value(&entry)?;
+        let tx = self
+            .db
+            .transaction(&[&self.commitment_store], TransactionMode::ReadWrite)?;
+        let commitments = tx.store(&self.commitment_store)?;
+        commitments.add(&entry, None).await?;
+        tx.done().await?;
         Ok(())
     }
 }

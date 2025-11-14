@@ -2,15 +2,19 @@
 use std::str::FromStr;
 // ----- extra library imports
 use async_trait::async_trait;
+use bcr_common::wire::{keys as wire_keys, swap as wire_swap};
+use bitcoin::base64::prelude::*;
 use cashu::Proof;
 use cdk::Error as CdkError;
 // ----- local imports
 use crate::{
+    TStamp,
     clowder_models::{
         AlphaStateResponse, ConnectedMintResponse, ConnectedMintsResponse, ExchangeRequest,
         ExchangeResponse, OfflineResponse, PathRequest, ProofFingerprint, PublicKeyResponse,
         SubstituteExchangeRequest, SubstituteExchangeResponse,
     },
+    error::Result,
     sync,
 };
 // ----- end imports
@@ -53,6 +57,19 @@ pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {
         locks: Vec<bitcoin::hashes::sha256::Hash>,
         wallet_pubkey: bitcoin::secp256k1::PublicKey,
     ) -> CdkResult<Vec<Proof>>;
+
+    async fn post_commitment(
+        &self,
+        inputs: Vec<cashu::Proof>,
+        outputs: Vec<cashu::BlindedMessage>,
+        expiration: chrono::TimeDelta,
+        alpha_pk: secp256k1::PublicKey,
+    ) -> Result<(
+        Vec<cashu::PublicKey>,
+        Vec<cashu::BlindedMessage>,
+        TStamp,
+        secp256k1::schnorr::Signature,
+    )>;
 }
 
 #[derive(Debug, Clone)]
@@ -362,5 +379,52 @@ impl MintConnector for HttpClientExt {
             .await
             .map_err(|e| CdkError::Custom(e.to_string()))?;
         Ok(response)
+    }
+
+    async fn post_commitment(
+        &self,
+        inputs: Vec<cashu::Proof>,
+        outputs: Vec<cashu::BlindedMessage>,
+        expiration: chrono::TimeDelta,
+        alpha_pk: secp256k1::PublicKey,
+    ) -> Result<(
+        Vec<cashu::PublicKey>,
+        Vec<cashu::BlindedMessage>,
+        TStamp,
+        secp256k1::schnorr::Signature,
+    )> {
+        let url = self
+            .url
+            .join("v1/commitment")
+            .expect("post_commitment url error");
+        let inputs: Vec<_> = inputs
+            .into_iter()
+            .map(wire_keys::ProofFingerprint::try_from)
+            .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
+        let now = chrono::Utc::now();
+        let payload = wire_swap::CommitmentContent {
+            inputs,
+            outputs,
+            expiration: now + expiration,
+        };
+        let borshed = borsh::to_vec(&payload)?;
+        let content = BASE64_STANDARD.encode(borshed);
+        let request = wire_swap::CommitmentRequest {
+            content: content.clone(),
+        };
+        let response = self.secondary.post(url).json(&request).send().await?;
+        let response: wire_swap::CommitmentResponse = response.json().await?;
+        bcr_common::core::signature::schnorr_verify_b64(
+            &content,
+            &response.commitment,
+            &alpha_pk.x_only_public_key().0,
+        )?;
+        let inputs: Vec<cashu::PublicKey> = payload.inputs.into_iter().map(|fp| fp.y).collect();
+        Ok((
+            inputs,
+            payload.outputs,
+            payload.expiration,
+            response.commitment,
+        ))
     }
 }

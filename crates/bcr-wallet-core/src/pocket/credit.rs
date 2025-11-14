@@ -72,6 +72,7 @@ impl Pocket {
         &self,
         client: &dyn MintConnector,
         inputs: HashMap<cdk01::PublicKey, cdk00::Proof>,
+        safe_mode: wallet::SafeMode,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
         if inputs.is_empty() {
             tracing::warn!("CrPocket::digest_proofs: empty inputs");
@@ -120,6 +121,7 @@ impl Pocket {
             keysets,
             client,
             self.db.as_ref(),
+            safe_mode,
         )
         .await?;
         Ok((cashed_in, ys))
@@ -146,6 +148,7 @@ impl wallet::Pocket for Pocket {
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
         inputs: Vec<cdk00::Proof>,
+        safe_mode: wallet::SafeMode,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
         tracing::info!(
             "Credit receive proofs keyset {:?} proofs {:?}",
@@ -161,7 +164,7 @@ impl wallet::Pocket for Pocket {
             proofs.insert(y, input);
         }
         tracing::info!("credit digest proofs");
-        self.digest_proofs(client, proofs).await
+        self.digest_proofs(client, proofs, safe_mode).await
     }
 
     async fn prepare_send(
@@ -226,6 +229,7 @@ impl wallet::Pocket for Pocket {
         rid: Uuid,
         _: &[KeySetInfo],
         client: &dyn MintConnector,
+        safe_mode: SafeMode,
     ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         let send_ref = {
             let mut locked = self.current_send.lock().unwrap();
@@ -244,6 +248,7 @@ impl wallet::Pocket for Pocket {
             self.db.as_ref(),
             client,
             None,
+            safe_mode,
         )
         .await?;
         Ok(sending_proofs)
@@ -305,6 +310,7 @@ impl wallet::CreditPocket for Pocket {
         &self,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
+        safe_mode: SafeMode,
     ) -> Result<(Amount, Vec<cdk00::Proof>)> {
         let mut pendings = self.db.list_pending().await?;
         let infos = collect_keyset_infos_from_proofs(pendings.values(), keysets_info)?;
@@ -332,7 +338,7 @@ impl wallet::CreditPocket for Pocket {
                     .expect("infos map is built from unspent_proofs keyset_id");
                 info.unit == self.unit && info.active
             });
-        let (reclaimed, _) = self.digest_proofs(client, reclaimable).await?;
+        let (reclaimed, _) = self.digest_proofs(client, reclaimable, safe_mode).await?;
         tracing::debug!(
             "CrPocket::reclaim_proofs: reclaimed: {reclaimed}, redeemable: {}",
             redeemable.len()
@@ -413,6 +419,7 @@ impl wallet::Pocket for DummyPocket {
         _client: &dyn MintConnector,
         _keysets_info: &[KeySetInfo],
         _proofs: Vec<cdk00::Proof>,
+        _safe_mode: SafeMode,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
         Ok((Amount::ZERO, Vec::new()))
     }
@@ -424,6 +431,7 @@ impl wallet::Pocket for DummyPocket {
         _: Uuid,
         _: &[KeySetInfo],
         _: &dyn MintConnector,
+        _: SafeMode,
     ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         Err(Error::Any(AnyError::msg("DummyPocket is dummy")))
     }
@@ -456,6 +464,7 @@ impl wallet::CreditPocket for DummyPocket {
         &self,
         _keysets_info: &[KeySetInfo],
         _client: &dyn MintConnector,
+        _safe_mode: SafeMode,
     ) -> Result<(Amount, Vec<cdk00::Proof>)> {
         Ok((Amount::ZERO, Vec::new()))
     }
@@ -533,7 +542,7 @@ mod tests {
         });
         let pocket = pocket(Arc::new(db));
         let (cashed, _) = pocket
-            .receive_proofs(&connector, &k_infos, proofs)
+            .receive_proofs(&connector, &k_infos, proofs, SafeMode::Disabled)
             .await
             .unwrap();
         assert_eq!(cashed, Amount::from(24u64));
@@ -549,7 +558,9 @@ mod tests {
         let db = MockPocketRepository::new();
         let connector = MockMintConnector::new();
         let crpocket = pocket(Arc::new(db));
-        let result = crpocket.receive_proofs(&connector, &k_infos, proofs).await;
+        let result = crpocket
+            .receive_proofs(&connector, &k_infos, proofs, SafeMode::Disabled)
+            .await;
         assert!(matches!(result, Err(Error::InactiveKeyset(_))));
     }
 
@@ -563,7 +574,9 @@ mod tests {
         let db = MockPocketRepository::new();
         let connector = MockMintConnector::new();
         let crpocket = pocket(Arc::new(db));
-        let result = crpocket.receive_proofs(&connector, &k_infos, proofs).await;
+        let result = crpocket
+            .receive_proofs(&connector, &k_infos, proofs, SafeMode::Disabled)
+            .await;
         assert!(matches!(result, Err(Error::CurrencyUnitMismatch(_, _))));
     }
 

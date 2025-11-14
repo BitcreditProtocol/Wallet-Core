@@ -18,12 +18,13 @@ use uuid::Uuid;
 // ----- local imports
 use crate::mint::MintConnector as MintCon;
 use crate::{
-    config::{Config, Settings},
+    config::{Config, SameMintSafeMode, Settings},
     error::{Error, Result},
     purse::Wallet,
     types::{PaymentSummary, RedemptionSummary},
     wallet::{CreditPocket, WalletBalance},
 };
+
 // ----- end imports
 
 #[cfg(target_arch = "wasm32")]
@@ -104,6 +105,7 @@ impl AppState {
                 w_cfg.mnemonic,
                 LocalDB::Keep,
                 Self::DB_VERSION,
+                settings.same_mint_safe_mode,
             )
             .await?;
             purse.add_wallet(wallet).await?;
@@ -182,6 +184,7 @@ pub async fn add_wallet(name: String, mint_url: String, mnemonic: String) -> Res
         mnemonic,
         LocalDB::Keep,
         AppState::DB_VERSION,
+        settings.same_mint_safe_mode,
     )
     .await?;
 
@@ -210,6 +213,7 @@ pub async fn restore_wallet(name: String, mint_url: String, mnemonic: String) ->
         mnemonic,
         LocalDB::Delete,
         AppState::DB_VERSION,
+        settings.same_mint_safe_mode,
     )
     .await?;
     wallet.restore_local_proofs().await?;
@@ -251,6 +255,7 @@ pub fn wallet_currency_unit(idx: usize) -> Result<WalletCurrencyUnit> {
     })
 }
 
+// TODO: fix this, lock held across await, issue #92
 pub async fn wallet_balance(idx: usize) -> Result<WalletBalance> {
     tracing::debug!("wallet_balance({idx})");
 
@@ -545,6 +550,7 @@ mod db {
     }
 }
 
+#[allow(dead_code)]
 fn build_mint_id(url: &MintUrl, info: &MintInfo) -> Vec<u8> {
     if let Some(pk) = info.pubkey {
         pk.to_bytes().to_vec()
@@ -596,6 +602,7 @@ async fn build_wallet(
     mnemonic: bip39::Mnemonic,
     local: LocalDB,
     db_version: u32,
+    same_mint_safe_mode: SameMintSafeMode,
 ) -> Result<ProductionWallet> {
     let seed = mnemonic.to_seed("");
     // retrieving mint details
@@ -646,6 +653,7 @@ async fn build_wallet(
         mnemonic,
         beta_clients,
         Box::new(|url| Box::new(crate::mint::HttpClientExt::new(url))),
+        same_mint_safe_mode,
     )
     .await?;
     Ok(new_wallet)

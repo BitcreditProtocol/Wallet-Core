@@ -168,6 +168,26 @@ async fn pocket_increment_nonexisting_counter() {
     assert!(result.is_err());
 }
 
+#[wasm_bindgen_test]
+async fn pocket_store_commitment() {
+    let proofdb = create_pocket_db("pocket_store_commitment").await;
+
+    let amounts = [Amount::from(8u64), Amount::from(16u64)];
+    let total = cashu::Amount::from(24);
+    let keyset = core_tests::generate_random_ecash_keyset().1;
+    let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
+    let ys = proofs.iter().map(|p| p.y().unwrap()).collect::<Vec<_>>();
+    let blinds = cashu::PreMintSecrets::random(keyset.id, total, &cashu::amount::SplitTarget::None)
+        .unwrap()
+        .blinded_messages();
+    let expiration = chrono::Utc::now() + chrono::TimeDelta::minutes(10);
+    let signature = secp256k1::schnorr::Signature::from_slice(&[0u8; 64]).unwrap();
+    proofdb
+        .store_commitment(ys, blinds, expiration, signature)
+        .await
+        .unwrap();
+}
+
 async fn create_transaction_db(test_name: &str) -> TransactionDB {
     let id = "test";
     let obj_stores = TransactionDB::object_stores(id);

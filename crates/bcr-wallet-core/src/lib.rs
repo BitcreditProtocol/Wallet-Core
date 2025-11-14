@@ -18,6 +18,7 @@ pub mod wallet;
 // ----- end imports
 
 const TEASER_SIZE: usize = 25;
+pub type TStamp = chrono::DateTime<chrono::Utc>;
 
 #[cfg(target_arch = "wasm32")]
 mod sync {

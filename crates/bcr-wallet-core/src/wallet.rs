@@ -1,7 +1,7 @@
 // ----- standard library imports
 use std::{collections::HashMap, str::FromStr, sync::Mutex};
 // ----- extra library imports
-use crate::{clowder_models::AlphaState, utils::proofs_to_fingerprints};
+use crate::{clowder_models::AlphaState, config::SameMintSafeMode, utils::proofs_to_fingerprints};
 use async_trait::async_trait;
 use bcr_wallet_lib::wallet::Token;
 use bitcoin::hashes::{Hash, sha256::Hash as Sha256};
@@ -23,6 +23,25 @@ use crate::{
 
 // ----- end imports
 
+pub enum SafeMode {
+    Disabled,
+    Enabled {
+        expire: chrono::TimeDelta,
+        alpha_pk: secp256k1::PublicKey,
+    },
+}
+impl SafeMode {
+    fn new(safe_mode: SameMintSafeMode, alpha_pk: secp256k1::PublicKey) -> Self {
+        match safe_mode {
+            SameMintSafeMode::Disabled => SafeMode::Disabled,
+            SameMintSafeMode::Enabled { expiration } => SafeMode::Enabled {
+                expire: expiration,
+                alpha_pk,
+            },
+        }
+    }
+}
+
 /// trait that represents a single compartment in our wallet where we store proofs/tokens of the
 /// same currency emitted by the same mint
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -35,6 +54,7 @@ pub trait Pocket: sync::SendSync {
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
         proofs: Vec<cdk00::Proof>,
+        safe_mode: SafeMode,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)>;
     async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo]) -> Result<SendSummary>;
     async fn send_proofs(
@@ -42,6 +62,7 @@ pub trait Pocket: sync::SendSync {
         rid: Uuid,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
+        safe_mode: SafeMode,
     ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn clean_local_proofs(&self, client: &dyn MintConnector)
     -> Result<Vec<cdk01::PublicKey>>;
@@ -63,6 +84,7 @@ pub trait CreditPocket: Pocket {
         &self,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
+        safe_mode: SafeMode,
     ) -> Result<(Amount, Vec<cdk00::Proof>)>;
     async fn get_redeemable_proofs(
         &self,
@@ -83,6 +105,7 @@ pub trait DebitPocket: Pocket {
         &self,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
+        safe_mode: SafeMode,
     ) -> Result<Amount>;
     async fn prepare_melt(
         &self,
@@ -95,6 +118,7 @@ pub trait DebitPocket: Pocket {
         rid: Uuid,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
+        safe_mode: SafeMode,
     ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn check_pending_melts(&self, client: &dyn MintConnector) -> Result<Amount>;
 }
@@ -147,6 +171,7 @@ pub struct Wallet<TxRepo, DebtPck> {
     current_payment: Mutex<Option<PayReference>>,
     clowder_id: bitcoin::secp256k1::PublicKey,
     client_factory: Box<dyn Fn(cashu::MintUrl) -> Box<dyn MintConnector> + Send + Sync>,
+    safe_mode: SameMintSafeMode,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -166,6 +191,7 @@ impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck> {
         mnemonic: bip39::Mnemonic,
         beta_clients: HashMap<cashu::MintUrl, Box<dyn MintConnector>>,
         client_factory: Box<dyn Fn(cashu::MintUrl) -> Box<dyn MintConnector> + Send + Sync>,
+        safe_mode: SameMintSafeMode,
     ) -> Result<Self> {
         let clowder_id = client.get_clowder_id().await?;
         Ok(Self {
@@ -181,6 +207,7 @@ impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck> {
             beta_clients,
             clowder_id,
             client_factory,
+            safe_mode,
         })
     }
 
@@ -290,7 +317,12 @@ where
         } else {
             let (amount, _) = self
                 .debit
-                .receive_proofs(self.client.as_ref(), &keysets_info, credit_proofs)
+                .receive_proofs(
+                    self.client.as_ref(),
+                    &keysets_info,
+                    credit_proofs,
+                    SafeMode::new(self.safe_mode, self.clowder_id),
+                )
                 .await?;
             Ok(amount)
         }
@@ -425,12 +457,22 @@ where
         let (stored_amount, ys) = if unit == self.debit.unit() {
             tracing::debug!("receive into debit pocket");
             self.debit
-                .receive_proofs(self.client.as_ref(), keysets_info, proofs)
+                .receive_proofs(
+                    self.client.as_ref(),
+                    keysets_info,
+                    proofs,
+                    SafeMode::new(self.safe_mode, self.clowder_id),
+                )
                 .await?
         } else if unit == self.credit.unit() {
             tracing::debug!("receive into credit pocket");
             self.credit
-                .receive_proofs(self.client.as_ref(), keysets_info, proofs)
+                .receive_proofs(
+                    self.client.as_ref(),
+                    keysets_info,
+                    proofs,
+                    SafeMode::new(self.safe_mode, self.clowder_id),
+                )
                 .await?
         } else {
             return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
@@ -462,6 +504,7 @@ where
         hash_lock: Sha256,
         key_locks: Vec<bitcoin::secp256k1::PublicKey>,
         wallet_pubkey: bitcoin::secp256k1::PublicKey,
+        safe_mode: SafeMode,
     ) -> Result<Vec<cashu::Proof>> {
         let amount = proofs
             .iter()
@@ -499,6 +542,16 @@ where
         let premints =
             cashu::PreMintSecrets::with_conditions(active_keyset_id, amount, &split_target, &htlc)?;
 
+        if let SafeMode::Enabled { expire, alpha_pk } = safe_mode {
+            crate::utils::compel_commitment(
+                proofs.clone(),
+                premints.blinded_messages(),
+                expire,
+                alpha_pk,
+                client,
+            )
+            .await?;
+        }
         let swap_request = cashu::SwapRequest::new(proofs, premints.blinded_messages());
         let swap = client.post_swap(swap_request).await?;
 
@@ -517,7 +570,7 @@ where
         // Ephemeral P2PK secret
         let wallet_pk = cashu::SecretKey::generate();
 
-        let (fingerprints, secrets) = proofs_to_fingerprints(&proofs)?;
+        let (fingerprints, secrets) = proofs_to_fingerprints(proofs)?;
 
         let hash_locks: Vec<Sha256> = secrets
             .iter()
@@ -614,6 +667,7 @@ where
             hash_lock,
             key_locks,
             *wallet_pk.public_key(),
+            SafeMode::new(self.safe_mode, self.clowder_id),
         )
         .await?;
 
@@ -885,11 +939,21 @@ where
             PaymentType::Cdk18 { transport, id } => {
                 let proofs = if unit == self.credit.unit() {
                     self.credit
-                        .send_proofs(request_id, &infos, self.client.as_ref())
+                        .send_proofs(
+                            request_id,
+                            &infos,
+                            self.client.as_ref(),
+                            SafeMode::new(self.safe_mode, self.clowder_id),
+                        )
                         .await?
                 } else if unit == self.debit.unit() {
                     self.debit
-                        .send_proofs(request_id, &infos, self.client.as_ref())
+                        .send_proofs(
+                            request_id,
+                            &infos,
+                            self.client.as_ref(),
+                            SafeMode::new(self.safe_mode, self.clowder_id),
+                        )
                         .await?
                 } else {
                     return Err(Error::Internal(String::from("currency unit mismatch")));
@@ -920,7 +984,12 @@ where
             PaymentType::Bolt11 => {
                 let proofs = self
                     .debit
-                    .pay_melt(request_id, &infos, self.client.as_ref())
+                    .pay_melt(
+                        request_id,
+                        &infos,
+                        self.client.as_ref(),
+                        SafeMode::new(self.safe_mode, self.clowder_id),
+                    )
                     .await?;
                 let (ys, proofs): (Vec<cdk01::PublicKey>, Vec<cdk00::Proof>) =
                     proofs.into_iter().unzip();
@@ -1067,10 +1136,20 @@ where
         tracing::info!("Swapping exchanged proofs");
         let keysets_info = self.client.get_mint_keysets().await?.keysets;
         self.debit
-            .receive_proofs(self.client.as_ref(), &keysets_info, exchanged_debit)
+            .receive_proofs(
+                self.client.as_ref(),
+                &keysets_info,
+                exchanged_debit,
+                SafeMode::new(self.safe_mode, self.clowder_id),
+            )
             .await?;
         self.credit
-            .receive_proofs(self.client.as_ref(), &keysets_info, exchanged_credit)
+            .receive_proofs(
+                self.client.as_ref(),
+                &keysets_info,
+                exchanged_credit,
+                SafeMode::new(self.safe_mode, self.clowder_id),
+            )
             .await?;
 
         let debit_balance = self.debit.balance().await?;

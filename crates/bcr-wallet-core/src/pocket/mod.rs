@@ -9,9 +9,10 @@ use cashu::{
 use uuid::Uuid;
 // ----- local imports
 use crate::{
-    MintConnector,
+    MintConnector, TStamp,
     error::{Error, Result},
-    sync,
+    sync, utils,
+    wallet::SafeMode,
 };
 // ----- local modules
 pub mod credit;
@@ -41,8 +42,17 @@ pub trait PocketRepository: sync::SendSync {
     async fn list_reserved(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn list_all(&self) -> Result<Vec<cdk01::PublicKey>>;
     async fn mark_as_pendingspent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
+
     async fn counter(&self, kid: cashu::Id) -> Result<u32>;
     async fn increment_counter(&self, kid: cashu::Id, old: u32, increment: u32) -> Result<()>;
+
+    async fn store_commitment(
+        &self,
+        inputs: Vec<cashu::PublicKey>,
+        outputs: Vec<cashu::BlindedMessage>,
+        expiration: TStamp,
+        commitment: secp256k1::schnorr::Signature,
+    ) -> Result<()>;
 }
 
 ///////////////////////////////////////////// clean_local_proofs
@@ -137,12 +147,20 @@ async fn swap(
     keysets: HashMap<cashu::Id, KeySet>,
     client: &dyn MintConnector,
     db: &dyn PocketRepository,
+    safe_mode: SafeMode,
 ) -> Result<Amount> {
     let total_input = inputs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
     let input_len = inputs.len();
     let mut blinds: Vec<cdk00::BlindedMessage> = Vec::new();
     for premint in premints.values() {
         blinds.extend(premint.blinded_messages());
+    }
+    if let SafeMode::Enabled { expire, alpha_pk } = safe_mode {
+        let (fps, returned_blinds, exp, commitment) =
+            utils::compel_commitment(inputs.clone(), blinds.clone(), expire, alpha_pk, client)
+                .await?;
+        db.store_commitment(fps, returned_blinds, exp, commitment)
+            .await?;
     }
     let request = cdk03::SwapRequest::new(inputs, blinds);
     // sending the swap request
@@ -189,12 +207,25 @@ async fn swap_proof_to_target(
     seed: &[u8; 64],
     db: &dyn PocketRepository,
     client: &dyn MintConnector,
+    safe_mode: SafeMode,
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
     let target = SplitTarget::Value(target_amount);
     let counter = db.counter(target_keyset.id).await?;
     let premint =
         cdk00::PreMintSecrets::from_seed(target_keyset.id, counter, seed, proof.amount, &target)?;
     let blinds = premint.blinded_messages();
+    if let SafeMode::Enabled { expire, alpha_pk } = safe_mode {
+        let (fps, returned_blinds, exp, commitment) = utils::compel_commitment(
+            vec![proof.clone()],
+            blinds.clone(),
+            expire,
+            alpha_pk,
+            client,
+        )
+        .await?;
+        db.store_commitment(fps, returned_blinds, exp, commitment)
+            .await?;
+    }
     let request = cdk03::SwapRequest::new(vec![proof], blinds);
     db.increment_counter(target_keyset.id, counter, premint.len() as u32)
         .await?;
@@ -263,6 +294,7 @@ async fn send_proofs(
     db: &dyn PocketRepository,
     client: &dyn MintConnector,
     target_swap_keysetid: Option<cashu::Id>,
+    safe_mode: SafeMode,
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
     let mut current_amount = Amount::ZERO;
     let mut sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
@@ -282,6 +314,7 @@ async fn send_proofs(
             seed,
             db,
             client,
+            safe_mode,
         )
         .await?
     } else {
@@ -315,7 +348,7 @@ mod tests {
         let signature = signature::sign_ecash(&mintkeyset, &blind).unwrap();
         let proofs = super::unblind_proofs(&keyset, &[signature], &premint);
         assert_eq!(proofs.len(), 1);
-        signature::verify_ecash(&mintkeyset, &proofs[0]).unwrap();
+        signature::verify_ecash_proof(&mintkeyset, &proofs[0]).unwrap();
     }
 
     #[test]
@@ -410,6 +443,7 @@ mod tests {
             &seed,
             &mockdb,
             &mockclient,
+            SafeMode::Disabled,
         )
         .await
         .unwrap();
@@ -450,9 +484,17 @@ mod tests {
             let y = p.y().expect("Hash to curve should not fail");
             Ok(y)
         });
-        let amount = super::swap(unit, inputs, premints, keysets, &mockclient, &mockdb)
-            .await
-            .unwrap();
+        let amount = super::swap(
+            unit,
+            inputs,
+            premints,
+            keysets,
+            &mockclient,
+            &mockdb,
+            SafeMode::Disabled,
+        )
+        .await
+        .unwrap();
         assert_eq!(amount, Amount::from(24u64));
     }
 }

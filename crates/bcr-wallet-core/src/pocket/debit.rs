@@ -98,6 +98,7 @@ impl Pocket {
         client: &dyn MintConnector,
         (active_info, active_keyset): (cashu::KeySetInfo, cashu::KeySet),
         inputs: HashMap<cdk01::PublicKey, cdk00::Proof>,
+        safe_mode: SafeMode,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
         if inputs.is_empty() {
             tracing::warn!("DbPocket::digest_proofs: empty inputs");
@@ -125,6 +126,7 @@ impl Pocket {
             keysets,
             client,
             self.pdb.as_ref(),
+            safe_mode,
         )
         .await?;
         Ok((cashed_in, ys))
@@ -190,6 +192,7 @@ impl wallet::Pocket for Pocket {
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
         inputs: Vec<cdk00::Proof>,
+        safe_mode: SafeMode,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
         // storing proofs in pending state
         let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
@@ -199,7 +202,8 @@ impl wallet::Pocket for Pocket {
             proofs.insert(y, input);
         }
         let active_keys = self.find_active_keyset(keysets_info, client).await?;
-        self.digest_proofs(client, active_keys, proofs).await
+        self.digest_proofs(client, active_keys, proofs, safe_mode)
+            .await
     }
 
     async fn prepare_send(
@@ -217,6 +221,7 @@ impl wallet::Pocket for Pocket {
         rid: Uuid,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
+        safe_mode: SafeMode,
     ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         let send_ref = {
             let mut locked = self.current_send.lock().unwrap();
@@ -236,6 +241,7 @@ impl wallet::Pocket for Pocket {
             self.pdb.as_ref(),
             client,
             Some(info.id),
+            safe_mode,
         )
         .await?;
 
@@ -295,11 +301,14 @@ impl wallet::DebitPocket for Pocket {
         &self,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
+        safe_mode: wallet::SafeMode,
     ) -> Result<Amount> {
         let pendings = self.pdb.list_pending().await?;
         let pendings_len = pendings.len();
         let active_keys = self.find_active_keyset(keysets_info, client).await?;
-        let (reclaimed, _) = self.digest_proofs(client, active_keys, pendings).await?;
+        let (reclaimed, _) = self
+            .digest_proofs(client, active_keys, pendings, safe_mode)
+            .await?;
         tracing::debug!(
             "DbPocket::reclaim_proofs: pendings: {pendings_len} reclaimed: {reclaimed}"
         );
@@ -342,6 +351,7 @@ impl wallet::DebitPocket for Pocket {
         rid: Uuid,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
+        safe_mode: wallet::SafeMode,
     ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         let melt_ref = self.current_melt.lock().unwrap().take();
         let melt_ref = melt_ref.ok_or(Error::NoPrepareRef(rid))?;
@@ -356,6 +366,7 @@ impl wallet::DebitPocket for Pocket {
             self.pdb.as_ref(),
             client,
             Some(info.id),
+            safe_mode,
         )
         .await?;
         let premints = if melt_ref.reserved_fees != Amount::ZERO {
@@ -507,7 +518,7 @@ mod tests {
         });
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
         let (cashed, _) = pocket
-            .receive_proofs(&connector, &k_infos, proofs)
+            .receive_proofs(&connector, &k_infos, proofs, SafeMode::Disabled)
             .await
             .unwrap();
         assert_eq!(cashed, Amount::from(24u64));
