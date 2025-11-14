@@ -517,7 +517,7 @@ where
         // Ephemeral P2PK secret
         let wallet_pk = cashu::SecretKey::generate();
 
-        let (fingerprints, secrets) = proofs_to_fingerprints(proofs.clone())?;
+        let (fingerprints, secrets) = proofs_to_fingerprints(&proofs)?;
 
         let hash_locks: Vec<Sha256> = secrets
             .iter()
