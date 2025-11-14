@@ -281,10 +281,11 @@ where
             let is_rabid = wlt.read().expect("Poisoned").is_wallet_mint_rabid().await?;
             let substitute_url = wlt.read().expect("Poisoned").mint_substitute().await?;
 
+            let wallet_name = wlt.read().expect("Poisoned").name();
             if is_rabid && let Some(substitute_url) = substitute_url {
                 tracing::info!(
                     "Wallet {} is found rabid, migrating to substitute beta {}",
-                    wlt.read().unwrap().name(),
+                    wallet_name,
                     substitute_url
                 );
                 let substitute_client = crate::mint::HttpClientExt::new(substitute_url);
