@@ -4,18 +4,19 @@ use bitcoin::secp256k1::PublicKey;
 use cashu::Proof;
 use cdk::Error as CdkError;
 // ----- local imports
-use crate::clowder_models::ProofFingerprint;
+use crate::{MintConnector, TStamp, clowder_models::ProofFingerprint, error::Result};
+
 // ----- end imports
 
 type CdkResult<T> = std::result::Result<T, cdk::Error>;
 
 pub fn proofs_to_fingerprints(
-    proofs: &[Proof],
+    proofs: Vec<Proof>,
 ) -> CdkResult<(Vec<ProofFingerprint>, Vec<cashu::secret::Secret>)> {
     let mut secrets = Vec::with_capacity(proofs.len());
     let mut fingerprints = Vec::with_capacity(proofs.len());
 
-    for p in proofs.iter() {
+    for p in proofs.into_iter() {
         secrets.push(p.secret.clone());
 
         fingerprints.push(p.try_into()?);
@@ -65,10 +66,10 @@ pub fn validate_offline_conditions(
     Ok(lock_time)
 }
 
-impl TryFrom<&Proof> for ProofFingerprint {
+impl TryFrom<Proof> for ProofFingerprint {
     type Error = CdkError;
 
-    fn try_from(proof: &Proof) -> Result<Self, Self::Error> {
+    fn try_from(proof: Proof) -> std::result::Result<Self, Self::Error> {
         Ok(ProofFingerprint {
             amount: proof.amount,
             keyset_id: proof.keyset_id,
@@ -80,8 +81,33 @@ impl TryFrom<&Proof> for ProofFingerprint {
     }
 }
 
+pub async fn compel_commitment(
+    inputs: Vec<cashu::Proof>,
+    outputs: Vec<cashu::BlindedMessage>,
+    expiration: chrono::TimeDelta,
+    alpha_pk: secp256k1::PublicKey,
+    client: &dyn MintConnector,
+) -> Result<(
+    Vec<cashu::PublicKey>,
+    Vec<cashu::BlindedMessage>,
+    TStamp,
+    secp256k1::schnorr::Signature,
+)> {
+    let result = client
+        .post_commitment(inputs, outputs, expiration, alpha_pk)
+        .await;
+    match result {
+        Ok(response) => Ok(response),
+        // TODO: protest
+        // Err(Error::BorshSignature(BorshMsgSignatureError::Secp256k1(_))) => {},
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub mod tests {
+    use crate::TStamp;
+    use crate::error::Result;
     use async_trait::async_trait;
     use cashu::{
         nut02 as cdk02, nut03 as cdk03, nut04 as cdk04, nut05 as cdk05, nut06 as cdk06,
@@ -92,7 +118,7 @@ pub mod tests {
     use crate::clowder_models::{
         AlphaStateResponse, ConnectedMintResponse, ConnectedMintsResponse, ProofFingerprint,
     };
-    type CdkResult<T> = Result<T, CDKError>;
+    type CdkResult<T> = std::result::Result<T, CDKError>;
 
     mockall::mock! {
             pub MintConnector {
@@ -186,6 +212,18 @@ pub mod tests {
             wallet_pubkey: bitcoin::secp256k1::PublicKey,
         ) -> CdkResult<Vec<cashu::Proof>>;
 
+        async fn post_commitment(
+            &self,
+            inputs: Vec<cashu::Proof>,
+            outputs: Vec<cashu::BlindedMessage>,
+            expiration: chrono::TimeDelta,
+            alpha_pk: secp256k1::PublicKey,
+        ) -> Result<(
+            Vec<cashu::PublicKey>,
+            Vec<cashu::BlindedMessage>,
+            TStamp,
+            secp256k1::schnorr::Signature,
+        )>;
         }
     }
 }

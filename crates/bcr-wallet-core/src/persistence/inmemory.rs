@@ -11,8 +11,10 @@ use cashu::{nut00 as cdk00, nut01 as cdk01, nut07 as cdk07};
 use cdk::wallet::types::{Transaction, TransactionId};
 // ----- local imports
 use crate::{
+    TStamp,
     config::Settings,
     error::{Error, Result},
+    persistence::Commitment,
     pocket::{PocketRepository, debit::MintMeltRepository},
     purse::PurseRepository,
     types::WalletConfig,
@@ -28,6 +30,8 @@ pub struct InMemoryPocketRepository {
     pending: Arc<Mutex<HashMap<cdk01::PublicKey, cdk00::Proof>>>,
 
     counter: Arc<Mutex<HashMap<cashu::Id, u32>>>,
+
+    commitments: Arc<Mutex<Vec<Commitment>>>,
 }
 
 #[async_trait]
@@ -110,6 +114,24 @@ impl PocketRepository for InMemoryPocketRepository {
 
         let new_val = val + increment;
         counter.insert(kid, new_val);
+        Ok(())
+    }
+
+    async fn store_commitment(
+        &self,
+        inputs: Vec<cashu::PublicKey>,
+        outputs: Vec<cashu::BlindedMessage>,
+        expiration: TStamp,
+        commitment: secp256k1::schnorr::Signature,
+    ) -> Result<()> {
+        let commitment = Commitment {
+            inputs,
+            outputs,
+            expiration,
+            commitment,
+        };
+        let mut commitments = self.commitments.lock().unwrap();
+        commitments.push(commitment);
         Ok(())
     }
 }

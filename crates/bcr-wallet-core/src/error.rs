@@ -8,6 +8,10 @@ use thiserror::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("BorshSignature: {0}")]
+    BorshSignature(#[from] bcr_common::core::signature::BorshMsgSignatureError),
+    #[error("Borsh: {0}")]
+    Borsh(#[from] borsh::io::Error),
     #[error("Rexie error: {0}")]
     Rexie(#[from] rexie::Error),
     #[error("serde_wasm_bindgen error: {0}")]
