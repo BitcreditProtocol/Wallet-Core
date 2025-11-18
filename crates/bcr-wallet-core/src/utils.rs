@@ -1,29 +1,12 @@
 // ----- standard library imports
 // ----- extra library imports
 use bitcoin::secp256k1::PublicKey;
-use cashu::Proof;
 use cdk::Error as CdkError;
 // ----- local imports
-use crate::{MintConnector, TStamp, clowder_models::ProofFingerprint, error::Result};
-
+use crate::{MintConnector, TStamp, error::Result};
 // ----- end imports
 
 type CdkResult<T> = std::result::Result<T, cdk::Error>;
-
-pub fn proofs_to_fingerprints(
-    proofs: Vec<Proof>,
-) -> CdkResult<(Vec<ProofFingerprint>, Vec<cashu::secret::Secret>)> {
-    let mut secrets = Vec::with_capacity(proofs.len());
-    let mut fingerprints = Vec::with_capacity(proofs.len());
-
-    for p in proofs.into_iter() {
-        secrets.push(p.secret.clone());
-
-        fingerprints.push(p.try_into()?);
-    }
-
-    Ok((fingerprints, secrets))
-}
 
 pub fn validate_offline_conditions(
     wallet_pubkey: PublicKey,
@@ -66,21 +49,6 @@ pub fn validate_offline_conditions(
     Ok(lock_time)
 }
 
-impl TryFrom<Proof> for ProofFingerprint {
-    type Error = CdkError;
-
-    fn try_from(proof: Proof) -> std::result::Result<Self, Self::Error> {
-        Ok(ProofFingerprint {
-            amount: proof.amount,
-            keyset_id: proof.keyset_id,
-            c: proof.c,
-            dleq: proof.dleq.clone(),
-            witness: proof.witness.clone(),
-            y: proof.y()?,
-        })
-    }
-}
-
 pub async fn compel_commitment(
     inputs: Vec<cashu::Proof>,
     outputs: Vec<cashu::BlindedMessage>,
@@ -109,14 +77,15 @@ pub mod tests {
     use crate::TStamp;
     use crate::error::Result;
     use async_trait::async_trait;
+    use bcr_common::wire::keys as wire_keys;
     use cashu::{
         nut02 as cdk02, nut03 as cdk03, nut04 as cdk04, nut05 as cdk05, nut06 as cdk06,
         nut07 as cdk07, nut09 as cdk09, nut23 as cdk23,
     };
     use cdk_common::Error as CDKError;
 
-    use crate::clowder_models::{
-        AlphaStateResponse, ConnectedMintResponse, ConnectedMintsResponse, ProofFingerprint,
+    use bcr_common::wire::clowder::{
+        AlphaStateResponse, ConnectedMintResponse, ConnectedMintsResponse,
     };
     type CdkResult<T> = std::result::Result<T, CDKError>;
 
@@ -207,7 +176,7 @@ pub mod tests {
 
         async fn post_exchange_substitute(
             &self,
-            proofs: Vec<ProofFingerprint>,
+            proofs: Vec<wire_keys::ProofFingerprint>,
             locks: Vec<bitcoin::hashes::sha256::Hash>,
             wallet_pubkey: bitcoin::secp256k1::PublicKey,
         ) -> CdkResult<Vec<cashu::Proof>>;

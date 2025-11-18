@@ -2,21 +2,12 @@
 use std::str::FromStr;
 // ----- extra library imports
 use async_trait::async_trait;
-use bcr_common::wire::{keys as wire_keys, swap as wire_swap};
+use bcr_common::wire::{clowder as wire_clowder, keys as wire_keys, swap as wire_swap};
 use bitcoin::base64::prelude::*;
 use cashu::Proof;
 use cdk::Error as CdkError;
 // ----- local imports
-use crate::{
-    TStamp,
-    clowder_models::{
-        AlphaStateResponse, ConnectedMintResponse, ConnectedMintsResponse, ExchangeRequest,
-        ExchangeResponse, OfflineResponse, PathRequest, ProofFingerprint, PublicKeyResponse,
-        SubstituteExchangeRequest, SubstituteExchangeResponse,
-    },
-    error::Result,
-    sync,
-};
+use crate::{TStamp, error::Result, sync};
 // ----- end imports
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -35,7 +26,7 @@ pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {
     async fn post_clowder_path(
         &self,
         origin_mint_url: cashu::MintUrl,
-    ) -> CdkResult<ConnectedMintsResponse>;
+    ) -> CdkResult<wire_clowder::ConnectedMintsResponse>;
     async fn get_alpha_keysets(
         &self,
         alpha_id: bitcoin::secp256k1::PublicKey,
@@ -45,15 +36,15 @@ pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {
     async fn get_alpha_status(
         &self,
         alpha_id: bitcoin::secp256k1::PublicKey,
-    ) -> CdkResult<AlphaStateResponse>;
+    ) -> CdkResult<wire_clowder::AlphaStateResponse>;
     async fn get_alpha_substitute(
         &self,
         alpha_id: bitcoin::secp256k1::PublicKey,
-    ) -> CdkResult<ConnectedMintResponse>;
+    ) -> CdkResult<wire_clowder::ConnectedMintResponse>;
 
     async fn post_exchange_substitute(
         &self,
-        proofs: Vec<ProofFingerprint>,
+        proofs: Vec<wire_keys::ProofFingerprint>,
         locks: Vec<bitcoin::hashes::sha256::Hash>,
         wallet_pubkey: bitcoin::secp256k1::PublicKey,
     ) -> CdkResult<Vec<Proof>>;
@@ -227,7 +218,7 @@ impl MintConnector for HttpClientExt {
             .send()
             .await
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
-        let response: OfflineResponse = response
+        let response: wire_clowder::OfflineResponse = response
             .json()
             .await
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
@@ -238,7 +229,7 @@ impl MintConnector for HttpClientExt {
     async fn get_alpha_status(
         &self,
         alpha_id: bitcoin::secp256k1::PublicKey,
-    ) -> CdkResult<AlphaStateResponse> {
+    ) -> CdkResult<wire_clowder::AlphaStateResponse> {
         let url = self.url.join(&format!("v1/alpha/status/{alpha_id}"))?;
         let response = self
             .secondary
@@ -256,7 +247,7 @@ impl MintConnector for HttpClientExt {
     async fn get_alpha_substitute(
         &self,
         alpha_id: bitcoin::secp256k1::PublicKey,
-    ) -> CdkResult<ConnectedMintResponse> {
+    ) -> CdkResult<wire_clowder::ConnectedMintResponse> {
         let url = self.url.join(&format!("v1/alpha/substitute/{alpha_id}"))?;
         let response = self
             .secondary
@@ -281,21 +272,21 @@ impl MintConnector for HttpClientExt {
             .send()
             .await
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
-        let response: ConnectedMintsResponse = response
+        let response: wire_clowder::ConnectedMintsResponse = response
             .json()
             .await
             .map_err(|e| CdkError::Custom(e.to_string()))?;
-        Ok(response.mint_urls)
+        Ok(response.mints.into_iter().map(|m| m.mint).collect())
     }
 
     async fn post_exchange_substitute(
         &self,
-        proofs: Vec<ProofFingerprint>,
+        proofs: Vec<wire_keys::ProofFingerprint>,
         locks: Vec<bitcoin::hashes::sha256::Hash>,
         wallet_pubkey: bitcoin::secp256k1::PublicKey,
     ) -> CdkResult<Vec<Proof>> {
         let url = self.url.join("v1/exchange/substitute")?;
-        let request = SubstituteExchangeRequest {
+        let request = wire_clowder::SubstituteExchangeRequest {
             proofs,
             locks,
             wallet_pubkey,
@@ -308,7 +299,7 @@ impl MintConnector for HttpClientExt {
             .send()
             .await
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
-        let response: SubstituteExchangeResponse = response
+        let response: wire_clowder::SubstituteExchangeResponse = response
             .json()
             .await
             .map_err(|e| CdkError::Custom(e.to_string()))?;
@@ -324,7 +315,7 @@ impl MintConnector for HttpClientExt {
             .url
             .join("v1/exchange")
             .expect("post_clowder_exchange url error");
-        let request = ExchangeRequest {
+        let request = wire_clowder::ExchangeRequest {
             exchange_path,
             alpha_proofs,
         };
@@ -335,7 +326,7 @@ impl MintConnector for HttpClientExt {
             .send()
             .await
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
-        let response: ExchangeResponse = response
+        let response: wire_clowder::ExchangeResponse = response
             .json()
             .await
             .map_err(|e| CdkError::Custom(e.to_string()))?;
@@ -351,7 +342,7 @@ impl MintConnector for HttpClientExt {
             .send()
             .await
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
-        let response: PublicKeyResponse = response
+        let response: wire_clowder::PublicKeyResponse = response
             .json()
             .await
             .map_err(|e| CdkError::Custom(e.to_string()))?;
@@ -361,12 +352,12 @@ impl MintConnector for HttpClientExt {
     async fn post_clowder_path(
         &self,
         origin_mint_url: cashu::MintUrl,
-    ) -> CdkResult<ConnectedMintsResponse> {
+    ) -> CdkResult<wire_clowder::ConnectedMintsResponse> {
         let url = self
             .url
             .join("v1/path")
             .expect("post_clowder_path url error");
-        let request = PathRequest { origin_mint_url };
+        let request = wire_clowder::PathRequest { origin_mint_url };
         let response = self
             .secondary
             .post(url)
@@ -374,7 +365,7 @@ impl MintConnector for HttpClientExt {
             .send()
             .await
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
-        let response: ConnectedMintsResponse = response
+        let response: wire_clowder::ConnectedMintsResponse = response
             .json()
             .await
             .map_err(|e| CdkError::Custom(e.to_string()))?;
