@@ -550,6 +550,7 @@ mod db {
     }
 }
 
+//"will be used in future refactoring see issue #92"
 #[allow(dead_code)]
 fn build_mint_id(url: &MintUrl, info: &MintInfo) -> Vec<u8> {
     if let Some(pk) = info.pubkey {

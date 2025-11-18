@@ -4,7 +4,6 @@ use tracing::info;
 use wasm_bindgen::prelude::*;
 // ----- local modules
 mod app;
-mod clowder_models;
 pub mod config;
 pub mod error;
 mod mint;

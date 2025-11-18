@@ -1,8 +1,9 @@
 // ----- standard library imports
 use std::{collections::HashMap, str::FromStr, sync::Mutex};
 // ----- extra library imports
-use crate::{clowder_models::AlphaState, config::SameMintSafeMode, utils::proofs_to_fingerprints};
+use crate::config::SameMintSafeMode;
 use async_trait::async_trait;
+use bcr_common::wire::{clowder as wire_clowder, keys as wire_keys};
 use bcr_wallet_lib::wallet::Token;
 use bitcoin::hashes::{Hash, sha256::Hash as Sha256};
 use cashu::{
@@ -403,14 +404,16 @@ where
             // Determine path from current mint to origin
             let path = self.client.post_clowder_path(mint.clone()).await?;
             tracing::debug!("Receive intermint proofs path {:?}", path);
-            if path.node_ids.len() < 3 {
+            let (mint_urls, node_ids): (Vec<_>, Vec<_>) =
+                path.mints.into_iter().map(|m| (m.mint, m.node_id)).unzip();
+            if node_ids.len() < 3 {
                 return Err(Error::InvalidClowderPath);
             }
-            let alpha_id = path.node_ids[0];
+            let alpha_id = node_ids[0];
 
             let alpha_client = (self.client_factory)(mint.clone());
             // The path goes through the substitute Beta if the Alpha origin mint is offline
-            let beta_mint = path.mint_urls[1].clone();
+            let beta_mint = mint_urls[1].clone();
             // Replace Beta instantiation here with stored MintConnectors for each Beta
             let substitute_client = self
                 .beta_clients
@@ -426,7 +429,7 @@ where
                         proofs,
                         mint,
                         alpha_client.as_ref(),
-                        path.node_ids,
+                        node_ids,
                         unit.clone(),
                         tstamp,
                     )
@@ -437,7 +440,7 @@ where
                     .offline_exchange(substitute_client.as_ref(), proofs, tstamp)
                     .await?;
                 // Alpha proofs -> Beta proofs is done, so we only need the path from Beta to the Wallet Mint
-                let path = path.node_ids[1..].to_vec();
+                let path = node_ids[1..].to_vec();
                 proofs = self
                     .online_exchange(
                         substitute_proofs,
@@ -570,7 +573,15 @@ where
         // Ephemeral P2PK secret
         let wallet_pk = cashu::SecretKey::generate();
 
-        let (fingerprints, secrets) = proofs_to_fingerprints(proofs)?;
+        let secrets = proofs
+            .iter()
+            .map(|p| p.secret.clone())
+            .collect::<Vec<cashu::secret::Secret>>();
+
+        let fingerprints: Vec<_> = proofs
+            .into_iter()
+            .map(wire_keys::ProofFingerprint::try_from)
+            .collect::<std::result::Result<_, _>>()?;
 
         let hash_locks: Vec<Sha256> = secrets
             .iter()
@@ -726,12 +737,12 @@ where
         } else {
             let path = self.client.post_clowder_path(token.mint_url()).await?;
             tracing::debug!("Receive intermint proofs path {:?}", path);
-            if path.node_ids.len() < 3 {
+            if path.mints.len() < 3 {
                 return Err(Error::InvalidClowderPath);
             }
-            let alpha_id = path.node_ids[0];
+            let alpha_id = path.mints[0].node_id;
             // The path goes through the substitute Beta if the Alpha origin mint is offline
-            let beta_mint = path.mint_urls[1].clone();
+            let beta_mint = path.mints[1].mint.clone();
             // In the direct exchange case this is the same as the Wallet's mint
             let substitute_client = self
                 .beta_clients
@@ -1046,7 +1057,7 @@ where
                 .ok_or(Error::BetaNotFound(beta))?;
 
             let status = beta_client.get_alpha_status(self.clowder_id).await?.state;
-            if matches!(status, AlphaState::Rabid(..)) {
+            if matches!(status, wire_clowder::AlphaState::Rabid(..)) {
                 rabid_count += 1;
             }
         }
@@ -1064,7 +1075,7 @@ where
                 .get(&beta)
                 .ok_or(Error::BetaNotFound(beta))?;
 
-            let substitute_vote = beta_client.get_alpha_substitute(mint_id).await?.mint_url;
+            let substitute_vote = beta_client.get_alpha_substitute(mint_id).await?.mint;
             *substitute_counts.entry(substitute_vote).or_default() += 1;
         }
 
