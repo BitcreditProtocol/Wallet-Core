@@ -1,21 +1,18 @@
 // ----- standard library imports
 use std::{collections::HashMap, str::FromStr, sync::Mutex};
 // ----- extra library imports
-use crate::config::SameMintSafeMode;
 use async_trait::async_trait;
 use bcr_common::wire::{clowder as wire_clowder, keys as wire_keys};
 use bcr_wallet_lib::wallet::Token;
 use bitcoin::hashes::{Hash, sha256::Hash as Sha256};
-use cashu::{
-    Amount, Bolt11Invoice, CurrencyUnit, KeySetInfo, MintUrl, Proof, nut00 as cdk00,
-    nut01 as cdk01, nut07 as cdk07, nut18 as cdk18,
-};
+use cashu::{Amount, Bolt11Invoice, CurrencyUnit, KeySetInfo, MintUrl, Proof};
 use cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
 use nostr_sdk::nips::nip19::{FromBech32, Nip19Profile};
 use uuid::Uuid;
 // ----- local imports
 use crate::{
     MintConnector,
+    config::SameMintSafeMode,
     error::{Error, Result},
     purse::{self},
     sync,
@@ -54,9 +51,9 @@ pub trait Pocket: sync::SendSync {
         &self,
         client: &dyn MintConnector,
         keysets_info: &[KeySetInfo],
-        proofs: Vec<cdk00::Proof>,
+        proofs: Vec<cashu::Proof>,
         safe_mode: SafeMode,
-    ) -> Result<(Amount, Vec<cdk01::PublicKey>)>;
+    ) -> Result<(Amount, Vec<cashu::PublicKey>)>;
     async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo]) -> Result<SendSummary>;
     async fn send_proofs(
         &self,
@@ -64,15 +61,15 @@ pub trait Pocket: sync::SendSync {
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
         safe_mode: SafeMode,
-    ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
+    ) -> Result<HashMap<cashu::PublicKey, cashu::Proof>>;
     async fn clean_local_proofs(&self, client: &dyn MintConnector)
-    -> Result<Vec<cdk01::PublicKey>>;
+    -> Result<Vec<cashu::PublicKey>>;
     async fn restore_local_proofs(
         &self,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
     ) -> Result<usize>;
-    async fn delete_proofs(&self) -> Result<HashMap<cashu::Id, Vec<cdk00::Proof>>>;
+    async fn delete_proofs(&self) -> Result<HashMap<cashu::Id, Vec<cashu::Proof>>>;
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -86,12 +83,12 @@ pub trait CreditPocket: Pocket {
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
         safe_mode: SafeMode,
-    ) -> Result<(Amount, Vec<cdk00::Proof>)>;
+    ) -> Result<(Amount, Vec<cashu::Proof>)>;
     async fn get_redeemable_proofs(
         &self,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
-    ) -> Result<Vec<cdk00::Proof>>;
+    ) -> Result<Vec<cashu::Proof>>;
     async fn list_redemptions(
         &self,
         keysets_info: &[KeySetInfo],
@@ -120,7 +117,7 @@ pub trait DebitPocket: Pocket {
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
         safe_mode: SafeMode,
-    ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
+    ) -> Result<HashMap<cashu::PublicKey, cashu::Proof>>;
     async fn check_pending_melts(&self, client: &dyn MintConnector) -> Result<Amount>;
 }
 
@@ -147,7 +144,7 @@ pub struct SendReference {
 }
 pub enum PaymentType {
     Cdk18 {
-        transport: cdk18::Transport,
+        transport: cashu::Transport,
         id: Option<String>,
     },
     Bolt11,
@@ -159,11 +156,11 @@ pub struct PayReference {
     ptype: PaymentType,
     memo: Option<String>,
 }
-pub struct Wallet<TxRepo, DebtPck> {
+pub struct Wallet<DebtPck> {
     network: bitcoin::Network,
     client: Box<dyn MintConnector>,
     beta_clients: HashMap<cashu::MintUrl, Box<dyn MintConnector>>,
-    tx_repo: TxRepo,
+    tx_repo: Box<dyn TransactionRepository>,
     debit: DebtPck,
     credit: Box<dyn CreditPocket>,
     name: String,
@@ -181,11 +178,11 @@ pub struct WalletBalance {
     pub credit: cashu::Amount,
 }
 
-impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck> {
+impl<DebtPck> Wallet<DebtPck> {
     pub async fn new(
         network: bitcoin::Network,
         client: Box<dyn MintConnector>,
-        tx_repo: TxRepo,
+        tx_repo: Box<dyn TransactionRepository>,
         (debit, credit): (DebtPck, Box<dyn CreditPocket>),
         name: String,
         id: String,
@@ -228,9 +225,13 @@ impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck> {
             .list_redemptions(&keysets_info, payment_window)
             .await
     }
+
+    pub async fn list_tx_ids(&self) -> Result<Vec<TransactionId>> {
+        self.tx_repo.list_tx_ids().await
+    }
 }
 
-impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck>
+impl<DebtPck> Wallet<DebtPck>
 where
     DebtPck: DebitPocket,
 {
@@ -245,8 +246,8 @@ where
 
     async fn check_nut18_request(
         &self,
-        req: &cdk18::PaymentRequest,
-    ) -> Result<(Amount, CurrencyUnit, cdk18::Transport)> {
+        req: &cashu::PaymentRequest,
+    ) -> Result<(Amount, CurrencyUnit, cashu::Transport)> {
         if let Some(mints) = &req.mints
             && !mints.contains(&self.client.mint_url())
         {
@@ -271,7 +272,7 @@ where
         let (nostr_transports, http_transports): (Vec<_>, Vec<_>) = req
             .transports
             .iter()
-            .partition(|t| matches!(t._type, cdk18::TransportType::Nostr));
+            .partition(|t| matches!(t._type, cashu::TransportType::Nostr));
         if !http_transports.is_empty() {
             Ok((amount, unit, http_transports[0].clone()))
         } else if !nostr_transports.is_empty() {
@@ -294,12 +295,7 @@ where
         };
         Ok(())
     }
-}
 
-impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck>
-where
-    DebtPck: DebitPocket,
-{
     pub async fn clean_local_db(&self) -> Result<u32> {
         let credit_ys = self.credit.clean_local_proofs(self.client.as_ref()).await?;
         let debit_ys = self.debit.clean_local_proofs(self.client.as_ref()).await?;
@@ -309,7 +305,7 @@ where
 
     pub async fn redeem_credit(&self) -> Result<Amount> {
         let keysets_info = self.client.get_mint_keysets().await?.keysets;
-        let credit_proofs: Vec<cdk00::Proof> = self
+        let credit_proofs: Vec<cashu::Proof> = self
             .credit
             .get_redeemable_proofs(&keysets_info, self.client.as_ref())
             .await?;
@@ -345,34 +341,19 @@ where
     pub async fn check_pending_melts(&self) -> Result<Amount> {
         self.debit.check_pending_melts(self.client.as_ref()).await
     }
-}
 
-impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck>
-where
-    TxRepo: TransactionRepository,
-{
-    pub async fn list_tx_ids(&self) -> Result<Vec<TransactionId>> {
-        self.tx_repo.list_tx_ids().await
-    }
-}
-
-impl<TxRepo, DebtPck> Wallet<TxRepo, DebtPck>
-where
-    TxRepo: TransactionRepository,
-    DebtPck: DebitPocket,
-{
     pub async fn load_tx(&self, tx_id: TransactionId) -> Result<Transaction> {
         let mut tx = self.tx_repo.load_tx(tx_id).await?;
         let p_status = types::get_transaction_status(&tx.metadata);
         if !matches!(p_status, types::TransactionStatus::Pending) {
             return Ok(tx);
         }
-        let request = cdk07::CheckStateRequest { ys: tx.ys.clone() };
+        let request = cashu::CheckStateRequest { ys: tx.ys.clone() };
         let response = self.client.post_check_state(request).await?;
         let is_any_spent = response
             .states
             .iter()
-            .any(|s| matches!(s.state, cdk07::State::Spent));
+            .any(|s| matches!(s.state, cashu::State::Spent));
         if is_any_spent {
             self.tx_repo
                 .update_metadata(
@@ -389,7 +370,7 @@ where
     async fn _receive_proofs(
         &self,
         keysets_info: &[KeySetInfo],
-        proofs: Vec<cdk00::Proof>,
+        proofs: Vec<cashu::Proof>,
         unit: CurrencyUnit,
         mint: Option<MintUrl>,
         tstamp: u64,
@@ -808,14 +789,14 @@ where
 
     async fn pay_nut18(
         &self,
-        proofs: Vec<cdk00::Proof>,
+        proofs: Vec<cashu::Proof>,
         nostr_cl: &nostr_sdk::Client,
         http_cl: &reqwest::Client,
-        transport: cdk18::Transport,
+        transport: cashu::Transport,
         p_id: Option<String>,
         mut partial_tx: Transaction,
     ) -> Result<TransactionId> {
-        let payload = cdk18::PaymentRequestPayload {
+        let payload = cashu::PaymentRequestPayload {
             id: p_id,
             memo: partial_tx.memo.clone(),
             unit: partial_tx.unit.clone(),
@@ -823,12 +804,12 @@ where
             proofs,
         };
         match transport._type {
-            cdk18::TransportType::HttpPost => {
+            cashu::TransportType::HttpPost => {
                 let url = reqwest::Url::from_str(&transport.target)?;
                 let response = http_cl.post(url).json(&payload).send().await?;
                 response.error_for_status()?;
             }
-            cdk18::TransportType::Nostr => {
+            cashu::TransportType::Nostr => {
                 let payload = serde_json::to_string(&payload)?;
                 let receiver = Nip19Profile::from_bech32(&transport.target)?;
                 let output = nostr_cl
@@ -851,9 +832,8 @@ where
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-impl<TxRepo, DebtPck> purse::Wallet for Wallet<TxRepo, DebtPck>
+impl<DebtPck> purse::Wallet for Wallet<DebtPck>
 where
-    TxRepo: TransactionRepository,
     DebtPck: DebitPocket,
 {
     fn config(&self) -> Result<WalletConfig> {
@@ -876,7 +856,7 @@ where
     async fn prepare_pay(&self, input: String, now: u64) -> Result<PaymentSummary> {
         let infos = self.client.get_mint_keysets().await?.keysets;
 
-        if let Ok(request) = cdk18::PaymentRequest::from_str(&input) {
+        if let Ok(request) = cashu::PaymentRequest::from_str(&input) {
             let (amount, unit, transport) = self.check_nut18_request(&request).await?;
             let s_summary = if self.credit.unit() == unit {
                 self.credit.prepare_send(amount, &infos).await?
@@ -969,7 +949,7 @@ where
                 } else {
                     return Err(Error::Internal(String::from("currency unit mismatch")));
                 };
-                let (ys, proofs): (Vec<cdk01::PublicKey>, Vec<cdk00::Proof>) =
+                let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
                 let amount = proofs
                     .iter()
@@ -1002,7 +982,7 @@ where
                         SafeMode::new(self.safe_mode, self.clowder_id),
                     )
                     .await?;
-                let (ys, proofs): (Vec<cdk01::PublicKey>, Vec<cdk00::Proof>) =
+                let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
                 let amount = proofs
                     .iter()
@@ -1026,7 +1006,7 @@ where
     }
     async fn receive_proofs(
         &self,
-        proofs: Vec<cdk00::Proof>,
+        proofs: Vec<cashu::Proof>,
         unit: CurrencyUnit,
         mint: Option<MintUrl>,
         tstamp: u64,

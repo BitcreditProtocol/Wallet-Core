@@ -50,8 +50,7 @@ mod prod {
 type ProductionConnector = crate::mint::HttpClientExt;
 type ProductionDebitPocket = crate::pocket::debit::Pocket;
 type ProductionCreditPocket = crate::pocket::credit::Pocket;
-type ProductionWallet =
-    crate::wallet::Wallet<prod::ProductionTransactionRepository, ProductionDebitPocket>;
+type ProductionWallet = crate::wallet::Wallet<ProductionDebitPocket>;
 type ProductionPurse = crate::purse::Purse<prod::ProductionPurseRepository, ProductionWallet>;
 
 pub struct AppState {
@@ -390,6 +389,7 @@ pub async fn wallet_check_received_payment(
     Ok(tx_id)
 }
 
+// TODO: this needs fix as a mutex is held through await point
 pub async fn wallet_check_pending_melts(idx: usize) -> Result<cashu::Amount> {
     tracing::debug!("wallet_check_pending_melts({idx})");
 
@@ -414,7 +414,7 @@ pub fn wallets_names() -> Result<Vec<String>> {
         let Some(purse) = &state.purse else {
             return Err(Error::Initialization);
         };
-        Ok(purse.names()?)
+        purse.names()
     })?;
     Ok(names)
 }
@@ -550,7 +550,7 @@ mod db {
     }
 }
 
-//"will be used in future refactoring see issue #92"
+// will be used in future refactoring see issue #92
 #[allow(dead_code)]
 fn build_mint_id(url: &MintUrl, info: &MintInfo) -> Vec<u8> {
     if let Some(pk) = info.pubkey {
@@ -647,7 +647,7 @@ async fn build_wallet(
     let new_wallet: ProductionWallet = ProductionWallet::new(
         network,
         client,
-        tx_repo,
+        Box::new(tx_repo),
         (debit_pocket, credit_pocket),
         name,
         wallet_id,
