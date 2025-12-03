@@ -1,15 +1,3 @@
-// ----- standard library imports
-use std::{
-    collections::HashMap,
-    str::FromStr,
-    sync::{Arc, Mutex},
-};
-// ----- extra library imports
-use anyhow::Error as AnyError;
-use async_trait::async_trait;
-use cashu::{nut00 as cdk00, nut01 as cdk01, nut07 as cdk07};
-use cdk::wallet::types::{Transaction, TransactionId};
-// ----- local imports
 use crate::{
     TStamp,
     config::Settings,
@@ -20,8 +8,15 @@ use crate::{
     types::WalletConfig,
     wallet::TransactionRepository,
 };
-
-// ----- end imports
+use anyhow::Error as AnyError;
+use async_trait::async_trait;
+use cashu::{nut00 as cdk00, nut01 as cdk01, nut07 as cdk07};
+use cdk::wallet::types::{Transaction, TransactionId};
+use std::{
+    collections::HashMap,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 
 ///////////////////////////////////////////// InMemoryPocketRepository
 #[derive(Default)]

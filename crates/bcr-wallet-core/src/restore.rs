@@ -1,11 +1,6 @@
-/// ----- standard library imports
-use std::collections::HashMap;
-// ----- extra library imports
-use cashu::{nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09};
-// ----- local imports
 use crate::{MintConnector, error::Result, pocket::PocketRepository};
-
-// ----- end imports
+use cashu::{nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09};
+use std::collections::HashMap;
 
 // as recommended by NUT13
 const EMPTY_RESPONSES_BEFORE_ABORT: usize = 3;
@@ -124,8 +119,7 @@ async fn restore_batch(
     Ok(proofs_len)
 }
 
-// tests contain rand related stuff, better skip them on wasm32
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{pocket::MockPocketRepository, utils::tests::MockMintConnector};

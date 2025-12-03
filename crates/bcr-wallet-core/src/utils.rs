@@ -1,10 +1,6 @@
-// ----- standard library imports
-// ----- extra library imports
+use crate::{MintConnector, TStamp, error::Result};
 use bitcoin::secp256k1::PublicKey;
 use cdk::Error as CdkError;
-// ----- local imports
-use crate::{MintConnector, TStamp, error::Result};
-// ----- end imports
 
 type CdkResult<T> = std::result::Result<T, cdk::Error>;
 
@@ -72,7 +68,7 @@ pub async fn compel_commitment(
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 pub mod tests {
     use crate::TStamp;
     use crate::error::Result;

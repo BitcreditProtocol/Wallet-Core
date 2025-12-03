@@ -1,27 +1,21 @@
-// ----- standard library imports
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, RwLock},
-};
-// ----- extra library imports
-use async_trait::async_trait;
-use cashu::{Amount, CurrencyUnit, MintUrl, PaymentRequest, nut00 as cdk00, nut18 as cdk18};
-use cdk::wallet::types::TransactionId;
-use nostr_sdk::nips::nip19::{Nip19Profile, ToBech32};
-use tokio_with_wasm::alias::time;
-use uuid::Uuid;
-// ----- local imports
 use crate::{
     MintConnector,
     error::{Error, Result},
     sync,
     types::{PaymentSummary, WalletConfig},
 };
+use async_trait::async_trait;
+use cashu::{Amount, CurrencyUnit, MintUrl, PaymentRequest, nut00 as cdk00, nut18 as cdk18};
+use cdk::wallet::types::TransactionId;
+use nostr_sdk::nips::nip19::{Nip19Profile, ToBech32};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, RwLock},
+};
+use tokio::time;
+use uuid::Uuid;
 
-// ----- end imports
-
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 pub trait PurseRepository: sync::SendSync {
     async fn store(&self, wallet: WalletConfig) -> Result<()>;
     async fn load(&self, wallet_id: &str) -> Result<WalletConfig>;
@@ -30,8 +24,7 @@ pub trait PurseRepository: sync::SendSync {
     async fn list_ids(&self) -> Result<Vec<String>>;
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 pub trait Wallet: sync::SendSync {
     fn config(&self) -> Result<WalletConfig>;
     fn name(&self) -> String;

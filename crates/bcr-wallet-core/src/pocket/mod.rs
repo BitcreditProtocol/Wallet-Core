@@ -1,24 +1,19 @@
-// ----- standard library imports
-use std::collections::{HashMap, HashSet};
-// ----- extra library imports
-use async_trait::async_trait;
-use cashu::{
-    Amount, CurrencyUnit, KeySet, KeySetInfo, ProofDleq, amount::SplitTarget, nut00 as cdk00,
-    nut01 as cdk01, nut03 as cdk03, nut07 as cdk07,
-};
-use uuid::Uuid;
-// ----- local imports
 use crate::{
     MintConnector, TStamp,
     error::{Error, Result},
     sync, utils,
     wallet::SafeMode,
 };
-// ----- local modules
+use async_trait::async_trait;
+use cashu::{
+    Amount, CurrencyUnit, KeySet, KeySetInfo, ProofDleq, amount::SplitTarget, nut00 as cdk00,
+    nut01 as cdk01, nut03 as cdk03, nut07 as cdk07,
+};
+use std::collections::{HashMap, HashSet};
+use uuid::Uuid;
+
 pub mod credit;
 pub mod debit;
-
-// ----- end imports
 
 ///////////////////////////////////////////// SendReference
 #[derive(Default, Clone)]
@@ -30,8 +25,7 @@ struct SendReference {
 
 ///////////////////////////////////////////// PocketRepository
 #[cfg_attr(test, mockall::automock)]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 pub trait PocketRepository: sync::SendSync {
     async fn store_new(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
     async fn store_pendingspent(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
@@ -328,7 +322,7 @@ async fn send_proofs(
     Ok(sending_proofs)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::utils::tests::MockMintConnector;

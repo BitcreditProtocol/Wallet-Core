@@ -1,8 +1,3 @@
-// ----- standard library imports
-use std::collections::HashMap;
-use std::fmt;
-use std::str::FromStr;
-// ----- extra library imports
 use bitcoin::base64::engine::{GeneralPurpose, general_purpose};
 use bitcoin::base64::{Engine as _, alphabet};
 use cashu::{
@@ -11,9 +6,9 @@ use cashu::{
     nuts::Id,
 };
 use serde::{Deserialize, Serialize};
-// ----- local modules
-
-// ----- end imports
+use std::collections::HashMap;
+use std::fmt;
+use std::str::FromStr;
 
 pub type CashuTokenV4 = cashu::nut00::TokenV4;
 

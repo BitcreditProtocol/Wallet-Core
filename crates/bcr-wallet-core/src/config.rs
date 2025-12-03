@@ -1,10 +1,5 @@
-// ----- standard library imports
-// ----- extra library imports
-use nostr_sdk::{Keys, RelayUrl, nips::nip06::FromMnemonic, nips::nip19::Nip19Profile};
-// ----- local imports
 use crate::error::Result;
-
-// ----- end imports
+use nostr_sdk::{Keys, RelayUrl, nips::nip06::FromMnemonic, nips::nip19::Nip19Profile};
 
 pub const LOCK_REDUCTION_SECONDS_PER_HOP: u64 = 600;
 pub const MAX_INTERMINT_ATTEMPTS: u64 = 3;
