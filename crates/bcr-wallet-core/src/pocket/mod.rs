@@ -6,8 +6,8 @@ use crate::{
 };
 use async_trait::async_trait;
 use cashu::{
-    Amount, CurrencyUnit, KeySet, KeySetInfo, ProofDleq, amount::SplitTarget, nut00 as cdk00,
-    nut01 as cdk01, nut03 as cdk03, nut07 as cdk07,
+    Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00, nut01 as cdk01,
+    nut03 as cdk03, nut07 as cdk07,
 };
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
@@ -70,8 +70,8 @@ async fn clean_local_proofs(
 ///////////////////////////////////////////// unblind_proofs
 pub(crate) fn unblind_proofs(
     keyset: &KeySet,
-    signatures: &[cdk00::BlindSignature],
-    premint: &cdk00::PreMintSecrets,
+    signatures: Vec<cdk00::BlindSignature>,
+    premint: cdk00::PreMintSecrets,
 ) -> Vec<cdk00::Proof> {
     let mut proofs: Vec<cdk00::Proof> = Vec::new();
     if signatures.len() > premint.len() {
@@ -81,54 +81,23 @@ pub(crate) fn unblind_proofs(
             premint.len()
         )
     }
-    for (signature, secret) in signatures.iter().zip(premint.iter()) {
-        if signature.keyset_id != keyset.id || signature.keyset_id != premint.keyset_id {
-            tracing::error!(
-                "kid mismatch in signature: {}, {}, {}",
-                signature.keyset_id,
-                keyset.id,
-                premint.keyset_id,
-            );
-            continue;
+    for (signature, secret) in signatures.into_iter().zip(premint.iter()) {
+        let kid = signature.keyset_id;
+        let amount = signature.amount;
+        // WARNING: due to a bug in `into_iter()` in cashu 0.13.1 we need to `iter()` and clone the secret
+        // fixed in 0.14.0
+        match bcr_common::core::signature::unblind_ecash_signature(
+            keyset,
+            secret.clone(),
+            signature,
+        ) {
+            Ok(proof) => proofs.push(proof),
+            Err(e) => {
+                tracing::error!(
+                    "unblind_ecash_signature failed: kid: {kid}, amount: {amount}, error: {e}",
+                );
+            }
         }
-        if secret.amount != Amount::ZERO && signature.amount != secret.amount {
-            tracing::error!(
-                "amount mismatch in signature: {} != {}",
-                signature.amount,
-                secret.amount
-            );
-            continue;
-        }
-        let Some(key) = keyset.keys.get(&signature.amount) else {
-            tracing::error!(
-                "No mint key for amount: {} in kid: {}",
-                keyset.id,
-                signature.amount,
-            );
-            continue;
-        };
-        let result = cashu::dhke::unblind_message(&signature.c, &secret.r, key);
-        let Ok(c) = result else {
-            tracing::error!(
-                "unblind_message fail: kid: {}, amount {}",
-                keyset.id,
-                signature.amount,
-            );
-            continue;
-        };
-        let mut proof = cdk00::Proof::new(
-            signature.amount,
-            signature.keyset_id,
-            secret.secret.clone(),
-            c,
-        );
-
-        proof.dleq = signature
-            .dleq
-            .as_ref()
-            .map(|dleq| ProofDleq::new(dleq.e.clone(), dleq.s.clone(), secret.r.clone()));
-
-        proofs.push(proof);
     }
     proofs
 }
@@ -137,7 +106,7 @@ pub(crate) fn unblind_proofs(
 async fn swap(
     output_unit: CurrencyUnit,
     inputs: Vec<cdk00::Proof>,
-    premints: HashMap<cashu::Id, cdk00::PreMintSecrets>,
+    mut premints: HashMap<cashu::Id, cdk00::PreMintSecrets>,
     keysets: HashMap<cashu::Id, KeySet>,
     client: &dyn MintConnector,
     db: &dyn PocketRepository,
@@ -175,9 +144,9 @@ async fn swap(
             .or_insert_with(|| vec![signature]);
     }
     let mut total_cashed_in = Amount::ZERO;
-    for (kid, signatures) in signatures.iter() {
-        let premint = premints.get(kid).expect("premint should be here");
-        let keyset = keysets.get(kid).expect("keyset should be here");
+    for (kid, signatures) in signatures.into_iter() {
+        let premint = premints.remove(&kid).expect("premint should be here");
+        let keyset = keysets.get(&kid).expect("keyset should be here");
         let proofs = unblind_proofs(keyset, signatures, premint);
 
         for proof in proofs {
@@ -225,7 +194,7 @@ async fn swap_proof_to_target(
         .await?;
     let signatures = client.post_swap(request).await?.signatures;
     let mut on_target: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
-    let mut proofs = unblind_proofs(target_keyset, &signatures, &premint);
+    let mut proofs = unblind_proofs(target_keyset, signatures, premint);
     proofs.sort_by_key(|proof| std::cmp::Reverse(proof.amount));
     let mut current_amount = Amount::ZERO;
     for proof in proofs.into_iter() {
@@ -340,7 +309,7 @@ mod tests {
         assert!(premint.blinded_messages().len() == 1);
         let blind = premint.blinded_messages()[0].clone();
         let signature = signature::sign_ecash(&mintkeyset, &blind).unwrap();
-        let proofs = super::unblind_proofs(&keyset, &[signature], &premint);
+        let proofs = super::unblind_proofs(&keyset, vec![signature], premint);
         assert_eq!(proofs.len(), 1);
         signature::verify_ecash_proof(&mintkeyset, &proofs[0]).unwrap();
     }
@@ -357,7 +326,7 @@ mod tests {
             &mintkeyset,
             &[Amount::from(8u64), Amount::from(32u64)],
         );
-        let proofs = super::unblind_proofs(&keyset, &signatures, &premint);
+        let proofs = super::unblind_proofs(&keyset, signatures, premint);
         assert_eq!(proofs.len(), 1);
     }
 
@@ -373,7 +342,7 @@ mod tests {
             &mintkeyset,
             &[Amount::from(16u64), Amount::from(4u64)],
         );
-        let proofs = super::unblind_proofs(&keyset, &signatures, &premint);
+        let proofs = super::unblind_proofs(&keyset, signatures, premint);
         assert_eq!(proofs.len(), 0);
     }
 
@@ -386,7 +355,7 @@ mod tests {
             cdk00::PreMintSecrets::random(kid2, Amount::from(16u64), &SplitTarget::None).unwrap();
         assert_eq!(premint.blinded_messages().len(), 1);
         let signatures = core_tests::generate_ecash_signatures(&mintkeyset, &[Amount::from(16u64)]);
-        let proofs = super::unblind_proofs(&keyset, &signatures, &premint);
+        let proofs = super::unblind_proofs(&keyset, signatures, premint);
         assert_eq!(proofs.len(), 0);
     }
 
