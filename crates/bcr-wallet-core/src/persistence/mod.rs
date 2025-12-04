@@ -1,4 +1,6 @@
+#[cfg(feature = "memory-db")]
 pub mod inmemory;
+pub mod redb;
 use crate::TStamp;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]

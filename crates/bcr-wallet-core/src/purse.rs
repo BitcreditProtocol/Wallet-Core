@@ -1,6 +1,7 @@
 use crate::{
     MintConnector,
     error::{Error, Result},
+    persistence::redb::PurseDB,
     sync,
     types::{PaymentSummary, WalletConfig},
 };
@@ -8,11 +9,11 @@ use async_trait::async_trait;
 use cashu::{Amount, CurrencyUnit, MintUrl, PaymentRequest, nut00 as cdk00, nut18 as cdk18};
 use cdk::wallet::types::TransactionId;
 use nostr_sdk::nips::nip19::{Nip19Profile, ToBech32};
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, RwLock},
+use std::{collections::HashMap, sync::Arc};
+use tokio::{
+    sync::{Mutex, RwLock},
+    time,
 };
-use tokio::time;
 use uuid::Uuid;
 
 #[async_trait]
@@ -68,8 +69,8 @@ struct PaymentReference {
     wallet_idx: usize,
 }
 
-pub struct Purse<PurseRepo, Wlt> {
-    pub repo: PurseRepo,
+pub struct Purse<Wlt> {
+    pub repo: Box<dyn PurseRepository>,
     pub wallets: Arc<Mutex<Vec<Arc<RwLock<Wlt>>>>>,
     nostr_cl: Arc<nostr_sdk::Client>,
     myself: Nip19Profile,
@@ -77,15 +78,15 @@ pub struct Purse<PurseRepo, Wlt> {
     current_payment: Mutex<Option<PaymentReference>>,
     current_payment_request: Mutex<Option<PaymentRequest>>,
 }
-impl<PurseRepo, Wlt> Purse<PurseRepo, Wlt> {
+impl<Wlt> Purse<Wlt> {
     pub async fn new(
-        repo: PurseRepo,
+        repo: PurseDB,
         http_cl: reqwest::Client,
         nostr_cl: nostr_sdk::Client,
         myself: Nip19Profile,
     ) -> Result<Self> {
         Ok(Self {
-            repo,
+            repo: Box::new(repo),
             wallets: Arc::new(Mutex::new(Vec::default())),
             nostr_cl: Arc::new(nostr_cl),
             myself,
@@ -96,10 +97,7 @@ impl<PurseRepo, Wlt> Purse<PurseRepo, Wlt> {
     }
 }
 
-impl<PurseRepo, Wlt> Purse<PurseRepo, Wlt>
-where
-    PurseRepo: PurseRepository,
-{
+impl<Wlt> Purse<Wlt> {
     pub async fn load_wallet_config(&self, wallet_id: &str) -> Result<WalletConfig> {
         self.repo.load(wallet_id).await
     }
@@ -107,63 +105,58 @@ where
         self.repo.list_ids().await
     }
 
-    pub fn get_wallet(&self, idx: usize) -> Option<Arc<RwLock<Wlt>>> {
-        let wallets = self.wallets.lock().unwrap();
+    pub async fn get_wallet(&self, idx: usize) -> Option<Arc<RwLock<Wlt>>> {
+        let wallets = self.wallets.lock().await;
 
         wallets.get(idx).cloned()
     }
 
-    pub fn ids(&self) -> Vec<u32> {
-        let w_len = self.wallets.lock().unwrap().len();
+    pub async fn ids(&self) -> Vec<u32> {
+        let w_len = self.wallets.lock().await.len();
         (0..w_len as u32).collect()
     }
 }
 
-impl<PurseRepo, Wlt> Purse<PurseRepo, Wlt>
+impl<Wlt> Purse<Wlt>
 where
     Wlt: Wallet,
 {
-    pub fn names(&self) -> Result<Vec<String>> {
-        let wallets = self.wallets.lock().unwrap();
+    pub async fn names(&self) -> Result<Vec<String>> {
+        let wallets = self.wallets.lock().await;
         let mut names = Vec::with_capacity(wallets.len());
         for w in wallets.iter() {
-            names.push(w.read().expect("Poisoned").name());
+            names.push(w.read().await.name());
         }
         Ok(names)
     }
 }
 
-impl<PurseRepo, Wlt> Purse<PurseRepo, Wlt>
+impl<Wlt> Purse<Wlt>
 where
-    PurseRepo: PurseRepository,
     Wlt: Wallet,
 {
     pub async fn add_wallet(&self, wallet: Wlt) -> Result<usize> {
         self.repo.store(wallet.config()?).await?;
-        let mut wallets = self.wallets.lock().unwrap();
+        let mut wallets = self.wallets.lock().await;
         wallets.push(Arc::new(RwLock::new(wallet)));
         Ok(wallets.len() - 1)
     }
 
     pub async fn prepare_pay(&self, idx: usize, input: String, now: u64) -> Result<PaymentSummary> {
-        let Some(wlt) = self.wallets.lock().unwrap().get(idx).cloned() else {
+        let Some(wlt) = self.wallets.lock().await.get(idx).cloned() else {
             return Err(Error::WalletNotFound(idx));
         };
-        let summary = wlt
-            .read()
-            .expect("Poisoned")
-            .prepare_pay(input, now)
-            .await?;
+        let summary = wlt.read().await.prepare_pay(input, now).await?;
         let pref = PaymentReference {
             payment_ref: summary.request_id,
             wallet_idx: idx,
         };
-        *self.current_payment.lock().unwrap() = Some(pref);
+        *self.current_payment.lock().await = Some(pref);
         Ok(summary)
     }
 
     pub async fn pay(&self, p_id: Uuid, tstamp: u64) -> Result<TransactionId> {
-        let p_ref = self.current_payment.lock().unwrap().take();
+        let p_ref = self.current_payment.lock().await.take();
         let Some(pref) = p_ref else {
             tracing::error!("No current payment reference found");
             return Err(Error::NoPrepareRef(p_id));
@@ -176,30 +169,30 @@ where
             );
             return Err(Error::NoPrepareRef(p_id));
         }
-        let Some(wlt) = self.wallets.lock().unwrap().get(pref.wallet_idx).cloned() else {
+        let Some(wlt) = self.wallets.lock().await.get(pref.wallet_idx).cloned() else {
             return Err(Error::Internal(String::from(
                 "Wallet not found for payment",
             )));
         };
         let txid = wlt
             .read()
-            .expect("Poisoned")
+            .await
             .pay(p_id, &self.nostr_cl, &self.http_cl, tstamp)
             .await?;
         Ok(txid)
     }
 
-    pub fn prepare_payment_request(
+    pub async fn prepare_payment_request(
         &self,
         amount: Amount,
         unit: Option<CurrencyUnit>,
         description: Option<String>,
     ) -> Result<cdk18::PaymentRequest> {
         let mints = {
-            let wlts = self.wallets.lock().unwrap();
+            let wlts = self.wallets.lock().await;
             let mut mints = Vec::with_capacity(wlts.len());
             for wlt in wlts.iter() {
-                mints.extend(wlt.read().expect("Poisoned").mint_urls()?);
+                mints.extend(wlt.read().await.mint_urls()?);
             }
             mints
         };
@@ -218,7 +211,7 @@ where
             nut10: None,
             transports: vec![nostr_transport],
         };
-        *self.current_payment_request.lock().unwrap() = Some(request.clone());
+        *self.current_payment_request.lock().await = Some(request.clone());
         Ok(request)
     }
 
@@ -227,7 +220,7 @@ where
         max_wait: core::time::Duration,
         p_id: Uuid,
     ) -> Result<Option<TransactionId>> {
-        let current_request = self.current_payment_request.lock().unwrap().take();
+        let current_request = self.current_payment_request.lock().await.take();
         let Some(req) = current_request else {
             return Err(Error::NoPrepareRef(p_id));
         };
@@ -269,12 +262,12 @@ where
     }
 
     pub async fn migrate_rabid_wallets(&self, tstamp: u64) -> Result<()> {
-        let mut wlts = self.wallets.lock().unwrap();
+        let mut wlts = self.wallets.lock().await;
         for wlt in wlts.iter_mut() {
-            let is_rabid = wlt.read().expect("Poisoned").is_wallet_mint_rabid().await?;
-            let substitute_url = wlt.read().expect("Poisoned").mint_substitute().await?;
+            let is_rabid = wlt.read().await.is_wallet_mint_rabid().await?;
+            let substitute_url = wlt.read().await.mint_substitute().await?;
 
-            let wallet_name = wlt.read().expect("Poisoned").name();
+            let wallet_name = wlt.read().await.name();
             if is_rabid && let Some(substitute_url) = substitute_url {
                 tracing::info!(
                     "Wallet {} is found rabid, migrating to substitute beta {}",
@@ -283,12 +276,10 @@ where
                 );
                 let substitute_client = crate::mint::HttpClientExt::new(substitute_url);
                 wlt.write()
-                    .expect("Poisoned")
+                    .await
                     .migrate_pockets_substitute(Box::new(substitute_client), tstamp)
                     .await?;
-                self.repo
-                    .store(wlt.read().expect("Poisoned").config()?)
-                    .await?;
+                self.repo.store(wlt.read().await.config()?).await?;
             }
         }
 
@@ -328,19 +319,14 @@ where
         return Ok(None);
     }
     let wlt = {
-        let locked = wlts.lock().unwrap();
+        let locked = wlts.lock().await;
         let mut best_wlt: Option<Arc<RwLock<T>>> = None;
         for wlt in locked.iter() {
-            if wlt.read().expect("Poisoned").mint_url()? == payload.mint {
+            if wlt.read().await.mint_url()? == payload.mint {
                 best_wlt.replace(wlt.clone());
                 break;
             }
-            if wlt
-                .read()
-                .expect("Poisoned")
-                .mint_urls()?
-                .contains(&payload.mint)
-            {
+            if wlt.read().await.mint_urls()?.contains(&payload.mint) {
                 best_wlt.replace(wlt.clone());
             }
         }
@@ -356,7 +342,7 @@ where
     ]);
     let response = wlt
         .read()
-        .expect("Poisoned")
+        .await
         .receive_proofs(
             payload.proofs,
             payload.unit,

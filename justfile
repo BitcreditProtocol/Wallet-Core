@@ -10,6 +10,6 @@ test:
 clean:
     cargo clean
 
-cli:
-    cargo run --package bcr-wallet-cli
+cli *args:
+    (cd crates/bcr-wallet-cli && cargo run -- {{args}})
 

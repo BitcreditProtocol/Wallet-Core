@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+memory-db = []
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
@@ -15,9 +19,11 @@ borsh.workspace = true
 cashu = { workspace = true, features = ["wallet"] }
 cdk = { workspace = true, features = ["wallet"] }
 chrono = {workspace = true}
+ciborium = {workspace = true}
 futures = {workspace = true}
 nostr-sdk = {workspace =true, features = ["nip06"]}
 rand = {workspace = true}
+redb = {workspace=true}
 reqwest = {workspace = true}
 secp256k1.workspace = true
 serde.workspace = true
