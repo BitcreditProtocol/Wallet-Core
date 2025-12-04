@@ -1,5 +1,5 @@
-use crate::mint::MintConnector as MintCon;
 use crate::{
+    MintConnector as MintCon,
     config::{Config, SameMintSafeMode, Settings},
     error::{Error, Result},
     purse::Wallet,
@@ -506,7 +506,7 @@ async fn build_wallet(
 ) -> Result<ProductionWallet> {
     let seed = mnemonic.to_seed("");
     // retrieving mint details
-    let client = Box::new(ProductionConnector::new(mint_url.clone()));
+    let client = ProductionConnector::new(mint_url.clone());
     let keyset_infos = client.get_mint_keysets().await?.keysets;
     let (debit_unit, credit_unit) = find_currency_units(&keyset_infos)?;
     // building wallet dbs
@@ -538,11 +538,19 @@ async fn build_wallet(
 
     let mut beta_clients = HashMap::<cashu::MintUrl, Box<dyn MintCon>>::new();
 
-    for beta in client.as_ref().get_clowder_betas().await? {
-        let beta_client = crate::mint::HttpClientExt::new(beta.clone());
+    let betas_urls = client.get_clowder_betas().await?;
+    for beta in betas_urls.clone() {
+        let beta_client = ProductionConnector::new(beta.clone());
         beta_clients.insert(beta, Box::new(beta_client));
     }
-
+    // When same_mint_safe_mode is enabled, wrap the client with SentinelClient
+    // to send events to sentinel nodes for monitoring
+    let client = if matches!(same_mint_safe_mode, SameMintSafeMode::Disabled) {
+        Box::new(client) as Box<dyn MintCon>
+    } else {
+        let cl = crate::mint::SentinelClient::new(client, betas_urls);
+        Box::new(cl) as Box<dyn MintCon>
+    };
     let new_wallet: ProductionWallet = ProductionWallet::new(
         network,
         client,
