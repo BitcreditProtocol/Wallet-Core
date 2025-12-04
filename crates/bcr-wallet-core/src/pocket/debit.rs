@@ -393,8 +393,8 @@ impl wallet::DebitPocket for Pocket {
                 .await?;
             return Err(Error::MeltUnpaid(response.quote));
         }
-        if let Some(premints) = &premints {
-            let change = unblind_proofs(&keyset, &response.change.unwrap_or(Vec::new()), premints);
+        if let Some(premints) = premints {
+            let change = unblind_proofs(&keyset, response.change.unwrap_or(Vec::new()), premints);
             for proof in change {
                 self.pdb.store_new(proof).await?;
             }
@@ -419,7 +419,7 @@ impl wallet::DebitPocket for Pocket {
                 }) => {
                     let premints = self.mdb.load_melt(mid.clone()).await?;
                     let keyset = client.get_mint_keyset(premints.keyset_id).await?;
-                    let proofs = unblind_proofs(&keyset, &signatures, &premints);
+                    let proofs = unblind_proofs(&keyset, signatures, premints);
                     for proof in proofs {
                         let amount = proof.amount;
                         match self.pdb.store_new(proof).await {

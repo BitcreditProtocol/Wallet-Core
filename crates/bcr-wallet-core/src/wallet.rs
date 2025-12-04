@@ -531,7 +531,7 @@ where
         let swap = client.post_swap(swap_request).await?;
 
         let keyset = client.get_mint_keyset(active_keyset_id).await?;
-        let proofs = crate::pocket::unblind_proofs(&keyset, &swap.signatures, &premints);
+        let proofs = crate::pocket::unblind_proofs(&keyset, swap.signatures, premints);
 
         Ok(proofs)
     }
