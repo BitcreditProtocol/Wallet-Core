@@ -1,11 +1,6 @@
-// ----- standard library imports
-use std::{collections::HashMap, str::FromStr};
-// ----- extra library imports
 use cashu::{Amount, CurrencyUnit, MintUrl};
+use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
-// ----- local imports
-
-// ----- end imports
 
 pub struct RedemptionSummary {
     pub tstamp: u64,

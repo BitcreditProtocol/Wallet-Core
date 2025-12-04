@@ -1,9 +1,11 @@
-// ----- standard library imports
-use std::{
-    cell::RefCell, collections::HashMap, collections::HashSet, str::FromStr, sync::Arc,
-    sync::RwLock,
+use crate::mint::MintConnector as MintCon;
+use crate::{
+    config::{Config, SameMintSafeMode, Settings},
+    error::{Error, Result},
+    purse::Wallet,
+    types::{PaymentSummary, RedemptionSummary},
+    wallet::{CreditPocket, WalletBalance},
 };
-// ----- extra library imports
 use anyhow::Error as AnyError;
 use bitcoin::{
     hashes::{Hash, HashEngine, sha256},
@@ -14,28 +16,12 @@ use cdk::wallet::{
     MintConnector,
     types::{Transaction, TransactionId},
 };
-use uuid::Uuid;
-// ----- local imports
-use crate::mint::MintConnector as MintCon;
-use crate::{
-    config::{Config, SameMintSafeMode, Settings},
-    error::{Error, Result},
-    purse::Wallet,
-    types::{PaymentSummary, RedemptionSummary},
-    wallet::{CreditPocket, WalletBalance},
+use std::{
+    cell::RefCell, collections::HashMap, collections::HashSet, str::FromStr, sync::Arc,
+    sync::RwLock,
 };
+use uuid::Uuid;
 
-// ----- end imports
-
-#[cfg(target_arch = "wasm32")]
-mod prod {
-    pub type ProductionPocketRepository = crate::persistence::rexie::PocketDB;
-    pub type ProductionMintMeltRepository = crate::persistence::rexie::MintMeltDB;
-    pub type ProductionPurseRepository = crate::persistence::rexie::PurseDB;
-    pub type ProductionTransactionRepository = crate::persistence::rexie::TransactionDB;
-    pub type ProductionSettingsRepository = crate::persistence::rexie::SettingsDB;
-}
-#[cfg(not(target_arch = "wasm32"))]
 mod prod {
     pub type ProductionPocketRepository = crate::persistence::inmemory::InMemoryPocketRepository;
     pub type ProductionMintMeltRepository =
@@ -424,93 +410,6 @@ pub enum LocalDB {
     Keep,
 }
 
-#[cfg(target_arch = "wasm32")]
-mod db {
-    use super::*;
-    use std::rc::Rc;
-
-    pub async fn build_pursedb(db_version: u32) -> Result<prod::ProductionPurseRepository> {
-        let rexie_db_name = "bitcredit_wallet";
-        let mut rexie_builder = rexie::Rexie::builder(rexie_db_name).version(db_version);
-        let purse_stores = prod::ProductionPurseRepository::object_stores();
-        for store in purse_stores {
-            rexie_builder = rexie_builder.add_object_store(store);
-        }
-        let rexie = Rc::new(rexie_builder.build().await?);
-        let pursedb = prod::ProductionPurseRepository::new(rexie)?;
-        Ok(pursedb)
-    }
-
-    pub async fn build_wallet_dbs(
-        db_version: u32,
-        wallet_id: &str,
-        debit: &CurrencyUnit,
-        credit: Option<&CurrencyUnit>,
-        local: LocalDB,
-    ) -> Result<(
-        prod::ProductionTransactionRepository,
-        (
-            (
-                prod::ProductionPocketRepository,
-                prod::ProductionMintMeltRepository,
-            ),
-            Option<prod::ProductionPocketRepository>,
-        ),
-    )> {
-        let rexie_db_name = format!("bitcredit_wallet_{wallet_id}");
-        let transaction_stores = prod::ProductionTransactionRepository::object_stores(wallet_id);
-        let mut rexie_builder = rexie::Rexie::builder(&rexie_db_name).version(db_version);
-        if matches!(local, db::LocalDB::Delete) {
-            rexie_builder.delete().await.unwrap_or_else(|e| {
-                tracing::warn!("Failed to delete existing DB: {e}");
-            });
-            rexie_builder = rexie::Rexie::builder(&rexie_db_name).version(db_version);
-        }
-        for store in transaction_stores {
-            rexie_builder = rexie_builder.add_object_store(store);
-        }
-        let stores = prod::ProductionPocketRepository::object_stores(debit);
-        for store in stores {
-            rexie_builder = rexie_builder.add_object_store(store);
-        }
-        let stores = prod::ProductionMintMeltRepository::object_stores(debit);
-        for store in stores {
-            rexie_builder = rexie_builder.add_object_store(store);
-        }
-        if let Some(unit) = credit {
-            let stores = prod::ProductionPocketRepository::object_stores(unit);
-            for store in stores {
-                rexie_builder = rexie_builder.add_object_store(store);
-            }
-        }
-        let rexiedb = Rc::new(rexie_builder.build().await?);
-        let tx_repo = prod::ProductionTransactionRepository::new(rexiedb.clone(), wallet_id)?;
-        let debitdb = prod::ProductionPocketRepository::new(rexiedb.clone(), &debit)?;
-        let mintmeltdb = prod::ProductionMintMeltRepository::new(rexiedb.clone(), &debit)?;
-        let creditdb = if let Some(unit) = credit {
-            Some(prod::ProductionPocketRepository::new(
-                rexiedb.clone(),
-                unit,
-            )?)
-        } else {
-            None
-        };
-        Ok((tx_repo, ((debitdb, mintmeltdb), creditdb)))
-    }
-
-    pub async fn build_settingsdb(db_version: u32) -> Result<prod::ProductionSettingsRepository> {
-        let rexie_db_name = "bitcredit_settings";
-        let mut rexie_builder = rexie::Rexie::builder(rexie_db_name).version(db_version);
-        let settings_stores = prod::ProductionSettingsRepository::object_stores();
-        for store in settings_stores {
-            rexie_builder = rexie_builder.add_object_store(store);
-        }
-        let rexie = Rc::new(rexie_builder.build().await?);
-        let settingsdb = prod::ProductionSettingsRepository::new(rexie)?;
-        Ok(settingsdb)
-    }
-}
-#[cfg(not(target_arch = "wasm32"))]
 mod db {
     use super::*;
 

@@ -1,17 +1,3 @@
-// ----- standard library imports
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
-// ----- extra library imports
-use async_trait::async_trait;
-use cashu::{
-    Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00, nut01 as cdk01,
-    nut05 as cdk05, nut23 as cdk23,
-};
-use cdk::Error as CdkError;
-use uuid::Uuid;
-// ----- local imports
 use crate::{
     MintConnector,
     error::{Error, Result},
@@ -20,8 +6,17 @@ use crate::{
     types::{MeltSummary, SendSummary},
     wallet,
 };
-
-// ----- end imports
+use async_trait::async_trait;
+use cashu::{
+    Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00, nut01 as cdk01,
+    nut05 as cdk05, nut23 as cdk23,
+};
+use cdk::Error as CdkError;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+use uuid::Uuid;
 
 struct MeltReference {
     rid: Uuid,
@@ -33,8 +28,7 @@ struct MeltReference {
 
 ///////////////////////////////////////////// Melt Repository
 #[cfg_attr(test, mockall::automock)]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 pub trait MintMeltRepository: sync::SendSync {
     async fn store_melt(
         &self,
@@ -172,8 +166,7 @@ impl Pocket {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 impl wallet::Pocket for Pocket {
     fn unit(&self) -> CurrencyUnit {
         self.unit.clone()
@@ -294,8 +287,7 @@ impl wallet::Pocket for Pocket {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 impl wallet::DebitPocket for Pocket {
     async fn reclaim_proofs(
         &self,
@@ -462,7 +454,7 @@ impl wallet::DebitPocket for Pocket {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{utils::tests::MockMintConnector, wallet::Pocket};

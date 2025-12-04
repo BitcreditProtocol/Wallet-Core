@@ -1,17 +1,3 @@
-// ----- standard library imports
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
-// ----- extra library imports
-use anyhow::Error as AnyError;
-use async_trait::async_trait;
-use cashu::{
-    Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00, nut01 as cdk01,
-    nut07 as cdk07,
-};
-use uuid::Uuid;
-// ----- local imports
 use crate::{
     MintConnector,
     error::{Error, Result},
@@ -20,8 +6,17 @@ use crate::{
     types::{RedemptionSummary, SendSummary},
     wallet,
 };
-
-// ----- end imports
+use anyhow::Error as AnyError;
+use async_trait::async_trait;
+use cashu::{
+    Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00, nut01 as cdk01,
+    nut07 as cdk07,
+};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+use uuid::Uuid;
 
 ///////////////////////////////////////////// credit pocket
 pub struct Pocket {
@@ -128,8 +123,7 @@ impl Pocket {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 impl wallet::Pocket for Pocket {
     fn unit(&self) -> CurrencyUnit {
         self.unit.clone()
@@ -299,8 +293,7 @@ impl wallet::Pocket for Pocket {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 impl wallet::CreditPocket for Pocket {
     fn maybe_unit(&self) -> Option<CurrencyUnit> {
         Some(self.unit.clone())
@@ -405,8 +398,7 @@ impl wallet::CreditPocket for Pocket {
 ///////////////////////////////////////////// dummy pocket
 pub struct DummyPocket {}
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 impl wallet::Pocket for DummyPocket {
     fn unit(&self) -> CurrencyUnit {
         CurrencyUnit::Custom(String::from("dummy"))
@@ -454,8 +446,7 @@ impl wallet::Pocket for DummyPocket {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 impl wallet::CreditPocket for DummyPocket {
     fn maybe_unit(&self) -> Option<CurrencyUnit> {
         None
@@ -484,7 +475,7 @@ impl wallet::CreditPocket for DummyPocket {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{

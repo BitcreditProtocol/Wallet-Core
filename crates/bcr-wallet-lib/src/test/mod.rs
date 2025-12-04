@@ -1,4 +1,4 @@
-use bcr_wallet_lib::wallet::*;
+use super::wallet::*;
 use cashu::nut02 as cdk02;
 use std::str::FromStr;
 

@@ -1,8 +1,4 @@
-// ----- standard library imports
-// ----- extra library imports
 use tracing::info;
-use wasm_bindgen::prelude::*;
-// ----- local modules
 mod app;
 pub mod config;
 pub mod error;
@@ -14,17 +10,10 @@ mod restore;
 mod types;
 pub mod utils;
 pub mod wallet;
-// ----- end imports
 
 const TEASER_SIZE: usize = 25;
 pub type TStamp = chrono::DateTime<chrono::Utc>;
 
-#[cfg(target_arch = "wasm32")]
-mod sync {
-    pub trait SendSync {}
-    impl<T> SendSync for T where T: ?Sized {}
-}
-#[cfg(not(target_arch = "wasm32"))]
 mod sync {
     pub trait SendSync: Send + Sync {}
     impl<T> SendSync for T where T: Send + Sync {}
@@ -32,9 +21,7 @@ mod sync {
 
 pub use crate::mint::MintConnector;
 // --------------------------------------------------------------- initialize_api
-#[wasm_bindgen]
 pub async fn initialize_api() {
-    tracing_wasm::set_as_global_default();
     info!("Tracing setup");
     let returned = app::initialize_api().await;
     if let Err(e) = returned {
@@ -43,7 +30,6 @@ pub async fn initialize_api() {
 }
 
 // --------------------------------------------------------------- generate_random_seed
-#[wasm_bindgen]
 pub async fn generate_random_mnemonic(mnemonic_len: u32) -> String {
     let mnemonic_len = if mnemonic_len == 0 { 12 } else { mnemonic_len };
     info!("Generate random {}-word mnemonic", mnemonic_len);
@@ -64,7 +50,6 @@ pub async fn generate_random_mnemonic(mnemonic_len: u32) -> String {
 }
 
 // --------------------------------------------------------------- add_wallet
-#[wasm_bindgen]
 pub async fn add_wallet(mint_url: String, mnemonic: String, name: String) -> u32 {
     let returned = app::add_wallet(mint_url.clone(), mnemonic.clone(), name.clone()).await;
     match returned {
@@ -77,7 +62,6 @@ pub async fn add_wallet(mint_url: String, mnemonic: String, name: String) -> u32
 }
 
 // --------------------------------------------------------------- restore_wallet
-#[wasm_bindgen]
 pub async fn restore_wallet(mint_url: String, mnemonic: String, name: String) -> u32 {
     let returned = app::restore_wallet(mint_url.clone(), mnemonic.clone(), name.clone()).await;
     match returned {
@@ -90,7 +74,6 @@ pub async fn restore_wallet(mint_url: String, mnemonic: String, name: String) ->
 }
 
 // --------------------------------------------------------------- get_wallet_name
-#[wasm_bindgen]
 pub fn get_wallet_name(idx: u32) -> String {
     let returned = app::wallet_name(idx as usize);
     match returned {
@@ -103,7 +86,6 @@ pub fn get_wallet_name(idx: u32) -> String {
 }
 
 // --------------------------------------------------------------- get_wallet_mint_url
-#[wasm_bindgen]
 pub fn get_wallet_mint_url(idx: u32) -> String {
     let returned = app::wallet_mint_url(idx as usize);
     match returned {
@@ -116,12 +98,9 @@ pub fn get_wallet_mint_url(idx: u32) -> String {
 }
 
 // --------------------------------------------------------------- get_wallet_units
-#[wasm_bindgen]
 #[derive(Default)]
 pub struct WalletCurrencyUnit {
-    #[wasm_bindgen(getter_with_clone)]
     pub credit: String,
-    #[wasm_bindgen(getter_with_clone)]
     pub debit: String,
 }
 impl std::convert::From<app::WalletCurrencyUnit> for WalletCurrencyUnit {
@@ -133,7 +112,6 @@ impl std::convert::From<app::WalletCurrencyUnit> for WalletCurrencyUnit {
     }
 }
 
-#[wasm_bindgen]
 pub fn get_wallet_currency_unit(idx: u32) -> WalletCurrencyUnit {
     let returned = app::wallet_currency_unit(idx as usize);
     match returned {
@@ -146,12 +124,9 @@ pub fn get_wallet_currency_unit(idx: u32) -> WalletCurrencyUnit {
 }
 
 // --------------------------------------------------------------- get_wallet_balance
-#[wasm_bindgen]
 #[derive(Default)]
 pub struct WalletBalance {
-    #[wasm_bindgen(readonly)]
     pub credit: u64,
-    #[wasm_bindgen(readonly)]
     pub debit: u64,
 }
 impl std::convert::From<wallet::WalletBalance> for WalletBalance {
@@ -163,7 +138,6 @@ impl std::convert::From<wallet::WalletBalance> for WalletBalance {
     }
 }
 
-#[wasm_bindgen]
 pub async fn get_wallet_balance(idx: u32) -> WalletBalance {
     let returned = app::wallet_balance(idx as usize).await;
     match returned {
@@ -176,7 +150,6 @@ pub async fn get_wallet_balance(idx: u32) -> WalletBalance {
 }
 
 // --------------------------------------------------------------- wallet_receive_token
-#[wasm_bindgen]
 pub async fn wallet_receive_token(idx: u32, token: String) -> String {
     let teaser = token.chars().take(TEASER_SIZE).collect::<String>();
     let tstamp = chrono::Utc::now().timestamp() as u64;
@@ -191,7 +164,6 @@ pub async fn wallet_receive_token(idx: u32, token: String) -> String {
 }
 
 // --------------------------------------------------------------- wallet_redeem
-#[wasm_bindgen]
 pub async fn wallet_redeem_credit(idx: u32) -> u64 {
     let returned = app::wallet_redeem_credit(idx as usize).await;
     match returned {
@@ -204,11 +176,8 @@ pub async fn wallet_redeem_credit(idx: u32) -> u64 {
 }
 
 // --------------------------------------------------------------- wallet_list_redemptions
-#[wasm_bindgen]
 pub struct RedemptionSummary {
-    #[wasm_bindgen(readonly)]
     pub tstamp: u32,
-    #[wasm_bindgen(readonly)]
     pub amount: u64,
 }
 impl std::convert::From<types::RedemptionSummary> for RedemptionSummary {
@@ -219,7 +188,6 @@ impl std::convert::From<types::RedemptionSummary> for RedemptionSummary {
         }
     }
 }
-#[wasm_bindgen]
 pub async fn wallet_list_redemptions(idx: u32, payment_window: u32) -> Vec<RedemptionSummary> {
     let window = std::time::Duration::from_secs(payment_window as u64);
     let returned = app::wallet_list_redemptions(idx as usize, window).await;
@@ -236,7 +204,6 @@ pub async fn wallet_list_redemptions(idx: u32, payment_window: u32) -> Vec<Redem
 }
 
 // --------------------------------------------------------------- wallet_clean_local_db
-#[wasm_bindgen]
 pub async fn wallet_clean_local_db(idx: u32) -> u32 {
     let returned = app::wallet_clean_local_db(idx as usize).await;
     match returned {
@@ -249,7 +216,6 @@ pub async fn wallet_clean_local_db(idx: u32) -> u32 {
 }
 
 // --------------------------------------------------------------- purse_migrate_rabid
-#[wasm_bindgen]
 pub async fn purse_migrate_rabid() {
     let tstamp = chrono::Utc::now().timestamp() as u64;
     match app::purse_migrate_rabid(tstamp).await {
@@ -259,7 +225,6 @@ pub async fn purse_migrate_rabid() {
 }
 
 // --------------------------------------------------------------- wallet_load_tx
-#[wasm_bindgen]
 #[derive(Clone, Copy, Default)]
 pub enum TransactionDirection {
     #[default]
@@ -274,7 +239,6 @@ impl std::convert::From<cdk::wallet::types::TransactionDirection> for Transactio
         }
     }
 }
-#[wasm_bindgen]
 #[derive(Clone, Copy, Default)]
 pub enum PaymentType {
     #[default]
@@ -293,7 +257,6 @@ impl std::convert::From<types::PaymentType> for PaymentType {
         }
     }
 }
-#[wasm_bindgen]
 #[derive(Clone, Copy, Default)]
 pub enum TransactionStatus {
     #[default]
@@ -312,24 +275,15 @@ impl std::convert::From<types::TransactionStatus> for TransactionStatus {
         }
     }
 }
-#[wasm_bindgen]
 #[derive(Default)]
 pub struct Transaction {
-    #[wasm_bindgen(readonly)]
     pub amount: u64,
-    #[wasm_bindgen(readonly)]
     pub fees: u64,
-    #[wasm_bindgen(getter_with_clone)]
     pub unit: String,
-    #[wasm_bindgen(readonly)]
     pub tstamp: u64,
-    #[wasm_bindgen(readonly)]
     pub direction: TransactionDirection,
-    #[wasm_bindgen(getter_with_clone)]
     pub memo: String,
-    #[wasm_bindgen(readonly)]
     pub ptype: PaymentType,
-    #[wasm_bindgen(readonly)]
     pub status: TransactionStatus,
 }
 
@@ -350,7 +304,6 @@ impl std::convert::From<cdk::wallet::types::Transaction> for Transaction {
     }
 }
 
-#[wasm_bindgen]
 pub async fn wallet_load_tx(idx: u32, tx_id: String) -> Transaction {
     let returned = app::wallet_load_tx(idx as usize, &tx_id).await;
     match returned {
@@ -362,20 +315,13 @@ pub async fn wallet_load_tx(idx: u32, tx_id: String) -> Transaction {
     }
 }
 // --------------------------------------------------------------- wallet_prepare_payment
-#[wasm_bindgen]
 #[derive(Default)]
 pub struct PaymentSummary {
-    #[wasm_bindgen(getter_with_clone)]
     pub request_id: String,
-    #[wasm_bindgen(getter_with_clone)]
     pub unit: String,
-    #[wasm_bindgen(readonly)]
     pub fees: u64,
-    #[wasm_bindgen(readonly)]
     pub reserved_fees: u64,
-    #[wasm_bindgen(readonly)]
     pub expiry: u64,
-    #[wasm_bindgen(readonly)]
     pub ptype: PaymentType,
 }
 impl std::convert::From<types::PaymentSummary> for PaymentSummary {
@@ -392,7 +338,6 @@ impl std::convert::From<types::PaymentSummary> for PaymentSummary {
     }
 }
 
-#[wasm_bindgen]
 pub async fn wallet_prepare_payment(idx: u32, input: String) -> PaymentSummary {
     let teaser = input.chars().take(TEASER_SIZE).collect::<String>();
     let tstamp = chrono::Utc::now().timestamp() as u64;
@@ -407,7 +352,6 @@ pub async fn wallet_prepare_payment(idx: u32, input: String) -> PaymentSummary {
 }
 
 // --------------------------------------------------------------- wallet_pay
-#[wasm_bindgen]
 pub async fn wallet_pay(request_id: String) -> String {
     let tstamp = chrono::Utc::now().timestamp() as u64;
     let returned = app::wallet_pay(request_id.clone(), tstamp).await;
@@ -421,15 +365,11 @@ pub async fn wallet_pay(request_id: String) -> String {
 }
 
 // --------------------------------------------------------------- wallet_prepare_payment_request
-#[wasm_bindgen]
 #[derive(Default)]
 pub struct PaymentRequest {
-    #[wasm_bindgen(getter_with_clone)]
     pub request: String,
-    #[wasm_bindgen(getter_with_clone)]
     pub p_id: String,
 }
-#[wasm_bindgen]
 pub async fn wallet_prepare_payment_request(
     idx: usize,
     amount: u32,
@@ -454,7 +394,6 @@ pub async fn wallet_prepare_payment_request(
 }
 
 // --------------------------------------------------------------- wallet_check_received_payment
-#[wasm_bindgen]
 pub async fn wallet_check_received_payment(max_wait_secs: u32, payment_id: String) -> String {
     let returned =
         app::wallet_check_received_payment(max_wait_secs as u64, payment_id.clone()).await;
@@ -469,7 +408,6 @@ pub async fn wallet_check_received_payment(max_wait_secs: u32, payment_id: Strin
 }
 
 // --------------------------------------------------------------- wallet_check_pending_melts
-#[wasm_bindgen]
 pub async fn wallet_check_pending_melts(idx: u32) -> u64 {
     let returned = app::wallet_check_pending_melts(idx as usize).await;
     match returned {
@@ -482,7 +420,6 @@ pub async fn wallet_check_pending_melts(idx: u32) -> u64 {
 }
 
 // --------------------------------------------------------------- wallet_list_tx_ids
-#[wasm_bindgen]
 pub async fn wallet_list_tx_ids(idx: u32) -> Vec<String> {
     let returned = app::wallet_list_tx_ids(idx as usize).await;
     match returned {
@@ -495,7 +432,6 @@ pub async fn wallet_list_tx_ids(idx: u32) -> Vec<String> {
 }
 
 // --------------------------------------------------------------- get_wallets_ids
-#[wasm_bindgen]
 pub fn get_wallets_ids() -> Vec<u32> {
     let returned = app::wallets_ids();
     match returned {
@@ -508,7 +444,6 @@ pub fn get_wallets_ids() -> Vec<u32> {
 }
 
 // --------------------------------------------------------------- get_wallets_names
-#[wasm_bindgen]
 pub fn get_wallets_names() -> Vec<String> {
     let returned = app::wallets_names();
     match returned {

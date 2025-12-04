@@ -1,17 +1,12 @@
-// ----- standard library imports
-use std::str::FromStr;
-// ----- extra library imports
+use crate::{TStamp, error::Result, sync};
 use async_trait::async_trait;
 use bcr_common::wire::{clowder as wire_clowder, keys as wire_keys, swap as wire_swap};
 use bitcoin::base64::prelude::*;
 use cashu::Proof;
 use cdk::Error as CdkError;
-// ----- local imports
-use crate::{TStamp, error::Result, sync};
-// ----- end imports
+use std::str::FromStr;
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {
     fn mint_url(&self) -> cashu::MintUrl;
 
@@ -83,8 +78,7 @@ impl HttpClientExt {
 }
 
 type CdkResult<T> = std::result::Result<T, cdk::Error>;
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 impl cdk::wallet::MintConnector for HttpClientExt {
     async fn get_mint_keys(&self) -> CdkResult<Vec<cashu::KeySet>> {
         self.main.get_mint_keys().await
@@ -182,8 +176,7 @@ impl cdk::wallet::MintConnector for HttpClientExt {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 impl MintConnector for HttpClientExt {
     fn mint_url(&self) -> cashu::MintUrl {
         cashu::MintUrl::from_str(self.url.as_str())

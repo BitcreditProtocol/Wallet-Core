@@ -1,9 +1,6 @@
-// ----- standard library imports
-// ----- extra library imports
 use anyhow::Error as AnyError;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use thiserror::Error;
-// ----- local imports
 
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Error)]
@@ -12,10 +9,6 @@ pub enum Error {
     BorshSignature(#[from] bcr_common::core::signature::BorshMsgSignatureError),
     #[error("Borsh: {0}")]
     Borsh(#[from] borsh::io::Error),
-    #[error("Rexie error: {0}")]
-    Rexie(#[from] rexie::Error),
-    #[error("serde_wasm_bindgen error: {0}")]
-    SerdeWasmBindgen(#[from] serde_wasm_bindgen::Error),
     #[error("cashu::mint_url::Error: {0}")]
     CashuMintUrl(#[from] cashu::mint_url::Error),
     #[error("cdk::Error: {0}")]

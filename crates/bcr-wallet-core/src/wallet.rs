@@ -1,15 +1,3 @@
-// ----- standard library imports
-use std::{collections::HashMap, str::FromStr, sync::Mutex};
-// ----- extra library imports
-use async_trait::async_trait;
-use bcr_common::wire::{clowder as wire_clowder, keys as wire_keys};
-use bcr_wallet_lib::wallet::Token;
-use bitcoin::hashes::{Hash, sha256::Hash as Sha256};
-use cashu::{Amount, Bolt11Invoice, CurrencyUnit, KeySetInfo, MintUrl, Proof};
-use cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
-use nostr_sdk::nips::nip19::{FromBech32, Nip19Profile};
-use uuid::Uuid;
-// ----- local imports
 use crate::{
     MintConnector,
     config::SameMintSafeMode,
@@ -18,8 +6,15 @@ use crate::{
     sync,
     types::{self, MeltSummary, PaymentSummary, RedemptionSummary, SendSummary, WalletConfig},
 };
-
-// ----- end imports
+use async_trait::async_trait;
+use bcr_common::wire::{clowder as wire_clowder, keys as wire_keys};
+use bcr_wallet_lib::wallet::Token;
+use bitcoin::hashes::{Hash, sha256::Hash as Sha256};
+use cashu::{Amount, Bolt11Invoice, CurrencyUnit, KeySetInfo, MintUrl, Proof};
+use cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
+use nostr_sdk::nips::nip19::{FromBech32, Nip19Profile};
+use std::{collections::HashMap, str::FromStr, sync::Mutex};
+use uuid::Uuid;
 
 pub enum SafeMode {
     Disabled,
@@ -42,8 +37,7 @@ impl SafeMode {
 
 /// trait that represents a single compartment in our wallet where we store proofs/tokens of the
 /// same currency emitted by the same mint
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 pub trait Pocket: sync::SendSync {
     fn unit(&self) -> CurrencyUnit;
     async fn balance(&self) -> Result<Amount>;
@@ -72,8 +66,7 @@ pub trait Pocket: sync::SendSync {
     async fn delete_proofs(&self) -> Result<HashMap<cashu::Id, Vec<cashu::Proof>>>;
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 pub trait CreditPocket: Pocket {
     fn maybe_unit(&self) -> Option<CurrencyUnit>;
     /// returns the amount reclaimed and the proofs that can be redeemed (i.e. unspent proofs with
@@ -96,8 +89,7 @@ pub trait CreditPocket: Pocket {
     ) -> Result<Vec<RedemptionSummary>>;
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 pub trait DebitPocket: Pocket {
     async fn reclaim_proofs(
         &self,
@@ -121,8 +113,7 @@ pub trait DebitPocket: Pocket {
     async fn check_pending_melts(&self, client: &dyn MintConnector) -> Result<Amount>;
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 pub trait TransactionRepository: sync::SendSync {
     async fn store_tx(&self, tx: Transaction) -> Result<TransactionId>;
     async fn load_tx(&self, tx_id: TransactionId) -> Result<Transaction>;
@@ -680,8 +671,7 @@ where
                     Ok(proofs) => break Ok(proofs),
                     Err(err) if attempts < crate::config::MAX_INTERMINT_ATTEMPTS => {
                         tracing::warn!("Failed to exchange HTLC proofs: {}", err);
-                        tokio_with_wasm::alias::time::sleep(std::time::Duration::from_secs(1))
-                            .await;
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
                     // TODO - Store the proofs and refund after time lock
                     Err(err) => {
@@ -830,8 +820,7 @@ where
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 impl<DebtPck> purse::Wallet for Wallet<DebtPck>
 where
     DebtPck: DebitPocket,
