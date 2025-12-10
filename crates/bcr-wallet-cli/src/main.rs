@@ -55,6 +55,8 @@ enum Commands {
     ReclaimFunds { id: usize },
     #[command(name = "migrate_rabid")]
     MigrateRabid,
+    #[command(name = "run_jobs")]
+    RunJobs,
     #[command(name = "gen_mnemonic")]
     GenMnemonic,
 }
@@ -158,6 +160,10 @@ async fn main() -> Result<()> {
         Commands::MigrateRabid => {
             info!("Migrate Rabid for {}", cli.wallet,);
             app_state.purse_migrate_rabid().await?
+        }
+        Commands::RunJobs => {
+            info!("RunJobs for {}:", cli.wallet);
+            command::cmd_run_jobs(&app_state).await?;
         }
     }
 

@@ -9,6 +9,7 @@ use cashu::Proof;
 use cdk::Error as CdkError;
 use rand::seq::IndexedRandom;
 use std::str::FromStr;
+use tracing::debug;
 
 #[async_trait]
 pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {
@@ -85,66 +86,79 @@ type CdkResult<T> = std::result::Result<T, cdk::Error>;
 #[async_trait]
 impl cdk::wallet::MintConnector for HttpClientExt {
     async fn get_mint_keys(&self) -> CdkResult<Vec<cashu::KeySet>> {
+        debug!("HTTP call to get_mint_keys");
         self.main.get_mint_keys().await
     }
     async fn post_restore(
         &self,
         request: cashu::RestoreRequest,
     ) -> CdkResult<cashu::RestoreResponse> {
+        debug!("HTTP call to post_restore");
         self.main.post_restore(request).await
     }
     async fn post_check_state(
         &self,
         request: cashu::CheckStateRequest,
     ) -> CdkResult<cashu::CheckStateResponse> {
+        debug!("HTTP call to post_check_state");
         self.main.post_check_state(request).await
     }
     async fn get_mint_keyset(&self, keyset_id: cashu::Id) -> CdkResult<cashu::KeySet> {
+        debug!("HTTP call to get_mint_keyset");
         self.main.get_mint_keyset(keyset_id).await
     }
     async fn get_mint_keysets(&self) -> CdkResult<cashu::KeysetResponse> {
+        debug!("HTTP call to get_mint_keysets");
         self.main.get_mint_keysets().await
     }
     async fn get_mint_info(&self) -> CdkResult<cashu::MintInfo> {
+        debug!("HTTP call to get_mint_info");
         self.main.get_mint_info().await
     }
     async fn post_swap(&self, request: cashu::SwapRequest) -> CdkResult<cashu::SwapResponse> {
+        debug!("HTTP call to post_swap");
         self.main.post_swap(request).await
     }
     async fn post_mint(
         &self,
         request: cashu::MintRequest<String>,
     ) -> CdkResult<cashu::MintResponse> {
+        debug!("HTTP call to post_mint");
         self.main.post_mint(request).await
     }
     async fn post_mint_quote(
         &self,
         request: cashu::MintQuoteBolt11Request,
     ) -> CdkResult<cashu::MintQuoteBolt11Response<String>> {
+        debug!("HTTP call to post_mint_quote");
         self.main.post_mint_quote(request).await
     }
     async fn post_melt(
         &self,
         request: cashu::MeltRequest<String>,
     ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        debug!("HTTP call to post_melt");
         self.main.post_melt(request).await
     }
     async fn get_melt_quote_status(
         &self,
         quote_id: &str,
     ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        debug!("HTTP call to get_melt_quote_status");
         self.main.get_melt_quote_status(quote_id).await
     }
     async fn post_melt_quote(
         &self,
         request: cashu::MeltQuoteBolt11Request,
     ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        debug!("HTTP call to post_melt_quote");
         self.main.post_melt_quote(request).await
     }
     async fn get_mint_quote_status(
         &self,
         quote_id: &str,
     ) -> CdkResult<cashu::MintQuoteBolt11Response<String>> {
+        debug!("HTTP call to get_mint_quote_status");
         self.main.get_mint_quote_status(quote_id).await
     }
 
@@ -152,30 +166,35 @@ impl cdk::wallet::MintConnector for HttpClientExt {
         &self,
         request: cashu::MintQuoteBolt12Request,
     ) -> CdkResult<cashu::MintQuoteBolt12Response<String>> {
+        debug!("HTTP call to post_mint_bolt12_quote");
         self.main.post_mint_bolt12_quote(request).await
     }
     async fn get_mint_quote_bolt12_status(
         &self,
         quote_id: &str,
     ) -> CdkResult<cashu::MintQuoteBolt12Response<String>> {
+        debug!("HTTP call to get_mint_quote_bolt12_status");
         self.main.get_mint_quote_bolt12_status(quote_id).await
     }
     async fn post_melt_bolt12_quote(
         &self,
         request: cashu::MeltQuoteBolt12Request,
     ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        debug!("HTTP call to post_melt_bolt12_quote");
         self.main.post_melt_bolt12_quote(request).await
     }
     async fn get_melt_bolt12_quote_status(
         &self,
         quote_id: &str,
     ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        debug!("HTTP call to get_melt_bolt12_quote_status");
         self.main.get_melt_bolt12_quote_status(quote_id).await
     }
     async fn post_melt_bolt12(
         &self,
         request: cashu::MeltRequest<String>,
     ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        debug!("HTTP call to post_melt_bolt12");
         self.main.post_melt_bolt12(request).await
     }
 }
@@ -193,6 +212,7 @@ impl MintConnector for HttpClientExt {
         alpha_id: bitcoin::secp256k1::PublicKey,
     ) -> CdkResult<Vec<cashu::KeySet>> {
         let url = self.url.join(&format!("v1/alpha/keysets/{alpha_id}"))?;
+        debug!("HTTP call to get_alpha_keysets on {url}");
         let response = self
             .secondary
             .get(url)
@@ -209,6 +229,7 @@ impl MintConnector for HttpClientExt {
     /// Is Alpha Offline
     async fn get_alpha_offline(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<bool> {
         let url = self.url.join(&format!("v1/alpha/offline/{alpha_id}"))?;
+        debug!("HTTP call to get_alpha_offline on {url}");
         let response = self
             .secondary
             .get(url)
@@ -228,6 +249,7 @@ impl MintConnector for HttpClientExt {
         alpha_id: bitcoin::secp256k1::PublicKey,
     ) -> CdkResult<wire_clowder::AlphaStateResponse> {
         let url = self.url.join(&format!("v1/alpha/status/{alpha_id}"))?;
+        debug!("HTTP call to get_alpha_status on {url}");
         let response = self
             .secondary
             .get(url)
@@ -246,6 +268,7 @@ impl MintConnector for HttpClientExt {
         alpha_id: bitcoin::secp256k1::PublicKey,
     ) -> CdkResult<wire_clowder::ConnectedMintResponse> {
         let url = self.url.join(&format!("v1/alpha/substitute/{alpha_id}"))?;
+        debug!("HTTP call to get_alpha_substitute on {url}");
         let response = self
             .secondary
             .get(url)
@@ -263,6 +286,7 @@ impl MintConnector for HttpClientExt {
             .url
             .join("v1/betas")
             .expect("get_clowder_betas url error");
+        debug!("HTTP call to get_clowder_betas on {url}");
         let response = self
             .secondary
             .get(url)
@@ -283,6 +307,7 @@ impl MintConnector for HttpClientExt {
         wallet_pubkey: bitcoin::secp256k1::PublicKey,
     ) -> CdkResult<Vec<Proof>> {
         let url = self.url.join("v1/exchange/substitute")?;
+        debug!("HTTP call to post_exchange_substitute on {url}");
         let request = wire_clowder::SubstituteExchangeRequest {
             proofs,
             locks,
@@ -312,6 +337,7 @@ impl MintConnector for HttpClientExt {
             .url
             .join("v1/exchange")
             .expect("post_clowder_exchange url error");
+        debug!("HTTP call to post_exchange on {url}");
         let request = wire_clowder::ExchangeRequest {
             exchange_path,
             alpha_proofs,
@@ -332,6 +358,7 @@ impl MintConnector for HttpClientExt {
 
     async fn get_clowder_id(&self) -> CdkResult<bitcoin::secp256k1::PublicKey> {
         let url = self.url.join("v1/id").expect("get_clowder_id url error");
+        debug!("HTTP call to get_clowder_id on {url}");
 
         let response = self
             .secondary
@@ -354,6 +381,7 @@ impl MintConnector for HttpClientExt {
             .url
             .join("v1/path")
             .expect("post_clowder_path url error");
+        debug!("HTTP call to post_clowder_path on {url}");
         let request = wire_clowder::PathRequest { origin_mint_url };
         let response = self
             .secondary
@@ -385,6 +413,7 @@ impl MintConnector for HttpClientExt {
             .url
             .join("v1/commitment")
             .expect("post_commitment url error");
+        debug!("HTTP call to post_commitment on {url}");
         let inputs: Vec<_> = inputs
             .into_iter()
             .map(wire_keys::ProofFingerprint::try_from)
@@ -466,31 +495,38 @@ impl SentinelClient {
 #[async_trait]
 impl cdk::wallet::MintConnector for SentinelClient {
     async fn get_mint_keys(&self) -> CdkResult<Vec<cashu::KeySet>> {
+        debug!("HTTP call to get_mint_keys on sentinel");
         self.main.get_mint_keys().await
     }
     async fn post_restore(
         &self,
         request: cashu::RestoreRequest,
     ) -> CdkResult<cashu::RestoreResponse> {
+        debug!("HTTP call to post_restore on sentinel");
         self.main.post_restore(request).await
     }
     async fn post_check_state(
         &self,
         request: cashu::CheckStateRequest,
     ) -> CdkResult<cashu::CheckStateResponse> {
+        debug!("HTTP call to post_check_state on sentinel");
         self.main.post_check_state(request).await
     }
     async fn get_mint_keyset(&self, keyset_id: cashu::Id) -> CdkResult<cashu::KeySet> {
+        debug!("HTTP call to get_mint_keyset on sentinel");
         self.main.get_mint_keyset(keyset_id).await
     }
     async fn get_mint_keysets(&self) -> CdkResult<cashu::KeysetResponse> {
+        debug!("HTTP call to get_mint_keysets on sentinel");
         self.main.get_mint_keysets().await
     }
     async fn get_mint_info(&self) -> CdkResult<cashu::MintInfo> {
+        debug!("HTTP call to get_mint_info on sentinel");
         self.main.get_mint_info().await
     }
 
     async fn post_swap(&self, request: cashu::SwapRequest) -> CdkResult<cashu::SwapResponse> {
+        debug!("HTTP call to post_swap on sentinel");
         let response = self.main.post_swap(request).await?;
         let Some(sentinel_url) = self.random_sentinel() else {
             return Ok(response);
@@ -510,6 +546,7 @@ impl cdk::wallet::MintConnector for SentinelClient {
         &self,
         request: cashu::MintRequest<String>,
     ) -> CdkResult<cashu::MintResponse> {
+        debug!("HTTP call to post_mint on sentinel");
         let response = self.main.post_mint(request).await?;
         let Some(sentinel_url) = self.random_sentinel() else {
             return Ok(response);
@@ -528,6 +565,7 @@ impl cdk::wallet::MintConnector for SentinelClient {
         &self,
         request: cashu::MintQuoteBolt11Request,
     ) -> CdkResult<cashu::MintQuoteBolt11Response<String>> {
+        debug!("HTTP call to post_mint_quote on sentinel");
         self.main.post_mint_quote(request).await
     }
 
@@ -535,6 +573,7 @@ impl cdk::wallet::MintConnector for SentinelClient {
         &self,
         request: cashu::MeltRequest<String>,
     ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        debug!("HTTP call to post_melt on sentinel");
         let fps = request
             .inputs()
             .iter()
@@ -557,18 +596,21 @@ impl cdk::wallet::MintConnector for SentinelClient {
         &self,
         quote_id: &str,
     ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        debug!("HTTP call to get_melt_quote_status on sentinel");
         self.main.get_melt_quote_status(quote_id).await
     }
     async fn post_melt_quote(
         &self,
         request: cashu::MeltQuoteBolt11Request,
     ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        debug!("HTTP call to post_melt_quote on sentinel");
         self.main.post_melt_quote(request).await
     }
     async fn get_mint_quote_status(
         &self,
         quote_id: &str,
     ) -> CdkResult<cashu::MintQuoteBolt11Response<String>> {
+        debug!("HTTP call to get_mint_quote_status on sentinel");
         self.main.get_mint_quote_status(quote_id).await
     }
 
@@ -576,30 +618,35 @@ impl cdk::wallet::MintConnector for SentinelClient {
         &self,
         request: cashu::MintQuoteBolt12Request,
     ) -> CdkResult<cashu::MintQuoteBolt12Response<String>> {
+        debug!("HTTP call to post_mint_bolt12_quote on sentinel");
         self.main.post_mint_bolt12_quote(request).await
     }
     async fn get_mint_quote_bolt12_status(
         &self,
         quote_id: &str,
     ) -> CdkResult<cashu::MintQuoteBolt12Response<String>> {
+        debug!("HTTP call to get_mint_quote_bolt12_status on sentinel");
         self.main.get_mint_quote_bolt12_status(quote_id).await
     }
     async fn post_melt_bolt12_quote(
         &self,
         request: cashu::MeltQuoteBolt12Request,
     ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        debug!("HTTP call to post_melt_bolt12_quote on sentinel");
         self.main.post_melt_bolt12_quote(request).await
     }
     async fn get_melt_bolt12_quote_status(
         &self,
         quote_id: &str,
     ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        debug!("HTTP call to get_melt_bolt12_quote_status on sentinel");
         self.main.get_melt_bolt12_quote_status(quote_id).await
     }
     async fn post_melt_bolt12(
         &self,
         request: cashu::MeltRequest<String>,
     ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>> {
+        debug!("HTTP call to post_melt_bolt12 on sentinel");
         self.main.post_melt_bolt12(request).await
     }
 }
