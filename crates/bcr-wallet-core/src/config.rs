@@ -26,9 +26,11 @@ impl Default for Settings {
                 RelayUrl::parse("wss://bcr-relay-dev.minibill.tech")
                     .expect("Invalid default relay URL"),
             ],
-            same_mint_safe_mode: SameMintSafeMode::Enabled {
-                expiration: chrono::TimeDelta::minutes(15),
-            },
+            same_mint_safe_mode: SameMintSafeMode::Disabled,
+            // Disabled for now until Clowder stabilizes more
+            // same_mint_safe_mode: SameMintSafeMode::Enabled {
+            //     expiration: chrono::TimeDelta::minutes(15),
+            // },
         }
     }
 }

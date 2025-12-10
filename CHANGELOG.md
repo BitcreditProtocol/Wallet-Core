@@ -1,4 +1,4 @@
-# 0.2.0
+# 0.7.0
 
 * Remove WASM
 * Replace rexie (IndexedDB) with redb for persistence

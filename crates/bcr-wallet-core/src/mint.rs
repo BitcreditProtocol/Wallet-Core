@@ -1,6 +1,9 @@
 use crate::{TStamp, error::Result, sync};
 use async_trait::async_trait;
-use bcr_common::wire::{clowder as wire_clowder, keys as wire_keys, swap as wire_swap};
+use bcr_common::wire::{
+    clowder::{self as wire_clowder, ConnectedMintsResponse},
+    keys as wire_keys, swap as wire_swap,
+};
 use bitcoin::base64::prelude::*;
 use cashu::Proof;
 use cdk::Error as CdkError;
@@ -22,7 +25,7 @@ pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {
     async fn post_clowder_path(
         &self,
         origin_mint_url: cashu::MintUrl,
-    ) -> CdkResult<wire_clowder::ConnectedMintsResponse>;
+    ) -> CdkResult<ConnectedMintsResponse>;
     async fn get_alpha_keysets(
         &self,
         alpha_id: bitcoin::secp256k1::PublicKey,
@@ -266,7 +269,7 @@ impl MintConnector for HttpClientExt {
             .send()
             .await
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
-        let response: wire_clowder::ConnectedMintsResponse = response
+        let response: ConnectedMintsResponse = response
             .json()
             .await
             .map_err(|e| CdkError::Custom(e.to_string()))?;
@@ -346,7 +349,7 @@ impl MintConnector for HttpClientExt {
     async fn post_clowder_path(
         &self,
         origin_mint_url: cashu::MintUrl,
-    ) -> CdkResult<wire_clowder::ConnectedMintsResponse> {
+    ) -> CdkResult<ConnectedMintsResponse> {
         let url = self
             .url
             .join("v1/path")
@@ -359,7 +362,7 @@ impl MintConnector for HttpClientExt {
             .send()
             .await
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
-        let response: wire_clowder::ConnectedMintsResponse = response
+        let response: ConnectedMintsResponse = response
             .json()
             .await
             .map_err(|e| CdkError::Custom(e.to_string()))?;
@@ -690,7 +693,7 @@ impl MintConnector for SentinelClient {
             .send()
             .await
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
-        let response: wire_clowder::ConnectedMintsResponse = response
+        let response: ConnectedMintsResponse = response
             .json()
             .await
             .map_err(|e| CdkError::Custom(e.to_string()))?;
@@ -770,7 +773,7 @@ impl MintConnector for SentinelClient {
     async fn post_clowder_path(
         &self,
         origin_mint_url: cashu::MintUrl,
-    ) -> CdkResult<wire_clowder::ConnectedMintsResponse> {
+    ) -> CdkResult<ConnectedMintsResponse> {
         let url = self
             .url
             .join("v1/path")
@@ -783,7 +786,7 @@ impl MintConnector for SentinelClient {
             .send()
             .await
             .map_err(|e| CdkError::HttpError(None, e.to_string()))?;
-        let response: wire_clowder::ConnectedMintsResponse = response
+        let response: ConnectedMintsResponse = response
             .json()
             .await
             .map_err(|e| CdkError::Custom(e.to_string()))?;

@@ -80,9 +80,7 @@ pub mod tests {
     };
     use cdk_common::Error as CDKError;
 
-    use bcr_common::wire::clowder::{
-        AlphaStateResponse, ConnectedMintResponse, ConnectedMintsResponse,
-    };
+    use bcr_common::wire::clowder::{AlphaStateResponse, ConnectedMintResponse};
     type CdkResult<T> = std::result::Result<T, CDKError>;
 
     mockall::mock! {
@@ -160,7 +158,7 @@ pub mod tests {
         async fn post_clowder_path(
             &self,
             origin_mint_url: cashu::MintUrl,
-        ) -> CdkResult<ConnectedMintsResponse>;
+        ) -> CdkResult<bcr_common::wire::clowder::ConnectedMintsResponse>;
         async fn get_alpha_keysets(
             &self,
             alpha_id: bitcoin::secp256k1::PublicKey,
