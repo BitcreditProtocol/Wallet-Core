@@ -1,0 +1,4 @@
+mint_url = "https://mint.wildcat0.clowder1.minibill.tech"
+mnemonic = "quit install damage when glove pipe lucky update high lock child police"
+log_level = "DEBUG"
+db_path = "./bob.db"

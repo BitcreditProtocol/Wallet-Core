@@ -23,6 +23,7 @@ chrono = {version  = "0.4"}
 ciborium = {version="0.2"}
 futures = {version = "0.3"}
 mockall = {version  = "0.13"}
+nostr = {version = "0.43"}
 nostr-sdk = {version = "0.43", features = ["nip59"]}
 rand = {version = "0.9"}
 redb = {version = "3.1.0"}
