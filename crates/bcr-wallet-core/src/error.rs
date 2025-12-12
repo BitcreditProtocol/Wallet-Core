@@ -64,16 +64,6 @@ pub enum Error {
     RedbStorage(#[from] redb::StorageError),
     #[error("Database Join error: {0}")]
     RedbTokioSpawn(#[from] tokio::task::JoinError),
-    #[error("local pocket DB not initialized correctly")]
-    BadPocketDB,
-    #[error("local purse DB not initialized correctly")]
-    BadPurseDB,
-    #[error("local transaction DB not initialized correctly")]
-    BadTransactionDB,
-    #[error("local mint/melt DB not initialized correctly")]
-    BadMintMeltDB,
-    #[error("local settings DB not initialized correctly")]
-    BadSettingsDB,
     #[error("proof in local DB not found: {0}")]
     ProofNotFound(cashu::PublicKey),
     #[error("proof not in desired state: {0}")]
@@ -82,8 +72,6 @@ pub enum Error {
     CounterKidMismatch,
     #[error("counter in local DB not found: {0}")]
     CounterNotFound(cdk02::Id),
-    #[error("internal, generic: {0}")]
-    Any(AnyError),
     #[error("wallet id {0} not found")]
     WalletIdNotFound(String),
     #[error("wallet at idx {0} not found")]
@@ -124,8 +112,6 @@ pub enum Error {
     MeltUnpaid(String),
     #[error("melt op not found: {0}")]
     MeltNotFound(String),
-    #[error("missing initialization")]
-    Initialization,
     #[error("inter-mint payment not supported yet")]
     InterMint,
     #[error("spending conditions not supported yet")]
@@ -134,8 +120,6 @@ pub enum Error {
     NoTransport,
     #[error("Maximum Exchange attempts reached")]
     MaxExchangeAttempts,
-    #[error("Missing currency unit")]
-    MissingCurrencyUnit,
     #[error("Invalid Clowder Path for foreign eCash")]
     InvalidClowderPath,
     #[error("Beta not found")]
@@ -145,4 +129,6 @@ pub enum Error {
 
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("internal, generic: {0}")]
+    Any(AnyError),
 }

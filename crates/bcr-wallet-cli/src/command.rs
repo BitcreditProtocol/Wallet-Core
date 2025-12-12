@@ -180,6 +180,11 @@ pub async fn cmd_send_payment(
     Ok(res)
 }
 
+pub async fn cmd_run_jobs(app_state: &AppState) -> Result<()> {
+    app_state.execute_jobs().await;
+    Ok(())
+}
+
 fn push_line(res: &mut String) {
     res.push_str("-----------------------\n");
 }

@@ -1,3 +1,4 @@
+use crate::job::JobState;
 use crate::mint::MintConnector;
 use crate::{
     config::{Config, SameMintSafeMode, Settings},
@@ -11,6 +12,7 @@ use bitcoin::{
 };
 use cashu::{CurrencyUnit, KeySetInfo, MintInfo, MintUrl};
 use cdk::wallet::{MintConnector as MintCon, types::TransactionId};
+use chrono::Utc;
 use error::{Error, Result};
 use std::{
     collections::{HashMap, HashSet},
@@ -18,13 +20,13 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::RwLock;
-use tracing::info;
 use uuid::Uuid;
 
 mod clowder_models;
 pub mod config;
 mod db;
 pub mod error;
+mod job;
 mod mint;
 pub mod persistence;
 pub mod pocket;
@@ -42,6 +44,7 @@ mod prod {
     pub type ProductionPurseRepository = crate::persistence::redb::PurseDB;
     pub type ProductionTransactionRepository = crate::persistence::redb::TransactionDB;
     pub type ProductionSettingsRepository = crate::persistence::redb::SettingsDB;
+    pub type ProductionJobsRepository = crate::persistence::redb::JobsDB;
 }
 
 type ProductionConnector = crate::mint::HttpClientExt;
@@ -63,6 +66,7 @@ pub enum LocalDB {
 pub struct AppState {
     purse: Arc<ProductionPurse>,
     settings: Arc<prod::ProductionSettingsRepository>,
+    jobs: Arc<prod::ProductionJobsRepository>,
     db: Arc<redb::Database>,
 }
 
@@ -72,11 +76,12 @@ impl AppState {
     pub async fn initialize(db_path: &str) -> Result<Self> {
         tracing::debug!("Initializing API");
 
-        // Open Datbase file - only allowed to do once!
+        // Open Database file - only allowed to do once!
         let db = Arc::new(redb::Database::create(db_path)?);
 
         let pursedb = db::build_pursedb(AppState::DB_VERSION, db.clone()).await?;
         let settingsdb = Arc::new(db::build_settingsdb(AppState::DB_VERSION, db.clone()).await?);
+        let jobsdb = Arc::new(db::build_jobsdb(AppState::DB_VERSION, db.clone()).await?);
         let settings = settingsdb.clone().load().await?;
         let config = Config::new(settings)?;
         let nostr_cl = nostr_sdk::Client::new(config.nostr_signer);
@@ -86,7 +91,7 @@ impl AppState {
         nostr_cl.connect().await;
         let http_cl = reqwest::Client::new();
         let purse = ProductionPurse::new(pursedb, http_cl, nostr_cl, config.nprofile).await?;
-        let mut appstate = AppState::new(Arc::new(purse), settingsdb, db);
+        let mut appstate = AppState::new(Arc::new(purse), settingsdb, jobsdb, db);
         appstate.load_wallets().await?;
         Ok(appstate)
     }
@@ -94,12 +99,14 @@ impl AppState {
     fn new(
         purse: Arc<ProductionPurse>,
         settings: Arc<prod::ProductionSettingsRepository>,
+        jobs: Arc<prod::ProductionJobsRepository>,
         db: Arc<redb::Database>,
     ) -> Self {
         tracing::debug!("Creating new AppState");
         Self {
             purse,
             settings,
+            jobs,
             db,
         }
     }
@@ -156,6 +163,10 @@ impl AppState {
 
     fn get_settingsdb(&self) -> Arc<prod::ProductionSettingsRepository> {
         self.settings.clone()
+    }
+
+    fn get_jobsdb(&self) -> Arc<prod::ProductionJobsRepository> {
+        self.jobs.clone()
     }
 
     fn get_db(&self) -> Arc<redb::Database> {
@@ -245,7 +256,6 @@ impl AppState {
         tracing::debug!("wallet_balance({idx})");
 
         let wallet = self.get_wallet(idx).await?;
-        // TODO: fix this, lock held across await, issue #92
         wallet.read().await.balance().await
     }
 
@@ -405,7 +415,7 @@ impl AppState {
 
     pub fn generate_random_mnemonic(&self, mnemonic_len: u32) -> String {
         let mnemonic_len = if mnemonic_len == 0 { 12 } else { mnemonic_len };
-        info!("Generate random {}-word mnemonic", mnemonic_len);
+        tracing::info!("Generate random {}-word mnemonic", mnemonic_len);
 
         const VALID_MNEMONIC_LENGTHS: [u32; 5] = [12, 15, 18, 21, 24];
         assert!(
@@ -421,6 +431,63 @@ impl AppState {
                 String::default()
             }
         }
+    }
+
+    /// Checks when the jobs were run the last time and if it's greater than 1 day
+    /// then it runs the jobs.
+    /// This should be called in an interval and on app initialization
+    pub async fn run_jobs(&self) -> Result<()> {
+        tracing::info!("Run Jobs triggered");
+        let last_run_ts = self.get_jobsdb().load().await?.last_run;
+        let now = Utc::now();
+
+        let diff = now.signed_duration_since(last_run_ts);
+
+        if diff.num_days() < 1 {
+            tracing::info!("Run Jobs called, but not yet 1 day since last job run.");
+            return Ok(());
+        }
+
+        if self.execute_jobs().await {
+            tracing::info!("Run Jobs executed successfully");
+            self.get_jobsdb().store(JobState { last_run: now }).await?;
+        } else {
+            tracing::info!(
+                "Run Jobs executed with some errors - will run again at the next interval."
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Actually runs the jobs - gets called via `run_jobs` for creating a
+    /// regular job interval, but calling this directly forces a job run right now
+    /// Returns a boolean indicating if all jobs ran to success
+    pub async fn execute_jobs(&self) -> bool {
+        let mut job_failed = false;
+        if let Err(e) = self.purse_migrate_rabid().await {
+            job_failed = true;
+            tracing::error!("Error running purse_migrate_rabid job: {e}");
+        }
+
+        let wallet_ids = self.get_purse().ids().await;
+        for wallet_id in wallet_ids.iter() {
+            match self.wallet_redeem_credit(*wallet_id as usize).await {
+                Ok(amount) => {
+                    tracing::info!(
+                        "Redeemed credit for wallet {wallet_id}. Amount redeemed: {amount}"
+                    );
+                }
+                Err(e) => {
+                    job_failed = true;
+                    tracing::error!(
+                        "Error running wallet_redeem_credit job for wallet {wallet_id}: {e}"
+                    );
+                }
+            };
+        }
+        // successful = true
+        !job_failed
     }
 }
 

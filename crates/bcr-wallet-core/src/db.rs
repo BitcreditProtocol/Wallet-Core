@@ -43,3 +43,10 @@ pub async fn build_settingsdb(
 ) -> Result<prod::ProductionSettingsRepository> {
     prod::ProductionSettingsRepository::new(db)
 }
+
+pub async fn build_jobsdb(
+    _db_version: u32,
+    db: Arc<redb::Database>,
+) -> Result<prod::ProductionJobsRepository> {
+    prod::ProductionJobsRepository::new(db)
+}
