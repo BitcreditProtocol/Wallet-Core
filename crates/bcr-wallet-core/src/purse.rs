@@ -8,6 +8,7 @@ use crate::{
 use async_trait::async_trait;
 use cashu::{Amount, CurrencyUnit, MintUrl, PaymentRequest, nut00 as cdk00, nut18 as cdk18};
 use cdk::wallet::types::TransactionId;
+use nostr::{nips::nip59::UnwrappedGift, signer::NostrSigner};
 use nostr_sdk::nips::nip19::{Nip19Profile, ToBech32};
 use std::{collections::HashMap, sync::Arc};
 use tokio::{
@@ -244,14 +245,22 @@ where
             .kind(nostr_sdk::Kind::GiftWrap)
             .pubkey(self.myself.public_key);
 
+        let signer = self.nostr_cl.signer().await?;
         for _ in 0..TIMEOUT_SPLIT_SIZE {
+            tracing::debug!("Checking events from Nostr...");
             let events = self
                 .nostr_cl
                 .fetch_events(filter.clone(), fetch_timeout)
                 .await?;
             for event in events {
-                if let Some(txid) =
-                    handle_event(event, &self.wallets, p_id, req.amount.unwrap_or_default()).await?
+                if let Some(txid) = handle_event(
+                    event,
+                    signer.clone(),
+                    &self.wallets,
+                    p_id,
+                    req.amount.unwrap_or_default(),
+                )
+                .await?
                 {
                     return Ok(Some(txid));
                 }
@@ -289,6 +298,7 @@ where
 
 async fn handle_event<T>(
     event: nostr_sdk::Event,
+    signer: Arc<dyn NostrSigner>,
     wlts: &Mutex<Vec<Arc<RwLock<T>>>>,
     payment_id: Uuid,
     expected: Amount,
@@ -296,13 +306,37 @@ async fn handle_event<T>(
 where
     T: Wallet,
 {
-    if event.kind != nostr_sdk::Kind::PrivateDirectMessage {
+    if event.kind != nostr_sdk::Kind::GiftWrap {
+        tracing::debug!("handle event, but no GiftWrap - {}", event.kind);
         return Ok(None);
     }
-    let Ok(payload) = serde_json::from_str::<cdk18::PaymentRequestPayload>(&event.content) else {
-        return Ok(None);
+
+    let payload = match UnwrappedGift::from_gift_wrap(&signer, &event).await {
+        Ok(UnwrappedGift { rumor, .. }) => {
+            if rumor.kind == nostr_sdk::Kind::PrivateDirectMessage {
+                match serde_json::from_str::<cdk18::PaymentRequestPayload>(&rumor.content) {
+                    Ok(payload) => payload,
+                    Err(e) => {
+                        tracing::error!("Parsing Payment Request failed: {e}");
+                        return Ok(None);
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    "handle event, but rumor no PrivateDirectMessage - {}",
+                    rumor.kind
+                );
+                return Ok(None);
+            }
+        }
+        Err(e) => {
+            tracing::error!("Unwrapping gift wrap failed: {e}");
+            return Ok(None);
+        }
     };
+
     if payload.id.unwrap_or_default() != payment_id.to_string() {
+        tracing::debug!("handle event, payment id doesn't match");
         return Ok(None);
     }
 

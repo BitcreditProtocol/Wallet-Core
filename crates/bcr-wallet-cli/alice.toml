@@ -1,7 +1,7 @@
 ## Other mint URLs
 #mint_url = "http://localhost:4343"
-mint_url = "http://localhost:8080"
-# mint_url = "https://mint.wildcat0.clowder1.minibill.tech"
+# mint_url = "http://localhost:8080"
+mint_url = "https://mint.wildcat0.clowder1.minibill.tech"
 # mint_url = "https://mint.wildcat1.clowder1.minibill.tech"
 
 # mint_url = "https://wildcat-dev-docker.minibill.tech"

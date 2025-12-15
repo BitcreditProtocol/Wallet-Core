@@ -1,5 +1,6 @@
 use anyhow::Result;
 use bcr_wallet_core::AppState;
+use tracing::info;
 
 use crate::WalletSettings;
 
@@ -22,6 +23,8 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
             .wallet_list_redemptions(*id, std::time::Duration::from_hours(48))
             .await?;
 
+        let transactions = app_state.wallet_list_tx_ids(*id).await?;
+
         res.push_str(&format!("Name: {name}\n"));
         res.push_str(&format!("Wallet ID: {id}\n"));
         res.push_str(&format!("Mint URL: {mint_url}\n"));
@@ -37,6 +40,18 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
             res.push_str("Redemptions plan:");
             for r in redemptions.iter() {
                 res.push_str(&format!("\t\t{} - {}", r.tstamp, r.amount));
+            }
+        }
+        if !transactions.is_empty() {
+            res.push_str("Transactions:");
+            push_break(&mut res);
+            for t in transactions.iter() {
+                let tx = app_state.wallet_load_tx(*id, &t.to_string()).await?;
+                res.push_str(&format!(
+                    "\t\tAmount: {}\t Fees: {}\tDesc: {}\tStatus: {:?}\tTstamp: {}\tDir: {:?}\tPayment Type: {:?}",
+                    tx.amount, tx.fees, tx.memo, tx.status, tx.tstamp, tx.direction, tx.ptype
+                ));
+                push_break(&mut res);
             }
         }
     }
@@ -121,13 +136,15 @@ pub async fn cmd_request_payment(
     app_state: &AppState,
     name: &str,
     amount: u64,
+    unit: &str,
     id: usize,
 ) -> Result<String> {
     let mut res = String::new();
     let req = app_state
-        .wallet_prepare_payment_request(id, amount, String::default(), String::default())
+        .wallet_prepare_payment_request(id, amount, unit.to_string(), String::default())
         .await?;
 
+    info!("Payment Request: {}, {}", &req.request, &req.p_id);
     let tx_id = app_state
         .wallet_check_received_payment(30, req.p_id.clone())
         .await?;
@@ -143,7 +160,10 @@ pub async fn cmd_request_payment(
         &req.request, &req.p_id
     ));
     push_break(&mut res);
-    res.push_str(&format!("Transaction ID: {tx_id:?}"));
+    res.push_str(&format!(
+        "Transaction ID: {:?}",
+        tx_id.map(|t| t.to_string())
+    ));
 
     Ok(res)
 }
@@ -158,6 +178,14 @@ pub async fn cmd_send_payment(
     let payment_summary = app_state
         .wallet_prepare_payment(id, input.to_owned())
         .await?;
+
+    info!(
+        "Payment Summary: Amount: {}, Unit: {}, Fees: {}, Reserved Fees: {}",
+        &payment_summary.amount,
+        &payment_summary.unit,
+        &payment_summary.fees,
+        &payment_summary.reserved_fees
+    );
 
     let tx_id = app_state
         .wallet_pay(payment_summary.request_id.to_string())
@@ -175,7 +203,7 @@ pub async fn cmd_send_payment(
         &payment_summary.unit, &payment_summary.amount, &payment_summary.fees
     ));
     push_break(&mut res);
-    res.push_str(&format!("Transaction ID: {tx_id:?}"));
+    res.push_str(&format!("Transaction ID: {tx_id}"));
 
     Ok(res)
 }

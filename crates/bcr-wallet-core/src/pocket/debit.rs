@@ -146,6 +146,7 @@ impl Pocket {
             rid: pocket_summary.request_id,
             ..Default::default()
         };
+
         for kid in kids {
             let kid_ys = ys.get(&kid).cloned().unwrap_or_default();
             for y in kid_ys {

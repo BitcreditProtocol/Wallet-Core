@@ -504,7 +504,7 @@ pub struct WalletCurrencyUnit {
     pub debit: String,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum TransactionDirection {
     #[default]
     Incoming,
@@ -518,7 +518,7 @@ impl std::convert::From<cdk::wallet::types::TransactionDirection> for Transactio
         }
     }
 }
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum PaymentType {
     #[default]
     NotApplicable,
@@ -536,7 +536,7 @@ impl std::convert::From<types::PaymentType> for PaymentType {
         }
     }
 }
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum TransactionStatus {
     #[default]
     NotApplicable,
@@ -554,7 +554,7 @@ impl std::convert::From<types::TransactionStatus> for TransactionStatus {
         }
     }
 }
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Transaction {
     pub amount: u64,
     pub fees: u64,

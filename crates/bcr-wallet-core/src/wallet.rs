@@ -430,7 +430,6 @@ where
             .iter()
             .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
         let (stored_amount, ys) = if unit == self.debit.unit() {
-            tracing::debug!("receive into debit pocket");
             self.debit
                 .receive_proofs(
                     self.client.as_ref(),
@@ -440,7 +439,6 @@ where
                 )
                 .await?
         } else if unit == self.credit.unit() {
-            tracing::debug!("receive into credit pocket");
             self.credit
                 .receive_proofs(
                     self.client.as_ref(),
@@ -836,12 +834,15 @@ where
             mnemonic: self.mnemonic.clone(),
         })
     }
+
     fn name(&self) -> String {
         self.name.clone()
     }
+
     fn mint_url(&self) -> Result<cashu::MintUrl> {
         Ok(self.client.mint_url())
     }
+
     async fn prepare_pay(&self, input: String, now: u64) -> Result<PaymentSummary> {
         let infos = self.client.get_mint_keysets().await?.keysets;
 
@@ -887,6 +888,7 @@ where
             Err(Error::UnknownPaymentRequest(input))
         }
     }
+
     async fn pay(
         &self,
         p_id: Uuid,

@@ -46,7 +46,11 @@ enum Commands {
     #[command(name = "redeem")]
     Redeem { id: usize },
     #[command(name = "request_payment")]
-    RequestPayment { id: usize, amount: u64 },
+    RequestPayment {
+        id: usize,
+        amount: u64,
+        unit: String,
+    },
     #[command(name = "send_payment")]
     SendPayment { id: usize, input: String },
     #[command(name = "recover")]
@@ -134,11 +138,11 @@ async fn main() -> Result<()> {
                 command::cmd_restore_wallet(&app_state, &settings, &cli.wallet).await?
             );
         }
-        Commands::RequestPayment { id, amount } => {
+        Commands::RequestPayment { id, amount, unit } => {
             info!(
                 "Requesting Payment for {}: {}, Amount: {amount}",
                 cli.wallet,
-                command::cmd_request_payment(&app_state, &cli.wallet, amount, id).await?
+                command::cmd_request_payment(&app_state, &cli.wallet, amount, &unit, id).await?
             );
         }
         Commands::SendPayment { id, input } => {
