@@ -2,12 +2,13 @@ use cashu::{Amount, CurrencyUnit, MintUrl};
 use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
 
+#[derive(Default, Debug, Clone)]
 pub struct RedemptionSummary {
     pub tstamp: u64,
     pub amount: Amount,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 pub struct SendSummary {
     pub request_id: Uuid,
     pub amount: Amount,
@@ -36,7 +37,7 @@ pub struct WalletConfig {
     pub mnemonic: bip39::Mnemonic,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct MeltSummary {
     pub request_id: Uuid,
     pub amount: Amount,
@@ -55,7 +56,7 @@ impl MeltSummary {
     }
 }
 
-#[derive(strum::EnumString, strum::Display)]
+#[derive(strum::EnumString, strum::Display, Debug, Clone)]
 pub enum PaymentType {
     NotApplicable,
     Token,
@@ -63,6 +64,7 @@ pub enum PaymentType {
     Lightning,
 }
 
+#[derive(Debug, Clone)]
 pub struct PaymentSummary {
     pub request_id: Uuid,
     pub unit: CurrencyUnit,
