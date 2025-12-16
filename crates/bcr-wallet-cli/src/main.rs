@@ -1,8 +1,13 @@
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 
 use anyhow::Result;
-use bcr_wallet_core::AppState;
+use bcr_wallet_core::{
+    AppState,
+    config::{AppStateConfig, SameMintSafeMode},
+    generate_random_mnemonic,
+};
 use clap::{Parser, Subcommand};
+use nostr_sdk::RelayUrl;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 use tracing_subscriber::{
@@ -15,9 +20,11 @@ mod command;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletSettings {
     pub mint_url: cashu::MintUrl,
-    pub mnemonic: String,
+    pub mnemonic: bip39::Mnemonic,
     pub log_level: String,
-    pub db_path: String,
+    pub db_path: PathBuf,
+    pub network: bitcoin::Network,
+    pub nostr_relays: Vec<RelayUrl>,
 }
 
 #[derive(Parser)]
@@ -101,7 +108,18 @@ async fn main() -> Result<()> {
 
     println!("{LOGO}");
 
-    let app_state = AppState::initialize(&settings.db_path).await?;
+    let app_state_cfg = AppStateConfig {
+        db_path: settings.db_path.clone(),
+        network: settings.network,
+        nostr_relays: settings.nostr_relays.clone(),
+        mnemonic: settings.mnemonic.clone(),
+        same_mint_safe_mode: SameMintSafeMode::Disabled,
+        // Disabled for now until Clowder stabilizes more
+        // same_mint_safe_mode: SameMintSafeMode::Enabled {
+        //     expiration: chrono::TimeDelta::minutes(15),
+        // },
+    };
+    let app_state = AppState::initialize(app_state_cfg).await?;
 
     match cli.command {
         Commands::Info => {
@@ -194,7 +212,7 @@ async fn main() -> Result<()> {
             );
         }
         Commands::GenMnemonic => {
-            info!("{}", app_state.generate_random_mnemonic(12));
+            info!("{}", generate_random_mnemonic(12));
         }
         Commands::Recover { .. } => {
             info!("Recover for {}: NOT IMPLEMENTED", cli.wallet,);

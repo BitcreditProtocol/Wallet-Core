@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::error::Result;
 use nostr_sdk::{Keys, RelayUrl, nips::nip06::FromMnemonic, nips::nip19::Nip19Profile};
 
@@ -9,46 +11,31 @@ pub enum SameMintSafeMode {
     Enabled { expiration: chrono::TimeDelta },
     Disabled,
 }
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Settings {
+
+#[derive(Debug, Clone)]
+pub struct AppStateConfig {
+    pub db_path: PathBuf,
     pub network: bitcoin::Network,
-    pub mnemonic: bip39::Mnemonic,
     pub nostr_relays: Vec<RelayUrl>,
+    pub mnemonic: bip39::Mnemonic,
     pub same_mint_safe_mode: SameMintSafeMode,
 }
 
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            network: bitcoin::Network::Testnet,
-            mnemonic: bip39::Mnemonic::generate(12).expect("Failed to generate default mnemonic"),
-            nostr_relays: vec![
-                RelayUrl::parse("wss://bcr-relay-dev.minibill.tech")
-                    .expect("Invalid default relay URL"),
-            ],
-            same_mint_safe_mode: SameMintSafeMode::Disabled,
-            // Disabled for now until Clowder stabilizes more
-            // same_mint_safe_mode: SameMintSafeMode::Enabled {
-            //     expiration: chrono::TimeDelta::minutes(15),
-            // },
-        }
-    }
-}
-
-pub struct Config {
+#[derive(Debug, Clone)]
+pub struct NostrConfig {
     pub nprofile: Nip19Profile,
     pub nostr_signer: Keys,
     pub relays: Vec<RelayUrl>,
 }
 
-impl Config {
-    pub fn new(settings: Settings) -> Result<Self> {
-        let keys = Keys::from_mnemonic(settings.mnemonic.to_string(), None)?;
+impl NostrConfig {
+    pub fn new(mnemonic: bip39::Mnemonic, nostr_relays: Vec<RelayUrl>) -> Result<Self> {
+        let keys = Keys::from_mnemonic(mnemonic.to_string(), None)?;
 
         Ok(Self {
-            nprofile: Nip19Profile::new(keys.public_key, settings.nostr_relays.clone()),
+            nprofile: Nip19Profile::new(keys.public_key, nostr_relays.clone()),
             nostr_signer: keys,
-            relays: settings.nostr_relays,
+            relays: nostr_relays,
         })
     }
 }

@@ -1,6 +1,5 @@
 use crate::{
     TStamp,
-    config::Settings,
     error::{Error, Result},
     job::JobState,
     persistence::Commitment,
@@ -665,6 +664,26 @@ impl TransactionDB {
         }
     }
 
+    fn list_txs_sync(
+        db: Arc<Database>,
+        tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    ) -> Result<Vec<TransactionEntry>> {
+        let read_txn = db.begin_read()?;
+
+        match read_txn.open_table(tx_table) {
+            Ok(table) => {
+                let mut res = Vec::new();
+                for (_, v) in table.range::<&[u8]>(..)?.flatten() {
+                    let tx: TransactionEntry = ciborium::from_reader(v.value().as_slice())?;
+                    res.push(tx);
+                }
+                Ok(res)
+            }
+            Err(TableError::TableDoesNotExist(_)) => Ok(vec![]),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     fn update_meta_sync(
         db: Arc<Database>,
         tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
@@ -722,6 +741,13 @@ impl TransactionRepository for TransactionDB {
         let db_clone = self.db.clone();
         let table = self.transaction_table;
         spawn_blocking(move || Self::list_tx_ids_sync(db_clone, table)).await?
+    }
+
+    async fn list_txs(&self) -> Result<Vec<Transaction>> {
+        let db_clone = self.db.clone();
+        let table = self.transaction_table;
+        let res = spawn_blocking(move || Self::list_txs_sync(db_clone, table)).await??;
+        Ok(res.into_iter().map(|entry| entry.into()).collect())
     }
 
     async fn update_metadata(
@@ -1068,64 +1094,6 @@ impl MintMeltRepository for MintMeltDB {
         let table = self.melt_table;
         spawn_blocking(move || Self::delete_melt_sync(db_clone, table, qid)).await??;
         Ok(())
-    }
-}
-
-///////////////////////////////////////////// SettingEntry
-const SETTINGS_TABLE: TableDefinition<&[u8], Vec<u8>> = TableDefinition::new("settings");
-
-///////////////////////////////////////////// SettingsDB
-pub struct SettingsDB {
-    db: Arc<Database>,
-}
-
-impl SettingsDB {
-    const SETTINGS_MAIN_ID: &'static str = "main";
-
-    pub fn new(db: Arc<Database>) -> Result<Self> {
-        Ok(Self { db })
-    }
-
-    fn store_sync(&self, settings: Settings) -> Result<()> {
-        let write_txn = self.db.begin_write()?;
-
-        {
-            let mut table = write_txn.open_table(SETTINGS_TABLE)?;
-
-            let mut serialized = Vec::new();
-            ciborium::into_writer(&settings, &mut serialized)?;
-            table.insert(Self::SETTINGS_MAIN_ID.as_bytes(), serialized)?;
-        }
-
-        write_txn.commit()?;
-        Ok(())
-    }
-
-    fn load_sync(&self) -> Result<Settings> {
-        let read_txn = self.db.begin_read()?;
-
-        match read_txn.open_table(SETTINGS_TABLE) {
-            Ok(table) => {
-                let entry = table.get(Self::SETTINGS_MAIN_ID.as_bytes())?;
-                match entry {
-                    Some(e) => {
-                        let settings: Settings = ciborium::from_reader(e.value().as_slice())?;
-                        Ok(settings)
-                    }
-                    None => Ok(Settings::default()),
-                }
-            }
-            Err(TableError::TableDoesNotExist(_)) => Ok(Settings::default()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    pub async fn store(self: Arc<Self>, settings: Settings) -> Result<()> {
-        spawn_blocking(move || self.store_sync(settings)).await?
-    }
-
-    pub async fn load(self: Arc<Self>) -> Result<Settings> {
-        spawn_blocking(move || self.load_sync()).await?
     }
 }
 

@@ -3,3 +3,5 @@ mint_url = "https://wildcat-dev-docker.minibill.tech"
 mnemonic = "trip piano round arrest seven kangaroo used critic museum decline erupt horse"
 log_level = "DEBUG"
 db_path = "./bob.db"
+network = "testnet"
+nostr_relays = ["wss://bcr-relay-dev.minibill.tech"]

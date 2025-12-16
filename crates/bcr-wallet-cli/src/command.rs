@@ -24,7 +24,7 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
             .wallet_list_redemptions(*id, std::time::Duration::from_hours(48))
             .await?;
 
-        let transactions = app_state.wallet_list_tx_ids(*id).await?;
+        let transactions = app_state.wallet_list_txs(*id).await?;
 
         res.push_str(&format!("Name: {name}\n"));
         res.push_str(&format!("Wallet ID: {id}\n"));
@@ -47,15 +47,8 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
         if !transactions.is_empty() {
             res.push_str("Transactions:");
             push_break(&mut res);
-            let mut txs = Vec::with_capacity(transactions.len());
-            for t in transactions.iter() {
-                let tx = app_state.wallet_load_tx(*id, &t.to_string()).await?;
-                txs.push(tx);
-            }
 
-            txs.sort_by(|a, b| b.tstamp.cmp(&a.tstamp)); // sort by timestamp desc
-
-            for tx in txs.iter() {
+            for tx in transactions.iter() {
                 res.push_str(&format!(
                     "\t\tAmount: {} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {}",
                     tx.amount, tx.unit, tx.fees,  tx.status, format_timestamp(tx.tstamp), &format!("{:?}", tx.ptype), tx.direction,tx.memo

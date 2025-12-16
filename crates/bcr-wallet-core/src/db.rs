@@ -37,13 +37,6 @@ pub async fn build_wallet_dbs(
     Ok((txdb, ((debitdb, mintmeltdb), creditdb)))
 }
 
-pub async fn build_settingsdb(
-    _db_version: u32,
-    db: Arc<redb::Database>,
-) -> Result<prod::ProductionSettingsRepository> {
-    prod::ProductionSettingsRepository::new(db)
-}
-
 pub async fn build_jobsdb(
     _db_version: u32,
     db: Arc<redb::Database>,
