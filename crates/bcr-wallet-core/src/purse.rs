@@ -3,9 +3,13 @@ use crate::{
     error::{Error, Result},
     persistence::redb::PurseDB,
     sync,
-    types::{PaymentSummary, WalletConfig},
+    types::{
+        self, PAYMENT_TYPE_METADATA_KEY, PaymentSummary, TRANSACTION_STATUS_METADATA_KEY,
+        WalletConfig,
+    },
 };
 use async_trait::async_trait;
+use bcr_wallet_lib::wallet::Token;
 use cashu::{Amount, CurrencyUnit, MintUrl, PaymentRequest, nut00 as cdk00, nut18 as cdk18};
 use cdk::wallet::types::TransactionId;
 use nostr::{nips::nip59::UnwrappedGift, signer::NostrSigner};
@@ -45,7 +49,7 @@ pub trait Wallet: sync::SendSync {
         nostr_cl: &nostr_sdk::Client,
         http_cl: &reqwest::Client,
         tstamp: u64,
-    ) -> Result<TransactionId>;
+    ) -> Result<(TransactionId, Option<Token>)>;
 
     async fn migrate_pockets_substitute(
         &mut self,
@@ -63,6 +67,13 @@ pub trait Wallet: sync::SendSync {
         metadata: HashMap<String, String>,
         quote_id: Option<String>,
     ) -> Result<TransactionId>;
+
+    async fn prepare_pay_by_token(
+        &self,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+    ) -> Result<PaymentSummary>;
 }
 
 struct PaymentReference {
@@ -175,7 +186,7 @@ where
                 "Wallet not found for payment",
             )));
         };
-        let txid = wlt
+        let (txid, _) = wlt
             .read()
             .await
             .pay(p_id, &self.nostr_cl, &self.http_cl, tstamp)
@@ -294,6 +305,65 @@ where
 
         Ok(())
     }
+
+    pub async fn prepare_pay_by_token(
+        &self,
+        idx: usize,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+    ) -> Result<PaymentSummary> {
+        let Some(wlt) = self.wallets.lock().await.get(idx).cloned() else {
+            return Err(Error::WalletNotFound(idx));
+        };
+
+        let summary = wlt
+            .read()
+            .await
+            .prepare_pay_by_token(amount, unit, description)
+            .await?;
+
+        let pref = PaymentReference {
+            payment_ref: summary.request_id,
+            wallet_idx: idx,
+        };
+
+        *self.current_payment.lock().await = Some(pref);
+
+        Ok(summary)
+    }
+
+    pub async fn pay_by_token(&self, p_id: Uuid, tstamp: u64) -> Result<(TransactionId, Token)> {
+        let p_ref = self.current_payment.lock().await.take();
+
+        let Some(pref) = p_ref else {
+            tracing::error!("No current payment reference found");
+            return Err(Error::NoPrepareRef(p_id));
+        };
+
+        if pref.payment_ref != p_id {
+            tracing::error!(
+                "Payment reference ID mismatch: expected {}, got {}",
+                pref.payment_ref,
+                p_id
+            );
+            return Err(Error::NoPrepareRef(p_id));
+        }
+
+        let Some(wlt) = self.wallets.lock().await.get(pref.wallet_idx).cloned() else {
+            return Err(Error::Internal(String::from(
+                "Wallet not found for payment",
+            )));
+        };
+
+        let (tx_id, token) = wlt
+            .read()
+            .await
+            .pay(p_id, &self.nostr_cl, &self.http_cl, tstamp)
+            .await?;
+
+        Ok((tx_id, token.expect("pay by token returns a token")))
+    }
 }
 
 async fn handle_event<T>(
@@ -373,6 +443,14 @@ where
         (String::from("sender"), event.pubkey.to_string()),
         (String::from("payment_id"), payment_id.to_string()),
         (String::from("nostr_event_id"), event.id.to_string()),
+        (
+            String::from(PAYMENT_TYPE_METADATA_KEY),
+            types::PaymentType::Cdk18.to_string(),
+        ),
+        (
+            String::from(TRANSACTION_STATUS_METADATA_KEY),
+            types::TransactionStatus::CashedIn.to_string(),
+        ),
     ]);
     let response = wlt
         .read()

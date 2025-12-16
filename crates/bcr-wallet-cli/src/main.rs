@@ -50,9 +50,17 @@ enum Commands {
         id: usize,
         amount: u64,
         unit: String,
+        description: Option<String>,
     },
     #[command(name = "send_payment")]
     SendPayment { id: usize, input: String },
+    #[command(name = "pay_by_token")]
+    PayByToken {
+        id: usize,
+        amount: u64,
+        unit: String,
+        description: Option<String>,
+    },
     #[command(name = "recover")]
     Recover { id: usize },
     #[command(name = "reclaim_funds")]
@@ -138,11 +146,24 @@ async fn main() -> Result<()> {
                 command::cmd_restore_wallet(&app_state, &settings, &cli.wallet).await?
             );
         }
-        Commands::RequestPayment { id, amount, unit } => {
+        Commands::RequestPayment {
+            id,
+            amount,
+            unit,
+            description,
+        } => {
             info!(
-                "Requesting Payment for {}: {}, Amount: {amount}",
+                "Requesting Payment for {}: {}, Amount: {amount}, Unit: {unit}, Description: {description:?}",
                 cli.wallet,
-                command::cmd_request_payment(&app_state, &cli.wallet, amount, &unit, id).await?
+                command::cmd_request_payment(
+                    &app_state,
+                    &cli.wallet,
+                    amount,
+                    &unit,
+                    id,
+                    description.clone()
+                )
+                .await?
             );
         }
         Commands::SendPayment { id, input } => {
@@ -150,6 +171,26 @@ async fn main() -> Result<()> {
                 "Sending Payment for {}: {}, Input: {input}",
                 cli.wallet,
                 command::cmd_send_payment(&app_state, &cli.wallet, &input, id).await?
+            );
+        }
+        Commands::PayByToken {
+            id,
+            amount,
+            unit,
+            description,
+        } => {
+            info!(
+                "Payment by Token for {}: {}, Amount: {amount}, Unit: {unit}, Description: {description:?}",
+                cli.wallet,
+                command::cmd_pay_by_token(
+                    &app_state,
+                    &cli.wallet,
+                    id,
+                    amount,
+                    &unit,
+                    description.clone()
+                )
+                .await?
             );
         }
         Commands::GenMnemonic => {

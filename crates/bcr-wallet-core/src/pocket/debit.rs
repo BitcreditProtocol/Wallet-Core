@@ -141,7 +141,9 @@ impl Pocket {
             }
         }
         let mut current_amount = Amount::ZERO;
-        let pocket_summary = SendSummary::new();
+        let mut pocket_summary = SendSummary::new();
+        pocket_summary.amount = target;
+        pocket_summary.unit = self.unit.clone();
         let mut send_ref = SendReference {
             rid: pocket_summary.request_id,
             ..Default::default()

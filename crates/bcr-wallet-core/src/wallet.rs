@@ -4,7 +4,10 @@ use crate::{
     error::{Error, Result},
     purse::{self},
     sync,
-    types::{self, MeltSummary, PaymentSummary, RedemptionSummary, SendSummary, WalletConfig},
+    types::{
+        self, MeltSummary, PAYMENT_TYPE_METADATA_KEY, PaymentSummary, RedemptionSummary,
+        SendSummary, TRANSACTION_STATUS_METADATA_KEY, WalletConfig,
+    },
 };
 use async_trait::async_trait;
 use bcr_common::wire::{clowder as wire_clowder, keys as wire_keys};
@@ -133,13 +136,16 @@ pub struct SendReference {
     pub amount: Amount,
     pub unit: CurrencyUnit,
 }
+
 pub enum PaymentType {
     Cdk18 {
         transport: cashu::Transport,
         id: Option<String>,
     },
     Bolt11,
+    Token,
 }
+
 pub struct PayReference {
     request_id: Uuid,
     unit: CurrencyUnit,
@@ -147,6 +153,7 @@ pub struct PayReference {
     ptype: PaymentType,
     memo: Option<String>,
 }
+
 pub struct Wallet<DebtPck> {
     network: bitcoin::Network,
     client: Box<dyn MintConnector>,
@@ -229,6 +236,7 @@ where
     pub fn debit_unit(&self) -> CurrencyUnit {
         self.debit.unit()
     }
+
     pub async fn balance(&self) -> Result<WalletBalance> {
         let debit = self.debit.balance().await?;
         let credit = self.credit.balance().await?;
@@ -741,6 +749,16 @@ where
             return Err(Error::EmptyToken(token_teaser));
         }
 
+        let mut metadata = HashMap::default();
+        metadata.insert(
+            PAYMENT_TYPE_METADATA_KEY.to_owned(),
+            types::PaymentType::Token.to_string(),
+        );
+        metadata.insert(
+            TRANSACTION_STATUS_METADATA_KEY.to_owned(),
+            types::TransactionStatus::CashedIn.to_string(),
+        );
+
         let tx_id = if token.unit().is_some() && token.unit() == Some(self.debit.unit()) {
             tracing::debug!("import debit token");
 
@@ -751,7 +769,7 @@ where
                 Some(token.mint_url()),
                 tstamp,
                 token.memo().clone(),
-                HashMap::default(),
+                metadata,
                 None,
             )
             .await?
@@ -765,7 +783,7 @@ where
                 Some(token.mint_url()),
                 tstamp,
                 token.memo().clone(),
-                HashMap::default(),
+                metadata,
                 None,
             )
             .await?
@@ -855,7 +873,8 @@ where
             } else {
                 return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
             };
-            let summary = PaymentSummary::from(s_summary);
+            let mut summary = PaymentSummary::from(s_summary);
+            summary.ptype = types::PaymentType::Cdk18;
             let pref = PayReference {
                 request_id: summary.request_id,
                 unit: summary.unit.clone(),
@@ -895,7 +914,7 @@ where
         nostr_cl: &nostr_sdk::Client,
         http_cl: &reqwest::Client,
         now: u64,
-    ) -> Result<TransactionId> {
+    ) -> Result<(TransactionId, Option<Token>)> {
         let p_ref = self.current_payment.lock().unwrap().take();
         let Some(p_ref) = p_ref else {
             tracing::error!("wallet: No current payment reference found");
@@ -945,6 +964,16 @@ where
                 let amount = proofs
                     .iter()
                     .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
+                let mut metadata = HashMap::default();
+                metadata.insert(
+                    PAYMENT_TYPE_METADATA_KEY.to_owned(),
+                    types::PaymentType::Cdk18.to_string(),
+                );
+                metadata.insert(
+                    TRANSACTION_STATUS_METADATA_KEY.to_owned(),
+                    types::TransactionStatus::Pending.to_string(),
+                );
+
                 let partial_tx = Transaction {
                     mint_url: self.client.mint_url(),
                     fee: fees,
@@ -955,13 +984,13 @@ where
                     ys,
                     amount,
                     // payments might need to fill some extra metadata later
-                    metadata: HashMap::default(),
+                    metadata,
                     quote_id: None,
                 };
                 let tx_id = self
                     .pay_nut18(proofs, nostr_cl, http_cl, transport, id, partial_tx)
                     .await?;
-                return Ok(tx_id);
+                Ok((tx_id, None))
             }
             PaymentType::Bolt11 => {
                 let proofs = self
@@ -978,6 +1007,16 @@ where
                 let amount = proofs
                     .iter()
                     .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
+                let mut metadata = HashMap::default();
+                metadata.insert(
+                    PAYMENT_TYPE_METADATA_KEY.to_owned(),
+                    types::PaymentType::Lightning.to_string(),
+                );
+                metadata.insert(
+                    TRANSACTION_STATUS_METADATA_KEY.to_owned(),
+                    types::TransactionStatus::Pending.to_string(),
+                );
+
                 let partial_tx = Transaction {
                     mint_url: self.client.mint_url(),
                     fee: fees,
@@ -987,11 +1026,83 @@ where
                     unit: unit.clone(),
                     ys,
                     amount,
-                    metadata: HashMap::default(),
+                    metadata,
                     quote_id: None,
                 };
                 let tx_id = self.tx_repo.store_tx(partial_tx).await?;
-                return Ok(tx_id);
+                Ok((tx_id, None))
+            }
+            PaymentType::Token => {
+                let (proofs, token) = if unit == self.credit.unit() {
+                    let p = self
+                        .credit
+                        .send_proofs(
+                            request_id,
+                            &infos,
+                            self.client.as_ref(),
+                            SafeMode::new(self.safe_mode, self.clowder_id),
+                        )
+                        .await?;
+                    (
+                        p.clone(),
+                        Token::new_bitcr(
+                            self.client.mint_url(),
+                            p.into_values().collect(),
+                            memo.clone(),
+                            self.credit.unit(),
+                        ),
+                    )
+                } else if unit == self.debit.unit() {
+                    let p = self
+                        .debit
+                        .send_proofs(
+                            request_id,
+                            &infos,
+                            self.client.as_ref(),
+                            SafeMode::new(self.safe_mode, self.clowder_id),
+                        )
+                        .await?;
+                    (
+                        p.clone(),
+                        Token::new_cashu(
+                            self.client.mint_url(),
+                            p.into_values().collect(),
+                            memo.clone(),
+                            self.debit.unit(),
+                        ),
+                    )
+                } else {
+                    return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
+                };
+                let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
+                    proofs.into_iter().unzip();
+                let amount = proofs
+                    .iter()
+                    .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
+                let mut metadata = HashMap::default();
+                metadata.insert(
+                    PAYMENT_TYPE_METADATA_KEY.to_owned(),
+                    types::PaymentType::Token.to_string(),
+                );
+                metadata.insert(
+                    TRANSACTION_STATUS_METADATA_KEY.to_owned(),
+                    types::TransactionStatus::CashedIn.to_string(),
+                );
+
+                let partial_tx = Transaction {
+                    mint_url: self.client.mint_url(),
+                    fee: fees,
+                    direction: TransactionDirection::Outgoing,
+                    memo,
+                    timestamp: now,
+                    unit: unit.clone(),
+                    ys,
+                    amount,
+                    metadata,
+                    quote_id: None,
+                };
+                let tx_id = self.tx_repo.store_tx(partial_tx).await?;
+                Ok((tx_id, Some(token)))
             }
         }
     }
@@ -1142,5 +1253,32 @@ where
         );
 
         Ok(())
+    }
+
+    async fn prepare_pay_by_token(
+        &self,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+    ) -> Result<PaymentSummary> {
+        let infos = self.client.get_mint_keysets().await?.keysets;
+
+        let s_summary = if self.credit.unit() == unit {
+            self.credit.prepare_send(amount, &infos).await?
+        } else if self.debit.unit() == unit {
+            self.debit.prepare_send(amount, &infos).await?
+        } else {
+            return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
+        };
+        let summary = PaymentSummary::from(s_summary);
+        let pref = PayReference {
+            request_id: summary.request_id,
+            unit: summary.unit.clone(),
+            fees: summary.fees,
+            ptype: PaymentType::Token,
+            memo: description,
+        };
+        *self.current_payment.lock().unwrap() = Some(pref);
+        Ok(summary)
     }
 }

@@ -6,6 +6,7 @@ use crate::{
     types::{PaymentSummary, RedemptionSummary},
     wallet::{CreditPocket, WalletBalance},
 };
+use bcr_wallet_lib::wallet::Token;
 use bitcoin::{
     hashes::{Hash, HashEngine, sha256},
     hex::DisplayHex,
@@ -319,6 +320,33 @@ impl AppState {
         Ok(Transaction::from(tx))
     }
 
+    pub async fn wallet_prepare_pay_by_token(
+        &self,
+        idx: usize,
+        amount: u64,
+        unit: String,
+        description: Option<String>,
+    ) -> Result<PaymentSummary> {
+        tracing::debug!("wallet_prepare_pay_by_token({idx}, {amount}, {unit}, {description:?})");
+        let amount = cashu::Amount::from(amount);
+        let unit = cashu::CurrencyUnit::from_str(&unit)
+            .map_err(|_| Error::InvalidCurrencyUnit(unit.clone()))?;
+        let purse = self.get_purse();
+        let summary = purse
+            .prepare_pay_by_token(idx, amount, unit, description)
+            .await?;
+        Ok(summary)
+    }
+
+    pub async fn wallet_pay_by_token(&self, rid: String) -> Result<CreatedToken> {
+        let tstamp = chrono::Utc::now().timestamp() as u64;
+        tracing::debug!("wallet_pay_by_token({rid}, {tstamp})");
+        let rid = Uuid::from_str(&rid)?;
+        let purse = self.get_purse();
+        let (tx_id, token) = purse.pay_by_token(rid, tstamp).await?;
+        Ok(CreatedToken { tx_id, token })
+    }
+
     pub async fn wallet_prepare_payment(
         &self,
         idx: usize,
@@ -347,20 +375,15 @@ impl AppState {
         idx: usize,
         amount: u64,
         unit: String,
-        description: String,
+        description: Option<String>,
     ) -> Result<PaymentRequest> {
-        tracing::debug!("wallet_prepare_pay_request({idx}, {amount}, {unit}, {description})");
+        tracing::debug!("wallet_prepare_pay_request({idx}, {amount}, {unit}, {description:?})");
 
         let amount = cashu::Amount::from(amount);
         let unit = if unit.trim().is_empty() {
             None
         } else {
             cashu::CurrencyUnit::from_str(&unit).ok()
-        };
-        let description = if description.trim().is_empty() {
-            None
-        } else {
-            Some(description.trim().to_string())
         };
         let purse = self.get_purse();
         let request = purse
@@ -493,12 +516,13 @@ impl AppState {
 
 // FFI types
 
-#[derive(Default)]
+#[derive(Default, Clone, Debug)]
 pub struct PaymentRequest {
     pub request: String,
     pub p_id: String,
 }
 
+#[derive(Default, Clone, Debug)]
 pub struct WalletCurrencyUnit {
     pub credit: String,
     pub debit: String,
@@ -526,6 +550,7 @@ pub enum PaymentType {
     Cdk18,
     Lightning,
 }
+
 impl std::convert::From<types::PaymentType> for PaymentType {
     fn from(ptype: types::PaymentType) -> Self {
         match ptype {
@@ -536,6 +561,7 @@ impl std::convert::From<types::PaymentType> for PaymentType {
         }
     }
 }
+
 #[derive(Debug, Clone, Copy, Default)]
 pub enum TransactionStatus {
     #[default]
@@ -544,6 +570,7 @@ pub enum TransactionStatus {
     CashedIn,
     Canceled,
 }
+
 impl std::convert::From<types::TransactionStatus> for TransactionStatus {
     fn from(status: types::TransactionStatus) -> Self {
         match status {
@@ -554,7 +581,8 @@ impl std::convert::From<types::TransactionStatus> for TransactionStatus {
         }
     }
 }
-#[derive(Default, Debug)]
+
+#[derive(Default, Clone, Debug)]
 pub struct Transaction {
     pub amount: u64,
     pub fees: u64,
@@ -581,6 +609,12 @@ impl std::convert::From<cdk::wallet::types::Transaction> for Transaction {
             status,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct CreatedToken {
+    pub tx_id: TransactionId,
+    pub token: Token,
 }
 
 // Wallet Initialization

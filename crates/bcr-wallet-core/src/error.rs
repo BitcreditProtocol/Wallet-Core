@@ -86,8 +86,8 @@ pub enum Error {
     NoActiveKeyset,
     #[error("unknown keyset ID")]
     UnknownKeysetId(cashu::Id),
-    #[error("unknown currency unit: {0}")]
-    UnknownCurrencyUnit(cashu::CurrencyUnit),
+    #[error("invalid currency unit: {0}")]
+    InvalidCurrencyUnit(String),
     #[error("unknown mint: {0}")]
     UnknownMint(cashu::MintUrl),
     #[error("currency unit mismatch: mine {0}, his {1}")]

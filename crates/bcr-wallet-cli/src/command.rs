@@ -1,5 +1,6 @@
 use anyhow::Result;
 use bcr_wallet_core::AppState;
+use chrono::{DateTime, Utc};
 use tracing::info;
 
 use crate::WalletSettings;
@@ -41,15 +42,23 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
             for r in redemptions.iter() {
                 res.push_str(&format!("\t\t{} - {}", r.tstamp, r.amount));
             }
+            push_break(&mut res);
         }
         if !transactions.is_empty() {
             res.push_str("Transactions:");
             push_break(&mut res);
+            let mut txs = Vec::with_capacity(transactions.len());
             for t in transactions.iter() {
                 let tx = app_state.wallet_load_tx(*id, &t.to_string()).await?;
+                txs.push(tx);
+            }
+
+            txs.sort_by(|a, b| b.tstamp.cmp(&a.tstamp)); // sort by timestamp desc
+
+            for tx in txs.iter() {
                 res.push_str(&format!(
-                    "\t\tAmount: {}\t Fees: {}\tDesc: {}\tStatus: {:?}\tTstamp: {}\tDir: {:?}\tPayment Type: {:?}",
-                    tx.amount, tx.fees, tx.memo, tx.status, tx.tstamp, tx.direction, tx.ptype
+                    "\t\tAmount: {} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {}",
+                    tx.amount, tx.unit, tx.fees,  tx.status, format_timestamp(tx.tstamp), &format!("{:?}", tx.ptype), tx.direction,tx.memo
                 ));
                 push_break(&mut res);
             }
@@ -138,10 +147,11 @@ pub async fn cmd_request_payment(
     amount: u64,
     unit: &str,
     id: usize,
+    description: Option<String>,
 ) -> Result<String> {
     let mut res = String::new();
     let req = app_state
-        .wallet_prepare_payment_request(id, amount, unit.to_string(), String::default())
+        .wallet_prepare_payment_request(id, amount, unit.to_string(), description)
         .await?;
 
     info!("Payment Request: {}, {}", &req.request, &req.p_id);
@@ -168,6 +178,45 @@ pub async fn cmd_request_payment(
     Ok(res)
 }
 
+pub async fn cmd_pay_by_token(
+    app_state: &AppState,
+    name: &str,
+    id: usize,
+    amount: u64,
+    unit: &str,
+    description: Option<String>,
+) -> Result<String> {
+    let mut res = String::new();
+    let payment_summary = app_state
+        .wallet_prepare_pay_by_token(id, amount, unit.to_string(), description)
+        .await?;
+
+    info!(
+        "Payment Summary: Amount: {}, Unit: {}",
+        &payment_summary.amount, &payment_summary.unit,
+    );
+    let result = app_state
+        .wallet_pay_by_token(payment_summary.request_id.to_string())
+        .await?;
+
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!("Pay by Token for {name}, Wallet ID: {id}.\n"));
+    push_break(&mut res);
+    res.push_str(&format!("Payment Summary: {}", &payment_summary.request_id));
+    res.push_str(&format!(
+        "Unit: {}, Amount: {}",
+        &payment_summary.unit, &payment_summary.amount
+    ));
+    push_break(&mut res);
+    res.push_str(&format!("Transaction ID: {}", result.tx_id));
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!("Token: {}", result.token));
+
+    Ok(res)
+}
+
 pub async fn cmd_send_payment(
     app_state: &AppState,
     name: &str,
@@ -180,11 +229,8 @@ pub async fn cmd_send_payment(
         .await?;
 
     info!(
-        "Payment Summary: Amount: {}, Unit: {}, Fees: {}, Reserved Fees: {}",
-        &payment_summary.amount,
-        &payment_summary.unit,
-        &payment_summary.fees,
-        &payment_summary.reserved_fees
+        "Payment Summary: Amount: {}, Unit: {}",
+        &payment_summary.amount, &payment_summary.unit,
     );
 
     let tx_id = app_state
@@ -219,4 +265,10 @@ fn push_line(res: &mut String) {
 
 fn push_break(res: &mut String) {
     res.push('\n');
+}
+
+fn format_timestamp(ts: u64) -> String {
+    let datetime: DateTime<Utc> = DateTime::from_timestamp(ts as i64, 0).expect("valid timestamp");
+
+    datetime.format("%Y-%m-%d %H:%M:%S").to_string()
 }

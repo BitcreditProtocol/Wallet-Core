@@ -192,7 +192,9 @@ impl wallet::Pocket for Pocket {
             }
         }
         let mut current_amount = Amount::ZERO;
-        let summary = SendSummary::new();
+        let mut summary = SendSummary::new();
+        summary.unit = self.unit.clone();
+        summary.amount = target;
         let mut send_ref = SendReference {
             rid: summary.request_id,
             ..Default::default()

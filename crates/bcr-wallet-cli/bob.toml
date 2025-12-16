@@ -1,4 +1,5 @@
-mint_url = "https://mint.wildcat0.clowder1.minibill.tech"
-mnemonic = "quit install damage when glove pipe lucky update high lock child police"
+# mint_url = "https://mint.wildcat0.clowder1.minibill.tech"
+mint_url = "https://wildcat-dev-docker.minibill.tech"
+mnemonic = "trip piano round arrest seven kangaroo used critic museum decline erupt horse"
 log_level = "DEBUG"
 db_path = "./bob.db"
