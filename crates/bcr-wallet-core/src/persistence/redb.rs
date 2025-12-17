@@ -847,7 +847,6 @@ impl PurseDB {
         }
     }
 
-    #[allow(unused)]
     fn delete_sync(db: Arc<Database>, wallet_id: &str) -> Result<()> {
         let write_txn = db.begin_write()?;
 

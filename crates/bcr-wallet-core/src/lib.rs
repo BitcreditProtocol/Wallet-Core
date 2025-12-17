@@ -92,9 +92,7 @@ impl AppState {
         let http_cl = reqwest::Client::new();
         let purse = ProductionPurse::new(pursedb, http_cl, nostr_cl, nostr_cfg.nprofile).await?;
         let mut appstate = AppState::new(Arc::new(purse), jobsdb, db, cfg);
-        appstate
-            .load_wallets(appstate.cfg.same_mint_safe_mode)
-            .await?;
+        appstate.load_wallets().await?;
         Ok(appstate)
     }
 
@@ -113,7 +111,7 @@ impl AppState {
         }
     }
 
-    pub async fn load_wallets(&mut self, same_mint_safe_mode: SameMintSafeMode) -> Result<()> {
+    pub async fn load_wallets(&mut self) -> Result<()> {
         tracing::debug!("AppState::load_wallets()");
 
         let purse = self.get_purse();
@@ -122,14 +120,35 @@ impl AppState {
         for wid in w_ids {
             tracing::debug!("Loading wallet with id: {wid}");
             let w_cfg = purse.load_wallet_config(&wid).await?;
+
             if w_cfg.network != self.cfg.network {
-                tracing::info!(
-                    "Skipping wallet {wid} with network {:?}, expected {:?}",
+                tracing::error!(
+                    "Network mismatch: wallet {wid} with network {:?}, expected {:?}",
                     w_cfg.network,
                     self.cfg.network,
                 );
-                continue;
+                return Err(Error::InvalidNetwork(w_cfg.network, self.cfg.network));
             }
+
+            if w_cfg.mnemonic != self.cfg.mnemonic {
+                tracing::error!(
+                    "Mnemonic mismatch: wallet {wid} has a different mnemonic than the one given via config"
+                );
+                return Err(Error::InvalidMnemonic);
+            }
+
+            if w_cfg.mint != self.cfg.default_mint_url {
+                tracing::error!(
+                    "Mint URL mismatch: wallet {wid} with mint url {}, expected: {}",
+                    w_cfg.mint,
+                    self.cfg.default_mint_url
+                );
+                return Err(Error::InvalidMintUrl(
+                    w_cfg.mint.clone(),
+                    self.cfg.default_mint_url.clone(),
+                ));
+            }
+
             let wallet = build_wallet(
                 w_cfg.name,
                 w_cfg.network,
@@ -137,7 +156,7 @@ impl AppState {
                 w_cfg.mnemonic,
                 LocalDB::Keep,
                 Self::DB_VERSION,
-                same_mint_safe_mode,
+                self.cfg.same_mint_safe_mode,
                 db.clone(),
             )
             .await?;
@@ -167,19 +186,19 @@ impl AppState {
     }
     // methods
 
-    pub async fn add_wallet(
-        &self,
-        name: String,
-        mint_url: MintUrl,
-        mnemonic: bip39::Mnemonic,
-    ) -> Result<usize> {
-        tracing::debug!("Adding a new wallet for mint {name}, {mint_url}, {mnemonic}");
+    pub async fn add_wallet(&self, name: String) -> Result<usize> {
+        let mint_url = self.cfg.default_mint_url.clone();
+        tracing::debug!("Adding a new wallet for mint {name}, {mint_url}");
+        let purse = self.get_purse();
+        if !purse.can_add_wallet().await {
+            return Err(Error::WalletAlreadyExists);
+        }
 
         let wallet = build_wallet(
             name,
             self.cfg.network,
             mint_url,
-            mnemonic,
+            self.cfg.mnemonic.clone(),
             LocalDB::Keep,
             AppState::DB_VERSION,
             self.cfg.same_mint_safe_mode,
@@ -187,25 +206,24 @@ impl AppState {
         )
         .await?;
 
-        let purse = self.get_purse();
         let idx = purse.add_wallet(wallet).await?;
 
         Ok(idx)
     }
 
-    pub async fn restore_wallet(
-        &self,
-        name: String,
-        mint_url: MintUrl,
-        mnemonic: bip39::Mnemonic,
-    ) -> Result<usize> {
+    pub async fn restore_wallet(&self, name: String) -> Result<usize> {
+        let mint_url = self.cfg.default_mint_url.clone();
         tracing::debug!("Restoring a new wallet for mint {name}, {mint_url}");
+        let purse = self.get_purse();
+        if !purse.can_add_wallet().await {
+            return Err(Error::WalletAlreadyExists);
+        }
 
         let wallet = build_wallet(
             name,
             self.cfg.network,
             mint_url,
-            mnemonic,
+            self.cfg.mnemonic.clone(),
             LocalDB::Delete,
             AppState::DB_VERSION,
             self.cfg.same_mint_safe_mode,
@@ -214,9 +232,16 @@ impl AppState {
         .await?;
         wallet.restore_local_proofs().await?;
 
-        let purse = self.get_purse();
         let idx = purse.add_wallet(wallet).await?;
         Ok(idx)
+    }
+
+    pub async fn delete_wallet(&self, idx: usize) -> Result<()> {
+        tracing::debug!("delete wallet {idx}");
+        self.wallet_clean_local_db(idx).await?;
+        let purse = self.get_purse();
+        purse.delete_wallet(idx).await?;
+        Ok(())
     }
 
     pub async fn get_wallet_name(&self, idx: usize) -> Result<String> {
@@ -425,12 +450,6 @@ impl AppState {
         tracing::debug!("get_wallet_ids");
         let purse = self.get_purse();
         Ok(purse.ids().await.iter().map(|id| *id as usize).collect())
-    }
-
-    pub async fn get_wallets_names(&self) -> Result<Vec<String>> {
-        tracing::debug!("get_wallet_names");
-        let purse = self.get_purse();
-        purse.names().await
     }
 
     /// Checks when the jobs were run the last time and if it's greater than 1 day

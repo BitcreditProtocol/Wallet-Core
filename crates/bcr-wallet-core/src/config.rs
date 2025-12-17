@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::error::Result;
+use cashu::MintUrl;
 use nostr_sdk::{Keys, RelayUrl, nips::nip06::FromMnemonic, nips::nip19::Nip19Profile};
 
 pub const LOCK_REDUCTION_SECONDS_PER_HOP: u64 = 600;
@@ -19,6 +20,7 @@ pub struct AppStateConfig {
     pub nostr_relays: Vec<RelayUrl>,
     pub mnemonic: bip39::Mnemonic,
     pub same_mint_safe_mode: SameMintSafeMode,
+    pub default_mint_url: MintUrl,
 }
 
 #[derive(Debug, Clone)]

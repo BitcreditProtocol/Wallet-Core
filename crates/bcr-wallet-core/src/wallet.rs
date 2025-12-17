@@ -862,6 +862,10 @@ where
         self.name.clone()
     }
 
+    fn id(&self) -> String {
+        self.id.clone()
+    }
+
     fn mint_url(&self) -> Result<cashu::MintUrl> {
         Ok(self.client.mint_url())
     }

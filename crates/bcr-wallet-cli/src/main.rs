@@ -46,6 +46,8 @@ enum Commands {
     Clear { id: usize },
     #[command(name = "add_wallet")]
     AddWallet,
+    #[command(name = "delete_wallet")]
+    DeleteWallet { id: usize },
     #[command(name = "restore_wallet")]
     RestoreWallet,
     #[command(name = "receive")]
@@ -113,6 +115,7 @@ async fn main() -> Result<()> {
         network: settings.network,
         nostr_relays: settings.nostr_relays.clone(),
         mnemonic: settings.mnemonic.clone(),
+        default_mint_url: settings.mint_url.clone(),
         same_mint_safe_mode: SameMintSafeMode::Disabled,
         // Disabled for now until Clowder stabilizes more
         // same_mint_safe_mode: SameMintSafeMode::Enabled {
@@ -154,14 +157,21 @@ async fn main() -> Result<()> {
             info!(
                 "Adding wallet for {}: {}",
                 cli.wallet,
-                command::cmd_add_wallet(&app_state, &settings, &cli.wallet).await?
+                command::cmd_add_wallet(&app_state, &cli.wallet).await?
+            );
+        }
+        Commands::DeleteWallet { id } => {
+            info!(
+                "Deleting wallet for {}: {}",
+                cli.wallet,
+                command::cmd_delete_wallet(&app_state, &cli.wallet, id).await?
             );
         }
         Commands::RestoreWallet => {
             info!(
                 "Restoring wallet for {}: {}",
                 cli.wallet,
-                command::cmd_restore_wallet(&app_state, &settings, &cli.wallet).await?
+                command::cmd_restore_wallet(&app_state, &cli.wallet).await?
             );
         }
         Commands::RequestPayment {
