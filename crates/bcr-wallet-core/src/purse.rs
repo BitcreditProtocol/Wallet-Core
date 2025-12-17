@@ -34,6 +34,7 @@ pub trait PurseRepository: sync::SendSync {
 pub trait Wallet: sync::SendSync {
     fn config(&self) -> Result<WalletConfig>;
     fn name(&self) -> String;
+    fn id(&self) -> String;
     fn mint_url(&self) -> Result<MintUrl>;
     #[allow(dead_code)]
     fn betas(&self) -> Vec<MintUrl>;
@@ -113,6 +114,7 @@ impl<Wlt> Purse<Wlt> {
     pub async fn load_wallet_config(&self, wallet_id: &str) -> Result<WalletConfig> {
         self.repo.load(wallet_id).await
     }
+
     pub async fn list_wallets(&self) -> Result<Vec<String>> {
         self.repo.list_ids().await
     }
@@ -127,19 +129,10 @@ impl<Wlt> Purse<Wlt> {
         let w_len = self.wallets.lock().await.len();
         (0..w_len as u32).collect()
     }
-}
 
-impl<Wlt> Purse<Wlt>
-where
-    Wlt: Wallet,
-{
-    pub async fn names(&self) -> Result<Vec<String>> {
-        let wallets = self.wallets.lock().await;
-        let mut names = Vec::with_capacity(wallets.len());
-        for w in wallets.iter() {
-            names.push(w.read().await.name());
-        }
-        Ok(names)
+    // Current limitation to 1 wallet
+    pub async fn can_add_wallet(&self) -> bool {
+        self.wallets.lock().await.is_empty()
     }
 }
 
@@ -152,6 +145,16 @@ where
         let mut wallets = self.wallets.lock().await;
         wallets.push(Arc::new(RwLock::new(wallet)));
         Ok(wallets.len() - 1)
+    }
+
+    pub async fn delete_wallet(&self, idx: usize) -> Result<()> {
+        let Some(wlt) = self.wallets.lock().await.get(idx).cloned() else {
+            return Err(Error::WalletNotFound(idx));
+        };
+        let id = wlt.read().await.id();
+        self.repo.delete(&id).await?;
+        self.wallets.lock().await.remove(idx);
+        Ok(())
     }
 
     pub async fn prepare_pay(&self, idx: usize, input: String, now: u64) -> Result<PaymentSummary> {

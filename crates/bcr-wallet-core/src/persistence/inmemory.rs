@@ -1,6 +1,5 @@
 use crate::{
     TStamp,
-    config::Settings,
     error::{Error, Result},
     persistence::Commitment,
     pocket::{PocketRepository, debit::MintMeltRepository},
@@ -197,6 +196,11 @@ impl TransactionRepository for InMemoryTransactionRepository {
             .collect();
         Ok(tx_ids)
     }
+    async fn list_txs(&self) -> Result<Vec<Transaction>> {
+        let transactions = self.transactions.lock().unwrap();
+        let txs: Vec<Transaction> = transactions.values().cloned().collect();
+        Ok(txs)
+    }
     async fn update_metadata(
         &self,
         tx_id: TransactionId,
@@ -243,20 +247,5 @@ impl MintMeltRepository for InMemoryMintMeltRepository {
         let mut melts = self.melts.lock().unwrap();
         melts.remove(&qid);
         Ok(())
-    }
-}
-
-///////////////////////////////////////////// InMemorySettingsRepository
-#[derive(Default)]
-pub struct InMemorySettingsRepository {
-    setting: Arc<Mutex<Settings>>,
-}
-impl InMemorySettingsRepository {
-    pub async fn store(&self, setting: Settings) -> Result<()> {
-        *self.setting.lock().unwrap() = setting;
-        Ok(())
-    }
-    pub async fn load(&self) -> Result<Settings> {
-        Ok(self.setting.lock().unwrap().clone())
     }
 }

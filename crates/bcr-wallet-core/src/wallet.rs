@@ -123,6 +123,7 @@ pub trait TransactionRepository: sync::SendSync {
     #[allow(dead_code)]
     async fn delete_tx(&self, tx_id: TransactionId) -> Result<()>;
     async fn list_tx_ids(&self) -> Result<Vec<TransactionId>>;
+    async fn list_txs(&self) -> Result<Vec<Transaction>>;
     async fn update_metadata(
         &self,
         tx_id: TransactionId,
@@ -226,6 +227,10 @@ impl<DebtPck> Wallet<DebtPck> {
 
     pub async fn list_tx_ids(&self) -> Result<Vec<TransactionId>> {
         self.tx_repo.list_tx_ids().await
+    }
+
+    pub async fn list_txs(&self) -> Result<Vec<Transaction>> {
+        self.tx_repo.list_txs().await
     }
 }
 
@@ -855,6 +860,10 @@ where
 
     fn name(&self) -> String {
         self.name.clone()
+    }
+
+    fn id(&self) -> String {
+        self.id.clone()
     }
 
     fn mint_url(&self) -> Result<cashu::MintUrl> {

@@ -3,8 +3,6 @@ use bcr_wallet_core::AppState;
 use chrono::{DateTime, Utc};
 use tracing::info;
 
-use crate::WalletSettings;
-
 pub async fn cmd_info(app_state: &AppState) -> Result<String> {
     let mut res = String::new();
     let wallet_ids = app_state.get_wallets_ids().await?;
@@ -24,7 +22,7 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
             .wallet_list_redemptions(*id, std::time::Duration::from_hours(48))
             .await?;
 
-        let transactions = app_state.wallet_list_tx_ids(*id).await?;
+        let transactions = app_state.wallet_list_txs(*id).await?;
 
         res.push_str(&format!("Name: {name}\n"));
         res.push_str(&format!("Wallet ID: {id}\n"));
@@ -47,15 +45,8 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
         if !transactions.is_empty() {
             res.push_str("Transactions:");
             push_break(&mut res);
-            let mut txs = Vec::with_capacity(transactions.len());
-            for t in transactions.iter() {
-                let tx = app_state.wallet_load_tx(*id, &t.to_string()).await?;
-                txs.push(tx);
-            }
 
-            txs.sort_by(|a, b| b.tstamp.cmp(&a.tstamp)); // sort by timestamp desc
-
-            for tx in txs.iter() {
+            for tx in transactions.iter() {
                 res.push_str(&format!(
                     "\t\tAmount: {} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {}",
                     tx.amount, tx.unit, tx.fees,  tx.status, format_timestamp(tx.tstamp), &format!("{:?}", tx.ptype), tx.direction,tx.memo
@@ -67,38 +58,27 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
     Ok(res)
 }
 
-pub async fn cmd_add_wallet(
-    app_state: &AppState,
-    settings: &WalletSettings,
-    name: &str,
-) -> Result<String> {
+pub async fn cmd_add_wallet(app_state: &AppState, name: &str) -> Result<String> {
     let mut res = String::new();
-    let id = app_state
-        .add_wallet(
-            name.to_owned(),
-            settings.mint_url.to_owned(),
-            settings.mnemonic.to_owned(),
-        )
-        .await?;
+    let id = app_state.add_wallet(name.to_owned()).await?;
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!("Created Wallet for {name} - Wallet ID: {id}.\n"));
     Ok(res)
 }
 
-pub async fn cmd_restore_wallet(
-    app_state: &AppState,
-    settings: &WalletSettings,
-    name: &str,
-) -> Result<String> {
+pub async fn cmd_delete_wallet(app_state: &AppState, name: &str, id: usize) -> Result<String> {
     let mut res = String::new();
-    let id = app_state
-        .restore_wallet(
-            name.to_owned(),
-            settings.mint_url.to_owned(),
-            settings.mnemonic.to_owned(),
-        )
-        .await?;
+    app_state.delete_wallet(id).await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!("Deleted Wallet for {name} - Wallet ID: {id}.\n"));
+    Ok(res)
+}
+
+pub async fn cmd_restore_wallet(app_state: &AppState, name: &str) -> Result<String> {
+    let mut res = String::new();
+    let id = app_state.restore_wallet(name.to_owned()).await?;
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!("Restored Wallet for {name} - Wallet ID: {id}.\n"));

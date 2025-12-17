@@ -1,6 +1,6 @@
 use anyhow::Error as AnyError;
 use bitcoin::hashes::sha256::Hash as Sha256;
-use cashu::nut02 as cdk02;
+use cashu::{MintUrl, nut02 as cdk02};
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -72,6 +72,8 @@ pub enum Error {
     CounterKidMismatch,
     #[error("counter in local DB not found: {0}")]
     CounterNotFound(cdk02::Id),
+    #[error("There already exists a wallet - delete it to create a new one")]
+    WalletAlreadyExists,
     #[error("wallet id {0} not found")]
     WalletIdNotFound(String),
     #[error("wallet at idx {0} not found")]
@@ -102,6 +104,10 @@ pub enum Error {
     NoDebitCurrencyInMint(Vec<cashu::CurrencyUnit>),
     #[error("network mismatch, ours: {0}, theirs: {1}")]
     InvalidNetwork(bitcoin::Network, bitcoin::Network),
+    #[error("mnemonic mismatch")]
+    InvalidMnemonic,
+    #[error("mint url mismatch, ours: {0}, theirs: {1}")]
+    InvalidMintUrl(MintUrl, MintUrl),
     #[error("payment request, missing amount")]
     MissingAmount,
     #[error("payment request unknown {0}")]

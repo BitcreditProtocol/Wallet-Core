@@ -1,7 +1,8 @@
+use crate::config::AppStateConfig;
 use crate::job::JobState;
 use crate::mint::MintConnector;
 use crate::{
-    config::{Config, SameMintSafeMode, Settings},
+    config::{NostrConfig, SameMintSafeMode},
     purse::Wallet,
     types::{PaymentSummary, RedemptionSummary},
     wallet::{CreditPocket, WalletBalance},
@@ -33,7 +34,7 @@ pub mod persistence;
 pub mod pocket;
 mod purse;
 mod restore;
-mod types;
+pub mod types;
 pub mod utils;
 pub mod wallet;
 
@@ -44,7 +45,6 @@ mod prod {
     pub type ProductionMintMeltRepository = crate::persistence::redb::MintMeltDB;
     pub type ProductionPurseRepository = crate::persistence::redb::PurseDB;
     pub type ProductionTransactionRepository = crate::persistence::redb::TransactionDB;
-    pub type ProductionSettingsRepository = crate::persistence::redb::SettingsDB;
     pub type ProductionJobsRepository = crate::persistence::redb::JobsDB;
 }
 
@@ -66,74 +66,89 @@ pub enum LocalDB {
 
 pub struct AppState {
     purse: Arc<ProductionPurse>,
-    settings: Arc<prod::ProductionSettingsRepository>,
     jobs: Arc<prod::ProductionJobsRepository>,
     db: Arc<redb::Database>,
+    cfg: AppStateConfig,
 }
 
 impl AppState {
     pub const DB_VERSION: u32 = 1;
 
-    pub async fn initialize(db_path: &str) -> Result<Self> {
+    pub async fn initialize(cfg: AppStateConfig) -> Result<Self> {
         tracing::debug!("Initializing API");
 
         // Open Database file - only allowed to do once!
-        let db = Arc::new(redb::Database::create(db_path)?);
+        let db = Arc::new(redb::Database::create(&cfg.db_path)?);
 
         let pursedb = db::build_pursedb(AppState::DB_VERSION, db.clone()).await?;
-        let settingsdb = Arc::new(db::build_settingsdb(AppState::DB_VERSION, db.clone()).await?);
         let jobsdb = Arc::new(db::build_jobsdb(AppState::DB_VERSION, db.clone()).await?);
-        let settings = settingsdb.clone().load().await?;
-        let config = Config::new(settings)?;
-        let nostr_cl = nostr_sdk::Client::new(config.nostr_signer);
-        for relay in &config.relays {
+
+        let nostr_cfg = NostrConfig::new(cfg.mnemonic.clone(), cfg.nostr_relays.clone())?;
+        let nostr_cl = nostr_sdk::Client::new(nostr_cfg.nostr_signer);
+        for relay in &nostr_cfg.relays {
             nostr_cl.add_relay(relay).await?;
         }
         nostr_cl.connect().await;
         let http_cl = reqwest::Client::new();
-        let purse = ProductionPurse::new(pursedb, http_cl, nostr_cl, config.nprofile).await?;
-        let mut appstate = AppState::new(Arc::new(purse), settingsdb, jobsdb, db);
+        let purse = ProductionPurse::new(pursedb, http_cl, nostr_cl, nostr_cfg.nprofile).await?;
+        let mut appstate = AppState::new(Arc::new(purse), jobsdb, db, cfg);
         appstate.load_wallets().await?;
         Ok(appstate)
     }
 
     fn new(
         purse: Arc<ProductionPurse>,
-        settings: Arc<prod::ProductionSettingsRepository>,
         jobs: Arc<prod::ProductionJobsRepository>,
         db: Arc<redb::Database>,
+        cfg: AppStateConfig,
     ) -> Self {
         tracing::debug!("Creating new AppState");
         Self {
             purse,
-            settings,
             jobs,
             db,
+            cfg,
         }
-    }
-
-    pub async fn load_settings(&self) -> Result<Settings> {
-        self.settings.clone().load().await
     }
 
     pub async fn load_wallets(&mut self) -> Result<()> {
         tracing::debug!("AppState::load_wallets()");
 
-        let settings = self.load_settings().await?;
         let purse = self.get_purse();
         let db = self.get_db();
         let w_ids = purse.list_wallets().await?;
         for wid in w_ids {
             tracing::debug!("Loading wallet with id: {wid}");
             let w_cfg = purse.load_wallet_config(&wid).await?;
-            if w_cfg.network != settings.network {
-                tracing::info!(
-                    "Skipping wallet {wid} with network {:?}, expected {:?}",
+
+            if w_cfg.network != self.cfg.network {
+                tracing::error!(
+                    "Network mismatch: wallet {wid} with network {:?}, expected {:?}",
                     w_cfg.network,
-                    settings.network,
+                    self.cfg.network,
                 );
-                continue;
+                return Err(Error::InvalidNetwork(w_cfg.network, self.cfg.network));
             }
+
+            if w_cfg.mnemonic != self.cfg.mnemonic {
+                tracing::error!(
+                    "Mnemonic mismatch: wallet {wid} has a different mnemonic than the one given via config"
+                );
+                return Err(Error::InvalidMnemonic);
+            }
+
+            if w_cfg.mint != self.cfg.default_mint_url {
+                tracing::error!(
+                    "Mint URL mismatch: wallet {wid} with mint url {}, expected: {}",
+                    w_cfg.mint,
+                    self.cfg.default_mint_url
+                );
+                return Err(Error::InvalidMintUrl(
+                    w_cfg.mint.clone(),
+                    self.cfg.default_mint_url.clone(),
+                ));
+            }
+
             let wallet = build_wallet(
                 w_cfg.name,
                 w_cfg.network,
@@ -141,7 +156,7 @@ impl AppState {
                 w_cfg.mnemonic,
                 LocalDB::Keep,
                 Self::DB_VERSION,
-                settings.same_mint_safe_mode,
+                self.cfg.same_mint_safe_mode,
                 db.clone(),
             )
             .await?;
@@ -162,10 +177,6 @@ impl AppState {
         self.purse.clone()
     }
 
-    fn get_settingsdb(&self) -> Arc<prod::ProductionSettingsRepository> {
-        self.settings.clone()
-    }
-
     fn get_jobsdb(&self) -> Arc<prod::ProductionJobsRepository> {
         self.jobs.clone()
     }
@@ -175,60 +186,62 @@ impl AppState {
     }
     // methods
 
-    pub async fn add_wallet(
-        &self,
-        name: String,
-        mint_url: MintUrl,
-        mnemonic: String,
-    ) -> Result<usize> {
-        tracing::debug!("Adding a new wallet for mint {name}, {mint_url}, {mnemonic}");
+    pub async fn add_wallet(&self, name: String) -> Result<usize> {
+        let mint_url = self.cfg.default_mint_url.clone();
+        tracing::debug!("Adding a new wallet for mint {name}, {mint_url}");
+        let purse = self.get_purse();
+        if !purse.can_add_wallet().await {
+            return Err(Error::WalletAlreadyExists);
+        }
 
-        let settings = self.get_settingsdb().load().await?;
-        let mnemonic = bip39::Mnemonic::from_str(&mnemonic)?;
         let wallet = build_wallet(
             name,
-            settings.network,
+            self.cfg.network,
             mint_url,
-            mnemonic,
+            self.cfg.mnemonic.clone(),
             LocalDB::Keep,
             AppState::DB_VERSION,
-            settings.same_mint_safe_mode,
+            self.cfg.same_mint_safe_mode,
             self.get_db(),
         )
         .await?;
 
-        let purse = self.get_purse();
         let idx = purse.add_wallet(wallet).await?;
 
         Ok(idx)
     }
 
-    pub async fn restore_wallet(
-        &self,
-        name: String,
-        mint_url: MintUrl,
-        mnemonic: String,
-    ) -> Result<usize> {
+    pub async fn restore_wallet(&self, name: String) -> Result<usize> {
+        let mint_url = self.cfg.default_mint_url.clone();
         tracing::debug!("Restoring a new wallet for mint {name}, {mint_url}");
+        let purse = self.get_purse();
+        if !purse.can_add_wallet().await {
+            return Err(Error::WalletAlreadyExists);
+        }
 
-        let settings = self.get_settingsdb().load().await?;
-        let mnemonic = bip39::Mnemonic::from_str(&mnemonic)?;
         let wallet = build_wallet(
             name,
-            settings.network,
+            self.cfg.network,
             mint_url,
-            mnemonic,
+            self.cfg.mnemonic.clone(),
             LocalDB::Delete,
             AppState::DB_VERSION,
-            settings.same_mint_safe_mode,
+            self.cfg.same_mint_safe_mode,
             self.get_db(),
         )
         .await?;
         wallet.restore_local_proofs().await?;
 
-        let purse = self.get_purse();
         let idx = purse.add_wallet(wallet).await?;
         Ok(idx)
+    }
+
+    pub async fn delete_wallet(&self, idx: usize) -> Result<()> {
+        tracing::debug!("delete wallet {idx}");
+        self.wallet_clean_local_db(idx).await?;
+        let purse = self.get_purse();
+        purse.delete_wallet(idx).await?;
+        Ok(())
     }
 
     pub async fn get_wallet_name(&self, idx: usize) -> Result<String> {
@@ -424,36 +437,19 @@ impl AppState {
         Ok(tx_ids)
     }
 
+    pub async fn wallet_list_txs(&self, idx: usize) -> Result<Vec<Transaction>> {
+        tracing::debug!("wallet_list_txs({idx})");
+
+        let wallet = self.get_wallet(idx).await?;
+        let mut txs = wallet.read().await.list_txs().await?;
+        txs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp)); // sort by timestamp desc
+        Ok(txs.into_iter().map(|t| t.into()).collect())
+    }
+
     pub async fn get_wallets_ids(&self) -> Result<Vec<usize>> {
         tracing::debug!("get_wallet_ids");
         let purse = self.get_purse();
         Ok(purse.ids().await.iter().map(|id| *id as usize).collect())
-    }
-
-    pub async fn get_wallets_names(&self) -> Result<Vec<String>> {
-        tracing::debug!("get_wallet_names");
-        let purse = self.get_purse();
-        purse.names().await
-    }
-
-    pub fn generate_random_mnemonic(&self, mnemonic_len: u32) -> String {
-        let mnemonic_len = if mnemonic_len == 0 { 12 } else { mnemonic_len };
-        tracing::info!("Generate random {}-word mnemonic", mnemonic_len);
-
-        const VALID_MNEMONIC_LENGTHS: [u32; 5] = [12, 15, 18, 21, 24];
-        assert!(
-            VALID_MNEMONIC_LENGTHS.contains(&mnemonic_len),
-            "word count must be one of: {VALID_MNEMONIC_LENGTHS:?}"
-        );
-        let returned =
-            bip39::Mnemonic::generate_in(bip39::Language::English, mnemonic_len as usize);
-        match returned {
-            Ok(mnemonic) => mnemonic.to_string(),
-            Err(e) => {
-                tracing::error!("generate_random_mnemonic({mnemonic_len}): {e}");
-                String::default()
-            }
-        }
     }
 
     /// Checks when the jobs were run the last time and if it's greater than 1 day
@@ -511,6 +507,25 @@ impl AppState {
         }
         // successful = true
         !job_failed
+    }
+}
+
+pub fn generate_random_mnemonic(mnemonic_len: u32) -> String {
+    let mnemonic_len = if mnemonic_len == 0 { 12 } else { mnemonic_len };
+    tracing::info!("Generate random {}-word mnemonic", mnemonic_len);
+
+    const VALID_MNEMONIC_LENGTHS: [u32; 5] = [12, 15, 18, 21, 24];
+    assert!(
+        VALID_MNEMONIC_LENGTHS.contains(&mnemonic_len),
+        "word count must be one of: {VALID_MNEMONIC_LENGTHS:?}"
+    );
+    let returned = bip39::Mnemonic::generate_in(bip39::Language::English, mnemonic_len as usize);
+    match returned {
+        Ok(mnemonic) => mnemonic.to_string(),
+        Err(e) => {
+            tracing::error!("generate_random_mnemonic({mnemonic_len}): {e}");
+            String::default()
+        }
     }
 }
 
