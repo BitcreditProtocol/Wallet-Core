@@ -7,7 +7,7 @@ use crate::{
     types::{PaymentSummary, RedemptionSummary},
     wallet::{CreditPocket, WalletBalance},
 };
-use bcr_wallet_lib::wallet::Token;
+use bcr_common::wallet::Token;
 use bitcoin::{
     hashes::{Hash, HashEngine, sha256},
     hex::DisplayHex,
@@ -277,7 +277,7 @@ impl AppState {
         let tstamp = chrono::Utc::now().timestamp() as u64;
         tracing::debug!("wallet_receive({idx}, {token}, {tstamp})");
 
-        let token = bcr_wallet_lib::wallet::Token::from_str(&token)?;
+        let token = Token::from_str(&token)?;
         let wallet = self.get_wallet(idx).await?;
         let tx_id = wallet.read().await.receive_token(token, tstamp).await?;
         Ok(tx_id)

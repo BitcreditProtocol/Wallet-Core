@@ -100,9 +100,7 @@ async fn main() -> Result<()> {
     let stdout_log = tracing_subscriber::fmt::layer()
         .with_filter(level_filter)
         .with_filter(FilterFn::new(|md| {
-            md.target().starts_with("bcr_wallet_cli")
-                || md.target().starts_with("bcr_wallet_core")
-                || md.target().starts_with("bcr_wallet_lib")
+            md.target().starts_with("bcr_wallet_cli") || md.target().starts_with("bcr_wallet_core")
         }));
     let subscriber = tracing_subscriber::registry().with(stdout_log);
     tracing::subscriber::set_global_default(subscriber)

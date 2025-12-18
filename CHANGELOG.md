@@ -1,3 +1,7 @@
+# 0.7.1
+
+* Remove `bcr-wallet-lib` in favor of `bcr-common::wallet` for `Token`
+
 # 0.7.0
 
 * Remove WASM

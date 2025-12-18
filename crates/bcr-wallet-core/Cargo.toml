@@ -12,7 +12,6 @@ memory-db = []
 anyhow.workspace = true
 async-trait.workspace = true
 bcr-common = {workspace = true}
-bcr-wallet-lib.workspace = true
 bip39.workspace = true
 bitcoin.workspace = true
 borsh.workspace = true

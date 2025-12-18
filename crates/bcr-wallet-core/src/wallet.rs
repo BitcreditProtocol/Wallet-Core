@@ -10,8 +10,8 @@ use crate::{
     },
 };
 use async_trait::async_trait;
+use bcr_common::wallet::Token;
 use bcr_common::wire::{clowder as wire_clowder, keys as wire_keys};
-use bcr_wallet_lib::wallet::Token;
 use bitcoin::hashes::{Hash, sha256::Hash as Sha256};
 use cashu::{Amount, Bolt11Invoice, CurrencyUnit, KeySetInfo, MintUrl, Proof};
 use cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
