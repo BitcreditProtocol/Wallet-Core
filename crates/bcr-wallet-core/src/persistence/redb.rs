@@ -769,7 +769,7 @@ struct WalletEntry {
     name: String,
     network: bitcoin::Network,
     mint: cashu::MintUrl,
-    mnemonic: bip39::Mnemonic,
+    pub_key: secp256k1::PublicKey,
     debit: CurrencyUnit,
     credit: Option<CurrencyUnit>,
 }
@@ -780,7 +780,7 @@ impl std::convert::From<WalletConfig> for WalletEntry {
             name: wallet.name,
             network: wallet.network,
             mint: wallet.mint,
-            mnemonic: wallet.mnemonic,
+            pub_key: wallet.pub_key,
             debit: wallet.debit,
             credit: wallet.credit,
         }
@@ -793,7 +793,7 @@ impl std::convert::From<WalletEntry> for WalletConfig {
             name: wallet.name,
             network: wallet.network,
             mint: wallet.mint,
-            mnemonic: wallet.mnemonic,
+            pub_key: wallet.pub_key,
             debit: wallet.debit,
             credit: wallet.credit,
         }

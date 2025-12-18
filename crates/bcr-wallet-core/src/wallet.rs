@@ -164,7 +164,7 @@ pub struct Wallet<DebtPck> {
     credit: Box<dyn CreditPocket>,
     name: String,
     id: String,
-    mnemonic: bip39::Mnemonic,
+    pub_key: secp256k1::PublicKey,
     current_payment: Mutex<Option<PayReference>>,
     clowder_id: bitcoin::secp256k1::PublicKey,
     client_factory: Box<dyn Fn(cashu::MintUrl) -> Box<dyn MintConnector> + Send + Sync>,
@@ -185,7 +185,7 @@ impl<DebtPck> Wallet<DebtPck> {
         (debit, credit): (DebtPck, Box<dyn CreditPocket>),
         name: String,
         id: String,
-        mnemonic: bip39::Mnemonic,
+        pub_key: secp256k1::PublicKey,
         beta_clients: HashMap<cashu::MintUrl, Box<dyn MintConnector>>,
         client_factory: Box<dyn Fn(cashu::MintUrl) -> Box<dyn MintConnector> + Send + Sync>,
         safe_mode: SameMintSafeMode,
@@ -199,7 +199,7 @@ impl<DebtPck> Wallet<DebtPck> {
             credit,
             name,
             id,
-            mnemonic,
+            pub_key,
             current_payment: Mutex::new(None),
             beta_clients,
             clowder_id,
@@ -854,7 +854,7 @@ where
             debit: self.debit.unit(),
             credit: self.credit.maybe_unit(),
             mint: self.client.mint_url(),
-            mnemonic: self.mnemonic.clone(),
+            pub_key: self.pub_key,
         })
     }
 

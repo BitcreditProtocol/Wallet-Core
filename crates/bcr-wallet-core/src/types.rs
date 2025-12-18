@@ -34,7 +34,7 @@ pub struct WalletConfig {
     pub mint: MintUrl,
     pub debit: CurrencyUnit,
     pub credit: Option<CurrencyUnit>,
-    pub mnemonic: bip39::Mnemonic,
+    pub pub_key: secp256k1::PublicKey,
 }
 
 #[derive(Default, Debug, Clone)]
