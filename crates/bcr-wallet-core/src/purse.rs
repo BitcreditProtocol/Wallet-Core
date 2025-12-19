@@ -84,7 +84,7 @@ struct PaymentReference {
 
 pub struct Purse<Wlt> {
     pub repo: Box<dyn PurseRepository>,
-    pub wallets: Arc<Mutex<Vec<Arc<RwLock<Wlt>>>>>,
+    pub wallets: Arc<RwLock<Vec<Arc<RwLock<Wlt>>>>>,
     nostr_cl: Arc<nostr_sdk::Client>,
     myself: Nip19Profile,
     http_cl: Arc<reqwest::Client>,
@@ -100,7 +100,7 @@ impl<Wlt> Purse<Wlt> {
     ) -> Result<Self> {
         Ok(Self {
             repo: Box::new(repo),
-            wallets: Arc::new(Mutex::new(Vec::default())),
+            wallets: Arc::new(RwLock::new(Vec::default())),
             nostr_cl: Arc::new(nostr_cl),
             myself,
             http_cl: Arc::new(http_cl),
@@ -120,19 +120,16 @@ impl<Wlt> Purse<Wlt> {
     }
 
     pub async fn get_wallet(&self, idx: usize) -> Option<Arc<RwLock<Wlt>>> {
-        let wallets = self.wallets.lock().await;
-
-        wallets.get(idx).cloned()
+        self.wallets.read().await.get(idx).cloned()
     }
 
     pub async fn ids(&self) -> Vec<u32> {
-        let w_len = self.wallets.lock().await.len();
-        (0..w_len as u32).collect()
+        (0..self.wallets.read().await.len() as u32).collect()
     }
 
     // Current limitation to 1 wallet
     pub async fn can_add_wallet(&self) -> bool {
-        self.wallets.lock().await.is_empty()
+        self.wallets.read().await.is_empty()
     }
 }
 
@@ -142,23 +139,23 @@ where
 {
     pub async fn add_wallet(&self, wallet: Wlt) -> Result<usize> {
         self.repo.store(wallet.config()?).await?;
-        let mut wallets = self.wallets.lock().await;
+        let mut wallets = self.wallets.write().await;
         wallets.push(Arc::new(RwLock::new(wallet)));
         Ok(wallets.len() - 1)
     }
 
     pub async fn delete_wallet(&self, idx: usize) -> Result<()> {
-        let Some(wlt) = self.wallets.lock().await.get(idx).cloned() else {
+        let Some(wlt) = self.get_wallet(idx).await else {
             return Err(Error::WalletNotFound(idx));
         };
         let id = wlt.read().await.id();
         self.repo.delete(&id).await?;
-        self.wallets.lock().await.remove(idx);
+        self.wallets.write().await.remove(idx);
         Ok(())
     }
 
     pub async fn prepare_pay(&self, idx: usize, input: String, now: u64) -> Result<PaymentSummary> {
-        let Some(wlt) = self.wallets.lock().await.get(idx).cloned() else {
+        let Some(wlt) = self.get_wallet(idx).await else {
             return Err(Error::WalletNotFound(idx));
         };
         let summary = wlt.read().await.prepare_pay(input, now).await?;
@@ -184,7 +181,7 @@ where
             );
             return Err(Error::NoPrepareRef(p_id));
         }
-        let Some(wlt) = self.wallets.lock().await.get(pref.wallet_idx).cloned() else {
+        let Some(wlt) = self.get_wallet(pref.wallet_idx).await else {
             return Err(Error::Internal(String::from(
                 "Wallet not found for payment",
             )));
@@ -204,7 +201,7 @@ where
         description: Option<String>,
     ) -> Result<cdk18::PaymentRequest> {
         let mints = {
-            let wlts = self.wallets.lock().await;
+            let wlts = self.wallets.read().await;
             let mut mints = Vec::with_capacity(wlts.len());
             for wlt in wlts.iter() {
                 mints.extend(wlt.read().await.mint_urls()?);
@@ -285,8 +282,8 @@ where
     }
 
     pub async fn migrate_rabid_wallets(&self, tstamp: u64) -> Result<()> {
-        let mut wlts = self.wallets.lock().await;
-        for wlt in wlts.iter_mut() {
+        let wlts = self.wallets.read().await;
+        for wlt in wlts.iter() {
             let is_rabid = wlt.read().await.is_wallet_mint_rabid().await?;
             let substitute_url = wlt.read().await.mint_substitute().await?;
 
@@ -316,7 +313,7 @@ where
         unit: CurrencyUnit,
         description: Option<String>,
     ) -> Result<PaymentSummary> {
-        let Some(wlt) = self.wallets.lock().await.get(idx).cloned() else {
+        let Some(wlt) = self.get_wallet(idx).await else {
             return Err(Error::WalletNotFound(idx));
         };
 
@@ -353,7 +350,7 @@ where
             return Err(Error::NoPrepareRef(p_id));
         }
 
-        let Some(wlt) = self.wallets.lock().await.get(pref.wallet_idx).cloned() else {
+        let Some(wlt) = self.get_wallet(pref.wallet_idx).await else {
             return Err(Error::Internal(String::from(
                 "Wallet not found for payment",
             )));
@@ -372,7 +369,7 @@ where
 async fn handle_event<T>(
     event: nostr_sdk::Event,
     signer: Arc<dyn NostrSigner>,
-    wlts: &Mutex<Vec<Arc<RwLock<T>>>>,
+    wlts: &RwLock<Vec<Arc<RwLock<T>>>>,
     payment_id: Uuid,
     expected: Amount,
 ) -> Result<Option<TransactionId>>
@@ -426,9 +423,9 @@ where
         return Ok(None);
     }
     let wlt = {
-        let locked = wlts.lock().await;
+        let wallets = wlts.read().await;
         let mut best_wlt: Option<Arc<RwLock<T>>> = None;
-        for wlt in locked.iter() {
+        for wlt in wallets.iter() {
             if wlt.read().await.mint_url()? == payload.mint {
                 best_wlt.replace(wlt.clone());
                 break;
