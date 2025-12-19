@@ -1,18 +1,17 @@
 [workspace.package]
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 license = "MIT"
 
 [workspace]
 resolver = "3"
 
-members = ["crates/bcr-wallet-core", "crates/bcr-wallet-lib", "crates/bcr-wallet-cli"]
+members = ["crates/bcr-wallet-core", "crates/bcr-wallet-cli"]
 
 [workspace.dependencies]
 anyhow = {version = "1"}
 async-trait = {version = "0.1"}
-bcr-common = {git = "https://github.com/BitcreditProtocol/bcr-common.git", branch = "master"}
-bcr-wallet-lib = {path = "./crates/bcr-wallet-lib"}
+bcr-common = {git = "https://github.com/BitcreditProtocol/bcr-common.git", rev = "05bce98b5e5facbcdb055e4a979f96baeb82da2e"}
 bip39 = {version = "2.1", features = ["rand"]}
 bitcoin = {version = "0.32"}
 borsh = {version = "1"}

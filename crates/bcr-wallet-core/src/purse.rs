@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use async_trait::async_trait;
-use bcr_wallet_lib::wallet::Token;
+use bcr_common::wallet::Token;
 use cashu::{Amount, CurrencyUnit, MintUrl, PaymentRequest, nut00 as cdk00, nut18 as cdk18};
 use cdk::wallet::types::TransactionId;
 use nostr::{nips::nip59::UnwrappedGift, signer::NostrSigner};
