@@ -1,6 +1,7 @@
 # 0.7.1
 
 * Remove `bcr-wallet-lib` in favor of `bcr-common::wallet` for `Token`
+* Don't persist mnemonic anymore (breaking DB change)
 
 # 0.7.0
 
