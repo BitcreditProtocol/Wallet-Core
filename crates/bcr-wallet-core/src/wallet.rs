@@ -8,6 +8,7 @@ use crate::{
         self, MeltSummary, PAYMENT_TYPE_METADATA_KEY, PaymentSummary, RedemptionSummary,
         SendSummary, TRANSACTION_STATUS_METADATA_KEY, WalletConfig,
     },
+    utils::tx_can_be_refreshed,
 };
 use async_trait::async_trait;
 use bcr_common::wallet::Token;
@@ -72,10 +73,12 @@ pub trait Pocket: sync::SendSync {
 #[async_trait]
 pub trait CreditPocket: Pocket {
     fn maybe_unit(&self) -> Option<CurrencyUnit>;
+    /// Reclaims the proofs for the given ys
     /// returns the amount reclaimed and the proofs that can be redeemed (i.e. unspent proofs with
     /// inactive keysets)
     async fn reclaim_proofs(
         &self,
+        ys: &[cashu::PublicKey],
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
         safe_mode: SafeMode,
@@ -94,8 +97,11 @@ pub trait CreditPocket: Pocket {
 
 #[async_trait]
 pub trait DebitPocket: Pocket {
+    /// Reclaim the proofs for the given ys
+    /// returns the amount reclaimed
     async fn reclaim_proofs(
         &self,
+        ys: &[cashu::PublicKey],
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
         safe_mode: SafeMode,
@@ -313,6 +319,17 @@ where
             .credit
             .get_redeemable_proofs(&keysets_info, self.client.as_ref())
             .await?;
+        let amount = self
+            .redeem_credit_proofs(credit_proofs, &keysets_info)
+            .await?;
+        Ok(amount)
+    }
+
+    async fn redeem_credit_proofs(
+        &self,
+        credit_proofs: Vec<cashu::Proof>,
+        keysets_info: &[KeySetInfo],
+    ) -> Result<Amount> {
         if credit_proofs.is_empty() {
             Ok(Amount::ZERO)
         } else {
@@ -320,7 +337,7 @@ where
                 .debit
                 .receive_proofs(
                     self.client.as_ref(),
-                    &keysets_info,
+                    keysets_info,
                     credit_proofs,
                     SafeMode::new(self.safe_mode, self.clowder_id),
                 )
@@ -347,10 +364,18 @@ where
     }
 
     pub async fn load_tx(&self, tx_id: TransactionId) -> Result<Transaction> {
-        let mut tx = self.tx_repo.load_tx(tx_id).await?;
-        let p_status = types::get_transaction_status(&tx.metadata);
-        if !matches!(p_status, types::TransactionStatus::Pending) {
-            return Ok(tx);
+        let tx = self.tx_repo.load_tx(tx_id).await?;
+        Ok(tx)
+    }
+
+    // Fetches the transaction with the given ID from the database and, if it's in a pending state
+    // it attempts to get the current state from the mint and, if it's spent, changes it to spent
+    // Returns whether the transaction has been updated
+    pub async fn refresh_tx(&self, tx_id: TransactionId) -> Result<bool> {
+        let mut updated = false;
+        let tx = self.tx_repo.load_tx(tx_id).await?;
+        if !tx_can_be_refreshed(&tx) {
+            return Ok(updated);
         }
         let request = cashu::CheckStateRequest { ys: tx.ys.clone() };
         let response = self.client.post_check_state(request).await?;
@@ -366,9 +391,81 @@ where
                     types::TransactionStatus::CashedIn.to_string(),
                 )
                 .await?;
-            tx = self.tx_repo.load_tx(tx_id).await?;
+            updated = true;
         }
-        Ok(tx)
+        Ok(updated)
+    }
+
+    pub async fn reclaim_tx(&self, tx_id: TransactionId) -> Result<Amount> {
+        let infos = self.client.get_mint_keysets().await?.keysets;
+        self.refresh_tx(tx_id).await?;
+        let tx = self.load_tx(tx_id).await?;
+
+        // Only Outgoing and Pending transactions can be reclaimed
+        if !tx_can_be_refreshed(&tx) {
+            return Err(Error::TransactionCantBeReclaimed(tx_id));
+        }
+
+        // Reclaim proofs
+        let amount = if tx.unit == self.debit.unit() {
+            tracing::debug!("Reclaim Debit Transaction {tx_id}");
+            self.debit
+                .reclaim_proofs(
+                    &tx.ys,
+                    &infos,
+                    self.client.as_ref(),
+                    SafeMode::new(self.safe_mode, self.clowder_id),
+                )
+                .await?
+        } else if tx.unit == self.credit.unit() {
+            tracing::debug!("Reclaim Credit Transaction {tx_id}");
+            let (reclaimed_amount, redeemable_proofs) = self
+                .credit
+                .reclaim_proofs(
+                    &tx.ys,
+                    &infos,
+                    self.client.as_ref(),
+                    SafeMode::new(self.safe_mode, self.clowder_id),
+                )
+                .await?;
+
+            let redeemed_amount = self.redeem_credit_proofs(redeemable_proofs, &infos).await?;
+            tracing::debug!(
+                "Reclaimed/Redeemed Credit Transaction {tx_id} - Reclaimed: {reclaimed_amount}, Redeemed: {redeemed_amount}"
+            );
+            reclaimed_amount + redeemed_amount
+        } else {
+            return Err(Error::CurrencyUnitMismatch(self.debit.unit(), tx.unit));
+        };
+
+        // If amount is zero - this means the transaction was already claimed - we set the transaction to CashedIn
+        if amount == Amount::ZERO {
+            self.tx_repo
+                .update_metadata(
+                    tx_id,
+                    String::from(types::TRANSACTION_STATUS_METADATA_KEY),
+                    types::TransactionStatus::CashedIn.to_string(),
+                )
+                .await?;
+        } else {
+            if amount != tx.amount {
+                tracing::warn!(
+                    "Reclaimed amount does not match the transaction amount for {tx_id}: {amount} vs. {}",
+                    tx.amount
+                );
+            }
+
+            // Set reclaimed transaction to canceled
+            self.tx_repo
+                .update_metadata(
+                    tx_id,
+                    String::from(types::TRANSACTION_STATUS_METADATA_KEY),
+                    types::TransactionStatus::Canceled.to_string(),
+                )
+                .await?;
+        }
+
+        Ok(amount)
     }
 
     async fn _receive_proofs(
@@ -1095,7 +1192,7 @@ where
                 );
                 metadata.insert(
                     TRANSACTION_STATUS_METADATA_KEY.to_owned(),
-                    types::TransactionStatus::CashedIn.to_string(),
+                    types::TransactionStatus::Pending.to_string(),
                 );
 
                 let partial_tx = Transaction {
@@ -1115,6 +1212,7 @@ where
             }
         }
     }
+
     async fn receive_proofs(
         &self,
         proofs: Vec<cashu::Proof>,

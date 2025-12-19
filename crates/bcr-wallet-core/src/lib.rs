@@ -1,6 +1,7 @@
 use crate::config::AppStateConfig;
 use crate::job::JobState;
 use crate::mint::MintConnector;
+use crate::utils::tx_can_be_refreshed;
 use crate::{
     config::{NostrConfig, SameMintSafeMode},
     purse::Wallet,
@@ -235,6 +236,7 @@ impl AppState {
         wallet.restore_local_proofs().await?;
 
         let idx = purse.add_wallet(wallet).await?;
+        tracing::debug!("Wallet restored successfully");
         Ok(idx)
     }
 
@@ -324,15 +326,6 @@ impl AppState {
         purse.migrate_rabid_wallets(tstamp).await?;
 
         Ok(())
-    }
-
-    pub async fn wallet_load_tx(&self, idx: usize, tx_id: &str) -> Result<Transaction> {
-        tracing::debug!("wallet_load_tx({idx}, {tx_id})");
-
-        let tx_id = TransactionId::from_str(tx_id)?;
-        let wallet = self.get_wallet(idx).await?;
-        let tx = wallet.read().await.load_tx(tx_id).await?;
-        Ok(Transaction::from(tx))
     }
 
     pub async fn wallet_prepare_pay_by_token(
@@ -448,17 +441,81 @@ impl AppState {
         Ok(txs.into_iter().map(|t| t.into()).collect())
     }
 
+    pub async fn wallet_load_tx(&self, idx: usize, tx_id: &str) -> Result<Transaction> {
+        tracing::debug!("wallet_load_tx({idx}, {tx_id})");
+
+        let tx_id = TransactionId::from_str(tx_id)?;
+        let wallet = self.get_wallet(idx).await?;
+        let tx = wallet.read().await.load_tx(tx_id).await?;
+        Ok(Transaction::from(tx))
+    }
+
+    pub async fn wallet_reclaim_tx(&self, idx: usize, tx_id: &str) -> Result<cashu::Amount> {
+        tracing::debug!("wallet_reclaim_tx({idx}, {tx_id})");
+        let tx_id = TransactionId::from_str(tx_id)?;
+        let wallet = self.get_wallet(idx).await?;
+        let amount = wallet.read().await.reclaim_tx(tx_id).await?;
+        Ok(amount)
+    }
+
+    // Refreshes the state of all pending transactions of the given wallet
+    pub async fn wallet_refresh_txs(&self, idx: usize) -> Result<usize> {
+        tracing::debug!("wallet_refresh_txs({idx})");
+        let wallet = self.get_wallet(idx).await?;
+        let txs = wallet.read().await.list_txs().await?;
+        let mut updated = 0;
+
+        for tx in txs.iter() {
+            if !tx_can_be_refreshed(tx) {
+                continue;
+            }
+
+            let tx_id = tx.id();
+
+            match wallet.read().await.refresh_tx(tx_id).await {
+                Ok(tx_updated) => {
+                    if tx_updated {
+                        updated += 1;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Error refreshing tx {}: {e}", tx_id);
+                }
+            };
+        }
+
+        Ok(updated)
+    }
+
+    // Refreshes the state of the transaction with the given id
+    pub async fn wallet_refresh_tx(&self, idx: usize, tx_id: &str) -> Result<bool> {
+        tracing::debug!("wallet_refresh_tx({idx}, {tx_id})");
+
+        let tx_id = TransactionId::from_str(tx_id)?;
+        let wallet = self.get_wallet(idx).await?;
+        let updated = wallet.read().await.refresh_tx(tx_id).await?;
+        Ok(updated)
+    }
+
     pub async fn get_wallets_ids(&self) -> Result<Vec<usize>> {
         tracing::debug!("get_wallet_ids");
         let purse = self.get_purse();
         Ok(purse.ids().await.iter().map(|id| *id as usize).collect())
     }
 
-    /// Checks when the jobs were run the last time and if it's greater than 1 day
-    /// then it runs the jobs.
+    /// Checks when the daily jobs were run the last time and if it's greater than 1 day
+    /// then it runs the daily jobs.
+    /// Also runs the regular jobs for each interval
     /// This should be called in an interval and on app initialization
     pub async fn run_jobs(&self) -> Result<()> {
         tracing::info!("Run Jobs triggered");
+        if self.execute_regular_jobs().await {
+            tracing::info!("Run Regular Jobs executed successfully");
+        } else {
+            tracing::info!(
+                "Run Regular Jobs executed with some errors - will run again at the next interval."
+            );
+        }
         let last_run_ts = self.get_jobsdb().load().await?.last_run;
         let now = Utc::now();
 
@@ -469,22 +526,44 @@ impl AppState {
             return Ok(());
         }
 
-        if self.execute_jobs().await {
+        if self.execute_daily_jobs().await {
             tracing::info!("Run Jobs executed successfully");
             self.get_jobsdb().store(JobState { last_run: now }).await?;
         } else {
             tracing::info!(
-                "Run Jobs executed with some errors - will run again at the next interval."
+                "Run Daily Jobs executed with some errors - will run again at the next interval."
             );
         }
 
         Ok(())
     }
 
-    /// Actually runs the jobs - gets called via `run_jobs` for creating a
+    pub async fn execute_regular_jobs(&self) -> bool {
+        let mut job_failed = false;
+
+        let wallet_ids = self.get_purse().ids().await;
+        for wallet_id in wallet_ids.iter() {
+            match self.wallet_refresh_txs(*wallet_id as usize).await {
+                Ok(updated) => {
+                    tracing::info!("Updated {updated} transactions for wallet {wallet_id}");
+                }
+                Err(e) => {
+                    job_failed = true;
+                    tracing::error!(
+                        "Error running wallet_refresh_txs job for wallet {wallet_id}: {e}"
+                    );
+                }
+            };
+        }
+
+        // successful = true
+        !job_failed
+    }
+
+    /// Actually runs the daily jobs - gets called via `run_jobs` for creating a
     /// regular job interval, but calling this directly forces a job run right now
     /// Returns a boolean indicating if all jobs ran to success
-    pub async fn execute_jobs(&self) -> bool {
+    pub async fn execute_daily_jobs(&self) -> bool {
         let mut job_failed = false;
         if let Err(e) = self.purse_migrate_rabid().await {
             job_failed = true;
@@ -599,8 +678,9 @@ impl std::convert::From<types::TransactionStatus> for TransactionStatus {
     }
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct Transaction {
+    pub id: String,
     pub amount: u64,
     pub fees: u64,
     pub unit: String,
@@ -616,6 +696,7 @@ impl std::convert::From<cdk::wallet::types::Transaction> for Transaction {
         let status = TransactionStatus::from(types::get_transaction_status(&tx.metadata));
         let ptype = PaymentType::from(types::get_payment_type(&tx.metadata));
         Self {
+            id: tx.id().to_string(),
             amount: u64::from(tx.amount),
             fees: u64::from(tx.fee),
             unit: tx.unit.to_string(),

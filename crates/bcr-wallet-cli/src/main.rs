@@ -70,10 +70,8 @@ enum Commands {
         unit: String,
         description: Option<String>,
     },
-    #[command(name = "recover")]
-    Recover { id: usize },
-    #[command(name = "reclaim_funds")]
-    ReclaimFunds { id: usize },
+    #[command(name = "reclaim")]
+    Reclaim { id: usize, tx_id: String },
     #[command(name = "migrate_rabid")]
     MigrateRabid,
     #[command(name = "run_jobs")]
@@ -222,11 +220,12 @@ async fn main() -> Result<()> {
         Commands::GenMnemonic => {
             info!("{}", generate_random_mnemonic(12));
         }
-        Commands::Recover { .. } => {
-            info!("Recover for {}: NOT IMPLEMENTED", cli.wallet,);
-        }
-        Commands::ReclaimFunds { .. } => {
-            info!("Reclaim for {}: NOT IMPLEMENTED", cli.wallet,);
+        Commands::Reclaim { id, tx_id } => {
+            info!(
+                "Reclaim for {}: {}",
+                cli.wallet,
+                command::cmd_reclaim(&app_state, &cli.wallet, id, &tx_id).await?
+            );
         }
         Commands::MigrateRabid => {
             info!("Migrate Rabid for {}", cli.wallet,);

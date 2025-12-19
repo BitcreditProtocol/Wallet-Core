@@ -100,6 +100,8 @@ pub enum Error {
     InactiveKeyset(cashu::Id),
     #[error("transaction not found {0}")]
     TransactionNotFound(cdk::wallet::types::TransactionId),
+    #[error("transaction can't be reclaimed - not outgoing or pending {0}")]
+    TransactionCantBeReclaimed(cdk::wallet::types::TransactionId),
     #[error("Mint not supporting debit currency")]
     NoDebitCurrencyInMint(Vec<cashu::CurrencyUnit>),
     #[error("network mismatch, ours: {0}, theirs: {1}")]
