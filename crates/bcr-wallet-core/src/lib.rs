@@ -16,7 +16,7 @@ use cashu::{CurrencyUnit, KeySetInfo, MintInfo, MintUrl};
 use cdk::wallet::{MintConnector as MintCon, types::TransactionId};
 use chrono::Utc;
 use error::{Error, Result};
-use secp256k1::{Keypair, SECP256K1, SecretKey};
+use secp256k1::{Keypair, SECP256K1};
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -131,7 +131,7 @@ impl AppState {
                 return Err(Error::InvalidNetwork(w_cfg.network, self.cfg.network));
             }
 
-            let keypair = keypair_from_mnemonic(&self.cfg.mnemonic)?;
+            let keypair = keypair_from_mnemonic(&self.cfg.mnemonic);
             if w_cfg.pub_key != keypair.public_key() {
                 tracing::error!(
                     "Key mismatch: wallet {wid} has a different pubkey than the one given via the config mnemonic"
@@ -693,7 +693,7 @@ async fn build_wallet(
     db: Arc<redb::Database>,
 ) -> Result<ProductionWallet> {
     let seed = seed_from_mnemonic(&mnemonic);
-    let keypair = keypair_from_mnemonic(&mnemonic)?;
+    let keypair = keypair_from_mnemonic(&mnemonic);
     // retrieving mint details
     let client = ProductionConnector::new(mint_url.clone());
     let keyset_infos = client.get_mint_keysets().await?.keysets;
@@ -758,14 +758,10 @@ async fn build_wallet(
 }
 
 // converts a mnemonic to a secp256k1 keypair
-fn keypair_from_mnemonic(mnemonic: &bip39::Mnemonic) -> Result<Keypair> {
+fn keypair_from_mnemonic(mnemonic: &bip39::Mnemonic) -> Keypair {
     let seed = seed_from_mnemonic(mnemonic);
-    let (key, _) = seed.split_at(32);
-    let secret = SecretKey::from_slice(key).map_err(|e| {
-        tracing::error!("Could not get secp256k1 key from mnemonic: {e}");
-        Error::InvalidMnemonic
-    })?;
-    Ok(Keypair::from_secret_key(SECP256K1, &secret))
+    let (key, _) = seed.split_at(secp256k1::constants::SECRET_KEY_SIZE);
+    Keypair::from_seckey_slice(SECP256K1, key).expect("key to be correct size")
 }
 
 fn seed_from_mnemonic(mnemonic: &bip39::Mnemonic) -> [u8; 64] {
