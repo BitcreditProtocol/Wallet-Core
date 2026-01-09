@@ -2,7 +2,7 @@ use crate::{TStamp, error::Result, sync};
 use async_trait::async_trait;
 use bcr_common::wire::{
     clowder::{self as wire_clowder, ConnectedMintsResponse},
-    keys as wire_keys, swap as wire_swap,
+    keys as wire_keys, melt as wire_melt, mint as wire_mint, swap as wire_swap,
 };
 use bitcoin::base64::prelude::*;
 use cashu::Proof;
@@ -61,6 +61,31 @@ pub trait MintConnector: cdk::wallet::MintConnector + sync::SendSync {
         TStamp,
         secp256k1::schnorr::Signature,
     )>;
+
+    async fn post_melt_quote_onchain(
+        &self,
+        req: wire_melt::MeltQuoteOnchainRequest,
+    ) -> Result<wire_melt::MeltQuoteOnchainResponse>;
+
+    async fn post_melt_onchain(
+        &self,
+        req: cashu::MeltRequest<String>,
+    ) -> Result<wire_melt::MeltQuoteOnchainResponse>;
+
+    async fn post_mint_quote_onchain(
+        &self,
+        req: wire_mint::MintQuoteOnchainRequest,
+    ) -> Result<wire_mint::MintQuoteOnchainResponse>;
+
+    async fn get_mint_quote_onchain(
+        &self,
+        quote_id: String,
+    ) -> Result<wire_mint::MintQuoteOnchainResponse>;
+
+    async fn post_mint_onchain(
+        &self,
+        req: cashu::MintRequest<String>,
+    ) -> Result<cashu::MintResponse>;
 }
 
 #[derive(Debug, Clone)]
@@ -443,6 +468,81 @@ impl MintConnector for HttpClientExt {
             payload.expiration,
             response.commitment,
         ))
+    }
+
+    async fn post_melt_quote_onchain(
+        &self,
+        req: wire_melt::MeltQuoteOnchainRequest,
+    ) -> Result<wire_melt::MeltQuoteOnchainResponse> {
+        let url = self
+            .url
+            .join("v1/melt/quote/onchain")
+            .expect("melt_quote_onchain url error");
+        debug!("HTTP call to melt_quote_onchain on {url}");
+
+        let res = self.secondary.post(url).json(&req).send().await?;
+        let response: wire_melt::MeltQuoteOnchainResponse = res.json().await?;
+        Ok(response)
+    }
+
+    async fn post_melt_onchain(
+        &self,
+        req: cashu::MeltRequest<String>,
+    ) -> Result<wire_melt::MeltQuoteOnchainResponse> {
+        let url = self
+            .url
+            .join("v1/melt/onchain")
+            .expect("melt_onchain url error");
+        debug!("HTTP call to melt_onchain on {url}");
+
+        let res = self.secondary.post(url).json(&req).send().await?;
+        let response: wire_melt::MeltQuoteOnchainResponse = res.json().await?;
+        Ok(response)
+    }
+
+    async fn post_mint_quote_onchain(
+        &self,
+        req: wire_mint::MintQuoteOnchainRequest,
+    ) -> Result<wire_mint::MintQuoteOnchainResponse> {
+        let url = self
+            .url
+            .join("v1/mint/quote/onchain")
+            .expect("mint_quote_onchain url error");
+        debug!("HTTP call to mint_quote_onchain on {url}");
+
+        let res = self.secondary.post(url).json(&req).send().await?;
+        let response: wire_mint::MintQuoteOnchainResponse = res.json().await?;
+        Ok(response)
+    }
+
+    async fn get_mint_quote_onchain(
+        &self,
+        quote_id: String,
+    ) -> Result<wire_mint::MintQuoteOnchainResponse> {
+        let url = self
+            .url
+            .join(&format!("v1/mint/quote/onchain/{quote_id}"))
+            .expect("get mint_onchain url error");
+        debug!("HTTP call to get mint_quote_onchain on {url}");
+
+        let res = self.secondary.get(url).send().await?;
+        let response: wire_mint::MintQuoteOnchainResponse = res.json().await?;
+        Ok(response)
+    }
+
+    async fn post_mint_onchain(
+        &self,
+        req: cashu::MintRequest<String>,
+    ) -> Result<cashu::MintResponse> {
+        let url = self
+            .url
+            .join("v1/mint/onchain")
+            .expect("mint_onchain url error");
+        debug!("HTTP call to mint_onchain on {url}");
+
+        let res = self.secondary.post(url).json(&req).send().await?;
+        let response: cashu::MintResponse = res.json().await?;
+        Ok(response)
     }
 }
 
@@ -885,5 +985,80 @@ impl MintConnector for SentinelClient {
             payload.expiration,
             response.commitment,
         ))
+    }
+
+    async fn post_melt_quote_onchain(
+        &self,
+        req: wire_melt::MeltQuoteOnchainRequest,
+    ) -> Result<wire_melt::MeltQuoteOnchainResponse> {
+        let url = self
+            .url
+            .join("v1/melt/quote/onchain")
+            .expect("melt_quote_onchain url error");
+        debug!("HTTP call on sentinel to melt_quote_onchain on {url}");
+
+        let res = self.secondary.post(url).json(&req).send().await?;
+        let response: wire_melt::MeltQuoteOnchainResponse = res.json().await?;
+        Ok(response)
+    }
+
+    async fn post_melt_onchain(
+        &self,
+        req: cashu::MeltRequest<String>,
+    ) -> Result<wire_melt::MeltQuoteOnchainResponse> {
+        let url = self
+            .url
+            .join("v1/melt/onchain")
+            .expect("melt_onchain url error");
+        debug!("HTTP call on sentinel to melt_onchain on {url}");
+
+        let res = self.secondary.post(url).json(&req).send().await?;
+        let response: wire_melt::MeltQuoteOnchainResponse = res.json().await?;
+        Ok(response)
+    }
+
+    async fn post_mint_quote_onchain(
+        &self,
+        req: wire_mint::MintQuoteOnchainRequest,
+    ) -> Result<wire_mint::MintQuoteOnchainResponse> {
+        let url = self
+            .url
+            .join("v1/mint/quote/onchain")
+            .expect("mint_quote_onchain url error");
+        debug!("HTTP call on sentinel to mint_quote_onchain on {url}");
+
+        let res = self.secondary.post(url).json(&req).send().await?;
+        let response: wire_mint::MintQuoteOnchainResponse = res.json().await?;
+        Ok(response)
+    }
+
+    async fn get_mint_quote_onchain(
+        &self,
+        quote_id: String,
+    ) -> Result<wire_mint::MintQuoteOnchainResponse> {
+        let url = self
+            .url
+            .join(&format!("v1/mint/quote/onchain/{quote_id}"))
+            .expect("get mint_onchain url error");
+        debug!("HTTP call on sentinel to get mint_quote_onchain on {url}");
+
+        let res = self.secondary.get(url).send().await?;
+        let response: wire_mint::MintQuoteOnchainResponse = res.json().await?;
+        Ok(response)
+    }
+
+    async fn post_mint_onchain(
+        &self,
+        req: cashu::MintRequest<String>,
+    ) -> Result<cashu::MintResponse> {
+        let url = self
+            .url
+            .join("v1/mint/onchain")
+            .expect("mint_onchain url error");
+        debug!("HTTP call on sentinel to mint_onchain on {url}");
+
+        let res = self.secondary.post(url).json(&req).send().await?;
+        let response: cashu::MintResponse = res.json().await?;
+        Ok(response)
     }
 }

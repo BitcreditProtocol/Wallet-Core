@@ -4,8 +4,8 @@ use crate::{
     persistence::redb::PurseDB,
     sync,
     types::{
-        self, PAYMENT_TYPE_METADATA_KEY, PaymentSummary, TRANSACTION_STATUS_METADATA_KEY,
-        WalletConfig,
+        self, MintSummary, PAYMENT_TYPE_METADATA_KEY, PaymentSummary,
+        TRANSACTION_STATUS_METADATA_KEY, WalletConfig,
     },
 };
 use async_trait::async_trait;
@@ -41,7 +41,14 @@ pub trait Wallet: sync::SendSync {
     #[allow(dead_code)]
     fn clowder_id(&self) -> bitcoin::secp256k1::PublicKey;
     fn mint_urls(&self) -> Result<Vec<MintUrl>>;
-    async fn prepare_pay(&self, input: String, now: u64) -> Result<PaymentSummary>;
+    async fn prepare_melt(
+        &self,
+        amount: bitcoin::Amount,
+        address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        description: Option<String>,
+    ) -> Result<PaymentSummary>;
+
+    async fn prepare_pay(&self, input: String) -> Result<PaymentSummary>;
     async fn is_wallet_mint_rabid(&self) -> Result<bool>;
     async fn mint_substitute(&self) -> Result<Option<MintUrl>>;
     async fn pay(
@@ -51,6 +58,9 @@ pub trait Wallet: sync::SendSync {
         http_cl: &reqwest::Client,
         tstamp: u64,
     ) -> Result<(TransactionId, Option<Token>)>;
+
+    async fn mint(&self, amount: bitcoin::Amount) -> Result<MintSummary>;
+    async fn check_pending_mints(&self) -> Result<Vec<TransactionId>>;
 
     async fn migrate_pockets_substitute(
         &mut self,
@@ -154,11 +164,59 @@ where
         Ok(())
     }
 
-    pub async fn prepare_pay(&self, idx: usize, input: String, now: u64) -> Result<PaymentSummary> {
+    pub async fn prepare_melt(
+        &self,
+        idx: usize,
+        amount: bitcoin::Amount,
+        address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        description: Option<String>,
+    ) -> Result<PaymentSummary> {
         let Some(wlt) = self.get_wallet(idx).await else {
             return Err(Error::WalletNotFound(idx));
         };
-        let summary = wlt.read().await.prepare_pay(input, now).await?;
+        let summary = wlt
+            .read()
+            .await
+            .prepare_melt(amount, address, description)
+            .await?;
+        let pref = PaymentReference {
+            payment_ref: summary.request_id,
+            wallet_idx: idx,
+        };
+        *self.current_payment.lock().await = Some(pref);
+        Ok(summary)
+    }
+
+    pub async fn melt(&self, p_id: Uuid, tstamp: u64) -> Result<TransactionId> {
+        let p_ref = self.current_payment.lock().await.take();
+        let Some(pref) = p_ref else {
+            tracing::error!("No current payment reference found");
+            return Err(Error::NoPrepareRef(p_id));
+        };
+        if pref.payment_ref != p_id {
+            tracing::error!(
+                "Payment reference ID mismatch: expected {}, got {}",
+                pref.payment_ref,
+                p_id
+            );
+            return Err(Error::NoPrepareRef(p_id));
+        }
+        let Some(wlt) = self.get_wallet(pref.wallet_idx).await else {
+            return Err(Error::Internal(String::from("Wallet not found for melt")));
+        };
+        let (txid, _) = wlt
+            .read()
+            .await
+            .pay(p_id, &self.nostr_cl, &self.http_cl, tstamp)
+            .await?;
+        Ok(txid)
+    }
+
+    pub async fn prepare_pay(&self, idx: usize, input: String) -> Result<PaymentSummary> {
+        let Some(wlt) = self.get_wallet(idx).await else {
+            return Err(Error::WalletNotFound(idx));
+        };
+        let summary = wlt.read().await.prepare_pay(input).await?;
         let pref = PaymentReference {
             payment_ref: summary.request_id,
             wallet_idx: idx,
@@ -192,6 +250,22 @@ where
             .pay(p_id, &self.nostr_cl, &self.http_cl, tstamp)
             .await?;
         Ok(txid)
+    }
+
+    pub async fn mint(&self, idx: usize, amount: bitcoin::Amount) -> Result<MintSummary> {
+        let Some(wlt) = self.get_wallet(idx).await else {
+            return Err(Error::WalletNotFound(idx));
+        };
+        let summary = wlt.read().await.mint(amount).await?;
+        Ok(summary)
+    }
+
+    pub async fn check_pending_mints(&self, idx: usize) -> Result<Vec<TransactionId>> {
+        let Some(wlt) = self.get_wallet(idx).await else {
+            return Err(Error::WalletNotFound(idx));
+        };
+        let tx_ids = wlt.read().await.check_pending_mints().await?;
+        Ok(tx_ids)
     }
 
     pub async fn prepare_payment_request(

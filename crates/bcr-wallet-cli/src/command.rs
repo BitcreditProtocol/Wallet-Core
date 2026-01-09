@@ -52,9 +52,15 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
             push_break(&mut res);
 
             for tx in transactions.iter() {
+                let quote_or_btc_tx_id = match (tx.btc_tx_id, &tx.quote_id) {
+                    (Some(_), Some(_)) => String::default(),
+                    (Some(btc_tx_id), None) => btc_tx_id.to_string(),
+                    (None, Some(quote_id)) => quote_id.to_string(),
+                    (None, None) => String::default(),
+                };
                 res.push_str(&format!(
-                    "\t\tId: {} \t Amount: {} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {}",
-                    tx.id, tx.amount, tx.unit, tx.fees,  tx.status, format_timestamp(tx.tstamp), &format!("{:?}", tx.ptype), tx.direction,tx.memo
+                    "\t\tId: {} \t Amount: {} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {} \t BTC TxID/Quote ID: {}",
+                    tx.id, tx.amount, tx.unit, tx.fees,  tx.status, format_timestamp(tx.tstamp), &format!("{:?}", tx.ptype), tx.direction, tx.memo, quote_or_btc_tx_id 
                 ));
                 push_break(&mut res);
             }
@@ -259,6 +265,58 @@ pub async fn cmd_reclaim(
     res.push_str(&format!(
         "Reclaim Funds for {name}, Tx: {tx_id} - Wallet ID: {id} - Reclaimed: {reclaimed}.\n"
     ));
+    Ok(res)
+}
+
+pub async fn cmd_melt(
+    app_state: &AppState,
+    name: &str,
+    id: usize,
+    amount: u64,
+    address: &str,
+    description: &Option<String>,
+) -> Result<String> {
+    let mut res = String::new();
+    let melt_summary = app_state
+        .wallet_prepare_melt(id, amount, address.to_owned(), description.to_owned())
+        .await?;
+
+    info!(
+        "Melt Summary: Amount: {}, Unit: {}",
+        &melt_summary.amount, &melt_summary.unit
+    );
+
+    let tx_id = app_state
+        .wallet_melt(melt_summary.request_id.to_string())
+        .await?;
+
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Melt for {name}, Amount: {amount}, Address: {address} - Wallet ID: {id}.\n"
+    ));
+    push_break(&mut res);
+    res.push_str(&format!("Transaction ID: {tx_id}"));
+
+    Ok(res)
+}
+
+pub async fn cmd_mint(app_state: &AppState, name: &str, id: usize, amount: u64) -> Result<String> {
+    let mut res = String::new();
+
+    let mint_summary = app_state.wallet_mint(id, amount).await?;
+
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Mint for {name}, Amount: {amount} - Wallet ID: {id}.\n"
+    ));
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Mint Summary - Pay {amount} to address {}",
+        mint_summary.address.assume_checked()
+    ));
+
     Ok(res)
 }
 

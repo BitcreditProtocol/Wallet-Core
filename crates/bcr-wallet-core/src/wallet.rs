@@ -5,21 +5,23 @@ use crate::{
     purse::{self},
     sync,
     types::{
-        self, MeltSummary, PAYMENT_TYPE_METADATA_KEY, PaymentSummary, RedemptionSummary,
-        SendSummary, TRANSACTION_STATUS_METADATA_KEY, WalletConfig,
+        self, BTC_TX_ID_TYPE_METADATA_KEY, MeltSummary, MintSummary, PAYMENT_TYPE_METADATA_KEY,
+        PaymentSummary, RedemptionSummary, SendSummary, TRANSACTION_STATUS_METADATA_KEY,
+        WalletConfig,
     },
     utils::tx_can_be_refreshed,
 };
 use async_trait::async_trait;
 use bcr_common::wallet::Token;
-use bcr_common::wire::{clowder as wire_clowder, keys as wire_keys};
+use bcr_common::wire::{clowder as wire_clowder, keys as wire_keys, melt as wire_melt};
 use bitcoin::hashes::{Hash, sha256::Hash as Sha256};
-use cashu::{Amount, Bolt11Invoice, CurrencyUnit, KeySetInfo, MintUrl, Proof};
+use cashu::{Amount, CurrencyUnit, KeySetInfo, MintUrl, Proof};
 use cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
 use nostr_sdk::nips::nip19::{FromBech32, Nip19Profile};
 use std::{collections::HashMap, str::FromStr, sync::Mutex};
 use uuid::Uuid;
 
+#[derive(Debug, Clone)]
 pub enum SafeMode {
     Disabled,
     Enabled {
@@ -106,20 +108,31 @@ pub trait DebitPocket: Pocket {
         client: &dyn MintConnector,
         safe_mode: SafeMode,
     ) -> Result<Amount>;
-    async fn prepare_melt(
+    async fn prepare_onchain_melt(
         &self,
-        invoice: Bolt11Invoice,
+        invoice: wire_melt::OnchainInvoice,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
     ) -> Result<MeltSummary>;
-    async fn pay_melt(
+    async fn pay_onchain_melt(
         &self,
         rid: Uuid,
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
         safe_mode: SafeMode,
-    ) -> Result<HashMap<cashu::PublicKey, cashu::Proof>>;
-    async fn check_pending_melts(&self, client: &dyn MintConnector) -> Result<Amount>;
+    ) -> Result<(bitcoin::Txid, HashMap<cashu::PublicKey, cashu::Proof>)>;
+    async fn mint_onchain(
+        &self,
+        amount: bitcoin::Amount,
+        client: &dyn MintConnector,
+    ) -> Result<MintSummary>;
+    async fn check_pending_mints(
+        &self,
+        keysets_info: &[KeySetInfo],
+        client: &dyn MintConnector,
+        tstamp: u64,
+        safe_mode: SafeMode,
+    ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>>;
 }
 
 #[async_trait]
@@ -149,7 +162,7 @@ pub enum PaymentType {
         transport: cashu::Transport,
         id: Option<String>,
     },
-    Bolt11,
+    OnChain,
     Token,
 }
 
@@ -292,20 +305,6 @@ where
         }
     }
 
-    fn check_bolt11_invoice(&self, invoice: &Bolt11Invoice, now: u64) -> Result<()> {
-        if invoice.network() != self.network {
-            return Err(Error::InvalidNetwork(self.network, invoice.network()));
-        }
-        let now = std::time::Duration::from_secs(now);
-        if now > invoice.duration_since_epoch() + invoice.expiry_time() {
-            return Err(Error::PaymentExpired);
-        }
-        if invoice.amount_milli_satoshis().is_none() {
-            return Err(Error::MissingAmount);
-        };
-        Ok(())
-    }
-
     pub async fn clean_local_db(&self) -> Result<u32> {
         let credit_ys = self.credit.clean_local_proofs(self.client.as_ref()).await?;
         let debit_ys = self.debit.clean_local_proofs(self.client.as_ref()).await?;
@@ -357,10 +356,6 @@ where
         debit?;
         credit?;
         Ok(())
-    }
-
-    pub async fn check_pending_melts(&self) -> Result<Amount> {
-        self.debit.check_pending_melts(self.client.as_ref()).await
     }
 
     pub async fn load_tx(&self, tx_id: TransactionId) -> Result<Transaction> {
@@ -967,7 +962,33 @@ where
         Ok(self.client.mint_url())
     }
 
-    async fn prepare_pay(&self, input: String, now: u64) -> Result<PaymentSummary> {
+    async fn prepare_melt(
+        &self,
+        amount: bitcoin::Amount,
+        address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        description: Option<String>,
+    ) -> Result<PaymentSummary> {
+        let infos = self.client.get_mint_keysets().await?.keysets;
+
+        let invoice = wire_melt::OnchainInvoice { address, amount };
+
+        let m_summary = self
+            .debit
+            .prepare_onchain_melt(invoice.clone(), &infos, self.client.as_ref())
+            .await?;
+        let summary = PaymentSummary::from(m_summary);
+        let pref = PayReference {
+            request_id: summary.request_id,
+            unit: summary.unit.clone(),
+            fees: summary.fees,
+            ptype: PaymentType::OnChain,
+            memo: description,
+        };
+        *self.current_payment.lock().unwrap() = Some(pref);
+        Ok(summary)
+    }
+
+    async fn prepare_pay(&self, input: String) -> Result<PaymentSummary> {
         let infos = self.client.get_mint_keysets().await?.keysets;
 
         if let Ok(request) = cashu::PaymentRequest::from_str(&input) {
@@ -990,22 +1011,6 @@ where
                     id: request.payment_id,
                 },
                 memo: request.description,
-            };
-            *self.current_payment.lock().unwrap() = Some(pref);
-            Ok(summary)
-        } else if let Ok(invoice) = Bolt11Invoice::from_str(&input) {
-            self.check_bolt11_invoice(&invoice, now)?;
-            let m_summary = self
-                .debit
-                .prepare_melt(invoice.clone(), &infos, self.client.as_ref())
-                .await?;
-            let summary = PaymentSummary::from(m_summary);
-            let pref = PayReference {
-                request_id: summary.request_id,
-                unit: summary.unit.clone(),
-                fees: summary.fees,
-                ptype: PaymentType::Bolt11,
-                memo: Some(invoice.description().to_string()),
             };
             *self.current_payment.lock().unwrap() = Some(pref);
             Ok(summary)
@@ -1098,46 +1103,6 @@ where
                     .await?;
                 Ok((tx_id, None))
             }
-            PaymentType::Bolt11 => {
-                let proofs = self
-                    .debit
-                    .pay_melt(
-                        request_id,
-                        &infos,
-                        self.client.as_ref(),
-                        SafeMode::new(self.safe_mode, self.clowder_id),
-                    )
-                    .await?;
-                let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
-                    proofs.into_iter().unzip();
-                let amount = proofs
-                    .iter()
-                    .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
-                let mut metadata = HashMap::default();
-                metadata.insert(
-                    PAYMENT_TYPE_METADATA_KEY.to_owned(),
-                    types::PaymentType::Lightning.to_string(),
-                );
-                metadata.insert(
-                    TRANSACTION_STATUS_METADATA_KEY.to_owned(),
-                    types::TransactionStatus::Pending.to_string(),
-                );
-
-                let partial_tx = Transaction {
-                    mint_url: self.client.mint_url(),
-                    fee: fees,
-                    direction: TransactionDirection::Outgoing,
-                    memo,
-                    timestamp: now,
-                    unit: unit.clone(),
-                    ys,
-                    amount,
-                    metadata,
-                    quote_id: None,
-                };
-                let tx_id = self.tx_repo.store_tx(partial_tx).await?;
-                Ok((tx_id, None))
-            }
             PaymentType::Token => {
                 let (proofs, token) = if unit == self.credit.unit() {
                     let p = self
@@ -1210,7 +1175,103 @@ where
                 let tx_id = self.tx_repo.store_tx(partial_tx).await?;
                 Ok((tx_id, Some(token)))
             }
+            PaymentType::OnChain => {
+                let (btc_tx_id, proofs) = self
+                    .debit
+                    .pay_onchain_melt(
+                        request_id,
+                        &infos,
+                        self.client.as_ref(),
+                        SafeMode::new(self.safe_mode, self.clowder_id),
+                    )
+                    .await?;
+                let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
+                    proofs.into_iter().unzip();
+                let amount = proofs
+                    .iter()
+                    .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
+                let mut metadata = HashMap::default();
+                metadata.insert(
+                    PAYMENT_TYPE_METADATA_KEY.to_owned(),
+                    types::PaymentType::OnChain.to_string(),
+                );
+                metadata.insert(
+                    TRANSACTION_STATUS_METADATA_KEY.to_owned(),
+                    types::TransactionStatus::Settled.to_string(),
+                );
+
+                metadata.insert(
+                    BTC_TX_ID_TYPE_METADATA_KEY.to_owned(),
+                    btc_tx_id.to_string(),
+                );
+
+                let partial_tx = Transaction {
+                    mint_url: self.client.mint_url(),
+                    fee: fees,
+                    direction: TransactionDirection::Outgoing,
+                    memo,
+                    timestamp: now,
+                    unit: unit.clone(),
+                    ys,
+                    amount,
+                    metadata,
+                    quote_id: None,
+                };
+                let tx_id = self.tx_repo.store_tx(partial_tx).await?;
+                Ok((tx_id, None))
+            }
         }
+    }
+
+    async fn mint(&self, amount: bitcoin::Amount) -> Result<MintSummary> {
+        let summary = self
+            .debit
+            .mint_onchain(amount, self.client.as_ref())
+            .await?;
+        Ok(summary)
+    }
+
+    async fn check_pending_mints(&self) -> Result<Vec<TransactionId>> {
+        let mut res = Vec::new();
+        let keysets_info = self.client.get_mint_keysets().await?.keysets;
+        let now = chrono::Utc::now();
+        let pending_mints_result = self
+            .debit
+            .check_pending_mints(
+                &keysets_info,
+                self.client.as_ref(),
+                now.timestamp() as u64,
+                SafeMode::new(self.safe_mode, self.clowder_id),
+            )
+            .await?;
+
+        for (qid, (amount, ys)) in pending_mints_result {
+            let mut metadata = HashMap::default();
+            metadata.insert(
+                PAYMENT_TYPE_METADATA_KEY.to_owned(),
+                types::PaymentType::OnChain.to_string(),
+            );
+            metadata.insert(
+                TRANSACTION_STATUS_METADATA_KEY.to_owned(),
+                types::TransactionStatus::Settled.to_string(),
+            );
+
+            let tx = Transaction {
+                mint_url: self.client.mint_url(),
+                fee: cashu::Amount::ZERO,
+                direction: TransactionDirection::Incoming,
+                memo: None,
+                timestamp: now.timestamp() as u64,
+                unit: self.debit_unit(),
+                ys,
+                amount,
+                metadata,
+                quote_id: Some(qid.to_string()),
+            };
+            let tx_id = self.tx_repo.store_tx(tx).await?;
+            res.push(tx_id);
+        }
+        Ok(res)
     }
 
     async fn receive_proofs(

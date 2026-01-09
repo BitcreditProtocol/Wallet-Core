@@ -1,6 +1,7 @@
 use crate::config::AppStateConfig;
 use crate::job::JobState;
 use crate::mint::MintConnector;
+use crate::types::MintSummary;
 use crate::utils::tx_can_be_refreshed;
 use crate::{
     config::{NostrConfig, SameMintSafeMode},
@@ -355,16 +356,66 @@ impl AppState {
         Ok(CreatedToken { tx_id, token })
     }
 
+    pub async fn wallet_prepare_melt(
+        &self,
+        idx: usize,
+        amount: u64,
+        address: String,
+        description: Option<String>,
+    ) -> Result<PaymentSummary> {
+        tracing::debug!("wallet_prepare_melt({idx}, {amount}, {address}, {description:?})");
+
+        let parsed_amount = bitcoin::Amount::from_sat(amount);
+        let parsed_address = bitcoin::Address::from_str(&address)
+            .map_err(|_| Error::InvalidBitcoinAddress(address.clone()))?;
+
+        if !parsed_address.is_valid_for_network(self.cfg.network) {
+            return Err(Error::InvalidBitcoinAddress(address.clone()));
+        }
+
+        let purse = self.get_purse();
+        let summary = purse
+            .prepare_melt(idx, parsed_amount, parsed_address, description)
+            .await?;
+        Ok(summary)
+    }
+
+    pub async fn wallet_melt(&self, rid: String) -> Result<TransactionId> {
+        let tstamp = chrono::Utc::now().timestamp() as u64;
+        tracing::debug!("wallet_melt({rid}, {tstamp})");
+
+        let purse = self.get_purse();
+        let rid = Uuid::from_str(&rid)?;
+        let tx_id = purse.melt(rid, tstamp).await?;
+        Ok(tx_id)
+    }
+
+    pub async fn wallet_mint(&self, idx: usize, amount: u64) -> Result<MintSummary> {
+        tracing::debug!("wallet_mint({idx}, {amount})");
+
+        let parsed_amount = bitcoin::Amount::from_sat(amount);
+        let purse = self.get_purse();
+        let summary = purse.mint(idx, parsed_amount).await?;
+        Ok(summary)
+    }
+
+    pub async fn wallet_check_pending_mints(&self, idx: usize) -> Result<Vec<TransactionId>> {
+        tracing::debug!("wallet_check_pending_mints({idx})");
+
+        let purse = self.get_purse();
+        let tx_ids = purse.check_pending_mints(idx).await?;
+        Ok(tx_ids)
+    }
+
     pub async fn wallet_prepare_payment(
         &self,
         idx: usize,
         input: String,
     ) -> Result<PaymentSummary> {
-        let now = chrono::Utc::now().timestamp() as u64;
         tracing::debug!("wallet_prepare_payment({idx}, {input})");
 
         let purse = self.get_purse();
-        let summary = purse.prepare_pay(idx, input, now).await?;
+        let summary = purse.prepare_pay(idx, input).await?;
         Ok(summary)
     }
 
@@ -415,13 +466,6 @@ impl AppState {
         let max_wait = core::time::Duration::from_secs(max_wait_sec);
         let tx_id = purse.check_received_payment(max_wait, p_id).await?;
         Ok(tx_id)
-    }
-
-    pub async fn wallet_check_pending_melts(&self, idx: usize) -> Result<cashu::Amount> {
-        tracing::debug!("wallet_check_pending_melts({idx})");
-
-        let wallet = self.get_wallet(idx).await?;
-        wallet.read().await.check_pending_melts().await
     }
 
     pub async fn wallet_list_tx_ids(&self, idx: usize) -> Result<Vec<TransactionId>> {
@@ -554,6 +598,24 @@ impl AppState {
                     );
                 }
             };
+            match self.wallet_check_pending_mints(*wallet_id as usize).await {
+                Ok(result) => {
+                    tracing::info!(
+                        "Received {} transactions from pending mints for wallet {wallet_id}, Tx Ids: {:?}",
+                        result.len(),
+                        result
+                            .iter()
+                            .map(|txid| txid.to_string())
+                            .collect::<Vec<String>>()
+                    );
+                }
+                Err(e) => {
+                    job_failed = true;
+                    tracing::error!(
+                        "Error running wallet_check_pending_mints job for wallet {wallet_id}: {e}"
+                    );
+                }
+            }
         }
 
         // successful = true
@@ -644,7 +706,7 @@ pub enum PaymentType {
     NotApplicable,
     Token,
     Cdk18,
-    Lightning,
+    OnChain,
 }
 
 impl std::convert::From<types::PaymentType> for PaymentType {
@@ -653,7 +715,7 @@ impl std::convert::From<types::PaymentType> for PaymentType {
             types::PaymentType::NotApplicable => PaymentType::NotApplicable,
             types::PaymentType::Token => PaymentType::Token,
             types::PaymentType::Cdk18 => PaymentType::Cdk18,
-            types::PaymentType::Lightning => PaymentType::Lightning,
+            types::PaymentType::OnChain => PaymentType::OnChain,
         }
     }
 }
@@ -689,12 +751,15 @@ pub struct Transaction {
     pub memo: String,
     pub ptype: PaymentType,
     pub status: TransactionStatus,
+    pub btc_tx_id: Option<bitcoin::Txid>,
+    pub quote_id: Option<String>,
 }
 
 impl std::convert::From<cdk::wallet::types::Transaction> for Transaction {
     fn from(tx: cdk::wallet::types::Transaction) -> Self {
         let status = TransactionStatus::from(types::get_transaction_status(&tx.metadata));
         let ptype = PaymentType::from(types::get_payment_type(&tx.metadata));
+        let btc_tx_id = types::get_btc_tx_id(&tx.metadata);
         Self {
             id: tx.id().to_string(),
             amount: u64::from(tx.amount),
@@ -705,6 +770,8 @@ impl std::convert::From<cdk::wallet::types::Transaction> for Transaction {
             memo: tx.memo.unwrap_or_default(),
             ptype,
             status,
+            btc_tx_id,
+            quote_id: tx.quote_id,
         }
     }
 }
@@ -838,13 +905,17 @@ async fn build_wallet(
     Ok(new_wallet)
 }
 
-// converts a mnemonic to a secp256k1 keypair
-fn keypair_from_mnemonic(mnemonic: &bip39::Mnemonic) -> Keypair {
-    let seed = seed_from_mnemonic(mnemonic);
+fn seed_from_mnemonic(mnemonic: &bip39::Mnemonic) -> [u8; 64] {
+    mnemonic.to_seed("")
+}
+
+fn keypair_from_seed(seed: [u8; 64]) -> Keypair {
     let (key, _) = seed.split_at(secp256k1::constants::SECRET_KEY_SIZE);
     Keypair::from_seckey_slice(SECP256K1, key).expect("key to be correct size")
 }
 
-fn seed_from_mnemonic(mnemonic: &bip39::Mnemonic) -> [u8; 64] {
-    mnemonic.to_seed("")
+// converts a mnemonic to a secp256k1 keypair
+fn keypair_from_mnemonic(mnemonic: &bip39::Mnemonic) -> Keypair {
+    let seed = seed_from_mnemonic(mnemonic);
+    keypair_from_seed(seed)
 }

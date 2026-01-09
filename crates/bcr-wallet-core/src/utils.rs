@@ -90,7 +90,7 @@ pub mod tests {
     use crate::TStamp;
     use crate::error::Result;
     use async_trait::async_trait;
-    use bcr_common::wire::keys as wire_keys;
+    use bcr_common::wire::{keys as wire_keys, melt as wire_melt, mint as wire_mint};
     use cashu::{
         nut02 as cdk02, nut03 as cdk03, nut04 as cdk04, nut05 as cdk05, nut06 as cdk06,
         nut07 as cdk07, nut09 as cdk09, nut23 as cdk23,
@@ -204,6 +204,28 @@ pub mod tests {
             TStamp,
             secp256k1::schnorr::Signature,
         )>;
+        async fn post_melt_quote_onchain(
+            &self,
+            req: wire_melt::MeltQuoteOnchainRequest,
+        ) -> Result<wire_melt::MeltQuoteOnchainResponse>;
+        async fn post_melt_onchain(
+            &self,
+            req: cashu::MeltRequest<String>,
+        ) -> Result<wire_melt::MeltQuoteOnchainResponse>;
+        async fn post_mint_quote_onchain(
+            &self,
+            req: wire_mint::MintQuoteOnchainRequest,
+        ) -> Result<wire_mint::MintQuoteOnchainResponse>;
+
+        async fn get_mint_quote_onchain(
+            &self,
+            quote_id: String,
+        ) -> Result<wire_mint::MintQuoteOnchainResponse>;
+
+        async fn post_mint_onchain(
+            &self,
+            req: cashu::MintRequest<String>,
+        ) -> Result<cashu::MintResponse>;
         }
     }
 }

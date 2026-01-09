@@ -28,6 +28,8 @@ pub enum Error {
     Cdk10(#[from] cashu::nut10::Error),
     #[error("cashu::amount: {0}")]
     CdkAmount(#[from] cashu::amount::Error),
+    #[error("cashu::dhke: {0}")]
+    CdkDhke(#[from] cashu::dhke::Error),
     #[error("bitcoin::bip32 {0}")]
     BtcBip32(#[from] bitcoin::bip32::Error),
     #[error("uuid:: {0}")]
@@ -82,6 +84,8 @@ pub enum Error {
     EmptyToken(String),
     #[error("invalid token: {0}")]
     InvalidToken(String),
+    #[error("invalid bitcoin address: {0}")]
+    InvalidBitcoinAddress(String),
     #[error("Invalid Hash Lock on Beta Proofs, expected {0} got {1}")]
     InvalidHashLock(Sha256, String),
     #[error("no active keyset")]
@@ -120,6 +124,10 @@ pub enum Error {
     MeltUnpaid(String),
     #[error("melt op not found: {0}")]
     MeltNotFound(String),
+    #[error("mint op not found: {0}")]
+    MintNotFound(String),
+    #[error("mint op failed: {0}")]
+    MintingError(String),
     #[error("inter-mint payment not supported yet")]
     InterMint,
     #[error("spending conditions not supported yet")]

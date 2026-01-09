@@ -33,7 +33,6 @@ pub struct WalletSettings {
 struct Cli {
     #[arg(short, long, default_value = "default")]
     wallet: String,
-
     #[command(subcommand)]
     command: Commands,
 }
@@ -72,6 +71,15 @@ enum Commands {
     },
     #[command(name = "reclaim")]
     Reclaim { id: usize, tx_id: String },
+    #[command(name = "melt")]
+    Melt {
+        id: usize,
+        amount: u64,
+        address: String,
+        description: Option<String>,
+    },
+    #[command(name = "mint")]
+    Mint { id: usize, amount: u64 },
     #[command(name = "migrate_rabid")]
     MigrateRabid,
     #[command(name = "run_jobs")]
@@ -225,6 +233,26 @@ async fn main() -> Result<()> {
                 "Reclaim for {}: {}",
                 cli.wallet,
                 command::cmd_reclaim(&app_state, &cli.wallet, id, &tx_id).await?
+            );
+        }
+        Commands::Melt {
+            id,
+            amount,
+            address,
+            description,
+        } => {
+            info!(
+                "Melt for {}: {}",
+                cli.wallet,
+                command::cmd_melt(&app_state, &cli.wallet, id, amount, &address, &description)
+                    .await?
+            );
+        }
+        Commands::Mint { id, amount } => {
+            info!(
+                "Mint for {}: {}",
+                cli.wallet,
+                command::cmd_mint(&app_state, &cli.wallet, id, amount).await?
             );
         }
         Commands::MigrateRabid => {

@@ -6,6 +6,14 @@
     * `wallet_reclaim_tx(wallet_id, tx_id)` - reclaims the funds from the given transaction
 * Add `id` to Transaction Response
 * Rename `CashedIn` to `Settled` (breaking DB Change)
+* Removed `wallet_check_pending_melts` - since onchain melts execute immediately
+* Add mint and melt
+    * Add `wallet_prepare_melt` - prepares a melt, returns a payment summary
+    * Add `wallet_melt` - executes the melt, returning a transaction id
+    * Add optional `btc_tx_id` to `Transaction` - the Bitcoin transaction ID (e.g. from a melt operation)
+    * Add optional `quote_id` to `Transaction` - the Mint quote ID (e.g. from a mint operation)
+    * Add `wallet_mint` -  creates a mint request for the given amount, returns a mint summary, with the amount and BTC address to pay to
+    * Add `wallet_check_pending_mints` - checks the open mint requests and attempts to mint them, if they were paid (Also called during the regular job runs)
 
 # 0.7.1
 

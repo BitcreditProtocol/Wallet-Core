@@ -1,3 +1,4 @@
+use bitcoin::address::NetworkUnchecked;
 use cashu::{Amount, CurrencyUnit, MintUrl};
 use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
@@ -56,12 +57,20 @@ impl MeltSummary {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct MintSummary {
+    pub quote_id: Uuid,
+    pub amount: bitcoin::Amount,
+    pub address: bitcoin::Address<NetworkUnchecked>,
+    pub expiry: u64,
+}
+
 #[derive(strum::EnumString, strum::Display, Debug, Clone)]
 pub enum PaymentType {
     NotApplicable,
     Token,
     Cdk18,
-    Lightning,
+    OnChain,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +108,12 @@ pub fn get_payment_type(metas: &HashMap<String, String>) -> PaymentType {
     PaymentType::from_str(ptype).unwrap_or(PaymentType::NotApplicable)
 }
 
+pub const BTC_TX_ID_TYPE_METADATA_KEY: &str = "btc_tx_id";
+pub fn get_btc_tx_id(metas: &HashMap<String, String>) -> Option<bitcoin::Txid> {
+    let tx_id = metas.get(BTC_TX_ID_TYPE_METADATA_KEY)?;
+    bitcoin::Txid::from_str(tx_id).ok()
+}
+
 impl std::convert::From<SendSummary> for PaymentSummary {
     fn from(value: SendSummary) -> Self {
         Self {
@@ -122,7 +137,7 @@ impl std::convert::From<MeltSummary> for PaymentSummary {
             fees: value.fees,
             reserved_fees: value.reserved_fees,
             expiry: value.expiry,
-            ptype: PaymentType::Lightning,
+            ptype: PaymentType::OnChain,
         }
     }
 }
