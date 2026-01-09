@@ -1246,7 +1246,7 @@ where
                 .ok_or(Error::BetaNotFound(beta))?;
 
             let status = beta_client.get_alpha_status(self.clowder_id).await?.state;
-            if matches!(status, wire_clowder::AlphaState::Rabid(..)) {
+            if matches!(status, wire_clowder::SimpleAlphaState::Rabid(..)) {
                 rabid_count += 1;
             }
         }
