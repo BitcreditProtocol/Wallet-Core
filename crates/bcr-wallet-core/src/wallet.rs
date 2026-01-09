@@ -388,7 +388,7 @@ where
                 .update_metadata(
                     tx_id,
                     String::from(types::TRANSACTION_STATUS_METADATA_KEY),
-                    types::TransactionStatus::CashedIn.to_string(),
+                    types::TransactionStatus::Settled.to_string(),
                 )
                 .await?;
             updated = true;
@@ -438,13 +438,13 @@ where
             return Err(Error::CurrencyUnitMismatch(self.debit.unit(), tx.unit));
         };
 
-        // If amount is zero - this means the transaction was already claimed - we set the transaction to CashedIn
+        // If amount is zero - this means the transaction was already claimed - we set the transaction to Settled
         if amount == Amount::ZERO {
             self.tx_repo
                 .update_metadata(
                     tx_id,
                     String::from(types::TRANSACTION_STATUS_METADATA_KEY),
-                    types::TransactionStatus::CashedIn.to_string(),
+                    types::TransactionStatus::Settled.to_string(),
                 )
                 .await?;
         } else {
@@ -858,7 +858,7 @@ where
         );
         metadata.insert(
             TRANSACTION_STATUS_METADATA_KEY.to_owned(),
-            types::TransactionStatus::CashedIn.to_string(),
+            types::TransactionStatus::Settled.to_string(),
         );
 
         let tx_id = if token.unit().is_some() && token.unit() == Some(self.debit.unit()) {

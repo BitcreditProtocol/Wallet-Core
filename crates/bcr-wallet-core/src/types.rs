@@ -80,7 +80,7 @@ pub enum TransactionStatus {
     #[default]
     NotApplicable,
     Pending,
-    CashedIn,
+    Settled,
     Canceled,
 }
 pub const TRANSACTION_STATUS_METADATA_KEY: &str = "transaction_status";

@@ -663,7 +663,7 @@ pub enum TransactionStatus {
     #[default]
     NotApplicable,
     Pending,
-    CashedIn,
+    Settled,
     Canceled,
 }
 
@@ -672,7 +672,7 @@ impl std::convert::From<types::TransactionStatus> for TransactionStatus {
         match status {
             types::TransactionStatus::NotApplicable => TransactionStatus::NotApplicable,
             types::TransactionStatus::Pending => TransactionStatus::Pending,
-            types::TransactionStatus::CashedIn => TransactionStatus::CashedIn,
+            types::TransactionStatus::Settled => TransactionStatus::Settled,
             types::TransactionStatus::Canceled => TransactionStatus::Canceled,
         }
     }
