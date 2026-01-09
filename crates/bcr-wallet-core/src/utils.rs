@@ -4,6 +4,23 @@ use cdk::Error as CdkError;
 
 type CdkResult<T> = std::result::Result<T, cdk::Error>;
 
+pub fn tx_can_be_refreshed(tx: &cdk::wallet::types::Transaction) -> bool {
+    // Only refresh outgoing transactions
+    if matches!(
+        tx.direction,
+        cdk::wallet::types::TransactionDirection::Incoming
+    ) {
+        return false;
+    }
+
+    // Only refresh pending transactions
+    let p_status = crate::types::get_transaction_status(&tx.metadata);
+    if !matches!(p_status, crate::types::TransactionStatus::Pending) {
+        return false;
+    }
+    true
+}
+
 pub fn validate_offline_conditions(
     wallet_pubkey: PublicKey,
     conditions: &cashu::Conditions,

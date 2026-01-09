@@ -168,6 +168,34 @@ impl PocketDB {
         }
     }
 
+    fn load_proofs_sync(
+        db: Arc<Database>,
+        proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        ys: Vec<cdk01::PublicKey>,
+    ) -> Result<Vec<ProofEntry>> {
+        let read_txn = db.begin_read()?;
+        match read_txn.open_table(proof_table) {
+            Ok(table) => {
+                let mut res = Vec::with_capacity(ys.len());
+                for y in ys.iter() {
+                    match table.get(y.to_bytes().as_slice())? {
+                        Some(entry) => {
+                            let proof: ProofEntry =
+                                ciborium::from_reader(entry.value().as_slice())?;
+                            res.push(proof)
+                        }
+                        None => {
+                            return Err(Error::ProofNotFound(y.to_owned()));
+                        }
+                    }
+                }
+                Ok(res)
+            }
+            Err(TableError::TableDoesNotExist(_)) => Ok(vec![]),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     fn delete_proof_sync(
         db: Arc<Database>,
         proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
@@ -400,6 +428,21 @@ impl PocketRepository for PocketDB {
         let proof = res.ok_or(Error::ProofNotFound(y))?;
         let state = proof.state;
         Ok((proof.into(), state))
+    }
+
+    async fn load_proofs(
+        &self,
+        ys: &[cdk01::PublicKey],
+    ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
+        let db_clone = self.db.clone();
+        let ys_clone = ys.to_owned();
+        let table = self.proof_table;
+        let res =
+            spawn_blocking(move || Self::load_proofs_sync(db_clone, table, ys_clone)).await??;
+        Ok(res
+            .into_iter()
+            .map(|entry| (entry.y, cdk00::Proof::from(entry)))
+            .collect())
     }
 
     async fn delete_proof(&self, y: cdk01::PublicKey) -> Result<Option<cdk00::Proof>> {

@@ -303,14 +303,14 @@ impl wallet::CreditPocket for Pocket {
 
     async fn reclaim_proofs(
         &self,
+        ys: &[cdk01::PublicKey],
         keysets_info: &[KeySetInfo],
         client: &dyn MintConnector,
         safe_mode: SafeMode,
     ) -> Result<(Amount, Vec<cdk00::Proof>)> {
-        let mut pendings = self.db.list_pending().await?;
+        let mut pendings = self.db.load_proofs(ys).await?;
         let infos = collect_keyset_infos_from_proofs(pendings.values(), keysets_info)?;
-        let ys = pendings.keys().cloned().collect::<Vec<_>>();
-        let request = cdk07::CheckStateRequest { ys };
+        let request = cdk07::CheckStateRequest { ys: ys.to_owned() };
         let response = client.post_check_state(request).await?;
         let unspent_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = response
             .states
@@ -326,6 +326,8 @@ impl wallet::CreditPocket for Pocket {
                 }
             })
             .collect();
+        // Separate reclaimable (active keyset) from redeemable (inactive keyset) proofs
+        // since we can't reclaim proofs from an inactive keyset anymore
         let (reclaimable, redeemable): (HashMap<_, _>, HashMap<_, _>) =
             unspent_proofs.into_iter().partition(|(_, p)| {
                 let info = infos
@@ -455,6 +457,7 @@ impl wallet::CreditPocket for DummyPocket {
     }
     async fn reclaim_proofs(
         &self,
+        _ys: &[cdk01::PublicKey],
         _keysets_info: &[KeySetInfo],
         _client: &dyn MintConnector,
         _safe_mode: SafeMode,
@@ -684,5 +687,86 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].tstamp, 20);
         assert_eq!(list[1].tstamp, 110);
+    }
+
+    #[tokio::test]
+    async fn credit_reclaim_proofs() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = vec![KeySetInfo::from(info)];
+        let amounts = [Amount::from(8u64), Amount::from(16u64)];
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
+
+        let ys: Vec<cdk01::PublicKey> = proofs.iter().map(|p| p.y().expect("valid y")).collect();
+
+        let mut pdb = MockPocketRepository::new();
+        let mut connector = MockMintConnector::new();
+        let cloned_keyset = keyset.clone();
+
+        connector
+            .expect_get_mint_keyset()
+            .times(1)
+            .with(eq(kid))
+            .returning(move |_| Ok(KeySet::from(cloned_keyset.clone())));
+        let state_request = cdk07::CheckStateRequest { ys: ys.clone() };
+        let state_proofs_clone = proofs.clone();
+        connector
+            .expect_post_check_state()
+            .times(1)
+            .with(eq(state_request))
+            .returning(move |_| {
+                let states: Vec<cashu::ProofState> = state_proofs_clone
+                    .iter()
+                    .map(|p| cashu::ProofState {
+                        y: p.y().unwrap(),
+                        state: cashu::State::Unspent,
+                        witness: None,
+                    })
+                    .collect();
+                Ok(cashu::CheckStateResponse { states })
+            });
+        let proofs_clone = proofs.clone();
+        let ys_clone = ys.clone();
+        pdb.expect_load_proofs()
+            .times(1)
+            .with(eq(ys_clone))
+            .returning(move |_| {
+                let mut map = HashMap::new();
+                map.insert(proofs_clone[0].y().unwrap(), proofs_clone[0].clone());
+                map.insert(proofs_clone[1].y().unwrap(), proofs_clone[1].clone());
+                Ok(map)
+            });
+        pdb.expect_counter()
+            .times(1)
+            .with(eq(kid))
+            .returning(|_| Ok(0));
+        pdb.expect_increment_counter()
+            .times(1)
+            .with(eq(kid), eq(0), eq(2))
+            .returning(|_, _, _| Ok(()));
+        connector
+            .expect_post_swap()
+            .times(1)
+            .returning(move |request| {
+                let amounts = request
+                    .outputs()
+                    .iter()
+                    .map(|b| b.amount)
+                    .collect::<Vec<_>>();
+                let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
+                let response = cdk03::SwapResponse { signatures };
+                Ok(response)
+            });
+        pdb.expect_store_new().times(2).returning(|p| {
+            let y = p.y().expect("Hash to curve should not fail");
+            Ok(y)
+        });
+
+        let pocket = pocket(Arc::new(pdb));
+        let (reclaimed, _) = pocket
+            .reclaim_proofs(&ys, &k_infos, &connector, SafeMode::Disabled)
+            .await
+            .expect("reclaim works");
+        assert_eq!(reclaimed, Amount::from(24u64));
     }
 }

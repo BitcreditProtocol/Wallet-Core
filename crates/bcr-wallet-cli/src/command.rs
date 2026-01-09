@@ -38,7 +38,12 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
         if !redemptions.is_empty() {
             res.push_str("Redemptions plan:");
             for r in redemptions.iter() {
-                res.push_str(&format!("\t\t{} - {}", r.tstamp, r.amount));
+                res.push_str(&format!(
+                    "\t\t{} ({}) - {}",
+                    format_timestamp(r.tstamp),
+                    r.tstamp,
+                    r.amount
+                ));
             }
             push_break(&mut res);
         }
@@ -48,8 +53,8 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
 
             for tx in transactions.iter() {
                 res.push_str(&format!(
-                    "\t\tAmount: {} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {}",
-                    tx.amount, tx.unit, tx.fees,  tx.status, format_timestamp(tx.tstamp), &format!("{:?}", tx.ptype), tx.direction,tx.memo
+                    "\t\tId: {} \t Amount: {} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {}",
+                    tx.id, tx.amount, tx.unit, tx.fees,  tx.status, format_timestamp(tx.tstamp), &format!("{:?}", tx.ptype), tx.direction,tx.memo
                 ));
                 push_break(&mut res);
             }
@@ -235,8 +240,26 @@ pub async fn cmd_send_payment(
 }
 
 pub async fn cmd_run_jobs(app_state: &AppState) -> Result<()> {
-    app_state.execute_jobs().await;
+    app_state.execute_regular_jobs().await;
+    app_state.execute_daily_jobs().await;
     Ok(())
+}
+
+pub async fn cmd_reclaim(
+    app_state: &AppState,
+    name: &str,
+    id: usize,
+    tx_id: &str,
+) -> Result<String> {
+    let mut res = String::new();
+    let reclaimed = app_state.wallet_reclaim_tx(id, tx_id).await?;
+
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Reclaim Funds for {name}, Tx: {tx_id} - Wallet ID: {id} - Reclaimed: {reclaimed}.\n"
+    ));
+    Ok(res)
 }
 
 fn push_line(res: &mut String) {

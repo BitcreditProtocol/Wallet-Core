@@ -449,7 +449,7 @@ where
         ),
         (
             String::from(TRANSACTION_STATUS_METADATA_KEY),
-            types::TransactionStatus::CashedIn.to_string(),
+            types::TransactionStatus::Settled.to_string(),
         ),
     ]);
     let response = wlt
