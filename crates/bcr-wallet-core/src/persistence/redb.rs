@@ -5,10 +5,11 @@ use crate::{
     persistence::Commitment,
     pocket::{PocketRepository, debit::MintMeltRepository},
     purse::PurseRepository,
-    types::WalletConfig,
+    types::{MintSummary, WalletConfig},
     wallet::TransactionRepository,
 };
 use async_trait::async_trait;
+use bitcoin::address::NetworkUnchecked;
 use cashu::{
     Amount, CurrencyUnit, MintUrl, nut00 as cdk00, nut01 as cdk01, nut02 as cdk02, nut07 as cdk07,
     nut12 as cdk12, secret::Secret,
@@ -17,6 +18,7 @@ use cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use tokio::task::spawn_blocking;
+use uuid::Uuid;
 
 ///////////////////////////////////////////// ProofEntry
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -1005,23 +1007,65 @@ fn convert_melt_entry_to(entry: MeltEntry) -> (String, Option<cdk00::PreMintSecr
     (quote_id, Some(cdk00::PreMintSecrets { secrets, keyset_id }))
 }
 
+///////////////////////////////////////////// MintEntry
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct MintEntry {
+    quote_id: Uuid,
+    amount: bitcoin::Amount,
+    address: bitcoin::Address<NetworkUnchecked>,
+    expiry: u64,
+}
+
+fn convert_mint_entry_from(
+    quote_id: Uuid,
+    amount: bitcoin::Amount,
+    address: bitcoin::Address<NetworkUnchecked>,
+    expiry: u64,
+) -> MintEntry {
+    MintEntry {
+        quote_id,
+        amount,
+        address,
+        expiry,
+    }
+}
+
+fn convert_mint_entry_to(entry: MintEntry) -> MintSummary {
+    MintSummary {
+        quote_id: entry.quote_id,
+        amount: entry.amount,
+        address: entry.address,
+        expiry: entry.expiry,
+    }
+}
+
 ///////////////////////////////////////////// MintMeltDB
 pub struct MintMeltDB {
     db: Arc<Database>,
     melt_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    mint_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
 }
 
 impl MintMeltDB {
     const MELT_BASE_DB_NAME: &'static str = "melts";
+    const MINT_BASE_DB_NAME: &'static str = "mints";
 
     pub fn new(db: Arc<Database>, unit: &CurrencyUnit) -> Result<Self> {
         // Leak once to get static string, because of dynamically generated table names
         let melt_name: &'static str =
             Box::leak(format!("{unit}_{}", Self::MELT_BASE_DB_NAME).into_boxed_str());
+        let mint_name: &'static str =
+            Box::leak(format!("{unit}_{}", Self::MINT_BASE_DB_NAME).into_boxed_str());
         let melt_table = TableDefinition::new(melt_name);
-        Ok(MintMeltDB { db, melt_table })
+        let mint_table = TableDefinition::new(mint_name);
+        Ok(MintMeltDB {
+            db,
+            melt_table,
+            mint_table,
+        })
     }
 
+    // melt
     fn store_melt_sync(
         db: Arc<Database>,
         melt_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
@@ -1100,10 +1144,90 @@ impl MintMeltDB {
             Err(e) => Err(e.into()),
         }
     }
+
+    // mint
+    fn store_mint_sync(
+        db: Arc<Database>,
+        mint_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        mint: MintEntry,
+    ) -> Result<Uuid> {
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(mint_table)?;
+
+            let mut serialized = Vec::new();
+            ciborium::into_writer(&mint, &mut serialized)?;
+            table.insert(mint.quote_id.as_bytes().as_slice(), serialized)?;
+        }
+
+        write_txn.commit()?;
+        Ok(mint.quote_id)
+    }
+
+    fn load_mint_sync(
+        db: Arc<Database>,
+        mint_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        qid: Uuid,
+    ) -> Result<Option<MintEntry>> {
+        let read_txn = db.begin_read()?;
+
+        match read_txn.open_table(mint_table) {
+            Ok(table) => {
+                let entry = table.get(qid.as_bytes().as_slice())?;
+                match entry {
+                    Some(e) => {
+                        let entry: MintEntry = ciborium::from_reader(e.value().as_slice())?;
+                        Ok(Some(entry))
+                    }
+                    None => Ok(None),
+                }
+            }
+            Err(TableError::TableDoesNotExist(_)) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn delete_mint_sync(
+        db: Arc<Database>,
+        mint_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        qid: Uuid,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(mint_table)?;
+            table.remove(qid.as_bytes().as_slice())?;
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    fn list_mints_sync(
+        db: Arc<Database>,
+        mint_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    ) -> Result<Vec<Uuid>> {
+        let read_txn = db.begin_read()?;
+
+        match read_txn.open_table(mint_table) {
+            Ok(table) => {
+                let mut res = Vec::new();
+                for (_, v) in table.range::<&[u8]>(..)?.flatten() {
+                    let entry: MintEntry = ciborium::from_reader(v.value().as_slice())?;
+                    res.push(entry.quote_id);
+                }
+                Ok(res)
+            }
+            Err(TableError::TableDoesNotExist(_)) => Ok(vec![]),
+            Err(e) => Err(e.into()),
+        }
+    }
 }
 
 #[async_trait]
 impl MintMeltRepository for MintMeltDB {
+    // melt
     async fn store_melt(
         &self,
         qid: String,
@@ -1135,6 +1259,41 @@ impl MintMeltRepository for MintMeltDB {
         let db_clone = self.db.clone();
         let table = self.melt_table;
         spawn_blocking(move || Self::delete_melt_sync(db_clone, table, qid)).await??;
+        Ok(())
+    }
+    // mint
+    async fn store_mint(
+        &self,
+        quote_id: Uuid,
+        amount: bitcoin::Amount,
+        address: bitcoin::Address<NetworkUnchecked>,
+        expiry: u64,
+    ) -> Result<Uuid> {
+        let db_clone = self.db.clone();
+        let table = self.mint_table;
+        let entry = convert_mint_entry_from(quote_id, amount, address, expiry);
+        spawn_blocking(move || Self::store_mint_sync(db_clone, table, entry)).await?
+    }
+
+    async fn load_mint(&self, qid: Uuid) -> Result<MintSummary> {
+        let db_clone = self.db.clone();
+        let table = self.mint_table;
+        let res = spawn_blocking(move || Self::load_mint_sync(db_clone, table, qid)).await??;
+        let entry = res.ok_or(Error::MintNotFound(qid.clone().to_string()))?;
+        let summary = convert_mint_entry_to(entry);
+        Ok(summary)
+    }
+
+    async fn list_mints(&self) -> Result<Vec<Uuid>> {
+        let db_clone = self.db.clone();
+        let table = self.mint_table;
+        spawn_blocking(move || Self::list_mints_sync(db_clone, table)).await?
+    }
+
+    async fn delete_mint(&self, qid: Uuid) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.mint_table;
+        spawn_blocking(move || Self::delete_mint_sync(db_clone, table, qid)).await??;
         Ok(())
     }
 }
