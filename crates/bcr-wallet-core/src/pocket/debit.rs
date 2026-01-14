@@ -81,42 +81,6 @@ impl Pocket {
         }
     }
 
-    pub fn generate_blinds(
-        keyset_id: cashu::Id,
-        amount: cashu::Amount,
-    ) -> Result<(
-        Vec<cashu::BlindedMessage>,
-        Vec<cashu::secret::Secret>,
-        Vec<cashu::SecretKey>,
-    )> {
-        let amounts: Vec<cashu::Amount> = amount.split();
-        let mut blinded_messages = Vec::with_capacity(amounts.len());
-        let mut secrets = Vec::with_capacity(amounts.len());
-        let mut rs = Vec::with_capacity(amounts.len());
-
-        for amount in amounts {
-            let blind = Self::generate_blind(keyset_id, amount)?;
-            blinded_messages.push(blind.0);
-            secrets.push(blind.1);
-            rs.push(blind.2);
-        }
-
-        Ok((blinded_messages, secrets, rs))
-    }
-
-    pub fn generate_blind(
-        kid: cashu::Id,
-        amount: cashu::Amount,
-    ) -> Result<(
-        cashu::BlindedMessage,
-        cashu::secret::Secret,
-        cashu::SecretKey,
-    )> {
-        let secret = cashu::secret::Secret::new(hex::encode(rand::random::<[u8; 32]>()));
-        let (b_, r) = cashu::dhke::blind_message(secret.as_bytes(), None)?;
-        Ok((cashu::BlindedMessage::new(amount, kid, b_), secret, r))
-    }
-
     fn find_active_keysetid(&self, keysets_info: &[KeySetInfo]) -> Result<cashu::KeySetInfo> {
         let active_info = keysets_info
             .iter()
@@ -244,14 +208,22 @@ impl Pocket {
                         tracing::info!("Mint {qid} paid - attempting to mint..");
                         let (active_keyset_info, active_keyset) =
                             self.find_active_keyset(keysets_info, client).await?;
-                        let (blinded_messages, secrets, rs) = Self::generate_blinds(
-                            active_keyset_info.id,
+                        let kid = active_keyset.id;
+
+                        let counter = self.pdb.counter(kid).await?;
+                        let premint = cashu::PreMintSecrets::from_seed(
+                            kid,
+                            counter,
+                            &self.seed,
                             cashu::Amount::from(mint_summary.amount.to_sat()),
+                            &SplitTarget::None,
                         )?;
+                        let increment = premint.len() as u32;
+                        self.pdb.increment_counter(kid, counter, increment).await?;
 
                         let mint_req = cashu::MintRequest {
                             quote: mint_summary.quote_id.to_string(),
-                            outputs: blinded_messages,
+                            outputs: premint.blinded_messages(),
                             signature: None,
                         };
                         match client.post_mint_onchain(mint_req).await {
@@ -260,8 +232,8 @@ impl Pocket {
                                 let blinded_signatures = mint_response.signatures;
                                 let inputs = cashu::dhke::construct_proofs(
                                     blinded_signatures,
-                                    rs,
-                                    secrets,
+                                    premint.rs(),
+                                    premint.secrets(),
                                     &active_keyset.keys,
                                 )?;
 

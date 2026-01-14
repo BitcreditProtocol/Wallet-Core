@@ -21,7 +21,6 @@ cdk-common = {version = "=0.13.1", default-features = false}
 chrono = {version  = "0.4"}
 ciborium = {version="0.2"}
 futures = {version = "0.3"}
-hex = {version = "0.4"}
 mockall = {version  = "0.13"}
 nostr = {version = "0.43"}
 nostr-sdk = {version = "0.43", features = ["nip59"]}
