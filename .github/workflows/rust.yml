@@ -45,9 +45,6 @@ jobs:
           echo "After cleanup:"
           df -h
 
-      - name: Install system tools
-        run: sudo apt-get install -y protobuf-compiler firefox
-
       - name: Switch rust version
         run: rustup default stable
 
