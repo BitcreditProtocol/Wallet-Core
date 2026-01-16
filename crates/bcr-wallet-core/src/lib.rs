@@ -456,15 +456,21 @@ impl AppState {
 
     pub async fn wallet_check_received_payment(
         &self,
+        initial_delay_sec: u64,
         max_wait_sec: u64,
+        check_interval_sec: u64,
         p_id: String,
     ) -> Result<Option<TransactionId>> {
         tracing::debug!("wallet_check_received_payment({p_id})");
 
         let p_id = Uuid::from_str(&p_id)?;
         let purse = self.get_purse();
+        let initial_delay = core::time::Duration::from_secs(initial_delay_sec);
         let max_wait = core::time::Duration::from_secs(max_wait_sec);
-        let tx_id = purse.check_received_payment(max_wait, p_id).await?;
+        let check_interval = core::time::Duration::from_secs(check_interval_sec);
+        let tx_id = purse
+            .check_received_payment(initial_delay, max_wait, check_interval, p_id)
+            .await?;
         Ok(tx_id)
     }
 
