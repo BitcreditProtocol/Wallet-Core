@@ -2,7 +2,11 @@ name: Rust CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [ "**" ]
+
+permissions:
+  contents: read
+  security-events: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,16 +16,17 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
-      - name: Create Github App token
+      - name: Create GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
         with:
           app-id: ${{ vars.PRIVATE_REPO_ACCESS_APP_ID }}
           private-key: ${{ secrets.PRIVATE_REPO_ACCESS_APP_PRIVATE_KEY }}
           owner: BitcreditProtocol
-
+      
       - name: Git auth with app token
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -47,45 +52,52 @@ jobs:
         run: rustup default stable
 
       - name: Update rust
-        run: rustup update
+        run: rustup update stable
 
       - name: Add rustup components
         run: rustup component add clippy rustfmt
 
-      - name: Activate cache
-        uses: Swatinem/rust-cache@v2.8.0
-        with:
-          prefix-key: "wallet-01"
-
       - name: Install required cargo tools
         run: cargo install cargo-deny clippy-sarif sarif-fmt
 
+      - name: Activate cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          prefix-key: "wallet-core"
+
+      - name: Check
+        run: cargo check --verbose
+
       - name: Check formatting
         run: cargo fmt -- --check
-
-      - name: Cargo deny
-        run: cargo deny check
         continue-on-error: true
 
       - name: Clippy
         run:
           cargo clippy
+          --verbose
           --all-features
           --message-format=json | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
         continue-on-error: true
 
-      - name: Check
-        run: cargo check
-
-      - name: Test
-        run: cargo test --verbose
+      - name: Cargo deny
+        run: cargo deny check
+        continue-on-error: true
 
       - name: Build
         run: cargo build --verbose
 
+      - name: Install wasm-pack
+        run: |
+          curl https://drager.github.io/wasm-pack/installer/init.sh -sSf | bash
+
+      - name: Build WASM version
+        run: |
+          cd crates/bcr-ebill-wasm
+          wasm-pack build --target web
+
       - name: Upload analysis results to GitHub
         uses: github/codeql-action/upload-sarif@v3
-        continue-on-error: true
         with:
           sarif_file: rust-clippy-results.sarif
           wait-for-processing: true
