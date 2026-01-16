@@ -87,15 +87,6 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
-      - name: Install wasm-pack
-        run: |
-          curl https://drager.github.io/wasm-pack/installer/init.sh -sSf | bash
-
-      - name: Build WASM version
-        run: |
-          cd crates/bcr-ebill-wasm
-          wasm-pack build --target web
-
       - name: Upload analysis results to GitHub
         uses: github/codeql-action/upload-sarif@v3
         with:
