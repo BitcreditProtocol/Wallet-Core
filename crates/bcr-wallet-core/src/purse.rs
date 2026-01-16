@@ -17,7 +17,7 @@ use nostr_sdk::nips::nip19::{Nip19Profile, ToBech32};
 use std::{collections::HashMap, sync::Arc};
 use tokio::{
     sync::{Mutex, RwLock},
-    time,
+    time::{self, Instant},
 };
 use uuid::Uuid;
 
@@ -301,9 +301,12 @@ where
         Ok(request)
     }
 
+    // We wait initial_delay before checking, then check every check_interval, until max_wait has expired
     pub async fn check_received_payment(
         &self,
+        initial_delay: core::time::Duration,
         max_wait: core::time::Duration,
+        check_interval: core::time::Duration,
         p_id: Uuid,
     ) -> Result<Option<TransactionId>> {
         let current_request = self.current_payment_request.lock().await.take();
@@ -313,30 +316,31 @@ where
         if req.payment_id != Some(p_id.to_string()) {
             return Err(Error::NoPrepareRef(p_id));
         }
-        // we split max timeout into 3 intervals.
-        // each interval is split into 2 30/70-sized sub-intervals: the fetch_events timeout, and
-        // the wait time in-between fetches.
-        const TIMEOUT_SPLIT_SIZE: u32 = 3;
-        const TIMEOUT_SUBSPLIT_WAIT: f64 = 0.7;
-        let interval = max_wait
-            .checked_div(TIMEOUT_SPLIT_SIZE)
-            .expect("TIMEOUT_SPLIT_SIZE should be > 0");
-        let sleep_time = interval.mul_f64(TIMEOUT_SUBSPLIT_WAIT);
-        let fetch_timeout = interval
-            .checked_sub(sleep_time)
-            .expect("sleep_time should be < interval");
 
         let filter = nostr_sdk::Filter::new()
             .kind(nostr_sdk::Kind::GiftWrap)
             .pubkey(self.myself.public_key);
 
         let signer = self.nostr_cl.signer().await?;
-        for _ in 0..TIMEOUT_SPLIT_SIZE {
+
+        // wait for initial delay before checking
+        time::sleep(initial_delay).await;
+        let start = Instant::now();
+        // timeout a bit less than check interval, so it finishes before the next tick
+        let fetch_timeout = check_interval
+            .checked_sub(std::time::Duration::from_millis(50))
+            .expect("valid duration");
+        let mut interval = time::interval(check_interval);
+
+        loop {
+            interval.tick().await;
+
             tracing::debug!("Checking events from Nostr...");
             let events = self
                 .nostr_cl
                 .fetch_events(filter.clone(), fetch_timeout)
                 .await?;
+
             for event in events {
                 if let Some(txid) = handle_event(
                     event,
@@ -350,8 +354,13 @@ where
                     return Ok(Some(txid));
                 }
             }
-            time::sleep(sleep_time).await;
+
+            if start.elapsed() >= max_wait {
+                tracing::warn!("check_received_payment timed out");
+                break;
+            }
         }
+
         Ok(None)
     }
 
@@ -533,7 +542,7 @@ where
             payload.proofs,
             payload.unit,
             Some(payload.mint),
-            event.created_at.as_u64(),
+            chrono::Utc::now().timestamp() as u64,
             payload.memo,
             meta,
             None,

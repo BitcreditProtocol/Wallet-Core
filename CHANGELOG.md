@@ -1,3 +1,9 @@
+# 0.7.3
+
+* Improve API for `wallet_check_received_payment` to give the caller more control
+    * It now takes `initial_delay_sec`, `max_wait_sec` and `check_interval_sec` to control when to start polling, how often to poll and how long
+* Fixed timestamp for receiving a nut-18 payment via Nostr, which used the randomized Nostr timestamp
+
 # 0.7.2
 
 * Add endpoints to refresh transactions and reclaim unspent funds

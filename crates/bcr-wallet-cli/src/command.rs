@@ -147,7 +147,7 @@ pub async fn cmd_request_payment(
 
     info!("Payment Request: {}, {}", &req.request, &req.p_id);
     let tx_id = app_state
-        .wallet_check_received_payment(30, req.p_id.clone())
+        .wallet_check_received_payment(2, 60, 1, req.p_id.clone())
         .await?;
 
     push_break(&mut res);
