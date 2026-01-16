@@ -1,4 +1,4 @@
-name: Rust CI
+name: Test coverage
 
 on:
   push:
@@ -10,16 +10,20 @@ permissions:
   actions: read
 
 env:
-  CARGO_TERM_COLOR: always
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain:
+          - stable
     steps:
       - name: Check out repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
-
+      
       - name: Create GitHub App token
         id: app-token
         uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
@@ -52,42 +56,39 @@ jobs:
       - name: Update rust
         run: rustup update stable
 
-      - name: Add rustup components
-        run: rustup component add clippy rustfmt
+      - name: Install llvm-tools-preview
+        run: rustup component add llvm-tools-preview
 
-      - name: Install required cargo tools
-        run: cargo install cargo-deny clippy-sarif sarif-fmt
+      - name: Install grcov
+        run: cargo install grcov
 
       - name: Activate cache
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
         with:
           prefix-key: "wallet-core"
 
-      - name: Check
-        run: cargo check --verbose
+      - name: Run tests
+        run: cargo test --workspace --verbose
+        env:
+          LLVM_PROFILE_FILE: "target/coverage/%p-%m.profraw"
+          RUSTFLAGS: "-Cinstrument-coverage"
 
-      - name: Check formatting
-        run: cargo fmt -- --check
-        continue-on-error: true
+      - name: Create coverage report
+        run: |
+          grcov \
+            --source-dir . \
+            --binary-path target/debug \
+            --branch \
+            --excl-start 'mod tests \{' \
+            --ignore 'tests/*' \
+            --keep-only "crates/*" \
+            -o lcov.info \
+            -t lcov `find crates -name coverage`
 
-      - name: Clippy
-        run:
-          cargo clippy
-          --verbose
-          --all-features
-          --message-format=json | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
-        continue-on-error: true
-
-      - name: Cargo deny
-        run: cargo deny check
-        continue-on-error: true
-
-      - name: Build
-        run: cargo build --verbose
-
-      - name: Upload analysis results to GitHub
-        uses: github/codeql-action/upload-sarif@v4
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
-          sarif_file: rust-clippy-results.sarif
-          wait-for-processing: true
-
+          files: lcov.info
+          fail_ci_if_error: false
