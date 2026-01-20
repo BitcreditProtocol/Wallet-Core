@@ -1,3 +1,8 @@
+# 0.7.4
+
+* Add `is_valid_token` utility method to expose our token checking
+* Fix Nostr event loop to not fail on invalid events
+
 # 0.7.3
 
 * Improve API for `wallet_check_received_payment` to give the caller more control

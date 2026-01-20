@@ -51,7 +51,7 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
             res.push_str("Transactions:");
             push_break(&mut res);
 
-            for tx in transactions.iter() {
+            for (idx, tx) in transactions.iter().enumerate() {
                 let quote_or_btc_tx_id = match (tx.btc_tx_id, &tx.quote_id) {
                     (Some(_), Some(_)) => String::default(),
                     (Some(btc_tx_id), None) => btc_tx_id.to_string(),
@@ -63,6 +63,9 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
                     tx.id, tx.amount, tx.unit, tx.fees,  tx.status, format_timestamp(tx.tstamp), &format!("{:?}", tx.ptype), tx.direction, tx.memo, quote_or_btc_tx_id 
                 ));
                 push_break(&mut res);
+                if idx > 20 {
+                    break;
+                }
             }
         }
     }

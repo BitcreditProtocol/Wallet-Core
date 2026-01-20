@@ -282,7 +282,7 @@ impl AppState {
         let tstamp = chrono::Utc::now().timestamp() as u64;
         tracing::debug!("wallet_receive({idx}, {token}, {tstamp})");
 
-        let token = Token::from_str(&token)?;
+        let token = Token::from_str(&token).map_err(|e| Error::InvalidToken(e.to_string()))?;
         let wallet = self.get_wallet(idx).await?;
         let tx_id = wallet.read().await.receive_token(token, tstamp).await?;
         Ok(tx_id)
@@ -676,6 +676,11 @@ pub fn generate_random_mnemonic(mnemonic_len: u32) -> String {
             String::default()
         }
     }
+}
+
+pub fn is_valid_token(token: &str) -> Result<Token> {
+    let token = Token::from_str(token).map_err(|e| Error::InvalidToken(e.to_string()))?;
+    Ok(token)
 }
 
 // FFI types
