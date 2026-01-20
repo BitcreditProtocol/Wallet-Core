@@ -166,7 +166,7 @@ pub mod tests {
         async fn get_clowder_betas(&self) -> CdkResult<Vec<cashu::MintUrl>>;
         fn mint_url(&self) -> cashu::MintUrl;
 
-        async fn post_exchange(
+        async fn post_online_exchange(
             &self,
             alpha_proofs: Vec<cashu::Proof>,
             exchange_path: Vec<bitcoin::secp256k1::PublicKey>,
@@ -185,7 +185,7 @@ pub mod tests {
         async fn get_alpha_status(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<AlphaStateResponse>;
         async fn get_alpha_substitute(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<ConnectedMintResponse>;
 
-        async fn post_exchange_substitute(
+        async fn post_offline_exchange(
             &self,
             proofs: Vec<wire_keys::ProofFingerprint>,
             locks: Vec<bitcoin::hashes::sha256::Hash>,
