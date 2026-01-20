@@ -336,23 +336,40 @@ where
             interval.tick().await;
 
             tracing::debug!("Checking events from Nostr...");
-            let events = self
+            let events = match self
                 .nostr_cl
                 .fetch_events(filter.clone(), fetch_timeout)
-                .await?;
+                .await
+            {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::error!("Error while fetching events from nostr: {e}");
+                    continue;
+                }
+            };
 
             for event in events {
-                if let Some(txid) = handle_event(
+                match handle_event(
                     event,
                     signer.clone(),
                     &self.wallets,
                     p_id,
                     req.amount.unwrap_or_default(),
                 )
-                .await?
+                .await
                 {
-                    return Ok(Some(txid));
-                }
+                    Ok(None) => {
+                        // do nothing
+                        continue;
+                    }
+                    Ok(Some(tx_id)) => {
+                        return Ok(Some(tx_id));
+                    }
+                    Err(e) => {
+                        tracing::error!("Error while handling Nostr event: {e}");
+                        continue;
+                    }
+                };
             }
 
             if start.elapsed() >= max_wait {

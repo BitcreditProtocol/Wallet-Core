@@ -4,7 +4,7 @@ use anyhow::Result;
 use bcr_wallet_core::{
     AppState,
     config::{AppStateConfig, SameMintSafeMode},
-    generate_random_mnemonic,
+    generate_random_mnemonic, is_valid_token,
 };
 use clap::{Parser, Subcommand};
 use nostr_sdk::RelayUrl;
@@ -86,6 +86,8 @@ enum Commands {
     RunJobs,
     #[command(name = "gen_mnemonic")]
     GenMnemonic,
+    #[command(name = "check_token")]
+    CheckToken { token: String },
 }
 
 #[tokio::main]
@@ -262,6 +264,10 @@ async fn main() -> Result<()> {
         Commands::RunJobs => {
             info!("RunJobs for {}:", cli.wallet);
             command::cmd_run_jobs(&app_state).await?;
+        }
+        Commands::CheckToken { token } => {
+            info!("Checking token for {}:", cli.wallet);
+            info!("{}", is_valid_token(&token)?);
         }
     }
 
