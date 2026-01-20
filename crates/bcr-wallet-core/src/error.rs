@@ -142,6 +142,10 @@ pub enum Error {
     BetaNotFound(cashu::MintUrl),
     #[error("Unsupported: {0}")]
     Unsupported(String),
+    #[error("insufficient amount for melting {0}")]
+    InsufficientOnChainMeltAmount(u64),
+    #[error("insufficient amount for minting {0}")]
+    InsufficientOnChainMintAmount(u64),
 
     #[error("internal error: {0}")]
     Internal(String),

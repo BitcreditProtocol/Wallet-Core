@@ -76,6 +76,7 @@ pub struct AppState {
 
 impl AppState {
     pub const DB_VERSION: u32 = 1;
+    pub const MINT_MELT_THRESHOLD_SAT: u64 = 1000;
 
     pub async fn initialize(cfg: AppStateConfig) -> Result<Self> {
         tracing::debug!("Initializing API");
@@ -365,6 +366,9 @@ impl AppState {
     ) -> Result<PaymentSummary> {
         tracing::debug!("wallet_prepare_melt({idx}, {amount}, {address}, {description:?})");
 
+        if amount < Self::MINT_MELT_THRESHOLD_SAT {
+            return Err(Error::InsufficientOnChainMeltAmount(amount));
+        }
         let parsed_amount = bitcoin::Amount::from_sat(amount);
         let parsed_address = bitcoin::Address::from_str(&address)
             .map_err(|_| Error::InvalidBitcoinAddress(address.clone()))?;
@@ -392,6 +396,10 @@ impl AppState {
 
     pub async fn wallet_mint(&self, idx: usize, amount: u64) -> Result<MintSummary> {
         tracing::debug!("wallet_mint({idx}, {amount})");
+
+        if amount < Self::MINT_MELT_THRESHOLD_SAT {
+            return Err(Error::InsufficientOnChainMintAmount(amount));
+        }
 
         let parsed_amount = bitcoin::Amount::from_sat(amount);
         let purse = self.get_purse();
