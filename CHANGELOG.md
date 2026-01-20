@@ -2,6 +2,7 @@
 
 * Add `is_valid_token` utility method to expose our token checking
 * Fix Nostr event loop to not fail on invalid events
+* Add Threshold for minting and melting
 
 # 0.7.3
 

@@ -534,10 +534,12 @@ where
                 best_wlt.replace(wlt.clone());
             }
         }
-        if best_wlt.is_none() {
-            return Err(Error::UnknownMint(payload.mint));
+        match best_wlt {
+            None => {
+                return Err(Error::UnknownMint(payload.mint));
+            }
+            Some(wlt) => wlt,
         }
-        best_wlt.expect("should be found")
     };
     let meta = HashMap::from([
         (String::from("sender"), event.pubkey.to_string()),
