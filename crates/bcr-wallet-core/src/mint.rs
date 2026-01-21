@@ -18,7 +18,7 @@ use tracing::debug;
 fn clowder_err_to_cdk(e: bcr_common::client::clowder::Error) -> CdkError {
     match e {
         bcr_common::client::clowder::Error::NotFound => {
-            CdkError::HttpError(None, "not found".to_string())
+            CdkError::HttpError(None, "Wildcat Clowder resource not found".to_string())
         }
         bcr_common::client::clowder::Error::Reqwest(e) => CdkError::HttpError(None, e.to_string()),
     }
@@ -106,7 +106,7 @@ pub struct HttpClientExt {
     main: cdk::wallet::HttpClient,
     url: reqwest::Url,
     secondary: reqwest::Client,
-    wdc_clwdr_client: ClowderClient,
+    clowder: ClowderClient,
 }
 
 impl HttpClientExt {
@@ -115,7 +115,7 @@ impl HttpClientExt {
             .expect("cashu::MintUrl is as good as reqwest::Url");
         Self {
             main: cdk::wallet::HttpClient::new(cdk_url),
-            wdc_clwdr_client: ClowderClient::new(mint_url.clone()),
+            clowder: ClowderClient::new(mint_url.clone()),
             url: mint_url,
             secondary: reqwest::Client::new(),
         }
@@ -253,8 +253,8 @@ impl MintConnector for HttpClientExt {
     ) -> CdkResult<Vec<cashu::KeySet>> {
         debug!("Clowder client call to get_alpha_keysets");
         let response = self
-            .wdc_clwdr_client
-            .get_active_keysets(&alpha_id)
+            .clowder
+            .get_active_keysets(alpha_id)
             .await
             .map_err(clowder_err_to_cdk)?;
         Ok(response.keysets)
@@ -264,7 +264,7 @@ impl MintConnector for HttpClientExt {
     async fn get_alpha_offline(&self, alpha_id: bitcoin::secp256k1::PublicKey) -> CdkResult<bool> {
         debug!("Clowder client call to get_alpha_offline");
         let response = self
-            .wdc_clwdr_client
+            .clowder
             .get_offline(alpha_id)
             .await
             .map_err(clowder_err_to_cdk)?;
@@ -277,7 +277,7 @@ impl MintConnector for HttpClientExt {
         alpha_id: bitcoin::secp256k1::PublicKey,
     ) -> CdkResult<wire_clowder::AlphaStateResponse> {
         debug!("Clowder client call to get_alpha_status");
-        self.wdc_clwdr_client
+        self.clowder
             .get_status(alpha_id)
             .await
             .map_err(clowder_err_to_cdk)
@@ -289,7 +289,7 @@ impl MintConnector for HttpClientExt {
         alpha_id: bitcoin::secp256k1::PublicKey,
     ) -> CdkResult<wire_clowder::ConnectedMintResponse> {
         debug!("Clowder client call to get_alpha_substitute");
-        self.wdc_clwdr_client
+        self.clowder
             .get_substitute(alpha_id)
             .await
             .map_err(clowder_err_to_cdk)
@@ -297,11 +297,7 @@ impl MintConnector for HttpClientExt {
 
     async fn get_clowder_betas(&self) -> CdkResult<Vec<cashu::MintUrl>> {
         debug!("Clowder client call to get_clowder_betas");
-        let response = self
-            .wdc_clwdr_client
-            .get_betas()
-            .await
-            .map_err(clowder_err_to_cdk)?;
+        let response = self.clowder.get_betas().await.map_err(clowder_err_to_cdk)?;
         Ok(response.mints.into_iter().map(|m| m.mint).collect())
     }
 
@@ -320,7 +316,7 @@ impl MintConnector for HttpClientExt {
             wallet_pk,
         };
         let response = self
-            .wdc_clwdr_client
+            .clowder
             .post_offline_exchange(request)
             .await
             .map_err(clowder_err_to_cdk)?;
@@ -343,7 +339,7 @@ impl MintConnector for HttpClientExt {
             exchange_path,
         };
         let response = self
-            .wdc_clwdr_client
+            .clowder
             .post_online_exchange(request)
             .await
             .map_err(clowder_err_to_cdk)?;
@@ -352,14 +348,8 @@ impl MintConnector for HttpClientExt {
 
     async fn get_clowder_id(&self) -> CdkResult<bitcoin::secp256k1::PublicKey> {
         debug!("Clowder client call to get_clowder_id");
-        let response = self
-            .wdc_clwdr_client
-            .get_id()
-            .await
-            .map_err(clowder_err_to_cdk)?;
-        let node_id = bitcoin::secp256k1::PublicKey::from_slice(&response.node_id.to_bytes())
-            .map_err(|e| CdkError::Custom(e.to_string()))?;
-        Ok(node_id)
+        let response = self.clowder.get_info().await.map_err(clowder_err_to_cdk)?;
+        Ok(*response.node_id)
     }
 
     async fn post_clowder_path(
@@ -367,7 +357,7 @@ impl MintConnector for HttpClientExt {
         origin_mint_url: cashu::MintUrl,
     ) -> CdkResult<ConnectedMintsResponse> {
         debug!("Clowder client call to post_clowder_path");
-        self.wdc_clwdr_client
+        self.clowder
             .post_path(origin_mint_url)
             .await
             .map_err(clowder_err_to_cdk)
@@ -524,7 +514,7 @@ impl SentinelClient {
             main,
             url,
             secondary,
-            wdc_clwdr_client: clowder,
+            clowder,
         } = client;
         Self {
             main,
@@ -720,7 +710,7 @@ impl MintConnector for SentinelClient {
         debug!("Clowder client call to get_alpha_keysets on sentinel");
         let response = self
             .clowder
-            .get_active_keysets(&alpha_id)
+            .get_active_keysets(alpha_id)
             .await
             .map_err(clowder_err_to_cdk)?;
         Ok(response.keysets)
@@ -814,10 +804,8 @@ impl MintConnector for SentinelClient {
 
     async fn get_clowder_id(&self) -> CdkResult<bitcoin::secp256k1::PublicKey> {
         debug!("Clowder client call to get_clowder_id on sentinel");
-        let response = self.clowder.get_id().await.map_err(clowder_err_to_cdk)?;
-        let node_id = bitcoin::secp256k1::PublicKey::from_slice(&response.node_id.to_bytes())
-            .map_err(|e| CdkError::Custom(e.to_string()))?;
-        Ok(node_id)
+        let response = self.clowder.get_info().await.map_err(clowder_err_to_cdk)?;
+        Ok(*response.node_id)
     }
 
     async fn post_clowder_path(
