@@ -1,3 +1,7 @@
+# 0.7.5
+
+* Adapt to new Clowder URLs
+
 # 0.7.4
 
 * Add `is_valid_token` utility method to expose our token checking
