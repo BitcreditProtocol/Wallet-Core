@@ -663,7 +663,7 @@ where
             .map(|secret| Sha256::hash(&secret.to_bytes()))
             .collect();
         let mut beta_proofs = substitute_client
-            .post_exchange_substitute(
+            .post_offline_exchange(
                 fingerprints.clone(),
                 hash_locks.clone(),
                 *wallet_pk.public_key(),
@@ -768,7 +768,7 @@ where
                 attempts += 1;
                 match self
                     .client
-                    .post_exchange(locked_alpha_proofs.clone(), exchange_path.clone())
+                    .post_online_exchange(locked_alpha_proofs.clone(), exchange_path.clone())
                     .await
                 {
                     Ok(proofs) => break Ok(proofs),
