@@ -1,3 +1,7 @@
+# 0.7.6
+
+* Fix intermint exchange
+
 # 0.7.5
 
 * Adapt to new Clowder URLs

@@ -480,22 +480,28 @@ where
         {
             // Determine path from current mint to origin
             let path = self.client.post_clowder_path(mint.clone()).await?;
-            tracing::debug!("Receive intermint proofs path {:?}", path);
-            let (mint_urls, node_ids): (Vec<_>, Vec<_>) =
-                path.mints.into_iter().map(|m| (m.mint, m.node_id)).unzip();
-            if node_ids.len() < 3 {
+            tracing::debug!("Received intermint proofs path {:?}", path);
+            if path.mints.len() < 2 {
                 return Err(Error::InvalidClowderPath);
             }
+
+            let (mint_urls, node_ids): (Vec<_>, Vec<_>) =
+                path.mints.into_iter().map(|m| (m.mint, m.node_id)).unzip();
+
             let alpha_id = node_ids[0];
 
             let alpha_client = (self.client_factory)(mint.clone());
             // The path goes through the substitute Beta if the Alpha origin mint is offline
             let beta_mint = mint_urls[1].clone();
-            // Replace Beta instantiation here with stored MintConnectors for each Beta
-            let substitute_client = self
-                .beta_clients
-                .get(&beta_mint)
-                .ok_or(Error::BetaNotFound(beta_mint))?;
+
+            // In the direct exchange case this is the same as the Wallet's mint
+            let substitute_client = if beta_mint == self.client.mint_url() {
+                &self.client
+            } else {
+                self.beta_clients
+                    .get(&beta_mint)
+                    .ok_or(Error::BetaNotFound(beta_mint))?
+            };
 
             let is_alpha_offline = substitute_client.get_alpha_offline(alpha_id).await?;
 
@@ -721,9 +727,8 @@ where
         tracing::debug!(alpha_url=?alpha_url, "intermint exchange");
 
         // Ephemeral P2PK secret
-        let wallet_pk = cashu::SecretKey::generate();
 
-        // TODO make factory
+        let wallet_pk = cashu::SecretKey::generate();
 
         // Require all intermediate mints to sign
         // Exclude alpha origin from p2pk lock as it doesn't need to sign its own eCash
@@ -810,18 +815,22 @@ where
             token.proofs(&keysets_info)?
         } else {
             let path = self.client.post_clowder_path(token.mint_url()).await?;
-            tracing::debug!("Receive intermint proofs path {:?}", path);
-            if path.mints.len() < 3 {
+            tracing::debug!("Received intermint proofs path {:?}", path);
+            if path.mints.len() < 2 {
                 return Err(Error::InvalidClowderPath);
             }
+
             let alpha_id = path.mints[0].node_id;
             // The path goes through the substitute Beta if the Alpha origin mint is offline
             let beta_mint = path.mints[1].mint.clone();
             // In the direct exchange case this is the same as the Wallet's mint
-            let substitute_client = self
-                .beta_clients
-                .get(&beta_mint)
-                .ok_or(Error::BetaNotFound(beta_mint))?;
+            let substitute_client = if beta_mint == self.client.mint_url() {
+                &self.client
+            } else {
+                self.beta_clients
+                    .get(&beta_mint)
+                    .ok_or(Error::BetaNotFound(beta_mint))?
+            };
 
             // In the offline case we can only ask the substitute, in the online case we can ask the mint
             // The Beta mint (after Alpha in the path) should have it in any case
