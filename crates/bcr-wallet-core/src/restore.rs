@@ -82,12 +82,15 @@ async fn restore_batch(
             );
             continue;
         };
-        let proof = cdk00::Proof::new(
+        let mut proof = cdk00::Proof::new(
             signature.amount,
             signature.keyset_id,
             premint.secret.clone(),
             c,
         );
+        if let Some(dleq) = signature.dleq {
+            proof.dleq = Some(cashu::ProofDleq::new(dleq.e, dleq.s, premint.r.clone()));
+        }
         let y = proof.y()?;
         proofs.insert(y, proof);
     }

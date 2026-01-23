@@ -27,7 +27,6 @@ use std::{
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-mod clowder_models;
 pub mod config;
 mod db;
 pub mod error;
@@ -321,11 +320,10 @@ impl AppState {
     }
 
     pub async fn purse_migrate_rabid(&self) -> Result<()> {
-        let tstamp = chrono::Utc::now().timestamp() as u64;
         tracing::debug!("purse_migrate_rabid");
 
         let purse = self.get_purse();
-        purse.migrate_rabid_wallets(tstamp).await?;
+        purse.migrate_rabid_wallets().await?;
 
         Ok(())
     }
