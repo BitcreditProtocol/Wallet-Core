@@ -25,7 +25,6 @@ use uuid::Uuid;
 pub trait PurseRepository: sync::SendSync {
     async fn store(&self, wallet: WalletConfig) -> Result<()>;
     async fn load(&self, wallet_id: &str) -> Result<WalletConfig>;
-    #[allow(dead_code)]
     async fn delete(&self, wallet_id: &str) -> Result<()>;
     async fn list_ids(&self) -> Result<Vec<String>>;
 }
@@ -36,7 +35,6 @@ pub trait Wallet: sync::SendSync {
     fn name(&self) -> String;
     fn id(&self) -> String;
     fn mint_url(&self) -> Result<MintUrl>;
-    #[allow(dead_code)]
     fn betas(&self) -> Vec<MintUrl>;
     #[allow(dead_code)]
     fn clowder_id(&self) -> bitcoin::secp256k1::PublicKey;
@@ -50,6 +48,7 @@ pub trait Wallet: sync::SendSync {
 
     async fn prepare_pay(&self, input: String) -> Result<PaymentSummary>;
     async fn is_wallet_mint_rabid(&self) -> Result<bool>;
+    async fn is_wallet_mint_offline(&self) -> Result<bool>;
     async fn mint_substitute(&self) -> Result<Option<MintUrl>>;
     async fn pay(
         &self,
@@ -65,7 +64,7 @@ pub trait Wallet: sync::SendSync {
     async fn migrate_pockets_substitute(
         &mut self,
         substitute: Box<dyn MintConnector>,
-    ) -> Result<()>;
+    ) -> Result<MintUrl>;
 
     async fn receive_proofs(
         &self,
@@ -83,6 +82,15 @@ pub trait Wallet: sync::SendSync {
         unit: CurrencyUnit,
         description: Option<String>,
     ) -> Result<PaymentSummary>;
+
+    async fn offline_pay_by_token(
+        &self,
+        request_id: Uuid,
+        unit: CurrencyUnit,
+        fees: Amount,
+        memo: Option<String>,
+        now: u64,
+    ) -> Result<(TransactionId, Option<Token>)>;
 }
 
 struct PaymentReference {
@@ -269,7 +277,7 @@ where
     pub async fn prepare_payment_request(
         &self,
         amount: Amount,
-        unit: Option<CurrencyUnit>,
+        unit: CurrencyUnit,
         description: Option<String>,
     ) -> Result<cdk18::PaymentRequest> {
         let mints = {
@@ -289,7 +297,7 @@ where
             payment_id: Some(Uuid::new_v4().to_string()),
             amount: Some(amount),
             mints: Some(mints),
-            unit,
+            unit: Some(unit),
             single_use: Some(true),
             description,
             nut10: None,
@@ -379,29 +387,39 @@ where
         Ok(None)
     }
 
-    pub async fn migrate_rabid_wallets(&self) -> Result<()> {
+    pub async fn migrate_rabid_wallets(&self) -> Result<HashMap<String, MintUrl>> {
+        let mut res = HashMap::new();
         let wlts = self.wallets.read().await;
         for wlt in wlts.iter() {
+            let wallet_id = wlt.read().await.id();
+            tracing::info!("Checking if alpha is rabid..");
             let is_rabid = wlt.read().await.is_wallet_mint_rabid().await?;
-            let substitute_url = wlt.read().await.mint_substitute().await?;
+            if is_rabid {
+                tracing::warn!("Alpha is rabid - finding substitute");
+                let substitute_url = wlt.read().await.mint_substitute().await?;
 
-            let wallet_name = wlt.read().await.name();
-            if is_rabid && let Some(substitute_url) = substitute_url {
-                tracing::info!(
-                    "Wallet {} is found rabid, migrating to substitute beta {}",
-                    wallet_name,
-                    substitute_url
-                );
-                let substitute_client = crate::mint::HttpClientExt::new(substitute_url);
-                wlt.write()
-                    .await
-                    .migrate_pockets_substitute(Box::new(substitute_client))
-                    .await?;
-                self.repo.store(wlt.read().await.config()?).await?;
+                let wallet_name = wlt.read().await.name();
+                if let Some(substitute_url) = substitute_url {
+                    tracing::info!(
+                        "Wallet {} is found rabid, migrating to substitute beta {}",
+                        wallet_name,
+                        substitute_url
+                    );
+                    let substitute_client = crate::mint::HttpClientExt::new(substitute_url);
+                    let new_mint_url = wlt
+                        .write()
+                        .await
+                        .migrate_pockets_substitute(Box::new(substitute_client))
+                        .await?;
+                    res.insert(wallet_id, new_mint_url);
+                    self.repo.store(wlt.read().await.config()?).await?;
+                }
+            } else {
+                tracing::info!("Alpha is not rabid - nothing to migrate.");
             }
         }
 
-        Ok(())
+        Ok(res)
     }
 
     pub async fn prepare_pay_by_token(

@@ -1,7 +1,7 @@
 use crate::config::AppStateConfig;
 use crate::job::JobState;
 use crate::mint::MintConnector;
-use crate::types::MintSummary;
+use crate::types::{MintSummary, WalletConfig};
 use crate::utils::tx_can_be_refreshed;
 use crate::{
     config::{NostrConfig, SameMintSafeMode},
@@ -74,6 +74,7 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub const CREDIT_SAT_UNIT: &str = "crsat";
     pub const DB_VERSION: u32 = 1;
     pub const MINT_MELT_THRESHOLD_SAT: u64 = 1000;
 
@@ -114,7 +115,7 @@ impl AppState {
         }
     }
 
-    pub async fn load_wallets(&mut self) -> Result<()> {
+    async fn load_wallets(&mut self) -> Result<()> {
         tracing::debug!("AppState::load_wallets()");
 
         let purse = self.get_purse();
@@ -122,7 +123,7 @@ impl AppState {
         let w_ids = purse.list_wallets().await?;
         for wid in w_ids {
             tracing::debug!("Loading wallet with id: {wid}");
-            let w_cfg = purse.load_wallet_config(&wid).await?;
+            let mut w_cfg = purse.load_wallet_config(&wid).await?;
 
             if w_cfg.network != self.cfg.network {
                 tracing::error!(
@@ -133,6 +134,7 @@ impl AppState {
                 return Err(Error::InvalidNetwork(w_cfg.network, self.cfg.network));
             }
 
+            let seed = seed_from_mnemonic(&self.cfg.mnemonic);
             let keypair = keypair_from_mnemonic(&self.cfg.mnemonic);
             if w_cfg.pub_key != keypair.public_key() {
                 tracing::error!(
@@ -142,26 +144,62 @@ impl AppState {
             }
 
             if w_cfg.mint != self.cfg.default_mint_url {
-                tracing::error!(
+                tracing::warn!(
                     "Mint URL mismatch: wallet {wid} with mint url {}, expected: {}",
                     w_cfg.mint,
                     self.cfg.default_mint_url
                 );
-                return Err(Error::InvalidMintUrl(
-                    w_cfg.mint.clone(),
-                    self.cfg.default_mint_url.clone(),
-                ));
             }
 
+            let client = ProductionConnector::new(w_cfg.mint.clone());
+
+            // Attempt to fetch clowder id/betas/keyset infos and fall back to saved ones
+            match client.get_clowder_id().await {
+                Ok(cid) => {
+                    w_cfg.clowder_id = cid;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Could not fetch clowder_id while loading wallets - falling back to config {}: {e}",
+                        &w_cfg.clowder_id.to_string()
+                    );
+                }
+            };
+            match client.get_mint_keysets().await {
+                Ok(ks) => {
+                    w_cfg.mint_keyset_infos = ks.keysets;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Could not fetch mint keysets while loading wallets - falling back to config {:?}: {e}",
+                        &w_cfg.mint_keyset_infos
+                    );
+                }
+            };
+            match client.get_clowder_betas().await {
+                Ok(betas) => {
+                    w_cfg.betas = betas;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Could not fetch betas while loading wallets - falling back to config {:?}: {e}",
+                        &w_cfg
+                            .betas
+                            .iter()
+                            .map(|b| b.to_string())
+                            .collect::<Vec<String>>()
+                    );
+                }
+            };
+
             let wallet = build_wallet(
-                w_cfg.name,
-                w_cfg.network,
-                w_cfg.mint,
-                self.cfg.mnemonic.clone(),
+                w_cfg,
+                client,
                 LocalDB::Keep,
                 Self::DB_VERSION,
                 self.cfg.same_mint_safe_mode,
                 db.clone(),
+                seed,
             )
             .await?;
             purse.add_wallet(wallet).await?;
@@ -198,7 +236,7 @@ impl AppState {
             return Err(Error::WalletAlreadyExists);
         }
 
-        let wallet = build_wallet(
+        let wallet = create_new_wallet(
             name,
             self.cfg.network,
             mint_url,
@@ -223,7 +261,7 @@ impl AppState {
             return Err(Error::WalletAlreadyExists);
         }
 
-        let wallet = build_wallet(
+        let wallet = create_new_wallet(
             name,
             self.cfg.network,
             mint_url,
@@ -319,13 +357,27 @@ impl AppState {
         Ok(deleted)
     }
 
-    pub async fn purse_migrate_rabid(&self) -> Result<()> {
+    pub async fn wallet_mint_is_rabid(&self, idx: usize) -> Result<bool> {
+        tracing::debug!("wallet_is_rabid({idx})");
+        let wallet = self.get_wallet(idx).await?;
+        let is_rabid = wallet.read().await.is_wallet_mint_rabid().await?;
+        Ok(is_rabid)
+    }
+
+    pub async fn wallet_mint_is_offline(&self, idx: usize) -> Result<bool> {
+        tracing::debug!("wallet_is_offline({idx})");
+        let wallet = self.get_wallet(idx).await?;
+        let is_offline = wallet.read().await.is_wallet_mint_offline().await?;
+        Ok(is_offline)
+    }
+
+    pub async fn purse_migrate_rabid(&self) -> Result<HashMap<String, MintUrl>> {
         tracing::debug!("purse_migrate_rabid");
 
         let purse = self.get_purse();
-        purse.migrate_rabid_wallets().await?;
+        let migrated = purse.migrate_rabid_wallets().await?;
 
-        Ok(())
+        Ok(migrated)
     }
 
     pub async fn wallet_prepare_pay_by_token(
@@ -445,11 +497,8 @@ impl AppState {
         tracing::debug!("wallet_prepare_pay_request({idx}, {amount}, {unit}, {description:?})");
 
         let amount = cashu::Amount::from(amount);
-        let unit = if unit.trim().is_empty() {
-            None
-        } else {
-            cashu::CurrencyUnit::from_str(&unit).ok()
-        };
+        let unit = cashu::CurrencyUnit::from_str(&unit)
+            .map_err(|_| Error::InvalidCurrencyUnit(unit.clone()))?;
         let purse = self.get_purse();
         let request = purse
             .prepare_payment_request(amount, unit, description)
@@ -639,11 +688,6 @@ impl AppState {
     /// Returns a boolean indicating if all jobs ran to success
     pub async fn execute_daily_jobs(&self) -> bool {
         let mut job_failed = false;
-        if let Err(e) = self.purse_migrate_rabid().await {
-            job_failed = true;
-            tracing::error!("Error running purse_migrate_rabid job: {e}");
-        }
-
         let wallet_ids = self.get_purse().ids().await;
         for wallet_id in wallet_ids.iter() {
             match self.wallet_redeem_credit(*wallet_id as usize).await {
@@ -812,9 +856,9 @@ fn build_mint_id(url: &MintUrl, info: &MintInfo) -> Vec<u8> {
     }
 }
 
-fn find_currency_units(
-    keyset_infos: &[KeySetInfo],
-) -> Result<(CurrencyUnit, Option<CurrencyUnit>)> {
+// Attempts to find debit and credit units in the given keysets
+// Falls back to crsat for credit, if there is no keyset for it
+fn find_currency_units(keyset_infos: &[KeySetInfo]) -> Result<(CurrencyUnit, CurrencyUnit)> {
     let currencies = keyset_infos
         .iter()
         .map(|k| k.unit.clone())
@@ -830,12 +874,23 @@ fn find_currency_units(
     let debit_unit = currencies
         .iter()
         .find(|unit| !unit.to_string().starts_with("cr"));
-    if debit_unit.is_none() {
-        let currencies = currencies.iter().cloned().collect();
-        return Err(Error::NoDebitCurrencyInMint(currencies));
-    }
-    let debit_unit = debit_unit.unwrap();
-    Ok((debit_unit.clone(), credit_unit.cloned()))
+
+    let debit_unit = match debit_unit {
+        Some(du) => du,
+        None => {
+            let currencies = currencies.iter().cloned().collect();
+            return Err(Error::NoDebitCurrencyInMint(currencies));
+        }
+    };
+
+    let credit_unit: CurrencyUnit = credit_unit.cloned().unwrap_or_else(|| {
+        tracing::warn!(
+            "app::add_wallet: no credit unit in keyset - setting {} for credit_pocket",
+            AppState::CREDIT_SAT_UNIT
+        );
+        CurrencyUnit::from_str(AppState::CREDIT_SAT_UNIT).expect("credit sat is a valid unit")
+    });
+    Ok((debit_unit.clone(), credit_unit))
 }
 
 fn build_wallet_id(seed: &[u8; 64]) -> String {
@@ -847,7 +902,7 @@ fn build_wallet_id(seed: &[u8; 64]) -> String {
         .to_string()
 }
 
-async fn build_wallet(
+async fn create_new_wallet(
     name: String,
     network: bitcoin::Network,
     mint_url: cashu::MintUrl,
@@ -859,42 +914,74 @@ async fn build_wallet(
 ) -> Result<ProductionWallet> {
     let seed = seed_from_mnemonic(&mnemonic);
     let keypair = keypair_from_mnemonic(&mnemonic);
-    // retrieving mint details
     let client = ProductionConnector::new(mint_url.clone());
-    let keyset_infos = client.get_mint_keysets().await?.keysets;
-    let (debit_unit, credit_unit) = find_currency_units(&keyset_infos)?;
-    // building wallet dbs
+
     let wallet_id = build_wallet_id(&seed);
+    let clowder_id = client.get_clowder_id().await?;
+    let keyset_infos = client.get_mint_keysets().await?.keysets;
+    let betas = client.get_clowder_betas().await?;
+    let (debit_unit, credit_unit) = find_currency_units(&keyset_infos)?;
+
+    let w_cfg = WalletConfig {
+        wallet_id,
+        name,
+        network,
+        mint: mint_url,
+        mint_keyset_infos: keyset_infos,
+        clowder_id,
+        debit: debit_unit,
+        credit: credit_unit,
+        pub_key: keypair.public_key(),
+        betas,
+    };
+    build_wallet(
+        w_cfg,
+        client,
+        local,
+        db_version,
+        same_mint_safe_mode,
+        db,
+        seed,
+    )
+    .await
+}
+
+async fn build_wallet(
+    w_cfg: WalletConfig,
+    client: ProductionConnector,
+    local: LocalDB,
+    db_version: u32,
+    same_mint_safe_mode: SameMintSafeMode,
+    db: Arc<redb::Database>,
+    seed: [u8; 64],
+) -> Result<ProductionWallet> {
+    // building wallet dbs
     let (tx_repo, ((debitdb, mintmeltdb), creditdb)) = crate::db::build_wallet_dbs(
         db_version,
-        &wallet_id,
-        &debit_unit,
-        credit_unit.as_ref(),
+        &w_cfg.wallet_id,
+        &w_cfg.debit,
+        &w_cfg.credit,
         local,
         db,
     )
     .await?;
+
     // building the debit pocket
     let debit_pocket = ProductionDebitPocket::new(
-        debit_unit.clone(),
+        w_cfg.debit.clone(),
         Arc::new(debitdb),
         Arc::new(mintmeltdb),
         seed,
     );
     // building the credit pocket
-    let credit_pocket: Box<dyn CreditPocket> = if let Some(unit) = &credit_unit {
-        let creditdb = creditdb.expect("Credit pocket DB should be present");
-        let pocket = ProductionCreditPocket::new(unit.clone(), Arc::new(creditdb), seed);
-        Box::new(pocket)
-    } else {
-        tracing::warn!("app::add_wallet: credit_pocket = DummyPocket");
-        Box::new(crate::pocket::credit::DummyPocket {})
-    };
+    let credit_pocket: Box<dyn CreditPocket> = Box::new(ProductionCreditPocket::new(
+        w_cfg.credit,
+        Arc::new(creditdb),
+        seed,
+    ));
 
     let mut beta_clients = HashMap::<cashu::MintUrl, Box<dyn MintConnector>>::new();
-
-    let betas_urls = client.get_clowder_betas().await?;
-    for beta in betas_urls.clone() {
+    for beta in w_cfg.betas.clone() {
         let beta_client = ProductionConnector::new(beta.clone());
         beta_clients.insert(beta, Box::new(beta_client));
     }
@@ -903,17 +990,19 @@ async fn build_wallet(
     let client = if matches!(same_mint_safe_mode, SameMintSafeMode::Disabled) {
         Box::new(client) as Box<dyn MintConnector>
     } else {
-        let cl = crate::mint::SentinelClient::new(client, betas_urls);
+        let cl = crate::mint::SentinelClient::new(client, w_cfg.betas);
         Box::new(cl) as Box<dyn MintConnector>
     };
     let new_wallet: ProductionWallet = ProductionWallet::new(
-        network,
+        w_cfg.network,
         client,
+        w_cfg.mint_keyset_infos,
         Box::new(tx_repo),
         (debit_pocket, credit_pocket),
-        name,
-        wallet_id,
-        keypair.public_key(),
+        w_cfg.name,
+        w_cfg.wallet_id,
+        w_cfg.pub_key,
+        w_cfg.clowder_id,
         beta_clients,
         Box::new(|url| Box::new(crate::mint::HttpClientExt::new(url))),
         same_mint_safe_mode,

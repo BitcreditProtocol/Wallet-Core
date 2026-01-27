@@ -295,6 +295,32 @@ async fn send_proofs(
     Ok(sending_proofs)
 }
 
+///////////////////////////////////////////// return proofs to send for offline payment
+// WARN: This does not swap to target and is suited only for the current temporary offline pay by token flow
+// This just sets the proofs to pending-spent and returns them
+async fn return_proofs_to_send_for_offline_payment(
+    send_proofs: Vec<cdk01::PublicKey>,
+    swap_proof: Option<(Amount, cdk01::PublicKey)>,
+    db: &dyn PocketRepository,
+) -> Result<(Amount, HashMap<cdk01::PublicKey, cdk00::Proof>)> {
+    let mut send_amount = Amount::ZERO;
+    let mut sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
+    for y in send_proofs {
+        let proof = db.mark_as_pendingspent(y).await?;
+        send_amount += proof.amount;
+        sending_proofs.insert(y, proof);
+    }
+
+    // Also add swap proof as-is, without swapping to target
+    if let Some((swap_amount, swap_y)) = swap_proof {
+        let swap_proof = db.mark_as_pendingspent(swap_y).await?;
+        sending_proofs.insert(swap_y, swap_proof);
+        send_amount += swap_amount;
+    }
+
+    Ok((send_amount, sending_proofs))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

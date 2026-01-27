@@ -1,4 +1,4 @@
-mint_url = "https://mint.wildcat1.clowder1.minibill.tech"
+mint_url = "https://mint.wildcat3.clowder1.minibill.tech"
 # mint_url = "https://wildcat-dev-docker.minibill.tech"
 mnemonic = "ridge brain slice tomorrow what poet jacket soda audit reflect process labor"
 log_level = "DEBUG"

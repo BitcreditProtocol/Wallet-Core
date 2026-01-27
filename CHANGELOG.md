@@ -1,3 +1,16 @@
+# 0.7.8
+
+* Add `clowder_id`, `betas` and `mint_keysets` to `WalletConfig` (breaking DB change)
+* Improve Offline functionality and performance
+    * Clowder ID is fetched at wallet initialization and cached in DB
+    * Betas are fetched at wallet initialization and cached in DB
+    * Mint keysets are fetched at wallet initialization and cached in DB / refetched on-demand
+* We always initialize Credit Sat Pocket now with `crsat`, even if the Mint doesn't have a credit keyset
+* Add endpoints `wallet_mint_is_rabid` and `wallet_mint_is_offline` to check whether a wallet mint is rabid, or offline
+* Removed `purse_migrate_rabid` from daily jobs - it now has to be called directly and returns a map of migrated wallets with their new mints
+* Removed the check for `default_mint_url` to have to match the wallet - it's just logged now
+* Implement a hacky demo-version of `offline_pay_by_token`, where the wallet can create a token even if the alpha mint is offline
+
 # 0.7.7
 
 * Fix Offline intermint exchange

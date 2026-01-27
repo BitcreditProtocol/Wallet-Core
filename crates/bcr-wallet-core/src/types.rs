@@ -1,5 +1,5 @@
 use bitcoin::address::NetworkUnchecked;
-use cashu::{Amount, CurrencyUnit, MintUrl};
+use cashu::{Amount, CurrencyUnit, KeySetInfo, MintUrl};
 use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
 
@@ -31,11 +31,13 @@ pub struct WalletConfig {
     pub wallet_id: String,
     pub name: String,
     pub network: bitcoin::Network,
-
     pub mint: MintUrl,
+    pub mint_keyset_infos: Vec<KeySetInfo>,
+    pub clowder_id: bitcoin::secp256k1::PublicKey,
     pub debit: CurrencyUnit,
-    pub credit: Option<CurrencyUnit>,
+    pub credit: CurrencyUnit,
     pub pub_key: secp256k1::PublicKey,
+    pub betas: Vec<MintUrl>,
 }
 
 #[derive(Default, Debug, Clone)]

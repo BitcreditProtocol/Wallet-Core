@@ -116,11 +116,13 @@ pub async fn cmd_receive(
 ) -> Result<String> {
     let mut res = String::new();
     let swapped = app_state.wallet_receive_token(id, token.to_owned()).await?;
+    let tx = app_state.wallet_load_tx(id, &swapped.to_string()).await?;
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!(
         "Received token {token}, returned {swapped} for {name} - Wallet ID: {id}.\n"
     ));
+    res.push_str(&format!("tx: {tx:?}.\n"));
     Ok(res)
 }
 
@@ -320,6 +322,25 @@ pub async fn cmd_mint(app_state: &AppState, name: &str, id: usize, amount: u64) 
         mint_summary.address.assume_checked()
     ));
 
+    Ok(res)
+}
+
+pub async fn cmd_migrate_rabid(app_state: &AppState, name: &str) -> Result<String> {
+    let mut res = String::new();
+
+    let migrated = app_state.purse_migrate_rabid().await?;
+
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!("Migrate Rabid for {name}:\n"));
+    push_break(&mut res);
+    if migrated.is_empty() {
+        res.push_str("Nothing migrated.\n");
+    } else {
+        for (k, v) in migrated.iter() {
+            res.push_str(&format!("Migrated Wallet {} to {}.\n", k, v));
+        }
+    }
     Ok(res)
 }
 

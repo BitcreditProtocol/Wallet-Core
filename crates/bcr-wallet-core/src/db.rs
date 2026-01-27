@@ -13,7 +13,7 @@ pub async fn build_wallet_dbs(
     _db_version: u32,
     wallet_id: &str,
     debit: &CurrencyUnit,
-    credit: Option<&CurrencyUnit>,
+    credit: &CurrencyUnit,
     _local: LocalDB,
     db: Arc<redb::Database>,
 ) -> Result<(
@@ -23,17 +23,13 @@ pub async fn build_wallet_dbs(
             prod::ProductionPocketRepository,
             prod::ProductionMintMeltRepository,
         ),
-        Option<prod::ProductionPocketRepository>,
+        prod::ProductionPocketRepository,
     ),
 )> {
     let txdb = prod::ProductionTransactionRepository::new(db.clone(), wallet_id)?;
     let debitdb = prod::ProductionPocketRepository::new(db.clone(), debit)?;
     let mintmeltdb = prod::ProductionMintMeltRepository::new(db.clone(), debit)?;
-    let creditdb = if let Some(cr) = credit {
-        Some(prod::ProductionPocketRepository::new(db, cr)?)
-    } else {
-        None
-    };
+    let creditdb = prod::ProductionPocketRepository::new(db, credit)?;
     Ok((txdb, ((debitdb, mintmeltdb), creditdb)))
 }
 

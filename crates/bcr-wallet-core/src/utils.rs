@@ -1,8 +1,10 @@
 use crate::{
     MintConnector, TStamp,
     error::{Error, Result},
+    wallet::SafeMode,
 };
 use bcr_common::wire::keys::ProofFingerprint;
+use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::PublicKey;
 use cashu::{HTLCWitness, Proof};
 use cdk::Error as CdkError;
@@ -132,6 +134,74 @@ pub fn sign_htlc_proof(
     }));
 
     Ok(())
+}
+
+pub async fn htlc_lock(
+    unit: cashu::CurrencyUnit,
+    tstamp: u64,
+    client: &dyn MintConnector,
+    is_credit: bool,
+    proofs: Vec<cashu::Proof>,
+    hash_lock: Sha256,
+    key_locks: Vec<bitcoin::secp256k1::PublicKey>,
+    wallet_pubkey: bitcoin::secp256k1::PublicKey,
+    safe_mode: SafeMode,
+) -> Result<Vec<cashu::Proof>> {
+    tracing::debug!("HTLC-locking proofs");
+    let amount = proofs
+        .iter()
+        .fold(cashu::Amount::ZERO, |acc, x| acc + x.amount);
+
+    let key_locks: Vec<cashu::PublicKey> = key_locks.into_iter().map(|k| k.into()).collect();
+
+    // total hops * time per hop + 2 hops buffer
+    let lock_time =
+        tstamp + (key_locks.len() as u64 + 2) * crate::config::LOCK_REDUCTION_SECONDS_PER_HOP;
+
+    // fetch keysets infos for the given client
+    let infos = client.get_mint_keysets().await?.keysets;
+
+    let active_keyset_id = if is_credit {
+        proofs.first().ok_or(Error::NoActiveKeyset)?.keyset_id
+    } else {
+        infos
+            .iter()
+            .find(|info| info.active && info.unit == unit)
+            .ok_or(Error::NoActiveKeyset)?
+            .id
+    };
+
+    let n = key_locks.len() as u64;
+    let p2pk = cashu::Conditions::new(
+        Some(lock_time),
+        Some(key_locks),
+        Some(vec![wallet_pubkey.into()]),
+        Some(n),
+        None,
+        Some(1),
+    )?;
+    let htlc = cashu::SpendingConditions::new_htlc_hash(&hash_lock.to_string(), Some(p2pk))?;
+    let split_target = cashu::amount::SplitTarget::None;
+    let premints =
+        cashu::PreMintSecrets::with_conditions(active_keyset_id, amount, &split_target, &htlc)?;
+
+    if let SafeMode::Enabled { expire, alpha_pk } = safe_mode {
+        crate::utils::compel_commitment(
+            proofs.clone(),
+            premints.blinded_messages(),
+            expire,
+            alpha_pk,
+            client,
+        )
+        .await?;
+    }
+    let swap_request = cashu::SwapRequest::new(proofs, premints.blinded_messages());
+    let swap = client.post_swap(swap_request).await?;
+
+    let keyset = client.get_mint_keyset(active_keyset_id).await?;
+    let proofs = crate::pocket::unblind_proofs(&keyset, swap.signatures, premints);
+
+    Ok(proofs)
 }
 
 #[cfg(test)]

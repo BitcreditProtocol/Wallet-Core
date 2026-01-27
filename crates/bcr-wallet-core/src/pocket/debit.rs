@@ -401,6 +401,92 @@ impl wallet::Pocket for Pocket {
 
         Ok(proofs_by_keyset)
     }
+
+    async fn return_proofs_to_send_for_offline_payment(
+        &self,
+        rid: Uuid,
+    ) -> Result<(Amount, HashMap<cdk01::PublicKey, cdk00::Proof>)> {
+        let send_ref = {
+            let mut locked = self.current_send.lock().unwrap();
+            if locked.is_none() {
+                return Err(Error::NoPrepareRef(rid));
+            }
+            if locked.as_ref().unwrap().rid != rid {
+                return Err(Error::NoPrepareRef(rid));
+            }
+            locked.take().unwrap()
+        };
+        let proofs_to_send = return_proofs_to_send_for_offline_payment(
+            send_ref.send_proofs,
+            send_ref.swap_proof,
+            self.pdb.as_ref(),
+        )
+        .await?;
+        Ok(proofs_to_send)
+    }
+
+    async fn swap_to_unlocked_substitute_proofs(
+        &self,
+        proofs: Vec<cdk00::Proof>,
+        keysets_info: &[KeySetInfo],
+        client: &dyn MintConnector,
+        send_amount: Amount,
+    ) -> Result<Vec<cashu::Proof>> {
+        let mut swapped_proofs = Vec::new();
+        let total_amount = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
+        let change_amount = total_amount - send_amount;
+        tracing::debug!(
+            "Swapping to unlocked substitute debit proofs - {change_amount} will be lost."
+        );
+        // handle keyset
+        let (active_info, active_keyset) = self.find_active_keyset(keysets_info, client).await?;
+        // calculate splits
+        let send_splits = send_amount.split();
+        let change_splits = change_amount.split();
+        let mut splits: Vec<Amount> = Vec::with_capacity(send_splits.len() + change_splits.len());
+        splits.extend(send_splits);
+        splits.extend(change_splits);
+        // no counter etc., since we're not persisting them anyway
+        let premint_secrets = cashu::PreMintSecrets::random(
+            active_info.id,
+            total_amount,
+            &SplitTarget::Values(splits),
+        )?;
+        let mut premints = HashMap::from([(active_info.id, premint_secrets)]);
+        let keysets = HashMap::from([(active_info.id, active_keyset)]);
+        let mut blinds: Vec<cdk00::BlindedMessage> = Vec::new();
+
+        for premint in premints.values() {
+            blinds.extend(premint.blinded_messages());
+        }
+
+        // swap
+        let request = cdk03::SwapRequest::new(proofs, blinds);
+        let response = client.post_swap(request).await?;
+
+        let mut signatures: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
+        for signature in response.signatures {
+            signatures
+                .entry(signature.keyset_id)
+                .and_modify(|v| v.push(signature.clone()))
+                .or_insert_with(|| vec![signature]);
+        }
+        // only collect sending proofs - change is discarded for now
+        for (kid, signatures) in signatures.into_iter() {
+            let premint = premints.remove(&kid).expect("premint should be here");
+            let keyset = keysets.get(&kid).expect("keyset should be here");
+            let mut unblinded_proofs = unblind_proofs(keyset, signatures, premint);
+            unblinded_proofs.sort_by_key(|proof| std::cmp::Reverse(proof.amount));
+            let mut current_amount = Amount::ZERO;
+            for proof in unblinded_proofs.into_iter() {
+                if current_amount + proof.amount <= send_amount {
+                    current_amount += proof.amount;
+                    swapped_proofs.push(proof);
+                }
+            }
+        }
+        Ok(swapped_proofs)
+    }
 }
 
 #[async_trait]
