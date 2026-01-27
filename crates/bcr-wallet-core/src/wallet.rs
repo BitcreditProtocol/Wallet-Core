@@ -9,11 +9,14 @@ use crate::{
         PaymentSummary, RedemptionSummary, SendSummary, TRANSACTION_STATUS_METADATA_KEY,
         WalletConfig,
     },
-    utils::tx_can_be_refreshed,
+    utils::{self, tx_can_be_refreshed},
 };
 use async_trait::async_trait;
-use bcr_common::wallet::Token;
-use bcr_common::wire::{clowder as wire_clowder, keys as wire_keys, melt as wire_melt};
+use bcr_common::wire::{
+    clowder::{self as wire_clowder, ConnectedMintResponse},
+    melt as wire_melt,
+};
+use bcr_common::{wallet::Token, wire::clowder::ConnectedMintsResponse};
 use bitcoin::hashes::{Hash, sha256::Hash as Sha256};
 use cashu::{Amount, CurrencyUnit, KeySetInfo, MintUrl, Proof};
 use cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
@@ -465,76 +468,82 @@ where
 
     async fn _receive_proofs(
         &self,
-        keysets_info: &[KeySetInfo],
+        local_alpha_keysets_info: &[KeySetInfo],
         proofs: Vec<cashu::Proof>,
         unit: CurrencyUnit,
-        mint: Option<MintUrl>,
+        mint: MintUrl,
+        intermint_infos: Option<(ConnectedMintsResponse, Vec<KeySetInfo>)>,
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,
-        quote_id: Option<String>,
     ) -> Result<TransactionId> {
         let mut proofs = proofs;
-        if let Some(mint) = mint
-            && mint != self.client.mint_url()
-        {
-            // Determine path from current mint to origin
-            let path = self.client.post_clowder_path(mint.clone()).await?;
-            tracing::debug!("Received intermint proofs path {:?}", path);
-            if path.mints.len() < 2 {
-                return Err(Error::InvalidClowderPath);
-            }
+        if mint != self.client.mint_url() {
+            if let Some((clowder_path, _)) = intermint_infos {
+                let alpha_id = clowder_path.mints[0].node_id;
+                let alpha_client = (self.client_factory)(mint.clone());
+                let substitute_beta_mint = clowder_path.mints[1].mint.clone();
 
-            let (mint_urls, node_ids): (Vec<_>, Vec<_>) =
-                path.mints.into_iter().map(|m| (m.mint, m.node_id)).unzip();
+                // In the direct exchange case this is the same as the Wallet's mint
+                let substitute_client = if substitute_beta_mint == self.client.mint_url() {
+                    &self.client
+                } else {
+                    self.beta_clients
+                        .get(&substitute_beta_mint)
+                        .ok_or(Error::BetaNotFound(substitute_beta_mint.clone()))?
+                };
+                tracing::debug!("Using substitute {}", substitute_beta_mint.to_string());
 
-            let alpha_id = node_ids[0];
+                // check if alpha is offline
+                let is_alpha_offline = substitute_client.get_alpha_offline(alpha_id).await?;
+                if !is_alpha_offline {
+                    tracing::debug!("Online exchange from {}", mint.to_string());
+                    proofs = self
+                        .online_exchange(
+                            proofs,
+                            mint,
+                            alpha_client.as_ref(),
+                            clowder_path.mints,
+                            unit.clone(),
+                            tstamp,
+                        )
+                        .await?;
+                } else {
+                    tracing::debug!("Offline exchange from {}", mint.to_string());
+                    let substitute_proofs = self
+                        .offline_exchange(substitute_client.as_ref(), proofs)
+                        .await?;
 
-            let alpha_client = (self.client_factory)(mint.clone());
-            // The path goes through the substitute Beta if the Alpha origin mint is offline
-            let beta_mint = mint_urls[1].clone();
+                    // log for debugging
+                    tracing::debug!(
+                        "Offline Exchanged token: {}",
+                        cashu::Token::new(
+                            substitute_beta_mint.clone(),
+                            substitute_proofs.clone(),
+                            None,
+                            cashu::CurrencyUnit::Sat,
+                        )
+                    );
 
-            // In the direct exchange case this is the same as the Wallet's mint
-            let substitute_client = if beta_mint == self.client.mint_url() {
-                &self.client
+                    // Alpha proofs -> Substitute Beta proofs is done, so we only need the path from
+                    // Substitute Beta to the Wallet Mint
+                    tracing::debug!("Got substitute proofs - online exchange to own mint next");
+                    let path = clowder_path.mints[1..].to_vec();
+                    proofs = self
+                        .online_exchange(
+                            substitute_proofs,
+                            substitute_beta_mint,
+                            substitute_client.as_ref(),
+                            path,
+                            unit.clone(),
+                            tstamp,
+                        )
+                        .await?;
+                }
             } else {
-                self.beta_clients
-                    .get(&beta_mint)
-                    .ok_or(Error::BetaNotFound(beta_mint))?
+                // different mint, but no clowder-path set
+                return Err(Error::InterMintButNoClowderPath);
             };
-
-            let is_alpha_offline = substitute_client.get_alpha_offline(alpha_id).await?;
-
-            if !is_alpha_offline {
-                tracing::debug!("Online exchange");
-                proofs = self
-                    .online_exchange(
-                        proofs,
-                        mint,
-                        alpha_client.as_ref(),
-                        node_ids,
-                        unit.clone(),
-                        tstamp,
-                    )
-                    .await?;
-            } else {
-                tracing::debug!("Offline exchange");
-                let substitute_proofs = self
-                    .offline_exchange(substitute_client.as_ref(), proofs, tstamp)
-                    .await?;
-                // Alpha proofs -> Beta proofs is done, so we only need the path from Beta to the Wallet Mint
-                let path = node_ids[1..].to_vec();
-                proofs = self
-                    .online_exchange(
-                        substitute_proofs,
-                        mint,
-                        substitute_client.as_ref(),
-                        path,
-                        unit.clone(),
-                        tstamp,
-                    )
-                    .await?;
-            }
         }
 
         let received_amount = proofs
@@ -544,7 +553,7 @@ where
             self.debit
                 .receive_proofs(
                     self.client.as_ref(),
-                    keysets_info,
+                    local_alpha_keysets_info,
                     proofs,
                     SafeMode::new(self.safe_mode, self.clowder_id),
                 )
@@ -553,7 +562,7 @@ where
             self.credit
                 .receive_proofs(
                     self.client.as_ref(),
-                    keysets_info,
+                    local_alpha_keysets_info,
                     proofs,
                     SafeMode::new(self.safe_mode, self.clowder_id),
                 )
@@ -573,7 +582,7 @@ where
             timestamp: tstamp,
             unit,
             ys,
-            quote_id,
+            quote_id: None,
         };
         let txid = self.tx_repo.store_tx(tx).await?;
         Ok(txid)
@@ -590,6 +599,7 @@ where
         wallet_pubkey: bitcoin::secp256k1::PublicKey,
         safe_mode: SafeMode,
     ) -> Result<Vec<cashu::Proof>> {
+        tracing::debug!("HTLC-locking proofs");
         let amount = proofs
             .iter()
             .fold(cashu::Amount::ZERO, |acc, x| acc + x.amount);
@@ -649,20 +659,11 @@ where
         &self,
         substitute_client: &dyn MintConnector,
         proofs: Vec<Proof>,
-        tstamp: u64,
     ) -> Result<Vec<Proof>> {
         // Ephemeral P2PK secret
         let wallet_pk = cashu::SecretKey::generate();
 
-        let secrets = proofs
-            .iter()
-            .map(|p| p.secret.clone())
-            .collect::<Vec<cashu::secret::Secret>>();
-
-        let fingerprints: Vec<_> = proofs
-            .into_iter()
-            .map(wire_keys::ProofFingerprint::try_from)
-            .collect::<std::result::Result<_, _>>()?;
+        let (fingerprints, secrets) = utils::proofs_to_fingerprints(proofs)?;
 
         let hash_locks: Vec<Sha256> = secrets
             .iter()
@@ -675,42 +676,8 @@ where
                 *wallet_pk.public_key(),
             )
             .await?;
-        // TODO - Verify Beta Proofs don't have additional locks preventing the wallet from using it
-        for ((p, h), s) in beta_proofs.iter_mut().zip(hash_locks).zip(secrets) {
-            let msg: Vec<u8> = p.secret.to_bytes();
-
-            // Verify spending conditions
-            let secret: cashu::nuts::nut10::Secret = p
-                .secret
-                .clone()
-                .try_into()
-                .map_err(|_| Error::SpendingConditions)?;
-            let conditions: cashu::Conditions = secret
-                .secret_data()
-                .tags()
-                .and_then(|c| c.clone().try_into().ok())
-                .ok_or(Error::SpendingConditions)?;
-
-            if secret.secret_data().data() != h.to_string() {
-                return Err(Error::InvalidHashLock(
-                    h,
-                    secret.secret_data().data().to_string(),
-                ));
-            }
-
-            crate::utils::validate_offline_conditions(
-                *wallet_pk.public_key(),
-                &conditions,
-                tstamp,
-            )?;
-
-            let signature: bitcoin::secp256k1::schnorr::Signature = wallet_pk.sign(&msg)?;
-            let signatures = vec![signature.to_string()];
-
-            p.witness = Some(cashu::Witness::HTLCWitness(cashu::HTLCWitness {
-                preimage: s.to_string(),
-                signatures: Some(signatures),
-            }));
+        for (p, s) in beta_proofs.iter_mut().zip(secrets) {
+            utils::sign_htlc_proof(p, &s.to_string(), &wallet_pk)?;
         }
         Ok(beta_proofs)
     }
@@ -720,21 +687,31 @@ where
         alpha_proofs: Vec<cashu::Proof>,
         alpha_url: MintUrl,
         alpha_client: &dyn MintConnector,
-        path: Vec<bitcoin::secp256k1::PublicKey>,
+        path: Vec<ConnectedMintResponse>,
         unit: CurrencyUnit,
         tstamp: u64,
     ) -> Result<Vec<Proof>> {
-        tracing::debug!(alpha_url=?alpha_url, "intermint exchange");
+        tracing::debug!(alpha_url=?alpha_url, "intermint exchange from ");
+        // Already proofs on our mint
+        if alpha_url == self.client.mint_url() {
+            tracing::debug!("not intermint exchanging proofs, since they're already on our mint");
+            return Ok(alpha_proofs);
+        }
 
         // Ephemeral P2PK secret
-
         let wallet_pk = cashu::SecretKey::generate();
 
         // Require all intermediate mints to sign
         // Exclude alpha origin from p2pk lock as it doesn't need to sign its own eCash
-        tracing::debug!("Origin {}", path[0]);
+        tracing::debug!(
+            "Intermint proofs path {:?}",
+            path.iter()
+                .map(|m| (m.mint.to_string(), m.node_id.to_string()))
+                .collect::<Vec<_>>()
+        );
+
         let key_locks: Vec<bitcoin::secp256k1::PublicKey> =
-            path.clone().into_iter().skip(1).collect();
+            path.iter().skip(1).map(|m| m.node_id).collect();
         tracing::debug!(
             "Key locks {}",
             key_locks
@@ -762,7 +739,19 @@ where
         )
         .await?;
 
-        let mut exchange_path = path.clone();
+        // log for debugging
+        tracing::debug!(
+            "Locked alpha token: {}",
+            cashu::Token::new(
+                alpha_url.clone(),
+                locked_alpha_proofs.clone(),
+                None,
+                cashu::CurrencyUnit::Sat,
+            )
+        );
+
+        let mut exchange_path: Vec<bitcoin::secp256k1::PublicKey> =
+            path.iter().map(|m| m.node_id).collect();
         // Include wallet pubkey as last to be p2pk
         exchange_path.push(*wallet_pk.public_key());
 
@@ -793,64 +782,38 @@ where
             }
         }?;
 
-        for proof in beta_proofs.iter_mut() {
-            let msg: Vec<u8> = proof.secret.to_bytes();
-            let signature: bitcoin::secp256k1::schnorr::Signature = wallet_pk.sign(&msg)?;
-
-            let signatures = vec![signature.to_string()];
-
-            proof.witness = Some(cashu::Witness::HTLCWitness(cashu::HTLCWitness {
-                preimage: preimage.to_string(),
-                signatures: Some(signatures),
-            }));
+        for p in beta_proofs.iter_mut() {
+            utils::sign_htlc_proof(p, &preimage, &wallet_pk)?;
         }
+        // log for debugging
+        tracing::debug!(
+            "Unlocked beta token: {}",
+            cashu::Token::new(
+                self.client.mint_url(),
+                beta_proofs.clone(),
+                None,
+                cashu::CurrencyUnit::Sat,
+            )
+        );
         tracing::debug!("Returning same mint proofs");
         Ok(beta_proofs)
     }
 
     pub async fn receive_token(&self, token: Token, tstamp: u64) -> Result<TransactionId> {
         let token_teaser = token.to_string().chars().take(20).collect::<String>();
-        let keysets_info = self.client.get_mint_keysets().await?.keysets;
+        let (intermint_infos, keysets_info) = self
+            .get_clowder_path_and_keysets_info(token.mint_url())
+            .await?;
+
         let proofs = if token.mint_url() == self.client.mint_url() {
             token.proofs(&keysets_info)?
+        } else if let Some((_, ref intermint_alpha_infos)) = intermint_infos {
+            token.proofs(intermint_alpha_infos)?
         } else {
-            let path = self.client.post_clowder_path(token.mint_url()).await?;
-            tracing::debug!("Received intermint proofs path {:?}", path);
-            if path.mints.len() < 2 {
-                return Err(Error::InvalidClowderPath);
-            }
-
-            let alpha_id = path.mints[0].node_id;
-            // The path goes through the substitute Beta if the Alpha origin mint is offline
-            let beta_mint = path.mints[1].mint.clone();
-            // In the direct exchange case this is the same as the Wallet's mint
-            let substitute_client = if beta_mint == self.client.mint_url() {
-                &self.client
-            } else {
-                self.beta_clients
-                    .get(&beta_mint)
-                    .ok_or(Error::BetaNotFound(beta_mint))?
-            };
-
-            // In the offline case we can only ask the substitute, in the online case we can ask the mint
-            // The Beta mint (after Alpha in the path) should have it in any case
-            // This can be revised based on some criteria ?
-            let alpha_keysets = substitute_client.get_alpha_keysets(alpha_id).await?;
-
-            // The endpoint only returns active keysets and Clowder/Wildcat don't have fees
-            let alpha_infos: Vec<cashu::KeySetInfo> = alpha_keysets
-                .iter()
-                .map(|keyset| cashu::KeySetInfo {
-                    id: keyset.id,
-                    unit: keyset.unit.clone(),
-                    active: true,
-                    input_fee_ppk: 0,
-                    final_expiry: keyset.final_expiry,
-                })
-                .collect();
-
-            token.proofs(&alpha_infos)?
+            // different mint, but no clowder-path set
+            return Err(Error::InterMintButNoClowderPath);
         };
+
         if proofs.is_empty() {
             return Err(Error::EmptyToken(token_teaser));
         }
@@ -872,11 +835,11 @@ where
                 &keysets_info,
                 proofs,
                 self.debit.unit(),
-                Some(token.mint_url()),
+                token.mint_url(),
+                intermint_infos,
                 tstamp,
                 token.memo().clone(),
                 metadata,
-                None,
             )
             .await?
         } else if token.unit().is_some() && token.unit() == Some(self.credit.unit()) {
@@ -886,11 +849,11 @@ where
                 &keysets_info,
                 proofs,
                 self.credit.unit(),
-                Some(token.mint_url()),
+                token.mint_url(),
+                intermint_infos,
                 tstamp,
                 token.memo().clone(),
                 metadata,
-                None,
             )
             .await?
         } else {
@@ -939,6 +902,67 @@ where
         }
         let txid = self.tx_repo.store_tx(partial_tx).await?;
         Ok(txid)
+    }
+
+    // Returns (Option<(clowder_path, intermint_alpha_keyset)>, local_alpha_keyset)
+    async fn get_clowder_path_and_keysets_info(
+        &self,
+        mint_url: MintUrl,
+    ) -> Result<(
+        Option<(ConnectedMintsResponse, Vec<KeySetInfo>)>,
+        Vec<KeySetInfo>,
+    )> {
+        let local_keysets_info = self.client.get_mint_keysets().await?.keysets;
+        if mint_url == self.client.mint_url() {
+            Ok((None, local_keysets_info))
+        } else {
+            // Intermint Exchange
+            let path = self.client.post_clowder_path(mint_url).await?;
+            tracing::debug!(
+                "Received intermint proofs path {:?}",
+                path.mints
+                    .iter()
+                    .map(|m| (m.mint.to_string(), m.node_id.to_string()))
+                    .collect::<Vec<_>>()
+            );
+            if path.mints.len() < 2 {
+                return Err(Error::InvalidClowderPath);
+            }
+
+            let alpha_id = path.mints[0].node_id;
+            // The path goes through the substitute Beta if the Alpha origin mint is offline
+            let beta_mint = path.mints[1].mint.clone();
+            tracing::debug!(
+                "Intermint Exchange - Alpha: {alpha_id}, Substitute Beta: {}",
+                beta_mint.to_string()
+            );
+            // In the direct exchange case this is the same as the Wallet's mint
+            let substitute_client = if beta_mint == self.client.mint_url() {
+                &self.client
+            } else {
+                self.beta_clients
+                    .get(&beta_mint)
+                    .ok_or(Error::BetaNotFound(beta_mint))?
+            };
+
+            // In the offline case we can only ask the substitute, in the online case we can ask the mint
+            // The Beta mint (after Alpha in the path) should have it in any case
+            // This can be revised based on some criteria ?
+            let alpha_keysets = substitute_client.get_alpha_keysets(alpha_id).await?;
+
+            // The endpoint only returns active keysets and Clowder/Wildcat don't have fees
+            let intermint_alpha_infos: Vec<cashu::KeySetInfo> = alpha_keysets
+                .iter()
+                .map(|keyset| cashu::KeySetInfo {
+                    id: keyset.id,
+                    unit: keyset.unit.clone(),
+                    active: true,
+                    input_fee_ppk: 0,
+                    final_expiry: keyset.final_expiry,
+                })
+                .collect();
+            Ok((Some((path, intermint_alpha_infos)), local_keysets_info))
+        }
     }
 }
 
@@ -1287,22 +1311,22 @@ where
         &self,
         proofs: Vec<cashu::Proof>,
         unit: CurrencyUnit,
-        mint: Option<MintUrl>,
+        mint: MintUrl,
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,
-        quote_id: Option<String>,
     ) -> Result<TransactionId> {
-        let keysets_info = self.client.get_mint_keysets().await?.keysets;
+        let (intermint_infos, local_alpha_keysets_info) =
+            self.get_clowder_path_and_keysets_info(mint.clone()).await?;
         self._receive_proofs(
-            &keysets_info,
+            &local_alpha_keysets_info,
             proofs,
             unit,
             mint,
+            intermint_infos,
             tstamp,
             memo,
             metadata,
-            quote_id,
         )
         .await
     }
@@ -1365,7 +1389,6 @@ where
     async fn migrate_pockets_substitute(
         &mut self,
         substitute: Box<dyn MintConnector>,
-        tstamp: u64,
     ) -> Result<()> {
         let debit_proofs = self.debit.delete_proofs().await?;
         let credit_proofs = self.credit.delete_proofs().await?;
@@ -1379,7 +1402,7 @@ where
         tracing::info!("Exchanging debit offline");
         for (_, proofs) in debit_proofs.iter() {
             let exchanged = self
-                .offline_exchange(substitute.as_ref(), proofs.clone(), tstamp)
+                .offline_exchange(substitute.as_ref(), proofs.clone())
                 .await?;
             exchanged_debit.extend(exchanged);
         }
@@ -1387,7 +1410,7 @@ where
         tracing::info!("Exchanging credit offline");
         for (_, proofs) in credit_proofs.iter() {
             let exchanged = self
-                .offline_exchange(substitute.as_ref(), proofs.clone(), tstamp)
+                .offline_exchange(substitute.as_ref(), proofs.clone())
                 .await?;
             exchanged_credit.extend(exchanged);
         }

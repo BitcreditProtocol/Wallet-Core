@@ -1,3 +1,8 @@
+# 0.7.7
+
+* Fix Offline intermint exchange
+* Fix DLEQs being set during restoration
+
 # 0.7.6
 
 * Fix intermint exchange

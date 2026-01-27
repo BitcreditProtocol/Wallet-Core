@@ -65,18 +65,16 @@ pub trait Wallet: sync::SendSync {
     async fn migrate_pockets_substitute(
         &mut self,
         substitute: Box<dyn MintConnector>,
-        tstamp: u64,
     ) -> Result<()>;
 
     async fn receive_proofs(
         &self,
         proofs: Vec<cdk00::Proof>,
         unit: CurrencyUnit,
-        mint: Option<MintUrl>,
+        mint: MintUrl,
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,
-        quote_id: Option<String>,
     ) -> Result<TransactionId>;
 
     async fn prepare_pay_by_token(
@@ -381,7 +379,7 @@ where
         Ok(None)
     }
 
-    pub async fn migrate_rabid_wallets(&self, tstamp: u64) -> Result<()> {
+    pub async fn migrate_rabid_wallets(&self) -> Result<()> {
         let wlts = self.wallets.read().await;
         for wlt in wlts.iter() {
             let is_rabid = wlt.read().await.is_wallet_mint_rabid().await?;
@@ -397,7 +395,7 @@ where
                 let substitute_client = crate::mint::HttpClientExt::new(substitute_url);
                 wlt.write()
                     .await
-                    .migrate_pockets_substitute(Box::new(substitute_client), tstamp)
+                    .migrate_pockets_substitute(Box::new(substitute_client))
                     .await?;
                 self.repo.store(wlt.read().await.config()?).await?;
             }
@@ -560,11 +558,10 @@ where
         .receive_proofs(
             payload.proofs,
             payload.unit,
-            Some(payload.mint),
+            payload.mint,
             chrono::Utc::now().timestamp() as u64,
             payload.memo,
             meta,
-            None,
         )
         .await;
     match response {

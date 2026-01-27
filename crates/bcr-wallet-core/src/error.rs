@@ -130,6 +130,10 @@ pub enum Error {
     MintingError(String),
     #[error("inter-mint payment not supported yet")]
     InterMint,
+    #[error("Missing DLEQ proof")]
+    MissingDleq,
+    #[error("intermint payment, but no clowder path")]
+    InterMintButNoClowderPath,
     #[error("spending conditions not supported yet")]
     SpendingConditions,
     #[error("NUT-18 request has no transport")]

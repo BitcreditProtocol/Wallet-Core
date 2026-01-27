@@ -1,6 +1,12 @@
-use crate::{MintConnector, TStamp, error::Result};
+use crate::{
+    MintConnector, TStamp,
+    error::{Error, Result},
+};
+use bcr_common::wire::keys::ProofFingerprint;
 use bitcoin::secp256k1::PublicKey;
+use cashu::{HTLCWitness, Proof};
 use cdk::Error as CdkError;
+use secp256k1::schnorr::Signature;
 
 type CdkResult<T> = std::result::Result<T, cdk::Error>;
 
@@ -83,6 +89,49 @@ pub async fn compel_commitment(
         // Err(Error::BorshSignature(BorshMsgSignatureError::Secp256k1(_))) => {},
         Err(e) => Err(e),
     }
+}
+
+pub fn proofs_to_fingerprints(
+    proofs: Vec<Proof>,
+) -> Result<(Vec<ProofFingerprint>, Vec<cashu::secret::Secret>)> {
+    let mut secrets = Vec::with_capacity(proofs.len());
+    let mut fingerprints = Vec::with_capacity(proofs.len());
+
+    for p in proofs.iter() {
+        let dleq = p.dleq.clone().ok_or(Error::MissingDleq)?;
+        secrets.push(p.secret.clone());
+
+        fingerprints.push(ProofFingerprint {
+            amount: p.amount.into(),
+            keyset_id: p.keyset_id,
+            c: p.c,
+            dleq: Some(dleq),
+            y: p.y()?,
+            witness: None,
+        });
+    }
+
+    Ok((fingerprints, secrets))
+}
+
+pub fn sign_htlc_proof(
+    proof: &mut Proof,
+    preimage: &str,
+    wallet_secret: &cashu::SecretKey,
+) -> Result<()> {
+    let msg: Vec<u8> = proof.secret.to_bytes();
+    let signature: Signature = wallet_secret
+        .sign(&msg)
+        .map_err(|err| Error::Internal(format!("signing error: {err}")))?;
+
+    let signatures = vec![signature.to_string()];
+
+    proof.witness = Some(cashu::Witness::HTLCWitness(HTLCWitness {
+        preimage: preimage.to_string(),
+        signatures: Some(signatures),
+    }));
+
+    Ok(())
 }
 
 #[cfg(test)]
