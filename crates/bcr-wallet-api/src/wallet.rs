@@ -3,7 +3,6 @@ use crate::{
     config::SameMintSafeMode,
     error::{Error, Result},
     purse::{self},
-    sync,
     types::{
         self, BTC_TX_ID_TYPE_METADATA_KEY, MeltSummary, MintSummary, PAYMENT_TYPE_METADATA_KEY,
         PaymentSummary, RedemptionSummary, SendSummary, TRANSACTION_STATUS_METADATA_KEY,
@@ -13,7 +12,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use bcr_common::{
-    cashu::{self, Amount, CurrencyUnit, KeySetInfo, MintUrl, Proof},
+    cashu::{self, Amount, CurrencyUnit, KeySetInfo, MintUrl, Proof, ProofsMethods},
     cdk::{
         StreamExt,
         wallet::types::{Transaction, TransactionDirection, TransactionId},
@@ -24,7 +23,12 @@ use bcr_common::{
         melt as wire_melt,
     },
 };
-use bitcoin::hashes::{Hash, sha256::Hash as Sha256};
+use bcr_wallet_core::SendSync;
+use bcr_wallet_persistence::TransactionRepository;
+use bitcoin::{
+    hashes::{Hash, sha256::Hash as Sha256},
+    secp256k1,
+};
 use futures::stream::FuturesUnordered;
 use nostr_sdk::nips::nip19::{FromBech32, Nip19Profile};
 use std::{collections::HashMap, str::FromStr, sync::Mutex};
@@ -53,7 +57,7 @@ impl SafeMode {
 /// trait that represents a single compartment in our wallet where we store proofs/tokens of the
 /// same currency emitted by the same mint
 #[async_trait]
-pub trait Pocket: sync::SendSync {
+pub trait Pocket: SendSync {
     fn unit(&self) -> CurrencyUnit;
     async fn balance(&self) -> Result<Amount>;
     async fn receive_proofs(
@@ -71,8 +75,10 @@ pub trait Pocket: sync::SendSync {
         client: &dyn MintConnector,
         safe_mode: SafeMode,
     ) -> Result<HashMap<cashu::PublicKey, cashu::Proof>>;
-    async fn clean_local_proofs(&self, client: &dyn MintConnector)
-    -> Result<Vec<cashu::PublicKey>>;
+    async fn cleanup_local_proofs(
+        &self,
+        client: &dyn MintConnector,
+    ) -> Result<Vec<cashu::PublicKey>>;
     async fn restore_local_proofs(
         &self,
         keysets_info: &[KeySetInfo],
@@ -155,22 +161,6 @@ pub trait DebitPocket: Pocket {
     ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>>;
 }
 
-#[async_trait]
-pub trait TransactionRepository: sync::SendSync {
-    async fn store_tx(&self, tx: Transaction) -> Result<TransactionId>;
-    async fn load_tx(&self, tx_id: TransactionId) -> Result<Transaction>;
-    #[allow(dead_code)]
-    async fn delete_tx(&self, tx_id: TransactionId) -> Result<()>;
-    async fn list_tx_ids(&self) -> Result<Vec<TransactionId>>;
-    async fn list_txs(&self) -> Result<Vec<Transaction>>;
-    async fn update_metadata(
-        &self,
-        tx_id: TransactionId,
-        key: String,
-        value: String,
-    ) -> Result<Option<String>>;
-}
-
 pub struct SendReference {
     pub request_id: Uuid,
     pub amount: Amount,
@@ -206,7 +196,7 @@ pub struct Wallet<DebtPck> {
     id: String,
     pub_key: secp256k1::PublicKey,
     current_payment: Mutex<Option<PayReference>>,
-    clowder_id: bitcoin::secp256k1::PublicKey,
+    clowder_id: secp256k1::PublicKey,
     client_factory: Box<dyn Fn(cashu::MintUrl) -> Box<dyn MintConnector> + Send + Sync>,
     safe_mode: SameMintSafeMode,
 }
@@ -227,7 +217,7 @@ impl<DebtPck> Wallet<DebtPck> {
         name: String,
         id: String,
         pub_key: secp256k1::PublicKey,
-        clowder_id: bitcoin::secp256k1::PublicKey,
+        clowder_id: secp256k1::PublicKey,
         beta_clients: HashMap<cashu::MintUrl, Box<dyn MintConnector>>,
         client_factory: Box<dyn Fn(cashu::MintUrl) -> Box<dyn MintConnector> + Send + Sync>,
         safe_mode: SameMintSafeMode,
@@ -268,11 +258,13 @@ impl<DebtPck> Wallet<DebtPck> {
     }
 
     pub async fn list_tx_ids(&self) -> Result<Vec<TransactionId>> {
-        self.tx_repo.list_tx_ids().await
+        let res = self.tx_repo.list_tx_ids().await?;
+        Ok(res)
     }
 
     pub async fn list_txs(&self) -> Result<Vec<Transaction>> {
-        self.tx_repo.list_txs().await
+        let res = self.tx_repo.list_txs().await?;
+        Ok(res)
     }
 
     // Returns (Option<(clowder_path, intermint_alpha_keyset)>, local_alpha_keyset)
@@ -400,13 +392,6 @@ where
         } else {
             Err(Error::NoTransport)
         }
-    }
-
-    pub async fn clean_local_db(&self) -> Result<u32> {
-        let credit_ys = self.credit.clean_local_proofs(self.client.as_ref()).await?;
-        let debit_ys = self.debit.clean_local_proofs(self.client.as_ref()).await?;
-        let total = credit_ys.len() + debit_ys.len();
-        Ok(total as u32)
     }
 
     pub async fn redeem_credit(&self) -> Result<Amount> {
@@ -640,9 +625,7 @@ where
             };
         }
 
-        let received_amount = proofs
-            .iter()
-            .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
+        let received_amount = proofs.total_amount()?;
         let (stored_amount, ys) = if unit == self.debit.unit() {
             self.debit
                 .receive_proofs(
@@ -737,8 +720,7 @@ where
                 .collect::<Vec<_>>()
         );
 
-        let key_locks: Vec<bitcoin::secp256k1::PublicKey> =
-            path.iter().skip(1).map(|m| m.node_id).collect();
+        let key_locks: Vec<secp256k1::PublicKey> = path.iter().skip(1).map(|m| m.node_id).collect();
         tracing::debug!(
             "Key locks {}",
             key_locks
@@ -777,8 +759,7 @@ where
             )
         );
 
-        let mut exchange_path: Vec<bitcoin::secp256k1::PublicKey> =
-            path.iter().map(|m| m.node_id).collect();
+        let mut exchange_path: Vec<secp256k1::PublicKey> = path.iter().map(|m| m.node_id).collect();
         // Include wallet pubkey as last to be p2pk
         exchange_path.push(*wallet_pk.public_key());
 
@@ -797,7 +778,6 @@ where
                         tracing::warn!("Failed to exchange HTLC proofs: {}", err);
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
-                    // TODO - Store the proofs and refund after time lock
                     Err(err) => {
                         tracing::error!(
                             "Failed to exchange HTLC proofs after max attempts: {}",
@@ -1074,9 +1054,7 @@ where
                 };
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
-                let amount = proofs
-                    .iter()
-                    .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
+                let amount = proofs.total_amount()?;
                 let mut metadata = HashMap::default();
                 metadata.insert(
                     PAYMENT_TYPE_METADATA_KEY.to_owned(),
@@ -1165,9 +1143,7 @@ where
                 };
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
-                let amount = proofs
-                    .iter()
-                    .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
+                let amount = proofs.total_amount()?;
                 let mut metadata = HashMap::default();
                 metadata.insert(
                     PAYMENT_TYPE_METADATA_KEY.to_owned(),
@@ -1205,9 +1181,7 @@ where
                     .await?;
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
-                let amount = proofs
-                    .iter()
-                    .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
+                let amount = proofs.total_amount()?;
                 let mut metadata = HashMap::default();
                 metadata.insert(
                     PAYMENT_TYPE_METADATA_KEY.to_owned(),
@@ -1420,7 +1394,7 @@ where
         self.beta_clients.keys().cloned().collect()
     }
 
-    fn clowder_id(&self) -> bitcoin::secp256k1::PublicKey {
+    fn clowder_id(&self) -> secp256k1::PublicKey {
         self.clowder_id
     }
 
@@ -1434,8 +1408,6 @@ where
         // Exchange debit
         let mut exchanged_debit = Vec::new();
         let mut exchanged_credit = Vec::new();
-
-        // TODO, handle partial exchanges
 
         tracing::info!("Exchanging debit offline");
         for (_, proofs) in debit_proofs.iter() {
@@ -1621,9 +1593,7 @@ where
                 return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
             };
 
-            let amount = proofs
-                .iter()
-                .fold(Amount::ZERO, |acc, proof| acc + proof.amount);
+            let amount = proofs.total_amount()?;
             let mut metadata = HashMap::default();
             metadata.insert(
                 PAYMENT_TYPE_METADATA_KEY.to_owned(),
@@ -1652,5 +1622,15 @@ where
         } else {
             Err(Error::NoSubstitute)
         }
+    }
+
+    async fn cleanup_local_proofs(&self) -> Result<()> {
+        self.credit
+            .cleanup_local_proofs(self.client.as_ref())
+            .await?;
+        self.debit
+            .cleanup_local_proofs(self.client.as_ref())
+            .await?;
+        Ok(())
     }
 }

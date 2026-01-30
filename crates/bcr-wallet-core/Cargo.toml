@@ -4,38 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[features]
-default = []
-memory-db = []
-
 [dependencies]
-anyhow.workspace = true
-async-trait.workspace = true
 bcr-common = {workspace = true}
-bip39.workspace = true
 bitcoin.workspace = true
-borsh.workspace = true
 chrono = {workspace = true}
-ciborium = {workspace = true}
-futures = {workspace = true}
-nostr = {workspace = true}
-nostr-sdk = {workspace = true, features = ["nip06"]}
-rand = {workspace = true}
-redb = {workspace = true}
-reqwest = {workspace = true}
-secp256k1.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 strum = {workspace = true, features = ["derive"]}
-thiserror.workspace = true
-tokio = {workspace = true}
-tracing.workspace = true
-url = {workspace = true}
+thiserror = {workspace = true }
 uuid = {workspace = true }
-
-[dev-dependencies]
-bcr-common = {workspace = true, features = ["test-utils"]}
-mockall = { workspace = true}
-rand = {workspace = true}
-tokio = {workspace = true}
 

@@ -3,18 +3,18 @@ use crate::{
     error::{Error, Result},
     keypair_from_seed,
     pocket::*,
-    restore,
-    types::{MeltSummary, MintSummary, SendSummary},
-    wallet,
+    restore, wallet,
 };
 use async_trait::async_trait;
 use bcr_common::{
     cashu::{
-        self, Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00,
-        nut01 as cdk01, nut05 as cdk05,
+        self, Amount, CurrencyUnit, KeySet, KeySetInfo, Proof, ProofsMethods, amount::SplitTarget,
+        nut00 as cdk00, nut01 as cdk01, nut05 as cdk05,
     },
     wire::{melt as wire_melt, mint as wire_mint},
 };
+use bcr_wallet_core::types::{MeltSummary, MintSummary, SendSummary};
+use bcr_wallet_persistence::{MintMeltRepository, PocketRepository};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -27,32 +27,6 @@ struct MeltReference {
     swap_proof: Option<(Amount, cdk01::PublicKey)>,
     reserved_fees: Amount,
     mint_quote: String,
-}
-
-///////////////////////////////////////////// Melt Repository
-#[cfg_attr(test, mockall::automock)]
-#[async_trait]
-pub trait MintMeltRepository: sync::SendSync {
-    // melt
-    async fn store_melt(
-        &self,
-        qid: String,
-        premints: Option<cdk00::PreMintSecrets>,
-    ) -> Result<String>;
-    async fn load_melt(&self, qid: String) -> Result<cdk00::PreMintSecrets>;
-    async fn list_melts(&self) -> Result<Vec<String>>;
-    async fn delete_melt(&self, qid: String) -> Result<()>;
-    // mint
-    async fn store_mint(
-        &self,
-        quote_id: Uuid,
-        amount: bitcoin::Amount,
-        address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-        expiry: u64,
-    ) -> Result<Uuid>;
-    async fn load_mint(&self, qid: Uuid) -> Result<MintSummary>;
-    async fn list_mints(&self) -> Result<Vec<Uuid>>;
-    async fn delete_mint(&self, qid: Uuid) -> Result<()>;
 }
 
 ///////////////////////////////////////////// debit pocket
@@ -116,7 +90,7 @@ impl Pocket {
         }
         let (ys, proofs): (Vec<cdk01::PublicKey>, Vec<cdk00::Proof>) = inputs.into_iter().unzip();
         let counter = self.pdb.counter(active_info.id).await?;
-        let total_amount = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
+        let total_amount = proofs.total_amount()?;
         let premint_secrets = cdk00::PreMintSecrets::from_seed(
             active_info.id,
             counter,
@@ -291,10 +265,8 @@ impl wallet::Pocket for Pocket {
     }
 
     async fn balance(&self) -> Result<cashu::Amount> {
-        let proofs = self.pdb.list_unspent().await?;
-        let total = proofs
-            .into_iter()
-            .fold(Amount::ZERO, |acc, (_, proof)| acc + proof.amount);
+        let proofs: Vec<Proof> = self.pdb.list_unspent().await?.into_values().collect();
+        let total = proofs.total_amount()?;
         Ok(total)
     }
 
@@ -359,11 +331,11 @@ impl wallet::Pocket for Pocket {
         Ok(sending_proofs)
     }
 
-    async fn clean_local_proofs(
+    async fn cleanup_local_proofs(
         &self,
         client: &dyn MintConnector,
     ) -> Result<Vec<cdk01::PublicKey>> {
-        let cleaned_ys = clean_local_proofs(self.pdb.as_ref(), client).await?;
+        let cleaned_ys = cleanup_local_proofs(self.pdb.as_ref(), client).await?;
         Ok(cleaned_ys)
     }
 
@@ -435,7 +407,7 @@ impl wallet::Pocket for Pocket {
         send_amount: Amount,
     ) -> Result<Vec<cashu::Proof>> {
         let mut swapped_proofs = Vec::new();
-        let total_amount = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
+        let total_amount = proofs.total_amount()?;
         let change_amount = total_amount - send_amount;
         tracing::debug!(
             "Swapping to unlocked substitute debit proofs - {change_amount} will be lost."
@@ -690,10 +662,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        utils::tests::MockMintConnector,
+        test_utils::tests::MockMintConnector,
         wallet::{DebitPocket, Pocket},
     };
     use bcr_common::core_tests;
+    use bcr_wallet_persistence::{MockMintMeltRepository, MockPocketRepository};
     use mockall::predicate::*;
 
     fn pocket(pdb: Arc<dyn PocketRepository>, mdb: Arc<dyn MintMeltRepository>) -> super::Pocket {

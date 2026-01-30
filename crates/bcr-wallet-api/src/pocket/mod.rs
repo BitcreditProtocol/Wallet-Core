@@ -1,14 +1,14 @@
 use crate::{
-    MintConnector, TStamp,
+    MintConnector,
     error::{Error, Result},
-    sync, utils,
+    utils,
     wallet::SafeMode,
 };
-use async_trait::async_trait;
 use bcr_common::cashu::{
-    self, Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00,
-    nut01 as cdk01, nut03 as cdk03, nut07 as cdk07,
+    self, Amount, CurrencyUnit, KeySet, KeySetInfo, ProofsMethods, amount::SplitTarget,
+    nut00 as cdk00, nut01 as cdk01, nut03 as cdk03, nut07 as cdk07,
 };
+use bcr_wallet_persistence::PocketRepository;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
@@ -23,38 +23,9 @@ struct SendReference {
     swap_proof: Option<(Amount, cdk01::PublicKey)>,
 }
 
-///////////////////////////////////////////// PocketRepository
-#[cfg_attr(test, mockall::automock)]
-#[async_trait]
-pub trait PocketRepository: sync::SendSync {
-    async fn store_new(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
-    async fn store_pendingspent(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey>;
-    async fn load_proof(&self, y: cdk01::PublicKey) -> Result<(cdk00::Proof, cdk07::State)>;
-    async fn load_proofs(
-        &self,
-        ys: &[cdk01::PublicKey],
-    ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
-    async fn delete_proof(&self, y: cdk01::PublicKey) -> Result<Option<cdk00::Proof>>;
-    async fn list_unspent(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
-    async fn list_pending(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
-    async fn list_reserved(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
-    async fn list_all(&self) -> Result<Vec<cdk01::PublicKey>>;
-    async fn mark_as_pendingspent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
-
-    async fn counter(&self, kid: cashu::Id) -> Result<u32>;
-    async fn increment_counter(&self, kid: cashu::Id, old: u32, increment: u32) -> Result<()>;
-
-    async fn store_commitment(
-        &self,
-        inputs: Vec<cashu::PublicKey>,
-        outputs: Vec<cashu::BlindedMessage>,
-        expiration: TStamp,
-        commitment: secp256k1::schnorr::Signature,
-    ) -> Result<()>;
-}
-
-///////////////////////////////////////////// clean_local_proofs
-async fn clean_local_proofs(
+///////////////////////////////////////////// cleanup_local_proofs
+// Removes Spent proofs from local DB
+async fn cleanup_local_proofs(
     db: &dyn PocketRepository,
     client: &dyn MintConnector,
 ) -> Result<Vec<cdk01::PublicKey>> {
@@ -116,7 +87,7 @@ async fn swap(
     db: &dyn PocketRepository,
     safe_mode: SafeMode,
 ) -> Result<Amount> {
-    let total_input = inputs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
+    let total_input = inputs.total_amount()?;
     let input_len = inputs.len();
     let blinds: Vec<cdk00::BlindedMessage> = premints
         .values()
@@ -324,8 +295,9 @@ async fn return_proofs_to_send_for_offline_payment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::tests::MockMintConnector;
-    use bcr_common::{core::signature, core_tests};
+    use crate::test_utils::tests::MockMintConnector;
+    use bcr_common::{cashu::Proof, core::signature, core_tests};
+    use bcr_wallet_persistence::MockPocketRepository;
     use cashu::nut02 as cdk02;
     use mockall::predicate::*;
 
@@ -441,9 +413,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(proofs.len(), 3);
-        let total = proofs
-            .iter()
-            .fold(Amount::ZERO, |acc, (_, p)| acc + p.amount);
+        let p: Vec<Proof> = proofs.values().cloned().collect();
+        let total = p.total_amount().unwrap();
         assert_eq!(total, target);
     }
 
