@@ -118,10 +118,10 @@ async fn swap(
 ) -> Result<Amount> {
     let total_input = inputs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
     let input_len = inputs.len();
-    let mut blinds: Vec<cdk00::BlindedMessage> = Vec::new();
-    for premint in premints.values() {
-        blinds.extend(premint.blinded_messages());
-    }
+    let blinds: Vec<cdk00::BlindedMessage> = premints
+        .values()
+        .flat_map(|premint| premint.blinded_messages())
+        .collect();
     if let SafeMode::Enabled { expire, alpha_pk } = safe_mode {
         let (fps, returned_blinds, exp, commitment) =
             utils::compel_commitment(inputs.clone(), blinds.clone(), expire, alpha_pk, client)

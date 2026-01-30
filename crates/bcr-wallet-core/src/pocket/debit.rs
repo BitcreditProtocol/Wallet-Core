@@ -454,11 +454,10 @@ impl wallet::Pocket for Pocket {
         )?;
         let mut premints = HashMap::from([(active_info.id, premint_secrets)]);
         let keysets = HashMap::from([(active_info.id, active_keyset)]);
-        let mut blinds: Vec<cdk00::BlindedMessage> = Vec::new();
-
-        for premint in premints.values() {
-            blinds.extend(premint.blinded_messages());
-        }
+        let blinds: Vec<cdk00::BlindedMessage> = premints
+            .values()
+            .flat_map(|premint| premint.blinded_messages())
+            .collect();
 
         // swap
         let request = cdk03::SwapRequest::new(proofs, blinds);
@@ -471,17 +470,20 @@ impl wallet::Pocket for Pocket {
                 .and_modify(|v| v.push(signature.clone()))
                 .or_insert_with(|| vec![signature]);
         }
+
+        let mut current_amount = Amount::ZERO;
         // only collect sending proofs - change is discarded for now
         for (kid, signatures) in signatures.into_iter() {
             let premint = premints.remove(&kid).expect("premint should be here");
             let keyset = keysets.get(&kid).expect("keyset should be here");
             let mut unblinded_proofs = unblind_proofs(keyset, signatures, premint);
             unblinded_proofs.sort_by_key(|proof| std::cmp::Reverse(proof.amount));
-            let mut current_amount = Amount::ZERO;
             for proof in unblinded_proofs.into_iter() {
                 if current_amount + proof.amount <= send_amount {
                     current_amount += proof.amount;
                     swapped_proofs.push(proof);
+                } else {
+                    break;
                 }
             }
         }
