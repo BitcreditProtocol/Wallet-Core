@@ -1,13 +1,13 @@
 use crate::config::AppStateConfig;
-use crate::mint::MintConnector;
-use crate::utils::tx_can_be_refreshed;
+use crate::external::mint::{ClowderMintConnector, HttpClientExt};
+use crate::wallet::types::WalletBalance;
 use crate::{
     config::{NostrConfig, SameMintSafeMode},
-    purse::Wallet,
-    wallet::{CreditPocket, WalletBalance},
+    pocket::credit::CreditPocketApi,
+    wallet::api::WalletApi,
 };
 use bcr_common::{
-    cashu::{self, CurrencyUnit, KeySetInfo, MintInfo, MintUrl},
+    cashu::{self, CurrencyUnit, MintUrl, nut18 as cdk18},
     cdk::{
         self,
         wallet::{MintConnector as MintCon, types::TransactionId},
@@ -17,14 +17,14 @@ use bcr_common::{
 use bcr_wallet_core::types::{
     self, JobState, MintSummary, PaymentSummary, RedemptionSummary, WalletConfig,
 };
-use bcr_wallet_core::utils::build_wallet_id;
+use bcr_wallet_core::util::{build_wallet_id, keypair_from_mnemonic, seed_from_mnemonic};
 use bcr_wallet_persistence::redb::jobs::JobsDB;
 use bcr_wallet_persistence::redb::{
     Database, build_jobsdb, build_pursedb, build_wallet_dbs, create_db,
 };
-use bitcoin::secp256k1::{Keypair, SECP256K1};
 use chrono::Utc;
 use error::{Error, Result};
+use nostr::nips::nip19::{Nip19Profile, ToBech32};
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -35,28 +35,19 @@ use uuid::Uuid;
 
 pub mod config;
 pub mod error;
-mod mint;
-pub mod pocket;
+mod external;
+mod pocket;
 mod purse;
-mod restore;
-pub mod utils;
-pub mod wallet;
-
-#[cfg(test)]
-mod test_utils;
-
-type ProductionJobsRepository = JobsDB;
-type ProductionConnector = crate::mint::HttpClientExt;
-type ProductionDebitPocket = crate::pocket::debit::Pocket;
-type ProductionCreditPocket = crate::pocket::credit::Pocket;
-type ProductionWallet = crate::wallet::Wallet<ProductionDebitPocket>;
-type ProductionPurse = crate::purse::Purse<ProductionWallet>;
+mod wallet;
 
 pub struct AppState {
-    purse: Arc<ProductionPurse>,
-    jobs: Arc<ProductionJobsRepository>,
+    purse: Arc<purse::Purse<wallet::Wallet>>,
+    jobs: Arc<JobsDB>,
     db: Arc<Database>,
     cfg: AppStateConfig,
+    nostr_cl: Arc<nostr_sdk::Client>,
+    http_cl: Arc<reqwest::Client>,
+    myself: Nip19Profile,
 }
 
 impl AppState {
@@ -74,31 +65,24 @@ impl AppState {
         let jobsdb = Arc::new(build_jobsdb(AppState::DB_VERSION, db.clone()).await?);
 
         let nostr_cfg = NostrConfig::new(cfg.mnemonic.clone(), cfg.nostr_relays.clone())?;
-        let nostr_cl = nostr_sdk::Client::new(nostr_cfg.nostr_signer);
+        let nostr_cl = Arc::new(nostr_sdk::Client::new(nostr_cfg.nostr_signer));
         for relay in &nostr_cfg.relays {
             nostr_cl.add_relay(relay).await?;
         }
         nostr_cl.connect().await;
-        let http_cl = reqwest::Client::new();
-        let purse = ProductionPurse::new(pursedb, http_cl, nostr_cl, nostr_cfg.nprofile).await?;
-        let mut appstate = AppState::new(Arc::new(purse), jobsdb, db, cfg);
-        appstate.load_wallets().await?;
-        Ok(appstate)
-    }
-
-    fn new(
-        purse: Arc<ProductionPurse>,
-        jobs: Arc<ProductionJobsRepository>,
-        db: Arc<Database>,
-        cfg: AppStateConfig,
-    ) -> Self {
-        tracing::debug!("Creating new AppState");
-        Self {
-            purse,
-            jobs,
+        let http_cl = Arc::new(reqwest::Client::new());
+        let purse = purse::Purse::new(pursedb).await?;
+        let mut appstate = Self {
+            purse: Arc::new(purse),
+            jobs: jobsdb,
             db,
             cfg,
-        }
+            http_cl,
+            nostr_cl,
+            myself: nostr_cfg.nprofile,
+        };
+        appstate.load_wallets().await?;
+        Ok(appstate)
     }
 
     async fn load_wallets(&mut self) -> Result<()> {
@@ -137,7 +121,7 @@ impl AppState {
                 );
             }
 
-            let client = ProductionConnector::new(w_cfg.mint.clone());
+            let client = HttpClientExt::new(w_cfg.mint.clone());
 
             // Attempt to fetch clowder id/betas/keyset infos and fall back to saved ones
             match client.get_clowder_id().await {
@@ -192,7 +176,7 @@ impl AppState {
         Ok(())
     }
 
-    async fn get_wallet(&self, idx: usize) -> Result<Arc<RwLock<ProductionWallet>>> {
+    async fn get_wallet(&self, idx: usize) -> Result<Arc<RwLock<wallet::Wallet>>> {
         let purse = self.get_purse();
         purse
             .get_wallet(idx)
@@ -200,20 +184,26 @@ impl AppState {
             .ok_or(Error::WalletNotFound(idx))
     }
 
-    fn get_purse(&self) -> Arc<ProductionPurse> {
+    fn get_purse(&self) -> Arc<purse::Purse<wallet::Wallet>> {
         self.purse.clone()
     }
 
-    fn get_jobsdb(&self) -> Arc<ProductionJobsRepository> {
+    fn get_jobsdb(&self) -> Arc<JobsDB> {
         self.jobs.clone()
     }
 
     fn get_db(&self) -> Arc<Database> {
         self.db.clone()
     }
-    // methods
 
-    pub async fn add_wallet(&self, name: String) -> Result<usize> {
+    //////////////////////////////////////////////////// Purse-Level API methods
+    pub async fn purse_wallets_ids(&self) -> Result<Vec<usize>> {
+        tracing::debug!("get_wallet_ids");
+        let purse = self.get_purse();
+        Ok(purse.ids().await.iter().map(|id| *id as usize).collect())
+    }
+
+    pub async fn purse_add_wallet(&self, name: String) -> Result<usize> {
         let mint_url = self.cfg.default_mint_url.clone();
         tracing::debug!("Adding a new wallet for mint {name}, {mint_url}");
         let purse = self.get_purse();
@@ -237,7 +227,7 @@ impl AppState {
         Ok(idx)
     }
 
-    pub async fn restore_wallet(&self, name: String) -> Result<usize> {
+    pub async fn purse_restore_wallet(&self, name: String) -> Result<usize> {
         let mint_url = self.cfg.default_mint_url.clone();
         tracing::debug!("Restoring a new wallet for mint {name}, {mint_url}");
         let purse = self.get_purse();
@@ -262,27 +252,37 @@ impl AppState {
         Ok(idx)
     }
 
-    pub async fn delete_wallet(&self, idx: usize) -> Result<()> {
+    pub async fn purse_delete_wallet(&self, idx: usize) -> Result<()> {
         tracing::debug!("delete wallet {idx}");
         let purse = self.get_purse();
         purse.delete_wallet(idx).await?;
         Ok(())
     }
 
-    pub async fn get_wallet_name(&self, idx: usize) -> Result<String> {
+    pub async fn purse_migrate_rabid(&self) -> Result<HashMap<String, MintUrl>> {
+        tracing::debug!("purse_migrate_rabid");
+
+        let purse = self.get_purse();
+        let migrated = purse.migrate_rabid_wallets().await?;
+
+        Ok(migrated)
+    }
+
+    ////////////////////////////////////////////////////  Wallet-Level API methods
+    pub async fn wallet_name(&self, idx: usize) -> Result<String> {
         tracing::debug!("name for wallet {idx}");
 
         let wallet = self.get_wallet(idx).await?;
         Ok(wallet.read().await.name())
     }
 
-    pub async fn get_wallet_mint_url(&self, idx: usize) -> Result<String> {
+    pub async fn wallet_mint_url(&self, idx: usize) -> Result<String> {
         tracing::debug!("mint_url for wallet {idx}");
         let wallet = self.get_wallet(idx).await?;
         Ok(wallet.read().await.mint_url()?.to_string())
     }
 
-    pub async fn get_wallet_currency_unit(&self, idx: usize) -> Result<WalletCurrencyUnit> {
+    pub async fn wallet_currency_unit(&self, idx: usize) -> Result<WalletCurrencyUnit> {
         tracing::debug!("wallet_currency_unit({idx})");
         let wallet = self.get_wallet(idx).await?;
         Ok(WalletCurrencyUnit {
@@ -291,7 +291,7 @@ impl AppState {
         })
     }
 
-    pub async fn get_wallet_balance(&self, idx: usize) -> Result<WalletBalance> {
+    pub async fn wallet_balance(&self, idx: usize) -> Result<WalletBalance> {
         tracing::debug!("wallet_balance({idx})");
 
         let wallet = self.get_wallet(idx).await?;
@@ -345,15 +345,6 @@ impl AppState {
         Ok(is_offline)
     }
 
-    pub async fn purse_migrate_rabid(&self) -> Result<HashMap<String, MintUrl>> {
-        tracing::debug!("purse_migrate_rabid");
-
-        let purse = self.get_purse();
-        let migrated = purse.migrate_rabid_wallets().await?;
-
-        Ok(migrated)
-    }
-
     pub async fn wallet_prepare_pay_by_token(
         &self,
         idx: usize,
@@ -365,20 +356,33 @@ impl AppState {
         let amount = cashu::Amount::from(amount);
         let unit = cashu::CurrencyUnit::from_str(&unit)
             .map_err(|_| Error::InvalidCurrencyUnit(unit.clone()))?;
-        let purse = self.get_purse();
-        let summary = purse
-            .prepare_pay_by_token(idx, amount, unit, description)
+        let wallet = self.get_wallet(idx).await?;
+
+        let summary = wallet
+            .read()
+            .await
+            .prepare_pay_by_token(amount, unit, description)
             .await?;
+
         Ok(summary)
     }
 
-    pub async fn wallet_pay_by_token(&self, rid: String) -> Result<CreatedToken> {
+    pub async fn wallet_pay_by_token(&self, idx: usize, rid: String) -> Result<CreatedToken> {
         let tstamp = chrono::Utc::now().timestamp() as u64;
         tracing::debug!("wallet_pay_by_token({rid}, {tstamp})");
-        let rid = Uuid::from_str(&rid)?;
-        let purse = self.get_purse();
-        let (tx_id, token) = purse.pay_by_token(rid, tstamp).await?;
-        Ok(CreatedToken { tx_id, token })
+        let p_id = Uuid::from_str(&rid)?;
+
+        let wallet = self.get_wallet(idx).await?;
+        let (tx_id, token) = wallet
+            .read()
+            .await
+            .pay(p_id, &self.nostr_cl, &self.http_cl, tstamp)
+            .await?;
+
+        Ok(CreatedToken {
+            tx_id,
+            token: token.expect("pay by token returns a token"),
+        })
     }
 
     pub async fn wallet_prepare_melt(
@@ -400,21 +404,29 @@ impl AppState {
         if !parsed_address.is_valid_for_network(self.cfg.network) {
             return Err(Error::InvalidBitcoinAddress(address.clone()));
         }
-
-        let purse = self.get_purse();
-        let summary = purse
-            .prepare_melt(idx, parsed_amount, parsed_address, description)
+        let wallet = self.get_wallet(idx).await?;
+        let summary = wallet
+            .read()
+            .await
+            .prepare_melt(parsed_amount, parsed_address, description)
             .await?;
+
         Ok(summary)
     }
 
-    pub async fn wallet_melt(&self, rid: String) -> Result<TransactionId> {
+    pub async fn wallet_melt(&self, idx: usize, rid: String) -> Result<TransactionId> {
         let tstamp = chrono::Utc::now().timestamp() as u64;
         tracing::debug!("wallet_melt({rid}, {tstamp})");
 
-        let purse = self.get_purse();
-        let rid = Uuid::from_str(&rid)?;
-        let tx_id = purse.melt(rid, tstamp).await?;
+        let wallet = self.get_wallet(idx).await?;
+        let p_id = Uuid::from_str(&rid)?;
+
+        let (tx_id, _) = wallet
+            .read()
+            .await
+            .pay(p_id, &self.nostr_cl, &self.http_cl, tstamp)
+            .await?;
+
         Ok(tx_id)
     }
 
@@ -426,16 +438,17 @@ impl AppState {
         }
 
         let parsed_amount = bitcoin::Amount::from_sat(amount);
-        let purse = self.get_purse();
-        let summary = purse.mint(idx, parsed_amount).await?;
+        let wallet = self.get_wallet(idx).await?;
+        let summary = wallet.read().await.mint(parsed_amount).await?;
+
         Ok(summary)
     }
 
     pub async fn wallet_check_pending_mints(&self, idx: usize) -> Result<Vec<TransactionId>> {
         tracing::debug!("wallet_check_pending_mints({idx})");
+        let wallet = self.get_wallet(idx).await?;
+        let tx_ids = wallet.read().await.check_pending_mints().await?;
 
-        let purse = self.get_purse();
-        let tx_ids = purse.check_pending_mints(idx).await?;
         Ok(tx_ids)
     }
 
@@ -446,18 +459,24 @@ impl AppState {
     ) -> Result<PaymentSummary> {
         tracing::debug!("wallet_prepare_payment({idx}, {input})");
 
-        let purse = self.get_purse();
-        let summary = purse.prepare_pay(idx, input).await?;
+        let wallet = self.get_wallet(idx).await?;
+        let summary = wallet.read().await.prepare_pay(input).await?;
+
         Ok(summary)
     }
 
-    pub async fn wallet_pay(&self, rid: String) -> Result<TransactionId> {
+    pub async fn wallet_pay(&self, idx: usize, rid: String) -> Result<TransactionId> {
         let tstamp = chrono::Utc::now().timestamp() as u64;
         tracing::debug!("wallet_pay({rid}, {tstamp})");
 
-        let purse = self.get_purse();
-        let rid = Uuid::from_str(&rid)?;
-        let tx_id = purse.pay(rid, tstamp).await?;
+        let wallet = self.get_wallet(idx).await?;
+        let p_id = Uuid::from_str(&rid)?;
+
+        let (tx_id, _) = wallet
+            .read()
+            .await
+            .pay(p_id, &self.nostr_cl, &self.http_cl, tstamp)
+            .await?;
         Ok(tx_id)
     }
 
@@ -473,9 +492,18 @@ impl AppState {
         let amount = cashu::Amount::from(amount);
         let unit = cashu::CurrencyUnit::from_str(&unit)
             .map_err(|_| Error::InvalidCurrencyUnit(unit.clone()))?;
-        let purse = self.get_purse();
-        let request = purse
-            .prepare_payment_request(amount, unit, description)
+
+        let nostr_transport = cdk18::Transport {
+            _type: cdk18::TransportType::Nostr,
+            target: self.myself.to_bech32()?,
+            tags: Some(vec![vec![String::from("n"), String::from("17")]]),
+        };
+
+        let wallet = self.get_wallet(idx).await?;
+        let request = wallet
+            .read()
+            .await
+            .prepare_payment_request(amount, unit, description, nostr_transport)
             .await?;
         Ok(PaymentRequest {
             p_id: request.payment_id.clone().unwrap_or_default(),
@@ -485,6 +513,7 @@ impl AppState {
 
     pub async fn wallet_check_received_payment(
         &self,
+        idx: usize,
         initial_delay_sec: u64,
         max_wait_sec: u64,
         check_interval_sec: u64,
@@ -493,12 +522,22 @@ impl AppState {
         tracing::debug!("wallet_check_received_payment({p_id})");
 
         let p_id = Uuid::from_str(&p_id)?;
-        let purse = self.get_purse();
+        let wallet = self.get_wallet(idx).await?;
+
         let initial_delay = core::time::Duration::from_secs(initial_delay_sec);
         let max_wait = core::time::Duration::from_secs(max_wait_sec);
         let check_interval = core::time::Duration::from_secs(check_interval_sec);
-        let tx_id = purse
-            .check_received_payment(initial_delay, max_wait, check_interval, p_id)
+        let tx_id = wallet
+            .read()
+            .await
+            .check_received_payment(
+                initial_delay,
+                max_wait,
+                check_interval,
+                p_id,
+                &self.nostr_cl,
+                self.myself.public_key,
+            )
             .await?;
         Ok(tx_id)
     }
@@ -545,7 +584,7 @@ impl AppState {
         let mut updated = 0;
 
         for tx in txs.iter() {
-            if !tx_can_be_refreshed(tx) {
+            if !wallet::util::tx_can_be_refreshed(tx) {
                 continue;
             }
 
@@ -576,12 +615,7 @@ impl AppState {
         Ok(updated)
     }
 
-    pub async fn get_wallets_ids(&self) -> Result<Vec<usize>> {
-        tracing::debug!("get_wallet_ids");
-        let purse = self.get_purse();
-        Ok(purse.ids().await.iter().map(|id| *id as usize).collect())
-    }
-
+    //////////////////////////////////////////////////// General App-Level calls
     /// Checks when the daily jobs were run the last time and if it's greater than 1 day
     /// then it runs the daily jobs.
     /// Also runs the regular jobs for each interval
@@ -721,60 +755,6 @@ pub struct WalletCurrencyUnit {
     pub debit: String,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub enum TransactionDirection {
-    #[default]
-    Incoming,
-    Outgoing,
-}
-impl std::convert::From<cdk::wallet::types::TransactionDirection> for TransactionDirection {
-    fn from(dir: cdk::wallet::types::TransactionDirection) -> Self {
-        match dir {
-            cdk::wallet::types::TransactionDirection::Incoming => TransactionDirection::Incoming,
-            cdk::wallet::types::TransactionDirection::Outgoing => TransactionDirection::Outgoing,
-        }
-    }
-}
-#[derive(Debug, Clone, Copy, Default)]
-pub enum PaymentType {
-    #[default]
-    NotApplicable,
-    Token,
-    Cdk18,
-    OnChain,
-}
-
-impl std::convert::From<types::PaymentType> for PaymentType {
-    fn from(ptype: types::PaymentType) -> Self {
-        match ptype {
-            types::PaymentType::NotApplicable => PaymentType::NotApplicable,
-            types::PaymentType::Token => PaymentType::Token,
-            types::PaymentType::Cdk18 => PaymentType::Cdk18,
-            types::PaymentType::OnChain => PaymentType::OnChain,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub enum TransactionStatus {
-    #[default]
-    NotApplicable,
-    Pending,
-    Settled,
-    Canceled,
-}
-
-impl std::convert::From<types::TransactionStatus> for TransactionStatus {
-    fn from(status: types::TransactionStatus) -> Self {
-        match status {
-            types::TransactionStatus::NotApplicable => TransactionStatus::NotApplicable,
-            types::TransactionStatus::Pending => TransactionStatus::Pending,
-            types::TransactionStatus::Settled => TransactionStatus::Settled,
-            types::TransactionStatus::Canceled => TransactionStatus::Canceled,
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct Transaction {
     pub id: String,
@@ -782,27 +762,27 @@ pub struct Transaction {
     pub fees: u64,
     pub unit: String,
     pub tstamp: u64,
-    pub direction: TransactionDirection,
-    pub memo: String,
-    pub ptype: PaymentType,
-    pub status: TransactionStatus,
+    pub direction: cdk::wallet::types::TransactionDirection,
+    pub memo: Option<String>,
+    pub ptype: types::PaymentType,
+    pub status: types::TransactionStatus,
     pub btc_tx_id: Option<bitcoin::Txid>,
     pub quote_id: Option<String>,
 }
 
 impl std::convert::From<cdk::wallet::types::Transaction> for Transaction {
     fn from(tx: cdk::wallet::types::Transaction) -> Self {
-        let status = TransactionStatus::from(types::get_transaction_status(&tx.metadata));
-        let ptype = PaymentType::from(types::get_payment_type(&tx.metadata));
+        let status = types::get_transaction_status(&tx.metadata);
+        let ptype = types::get_payment_type(&tx.metadata);
         let btc_tx_id = types::get_btc_tx_id(&tx.metadata);
         Self {
             id: tx.id().to_string(),
             amount: u64::from(tx.amount),
             fees: u64::from(tx.fee),
             unit: tx.unit.to_string(),
-            direction: TransactionDirection::from(tx.direction),
+            direction: tx.direction,
             tstamp: tx.timestamp,
-            memo: tx.memo.unwrap_or_default(),
+            memo: tx.memo,
             ptype,
             status,
             btc_tx_id,
@@ -817,22 +797,25 @@ pub struct CreatedToken {
     pub token: Token,
 }
 
-// Wallet Initialization
-// will be used in future refactoring see issue #92
-#[allow(dead_code)]
-fn build_mint_id(url: &MintUrl, info: &MintInfo) -> Vec<u8> {
-    if let Some(pk) = info.pubkey {
-        pk.to_bytes().to_vec()
-    } else if let Some(name) = &info.name {
-        name.to_string().as_bytes().to_vec()
-    } else {
-        url.to_string().as_bytes().to_vec()
-    }
-}
+async fn create_new_wallet(
+    name: String,
+    network: bitcoin::Network,
+    mint_url: cashu::MintUrl,
+    mnemonic: bip39::Mnemonic,
+    db_version: u32,
+    same_mint_safe_mode: SameMintSafeMode,
+    db: Arc<Database>,
+) -> Result<wallet::Wallet> {
+    let seed = seed_from_mnemonic(&mnemonic);
+    let keypair = keypair_from_mnemonic(&mnemonic);
+    let client = HttpClientExt::new(mint_url.clone());
 
-// Attempts to find debit and credit units in the given keysets
-// Falls back to crsat for credit, if there is no keyset for it
-fn find_currency_units(keyset_infos: &[KeySetInfo]) -> Result<(CurrencyUnit, CurrencyUnit)> {
+    let wallet_id = build_wallet_id(&seed);
+    let clowder_id = client.get_clowder_id().await?;
+    let keyset_infos = client.get_mint_keysets().await?.keysets;
+    let betas = client.get_clowder_betas().await?;
+    // Attempt to find debit and credit units in the given keysets
+    // Falls back to crsat for credit, if there is no keyset for it
     let currencies = keyset_infos
         .iter()
         .map(|k| k.unit.clone())
@@ -864,27 +847,6 @@ fn find_currency_units(keyset_infos: &[KeySetInfo]) -> Result<(CurrencyUnit, Cur
         );
         CurrencyUnit::from_str(AppState::CREDIT_SAT_UNIT).expect("credit sat is a valid unit")
     });
-    Ok((debit_unit.clone(), credit_unit))
-}
-
-async fn create_new_wallet(
-    name: String,
-    network: bitcoin::Network,
-    mint_url: cashu::MintUrl,
-    mnemonic: bip39::Mnemonic,
-    db_version: u32,
-    same_mint_safe_mode: SameMintSafeMode,
-    db: Arc<Database>,
-) -> Result<ProductionWallet> {
-    let seed = seed_from_mnemonic(&mnemonic);
-    let keypair = keypair_from_mnemonic(&mnemonic);
-    let client = ProductionConnector::new(mint_url.clone());
-
-    let wallet_id = build_wallet_id(&seed);
-    let clowder_id = client.get_clowder_id().await?;
-    let keyset_infos = client.get_mint_keysets().await?.keysets;
-    let betas = client.get_clowder_betas().await?;
-    let (debit_unit, credit_unit) = find_currency_units(&keyset_infos)?;
 
     let w_cfg = WalletConfig {
         wallet_id,
@@ -893,7 +855,7 @@ async fn create_new_wallet(
         mint: mint_url,
         mint_keyset_infos: keyset_infos,
         clowder_id,
-        debit: debit_unit,
+        debit: debit_unit.to_owned(),
         credit: credit_unit,
         pub_key: keypair.public_key(),
         betas,
@@ -903,12 +865,12 @@ async fn create_new_wallet(
 
 async fn build_wallet(
     w_cfg: WalletConfig,
-    client: ProductionConnector,
+    client: HttpClientExt,
     db_version: u32,
     same_mint_safe_mode: SameMintSafeMode,
     db: Arc<Database>,
     seed: [u8; 64],
-) -> Result<ProductionWallet> {
+) -> Result<wallet::Wallet> {
     // building wallet dbs
     let (tx_repo, ((debitdb, mintmeltdb), creditdb)) = build_wallet_dbs(
         db_version,
@@ -920,33 +882,33 @@ async fn build_wallet(
     .await?;
 
     // building the debit pocket
-    let debit_pocket = ProductionDebitPocket::new(
+    let debit_pocket = Box::new(pocket::debit::Pocket::new(
         w_cfg.debit.clone(),
         Arc::new(debitdb),
         Arc::new(mintmeltdb),
         seed,
-    );
+    ));
     // building the credit pocket
-    let credit_pocket: Box<dyn CreditPocket> = Box::new(ProductionCreditPocket::new(
+    let credit_pocket: Box<dyn CreditPocketApi> = Box::new(pocket::credit::Pocket::new(
         w_cfg.credit,
         Arc::new(creditdb),
         seed,
     ));
 
-    let mut beta_clients = HashMap::<cashu::MintUrl, Box<dyn MintConnector>>::new();
+    let mut beta_clients = HashMap::<cashu::MintUrl, Box<dyn ClowderMintConnector>>::new();
     for beta in w_cfg.betas.clone() {
-        let beta_client = ProductionConnector::new(beta.clone());
+        let beta_client = HttpClientExt::new(beta.clone());
         beta_clients.insert(beta, Box::new(beta_client));
     }
     // When same_mint_safe_mode is enabled, wrap the client with SentinelClient
     // to send events to sentinel nodes for monitoring
     let client = if matches!(same_mint_safe_mode, SameMintSafeMode::Disabled) {
-        Box::new(client) as Box<dyn MintConnector>
+        Box::new(client) as Box<dyn ClowderMintConnector>
     } else {
-        let cl = crate::mint::SentinelClient::new(client, w_cfg.betas);
-        Box::new(cl) as Box<dyn MintConnector>
+        let cl = external::mint::SentinelClient::new(client, w_cfg.betas);
+        Box::new(cl) as Box<dyn ClowderMintConnector>
     };
-    let new_wallet: ProductionWallet = ProductionWallet::new(
+    let new_wallet: wallet::Wallet = wallet::Wallet::new(
         w_cfg.network,
         client,
         w_cfg.mint_keyset_infos,
@@ -957,24 +919,9 @@ async fn build_wallet(
         w_cfg.pub_key,
         w_cfg.clowder_id,
         beta_clients,
-        Box::new(|url| Box::new(crate::mint::HttpClientExt::new(url))),
+        Box::new(|url| Box::new(external::mint::HttpClientExt::new(url))),
         same_mint_safe_mode,
     )
     .await?;
     Ok(new_wallet)
-}
-
-fn seed_from_mnemonic(mnemonic: &bip39::Mnemonic) -> [u8; 64] {
-    mnemonic.to_seed("")
-}
-
-fn keypair_from_seed(seed: [u8; 64]) -> Keypair {
-    let (key, _) = seed.split_at(secp256k1::constants::SECRET_KEY_SIZE);
-    Keypair::from_seckey_slice(SECP256K1, key).expect("key to be correct size")
-}
-
-// converts a mnemonic to a secp256k1 keypair
-fn keypair_from_mnemonic(mnemonic: &bip39::Mnemonic) -> Keypair {
-    let seed = seed_from_mnemonic(mnemonic);
-    keypair_from_seed(seed)
 }

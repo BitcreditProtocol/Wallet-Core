@@ -1,9 +1,8 @@
 use crate::{
-    MintConnector,
+    ClowderMintConnector,
     error::{Error, Result},
-    keypair_from_seed,
     pocket::*,
-    restore, wallet,
+    wallet::types::SafeMode,
 };
 use async_trait::async_trait;
 use bcr_common::{
@@ -13,13 +12,54 @@ use bcr_common::{
     },
     wire::{melt as wire_melt, mint as wire_mint},
 };
-use bcr_wallet_core::types::{MeltSummary, MintSummary, SendSummary};
+use bcr_wallet_core::{
+    types::{MeltSummary, MintSummary, SendSummary},
+    util::keypair_from_seed,
+};
 use bcr_wallet_persistence::{MintMeltRepository, PocketRepository};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
 use uuid::Uuid;
+
+#[async_trait]
+pub trait DebitPocketApi: super::PocketApi {
+    /// Reclaim the proofs for the given ys
+    /// returns the amount reclaimed
+    async fn reclaim_proofs(
+        &self,
+        ys: &[cashu::PublicKey],
+        keysets_info: &[KeySetInfo],
+        client: &dyn ClowderMintConnector,
+        safe_mode: SafeMode,
+    ) -> Result<Amount>;
+    async fn prepare_onchain_melt(
+        &self,
+        invoice: wire_melt::OnchainInvoice,
+        keysets_info: &[KeySetInfo],
+        client: &dyn ClowderMintConnector,
+    ) -> Result<MeltSummary>;
+    async fn pay_onchain_melt(
+        &self,
+        rid: Uuid,
+        keysets_info: &[KeySetInfo],
+        client: &dyn ClowderMintConnector,
+        safe_mode: SafeMode,
+    ) -> Result<(bitcoin::Txid, HashMap<cashu::PublicKey, cashu::Proof>)>;
+    async fn mint_onchain(
+        &self,
+        amount: bitcoin::Amount,
+        client: &dyn ClowderMintConnector,
+    ) -> Result<MintSummary>;
+    async fn check_pending_mints(
+        &self,
+        keysets_info: &[KeySetInfo],
+        client: &dyn ClowderMintConnector,
+        tstamp: u64,
+        safe_mode: SafeMode,
+    ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>>;
+}
 
 struct MeltReference {
     rid: Uuid,
@@ -70,7 +110,7 @@ impl Pocket {
     async fn find_active_keyset(
         &self,
         keysets_info: &[KeySetInfo],
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
     ) -> Result<(KeySetInfo, KeySet)> {
         let active_info = self.find_active_keysetid(keysets_info)?;
         let active_keyset = client.get_mint_keyset(active_info.id).await?;
@@ -79,7 +119,7 @@ impl Pocket {
 
     async fn digest_proofs(
         &self,
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
         (active_info, active_keyset): (cashu::KeySetInfo, cashu::KeySet),
         inputs: HashMap<cdk01::PublicKey, cdk00::Proof>,
         safe_mode: SafeMode,
@@ -162,9 +202,9 @@ impl Pocket {
         &self,
         qid: Uuid,
         keysets_info: &[KeySetInfo],
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
         tstamp: u64,
-        safe_mode: wallet::SafeMode,
+        safe_mode: SafeMode,
     ) -> Result<Option<(cashu::Amount, Vec<cashu::PublicKey>)>> {
         let mint_summary = self.mdb.load_mint(qid).await?;
         let mint_state = client.get_mint_quote_onchain(qid.to_string()).await?;
@@ -259,7 +299,7 @@ impl Pocket {
 }
 
 #[async_trait]
-impl wallet::Pocket for Pocket {
+impl super::PocketApi for Pocket {
     fn unit(&self) -> CurrencyUnit {
         self.unit.clone()
     }
@@ -272,7 +312,7 @@ impl wallet::Pocket for Pocket {
 
     async fn receive_proofs(
         &self,
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
         keysets_info: &[KeySetInfo],
         inputs: Vec<cdk00::Proof>,
         safe_mode: SafeMode,
@@ -303,7 +343,7 @@ impl wallet::Pocket for Pocket {
         &self,
         rid: Uuid,
         keysets_info: &[KeySetInfo],
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
         safe_mode: SafeMode,
     ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         let send_ref = {
@@ -333,7 +373,7 @@ impl wallet::Pocket for Pocket {
 
     async fn cleanup_local_proofs(
         &self,
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
     ) -> Result<Vec<cdk01::PublicKey>> {
         let cleaned_ys = cleanup_local_proofs(self.pdb.as_ref(), client).await?;
         Ok(cleaned_ys)
@@ -342,7 +382,7 @@ impl wallet::Pocket for Pocket {
     async fn restore_local_proofs(
         &self,
         keysets_info: &[KeySetInfo],
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
     ) -> Result<usize> {
         let kids = keysets_info.iter().filter_map(|info| {
             if info.unit == self.unit {
@@ -403,7 +443,7 @@ impl wallet::Pocket for Pocket {
         &self,
         proofs: Vec<cdk00::Proof>,
         keysets_info: &[KeySetInfo],
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
         send_amount: Amount,
     ) -> Result<Vec<cashu::Proof>> {
         let mut swapped_proofs = Vec::new();
@@ -473,13 +513,13 @@ impl wallet::Pocket for Pocket {
 }
 
 #[async_trait]
-impl wallet::DebitPocket for Pocket {
+impl DebitPocketApi for Pocket {
     async fn reclaim_proofs(
         &self,
         ys: &[cdk01::PublicKey],
         keysets_info: &[KeySetInfo],
-        client: &dyn MintConnector,
-        safe_mode: wallet::SafeMode,
+        client: &dyn ClowderMintConnector,
+        safe_mode: SafeMode,
     ) -> Result<Amount> {
         let pendings = self.pdb.load_proofs(ys).await?;
         let pendings_len = pendings.len();
@@ -497,7 +537,7 @@ impl wallet::DebitPocket for Pocket {
         &self,
         invoice: wire_melt::OnchainInvoice,
         keysets_info: &[KeySetInfo],
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
     ) -> Result<MeltSummary> {
         let secret_key = keypair_from_seed(self.seed).secret_key();
         let signature = cdk01::SecretKey::from(secret_key).sign(&[])?; // not used currently - sign empty message
@@ -533,8 +573,8 @@ impl wallet::DebitPocket for Pocket {
         &self,
         rid: Uuid,
         keysets_info: &[KeySetInfo],
-        client: &dyn MintConnector,
-        safe_mode: wallet::SafeMode,
+        client: &dyn ClowderMintConnector,
+        safe_mode: SafeMode,
     ) -> Result<(bitcoin::Txid, HashMap<cdk01::PublicKey, cdk00::Proof>)> {
         let melt_ref = self.current_melt.lock().unwrap().take();
         let melt_ref = melt_ref.ok_or(Error::NoPrepareRef(rid))?;
@@ -599,7 +639,7 @@ impl wallet::DebitPocket for Pocket {
     async fn mint_onchain(
         &self,
         amount: bitcoin::Amount,
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
     ) -> Result<MintSummary> {
         let request = wire_mint::MintQuoteOnchainRequest {
             amount,
@@ -630,9 +670,9 @@ impl wallet::DebitPocket for Pocket {
     async fn check_pending_mints(
         &self,
         keysets_info: &[KeySetInfo],
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
         tstamp: u64,
-        safe_mode: wallet::SafeMode,
+        safe_mode: SafeMode,
     ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>> {
         let mint_ids = self.mdb.list_mints().await?;
         let mut res = HashMap::with_capacity(mint_ids.len());
@@ -662,8 +702,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        test_utils::tests::MockMintConnector,
-        wallet::{DebitPocket, Pocket},
+        external::test_utils::tests::MockMintConnector,
+        pocket::{PocketApi, debit::DebitPocketApi},
     };
     use bcr_common::core_tests;
     use bcr_wallet_persistence::{MockMintMeltRepository, MockPocketRepository};
@@ -894,7 +934,7 @@ mod tests {
         pocket.current_melt.lock().unwrap().replace(melt_ref);
 
         let res = pocket
-            .pay_onchain_melt(uuid, &k_infos, &connector, wallet::SafeMode::Disabled)
+            .pay_onchain_melt(uuid, &k_infos, &connector, SafeMode::Disabled)
             .await
             .expect("pay melt works");
         assert_eq!(res.0, tx_id);
@@ -985,7 +1025,7 @@ mod tests {
                 &k_infos,
                 &connector,
                 chrono::Utc::now().timestamp() as u64,
-                wallet::SafeMode::Disabled,
+                SafeMode::Disabled,
             )
             .await
             .expect("check pending mint works");

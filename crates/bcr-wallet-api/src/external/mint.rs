@@ -27,11 +27,9 @@ fn clowder_err_to_cdk(e: bcr_common::client::clowder::Error) -> CdkError {
 }
 
 #[async_trait]
-pub trait MintConnector: cdk::wallet::MintConnector + SendSync {
+pub trait ClowderMintConnector: cdk::wallet::MintConnector + SendSync {
     fn mint_url(&self) -> cashu::MintUrl;
-
     async fn get_clowder_betas(&self) -> CdkResult<Vec<cashu::MintUrl>>;
-
     async fn post_online_exchange(
         &self,
         alpha_proofs: Vec<Proof>,
@@ -46,7 +44,6 @@ pub trait MintConnector: cdk::wallet::MintConnector + SendSync {
         &self,
         alpha_id: secp256k1::PublicKey,
     ) -> CdkResult<Vec<cashu::KeySet>>;
-
     async fn get_alpha_offline(&self, alpha_id: secp256k1::PublicKey) -> CdkResult<bool>;
     async fn get_alpha_status(
         &self,
@@ -56,14 +53,12 @@ pub trait MintConnector: cdk::wallet::MintConnector + SendSync {
         &self,
         alpha_id: secp256k1::PublicKey,
     ) -> CdkResult<wire_clowder::ConnectedMintResponse>;
-
     async fn post_offline_exchange(
         &self,
         proofs: Vec<wire_keys::ProofFingerprint>,
         locks: Vec<bitcoin::hashes::sha256::Hash>,
         wallet_pubkey: secp256k1::PublicKey,
     ) -> CdkResult<Vec<Proof>>;
-
     async fn post_commitment(
         &self,
         inputs: Vec<cashu::Proof>,
@@ -76,27 +71,22 @@ pub trait MintConnector: cdk::wallet::MintConnector + SendSync {
         TStamp,
         secp256k1::schnorr::Signature,
     )>;
-
     async fn post_melt_quote_onchain(
         &self,
         req: wire_melt::MeltQuoteOnchainRequest,
     ) -> Result<wire_melt::MeltQuoteOnchainResponse>;
-
     async fn post_melt_onchain(
         &self,
         req: cashu::MeltRequest<String>,
     ) -> Result<wire_melt::MeltQuoteOnchainResponse>;
-
     async fn post_mint_quote_onchain(
         &self,
         req: wire_mint::MintQuoteOnchainRequest,
     ) -> Result<wire_mint::MintQuoteOnchainResponse>;
-
     async fn get_mint_quote_onchain(
         &self,
         quote_id: String,
     ) -> Result<wire_mint::MintQuoteOnchainResponse>;
-
     async fn post_mint_onchain(
         &self,
         req: cashu::MintRequest<String>,
@@ -242,7 +232,7 @@ impl cdk::wallet::MintConnector for HttpClientExt {
 }
 
 #[async_trait]
-impl MintConnector for HttpClientExt {
+impl ClowderMintConnector for HttpClientExt {
     fn mint_url(&self) -> cashu::MintUrl {
         cashu::MintUrl::from_str(self.url.as_str())
             .expect("cashu::MintUrl is as good as reqwest::Url")
@@ -704,7 +694,7 @@ impl cdk::wallet::MintConnector for SentinelClient {
 }
 
 #[async_trait]
-impl MintConnector for SentinelClient {
+impl ClowderMintConnector for SentinelClient {
     fn mint_url(&self) -> cashu::MintUrl {
         cashu::MintUrl::from_str(self.url.as_str())
             .expect("cashu::MintUrl is as good as reqwest::Url")

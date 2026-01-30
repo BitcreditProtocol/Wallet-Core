@@ -5,7 +5,7 @@ use tracing::info;
 
 pub async fn cmd_info(app_state: &AppState) -> Result<String> {
     let mut res = String::new();
-    let wallet_ids = app_state.get_wallets_ids().await?;
+    let wallet_ids = app_state.purse_wallets_ids().await?;
 
     push_break(&mut res);
     push_break(&mut res);
@@ -13,10 +13,10 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
     push_line(&mut res);
 
     for id in wallet_ids.iter() {
-        let name = app_state.get_wallet_name(*id).await?;
-        let mint_url = app_state.get_wallet_mint_url(*id).await?;
-        let unit = app_state.get_wallet_currency_unit(*id).await?;
-        let balance = app_state.get_wallet_balance(*id).await?;
+        let name = app_state.wallet_name(*id).await?;
+        let mint_url = app_state.wallet_mint_url(*id).await?;
+        let unit = app_state.wallet_currency_unit(*id).await?;
+        let balance = app_state.wallet_balance(*id).await?;
 
         let redemptions = app_state
             .wallet_list_redemptions(*id, std::time::Duration::from_hours(48))
@@ -60,7 +60,7 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
                 };
                 res.push_str(&format!(
                     "\t\tId: {} \t Amount: {} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {} \t BTC TxID/Quote ID: {}",
-                    tx.id, tx.amount, tx.unit, tx.fees,  tx.status, format_timestamp(tx.tstamp), &format!("{:?}", tx.ptype), tx.direction, tx.memo, quote_or_btc_tx_id 
+                    tx.id, tx.amount, tx.unit, tx.fees,  tx.status, format_timestamp(tx.tstamp), &format!("{:?}", tx.ptype), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id 
                 ));
                 push_break(&mut res);
                 if idx > 20 {
@@ -74,7 +74,7 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
 
 pub async fn cmd_add_wallet(app_state: &AppState, name: &str) -> Result<String> {
     let mut res = String::new();
-    let id = app_state.add_wallet(name.to_owned()).await?;
+    let id = app_state.purse_add_wallet(name.to_owned()).await?;
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!("Created Wallet for {name} - Wallet ID: {id}.\n"));
@@ -83,7 +83,7 @@ pub async fn cmd_add_wallet(app_state: &AppState, name: &str) -> Result<String> 
 
 pub async fn cmd_delete_wallet(app_state: &AppState, name: &str, id: usize) -> Result<String> {
     let mut res = String::new();
-    app_state.delete_wallet(id).await?;
+    app_state.purse_delete_wallet(id).await?;
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!("Deleted Wallet for {name} - Wallet ID: {id}.\n"));
@@ -92,7 +92,7 @@ pub async fn cmd_delete_wallet(app_state: &AppState, name: &str, id: usize) -> R
 
 pub async fn cmd_restore_wallet(app_state: &AppState, name: &str) -> Result<String> {
     let mut res = String::new();
-    let id = app_state.restore_wallet(name.to_owned()).await?;
+    let id = app_state.purse_restore_wallet(name.to_owned()).await?;
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!("Restored Wallet for {name} - Wallet ID: {id}.\n"));
@@ -143,7 +143,7 @@ pub async fn cmd_request_payment(
 
     info!("Payment Request: {}, {}", &req.request, &req.p_id);
     let tx_id = app_state
-        .wallet_check_received_payment(2, 60, 1, req.p_id.clone())
+        .wallet_check_received_payment(id, 2, 60, 1, req.p_id.clone())
         .await?;
 
     push_break(&mut res);
@@ -183,7 +183,7 @@ pub async fn cmd_pay_by_token(
         &payment_summary.amount, &payment_summary.unit,
     );
     let result = app_state
-        .wallet_pay_by_token(payment_summary.request_id.to_string())
+        .wallet_pay_by_token(id, payment_summary.request_id.to_string())
         .await?;
 
     push_break(&mut res);
@@ -221,7 +221,7 @@ pub async fn cmd_send_payment(
     );
 
     let tx_id = app_state
-        .wallet_pay(payment_summary.request_id.to_string())
+        .wallet_pay(id, payment_summary.request_id.to_string())
         .await?;
 
     push_break(&mut res);
@@ -283,7 +283,7 @@ pub async fn cmd_melt(
     );
 
     let tx_id = app_state
-        .wallet_melt(melt_summary.request_id.to_string())
+        .wallet_melt(id, melt_summary.request_id.to_string())
         .await?;
 
     push_break(&mut res);

@@ -1,10 +1,9 @@
 use crate::{
-    MintConnector,
+    ClowderMintConnector,
     error::{Error, Result},
     pocket::*,
-    restore, wallet,
+    wallet::types::SafeMode,
 };
-use anyhow::Error as AnyError;
 use async_trait::async_trait;
 use bcr_common::cashu::{
     self, Amount, CurrencyUnit, KeySet, KeySetInfo, Proof, ProofsMethods, amount::SplitTarget,
@@ -17,6 +16,30 @@ use std::{
     sync::{Arc, Mutex},
 };
 use uuid::Uuid;
+
+#[async_trait]
+pub trait CreditPocketApi: super::PocketApi {
+    /// Reclaims the proofs for the given ys
+    /// returns the amount reclaimed and the proofs that can be redeemed (i.e. unspent proofs with
+    /// inactive keysets)
+    async fn reclaim_proofs(
+        &self,
+        ys: &[cashu::PublicKey],
+        keysets_info: &[KeySetInfo],
+        client: &dyn ClowderMintConnector,
+        safe_mode: SafeMode,
+    ) -> Result<(Amount, Vec<cashu::Proof>)>;
+    async fn get_redeemable_proofs(
+        &self,
+        keysets_info: &[KeySetInfo],
+        client: &dyn ClowderMintConnector,
+    ) -> Result<Vec<cashu::Proof>>;
+    async fn list_redemptions(
+        &self,
+        keysets_info: &[KeySetInfo],
+        payment_window: std::time::Duration,
+    ) -> Result<Vec<RedemptionSummary>>;
+}
 
 ///////////////////////////////////////////// credit pocket
 pub struct Pocket {
@@ -55,9 +78,9 @@ impl Pocket {
                 return Err(Error::InactiveKeyset(info.id));
             }
             if info.input_fee_ppk != 0 {
-                return Err(Error::Any(AnyError::msg(
-                    "mint with fees not supported yet",
-                )));
+                return Err(Error::Unsupported(
+                    "mint with fees not supported yet".to_string(),
+                ));
             }
         }
         Ok(infos)
@@ -65,9 +88,9 @@ impl Pocket {
 
     async fn digest_proofs(
         &self,
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
         inputs: HashMap<cdk01::PublicKey, cdk00::Proof>,
-        safe_mode: wallet::SafeMode,
+        safe_mode: SafeMode,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
         if inputs.is_empty() {
             tracing::warn!("CrPocket::digest_proofs: empty inputs");
@@ -124,7 +147,7 @@ impl Pocket {
 }
 
 #[async_trait]
-impl wallet::Pocket for Pocket {
+impl super::PocketApi for Pocket {
     fn unit(&self) -> CurrencyUnit {
         self.unit.clone()
     }
@@ -137,10 +160,10 @@ impl wallet::Pocket for Pocket {
 
     async fn receive_proofs(
         &self,
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
         keysets_info: &[KeySetInfo],
         inputs: Vec<cdk00::Proof>,
-        safe_mode: wallet::SafeMode,
+        safe_mode: SafeMode,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
         tracing::info!(
             "Credit receive proofs keyset {:?} proofs {:?}",
@@ -222,7 +245,7 @@ impl wallet::Pocket for Pocket {
         &self,
         rid: Uuid,
         _: &[KeySetInfo],
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
         safe_mode: SafeMode,
     ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         let send_ref = {
@@ -250,7 +273,7 @@ impl wallet::Pocket for Pocket {
 
     async fn cleanup_local_proofs(
         &self,
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
     ) -> Result<Vec<cdk01::PublicKey>> {
         let cleaned_ys = cleanup_local_proofs(self.db.as_ref(), client).await?;
         Ok(cleaned_ys)
@@ -259,7 +282,7 @@ impl wallet::Pocket for Pocket {
     async fn restore_local_proofs(
         &self,
         keysets_info: &[KeySetInfo],
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
     ) -> Result<usize> {
         let kids = keysets_info.iter().filter_map(|info| {
             if info.unit == self.unit {
@@ -319,7 +342,7 @@ impl wallet::Pocket for Pocket {
         &self,
         proofs: Vec<cdk00::Proof>,
         keysets_info: &[KeySetInfo],
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
         send_amount: Amount,
     ) -> Result<Vec<cashu::Proof>> {
         let mut swapped_proofs = Vec::new();
@@ -397,12 +420,12 @@ impl wallet::Pocket for Pocket {
 }
 
 #[async_trait]
-impl wallet::CreditPocket for Pocket {
+impl CreditPocketApi for Pocket {
     async fn reclaim_proofs(
         &self,
         ys: &[cdk01::PublicKey],
         keysets_info: &[KeySetInfo],
-        client: &dyn MintConnector,
+        client: &dyn ClowderMintConnector,
         safe_mode: SafeMode,
     ) -> Result<(Amount, Vec<cdk00::Proof>)> {
         let mut pendings = self.db.load_proofs(ys).await?;
@@ -443,7 +466,7 @@ impl wallet::CreditPocket for Pocket {
     async fn get_redeemable_proofs(
         &self,
         keysets_info: &[KeySetInfo],
-        _client: &dyn MintConnector,
+        _client: &dyn ClowderMintConnector,
     ) -> Result<Vec<cdk00::Proof>> {
         let unspent = self.db.list_unspent().await?;
         let infos = collect_keyset_infos_from_proofs(unspent.values(), keysets_info)?;
@@ -500,8 +523,8 @@ impl wallet::CreditPocket for Pocket {
 mod tests {
     use super::*;
     use crate::{
-        test_utils::tests::MockMintConnector,
-        wallet::{CreditPocket, Pocket},
+        external::test_utils::tests::MockMintConnector,
+        pocket::{PocketApi, credit::CreditPocketApi},
     };
     use bcr_common::core_tests;
     use bcr_wallet_persistence::MockPocketRepository;
