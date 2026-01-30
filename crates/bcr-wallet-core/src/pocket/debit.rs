@@ -442,6 +442,7 @@ impl wallet::Pocket for Pocket {
         let (active_info, active_keyset) = self.find_active_keyset(keysets_info, client).await?;
         // calculate splits
         let send_splits = send_amount.split();
+        let send_splits_len = send_splits.len();
         let change_splits = change_amount.split();
         let mut splits: Vec<Amount> = Vec::with_capacity(send_splits.len() + change_splits.len());
         splits.extend(send_splits);
@@ -463,8 +464,12 @@ impl wallet::Pocket for Pocket {
         let request = cdk03::SwapRequest::new(proofs, blinds);
         let response = client.post_swap(request).await?;
 
+        // We only take the send_splits signatures, they add up to our send_amount
+        let mut send_signatures = response.signatures.clone();
+        send_signatures.truncate(send_splits_len);
+
         let mut signatures: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
-        for signature in response.signatures {
+        for signature in send_signatures {
             signatures
                 .entry(signature.keyset_id)
                 .and_modify(|v| v.push(signature.clone()))
@@ -476,17 +481,21 @@ impl wallet::Pocket for Pocket {
         for (kid, signatures) in signatures.into_iter() {
             let premint = premints.remove(&kid).expect("premint should be here");
             let keyset = keysets.get(&kid).expect("keyset should be here");
-            let mut unblinded_proofs = unblind_proofs(keyset, signatures, premint);
-            unblinded_proofs.sort_by_key(|proof| std::cmp::Reverse(proof.amount));
+            let unblinded_proofs = unblind_proofs(keyset, signatures, premint);
             for proof in unblinded_proofs.into_iter() {
                 if current_amount + proof.amount <= send_amount {
                     current_amount += proof.amount;
                     swapped_proofs.push(proof);
-                } else {
-                    break;
                 }
             }
         }
+
+        if current_amount != send_amount {
+            tracing::warn!(
+                "Mismatch between target {send_amount} and amount from proofs {current_amount}"
+            );
+        }
+
         Ok(swapped_proofs)
     }
 }
