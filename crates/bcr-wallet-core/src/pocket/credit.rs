@@ -377,16 +377,14 @@ impl wallet::Pocket for Pocket {
         }
 
         let mut current_amount = Amount::ZERO;
-        // only collect sending proofs - change is discarded for now
+        // only collect sending proofs, so we can take all - change is discarded for now
         for (kid, signatures) in signatures.into_iter() {
             let premint = premints.remove(&kid).expect("premint should be here");
             let keyset = keysets.get(&kid).expect("keyset should be here");
             let unblinded_proofs = unblind_proofs(keyset, signatures, premint);
             for proof in unblinded_proofs.into_iter() {
-                if current_amount + proof.amount <= send_amount {
-                    current_amount += proof.amount;
-                    swapped_proofs.push(proof);
-                }
+                current_amount += proof.amount;
+                swapped_proofs.push(proof);
             }
         }
 
