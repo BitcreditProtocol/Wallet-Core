@@ -144,6 +144,8 @@ pub enum Error {
     InvalidClowderPath,
     #[error("Beta not found")]
     BetaNotFound(cashu::MintUrl),
+    #[error("No Substitute could be determined")]
+    NoSubstitute,
     #[error("Unsupported: {0}")]
     Unsupported(String),
     #[error("insufficient amount for melting {0}")]

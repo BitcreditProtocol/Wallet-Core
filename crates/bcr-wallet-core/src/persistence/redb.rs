@@ -814,9 +814,12 @@ struct WalletEntry {
     name: String,
     network: bitcoin::Network,
     mint: cashu::MintUrl,
+    mint_keyset_infos: Vec<cashu::KeySetInfo>,
+    clowder_id: bitcoin::secp256k1::PublicKey,
     pub_key: secp256k1::PublicKey,
     debit: CurrencyUnit,
-    credit: Option<CurrencyUnit>,
+    credit: CurrencyUnit,
+    betas: Vec<MintUrl>,
 }
 impl std::convert::From<WalletConfig> for WalletEntry {
     fn from(wallet: WalletConfig) -> Self {
@@ -825,9 +828,12 @@ impl std::convert::From<WalletConfig> for WalletEntry {
             name: wallet.name,
             network: wallet.network,
             mint: wallet.mint,
+            mint_keyset_infos: wallet.mint_keyset_infos,
+            clowder_id: wallet.clowder_id,
             pub_key: wallet.pub_key,
             debit: wallet.debit,
             credit: wallet.credit,
+            betas: wallet.betas,
         }
     }
 }
@@ -838,9 +844,12 @@ impl std::convert::From<WalletEntry> for WalletConfig {
             name: wallet.name,
             network: wallet.network,
             mint: wallet.mint,
+            mint_keyset_infos: wallet.mint_keyset_infos,
+            clowder_id: wallet.clowder_id,
             pub_key: wallet.pub_key,
             debit: wallet.debit,
             credit: wallet.credit,
+            betas: wallet.betas,
         }
     }
 }

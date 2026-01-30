@@ -276,7 +276,10 @@ impl MintConnector for HttpClientExt {
         &self,
         alpha_id: bitcoin::secp256k1::PublicKey,
     ) -> CdkResult<wire_clowder::AlphaStateResponse> {
-        debug!("Clowder client call to get_alpha_status");
+        debug!(
+            "Clowder client call to get_alpha_status on {} for {alpha_id}",
+            self.mint_url().to_string()
+        );
         self.clowder
             .get_status(alpha_id)
             .await
@@ -288,7 +291,10 @@ impl MintConnector for HttpClientExt {
         &self,
         alpha_id: bitcoin::secp256k1::PublicKey,
     ) -> CdkResult<wire_clowder::ConnectedMintResponse> {
-        debug!("Clowder client call to get_alpha_substitute");
+        debug!(
+            "Clowder client call to get_alpha_substitute on {} for {alpha_id}",
+            self.mint_url().to_string()
+        );
         self.clowder
             .get_substitute(alpha_id)
             .await

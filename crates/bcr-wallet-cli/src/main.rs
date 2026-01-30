@@ -88,6 +88,8 @@ enum Commands {
     GenMnemonic,
     #[command(name = "check_token")]
     CheckToken { token: String },
+    #[command(name = "check_rabid_offline")]
+    CheckRabidOffline { id: usize },
 }
 
 #[tokio::main]
@@ -258,8 +260,11 @@ async fn main() -> Result<()> {
             );
         }
         Commands::MigrateRabid => {
-            info!("Migrate Rabid for {}", cli.wallet,);
-            app_state.purse_migrate_rabid().await?
+            info!(
+                "Migrate Rabid for {}: {}",
+                cli.wallet,
+                command::cmd_migrate_rabid(&app_state, &cli.wallet).await?
+            )
         }
         Commands::RunJobs => {
             info!("RunJobs for {}:", cli.wallet);
@@ -268,6 +273,15 @@ async fn main() -> Result<()> {
         Commands::CheckToken { token } => {
             info!("Checking token for {}:", cli.wallet);
             info!("{}", is_valid_token(&token)?);
+        }
+        Commands::CheckRabidOffline { id } => {
+            info!(
+                "Check Rabid/Offline for {} and wallet {}: Rabid: {}, Offline: {}",
+                cli.wallet,
+                id,
+                app_state.wallet_mint_is_rabid(id).await?,
+                app_state.wallet_mint_is_offline(id).await?,
+            );
         }
     }
 

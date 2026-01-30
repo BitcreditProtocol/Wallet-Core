@@ -293,14 +293,113 @@ impl wallet::Pocket for Pocket {
 
         Ok(proofs_by_keyset)
     }
+
+    async fn return_proofs_to_send_for_offline_payment(
+        &self,
+        rid: Uuid,
+    ) -> Result<(Amount, HashMap<cdk01::PublicKey, cdk00::Proof>)> {
+        let send_ref = {
+            let mut locked = self.current_send.lock().unwrap();
+            if locked.is_none() {
+                return Err(Error::NoPrepareRef(rid));
+            }
+            if locked.as_ref().unwrap().rid != rid {
+                return Err(Error::NoPrepareRef(rid));
+            }
+            locked.take().unwrap()
+        };
+        let proofs_to_send = return_proofs_to_send_for_offline_payment(
+            send_ref.send_proofs,
+            send_ref.swap_proof,
+            self.db.as_ref(),
+        )
+        .await?;
+        Ok(proofs_to_send)
+    }
+
+    async fn swap_to_unlocked_substitute_proofs(
+        &self,
+        proofs: Vec<cdk00::Proof>,
+        keysets_info: &[KeySetInfo],
+        client: &dyn MintConnector,
+        send_amount: Amount,
+    ) -> Result<Vec<cashu::Proof>> {
+        let mut swapped_proofs = Vec::new();
+        let total_amount = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
+        let change_amount = total_amount - send_amount;
+        tracing::debug!(
+            "Swapping to unlocked substitute credit proofs - {change_amount} will be lost."
+        );
+        // handle keyset
+        let active_info = keysets_info
+            .iter()
+            .find(|info| info.unit == self.unit && info.active && info.input_fee_ppk == 0);
+        let Some(active_info) = active_info else {
+            return Err(Error::NoActiveKeyset);
+        };
+
+        let active_keyset = client.get_mint_keyset(active_info.id).await?;
+        // calculate splits
+        let send_splits = send_amount.split();
+        let send_splits_len = send_splits.len();
+        let change_splits = change_amount.split();
+        let mut splits: Vec<Amount> = Vec::with_capacity(send_splits.len() + change_splits.len());
+        splits.extend(send_splits);
+        splits.extend(change_splits);
+        // create premints - no counter etc., since we're not persisting them anyway
+        let premint_secrets = cashu::PreMintSecrets::random(
+            active_info.id,
+            total_amount,
+            &SplitTarget::Values(splits),
+        )?;
+        let mut premints = HashMap::from([(active_info.id, premint_secrets)]);
+        let keysets = HashMap::from([(active_info.id, active_keyset)]);
+
+        let blinds: Vec<cdk00::BlindedMessage> = premints
+            .values()
+            .flat_map(|premint| premint.blinded_messages())
+            .collect();
+
+        // swap
+        let request = cdk03::SwapRequest::new(proofs, blinds);
+        let response = client.post_swap(request).await?;
+
+        // We only take the send_splits signatures, they add up to our send_amount
+        let mut send_signatures = response.signatures.clone();
+        send_signatures.truncate(send_splits_len);
+
+        let mut signatures: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
+        for signature in send_signatures {
+            signatures
+                .entry(signature.keyset_id)
+                .and_modify(|v| v.push(signature.clone()))
+                .or_insert_with(|| vec![signature]);
+        }
+
+        let mut current_amount = Amount::ZERO;
+        // only collect sending proofs, so we can take all - change is discarded for now
+        for (kid, signatures) in signatures.into_iter() {
+            let premint = premints.remove(&kid).expect("premint should be here");
+            let keyset = keysets.get(&kid).expect("keyset should be here");
+            let unblinded_proofs = unblind_proofs(keyset, signatures, premint);
+            for proof in unblinded_proofs.into_iter() {
+                current_amount += proof.amount;
+                swapped_proofs.push(proof);
+            }
+        }
+
+        if current_amount != send_amount {
+            tracing::warn!(
+                "Mismatch between target {send_amount} and amount from proofs {current_amount}"
+            );
+        }
+
+        Ok(swapped_proofs)
+    }
 }
 
 #[async_trait]
 impl wallet::CreditPocket for Pocket {
-    fn maybe_unit(&self) -> Option<CurrencyUnit> {
-        Some(self.unit.clone())
-    }
-
     async fn reclaim_proofs(
         &self,
         ys: &[cdk01::PublicKey],
@@ -396,87 +495,6 @@ impl wallet::CreditPocket for Pocket {
         }
         redemptions.sort_by_key(|r| r.tstamp);
         Ok(redemptions)
-    }
-}
-
-///////////////////////////////////////////// dummy pocket
-pub struct DummyPocket {}
-
-#[async_trait]
-impl wallet::Pocket for DummyPocket {
-    fn unit(&self) -> CurrencyUnit {
-        CurrencyUnit::Custom(String::from("dummy"))
-    }
-    async fn balance(&self) -> Result<cashu::Amount> {
-        Ok(cashu::Amount::ZERO)
-    }
-    async fn receive_proofs(
-        &self,
-        _client: &dyn MintConnector,
-        _keysets_info: &[KeySetInfo],
-        _proofs: Vec<cdk00::Proof>,
-        _safe_mode: SafeMode,
-    ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
-        Ok((Amount::ZERO, Vec::new()))
-    }
-    async fn prepare_send(&self, _: Amount, _: &[KeySetInfo]) -> Result<SendSummary> {
-        Err(Error::Any(AnyError::msg("DummyPocket is dummy")))
-    }
-    async fn send_proofs(
-        &self,
-        _: Uuid,
-        _: &[KeySetInfo],
-        _: &dyn MintConnector,
-        _: SafeMode,
-    ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
-        Err(Error::Any(AnyError::msg("DummyPocket is dummy")))
-    }
-    async fn clean_local_proofs(
-        &self,
-        _client: &dyn MintConnector,
-    ) -> Result<Vec<cdk01::PublicKey>> {
-        Ok(Vec::new())
-    }
-    async fn delete_proofs(&self) -> Result<HashMap<cashu::Id, Vec<cdk00::Proof>>> {
-        Ok(HashMap::new())
-    }
-
-    async fn restore_local_proofs(
-        &self,
-        _keysets_info: &[KeySetInfo],
-        _client: &dyn MintConnector,
-    ) -> Result<usize> {
-        Ok(0)
-    }
-}
-
-#[async_trait]
-impl wallet::CreditPocket for DummyPocket {
-    fn maybe_unit(&self) -> Option<CurrencyUnit> {
-        None
-    }
-    async fn reclaim_proofs(
-        &self,
-        _ys: &[cdk01::PublicKey],
-        _keysets_info: &[KeySetInfo],
-        _client: &dyn MintConnector,
-        _safe_mode: SafeMode,
-    ) -> Result<(Amount, Vec<cdk00::Proof>)> {
-        Ok((Amount::ZERO, Vec::new()))
-    }
-    async fn get_redeemable_proofs(
-        &self,
-        _keysets_info: &[KeySetInfo],
-        _client: &dyn MintConnector,
-    ) -> Result<Vec<cdk00::Proof>> {
-        Ok(Vec::new())
-    }
-    async fn list_redemptions(
-        &self,
-        _keysets_info: &[KeySetInfo],
-        _payment_window: std::time::Duration,
-    ) -> Result<Vec<RedemptionSummary>> {
-        Ok(Vec::new())
     }
 }
 
