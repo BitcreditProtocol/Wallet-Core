@@ -1,6 +1,9 @@
 use anyhow::Error as AnyError;
+use bcr_common::{
+    cashu::{self, MintUrl, nut02 as cdk02},
+    cdk,
+};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use cashu::{MintUrl, nut02 as cdk02};
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;

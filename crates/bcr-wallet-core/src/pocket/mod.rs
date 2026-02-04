@@ -5,9 +5,9 @@ use crate::{
     wallet::SafeMode,
 };
 use async_trait::async_trait;
-use cashu::{
-    Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00, nut01 as cdk01,
-    nut03 as cdk03, nut07 as cdk07,
+use bcr_common::cashu::{
+    self, Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00,
+    nut01 as cdk01, nut03 as cdk03, nut07 as cdk07,
 };
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;

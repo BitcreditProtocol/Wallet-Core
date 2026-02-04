@@ -1,5 +1,5 @@
+use bcr_common::cashu::{Amount, CurrencyUnit, KeySetInfo, MintUrl};
 use bitcoin::address::NetworkUnchecked;
-use cashu::{Amount, CurrencyUnit, KeySetInfo, MintUrl};
 use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
 

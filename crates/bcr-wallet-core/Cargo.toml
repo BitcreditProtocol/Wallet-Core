@@ -15,8 +15,6 @@ bcr-common = {workspace = true}
 bip39.workspace = true
 bitcoin.workspace = true
 borsh.workspace = true
-cashu = { workspace = true, features = ["wallet"] }
-cdk = { workspace = true, features = ["wallet"] }
 chrono = {workspace = true}
 ciborium = {workspace = true}
 futures = {workspace = true}
@@ -37,7 +35,6 @@ uuid = {workspace = true }
 
 [dev-dependencies]
 bcr-common = {workspace = true, features = ["test-utils"]}
-cdk-common.workspace = true
 mockall = { workspace = true}
 rand = {workspace = true}
 tokio = {workspace = true}

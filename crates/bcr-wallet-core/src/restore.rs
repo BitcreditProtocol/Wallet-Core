@@ -1,5 +1,5 @@
 use crate::{MintConnector, error::Result, pocket::PocketRepository};
-use cashu::{nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09};
+use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09};
 use std::collections::HashMap;
 
 // as recommended by NUT13
