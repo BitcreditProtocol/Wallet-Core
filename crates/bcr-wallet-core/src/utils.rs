@@ -3,11 +3,13 @@ use crate::{
     error::{Error, Result},
     wallet::SafeMode,
 };
-use bcr_common::wire::keys::ProofFingerprint;
+use bcr_common::{
+    cashu::{self, HTLCWitness, Proof},
+    cdk::{self, Error as CdkError},
+    wire::keys::ProofFingerprint,
+};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::PublicKey;
-use cashu::{HTLCWitness, Proof};
-use cdk::Error as CdkError;
 use secp256k1::schnorr::Signature;
 
 type CdkResult<T> = std::result::Result<T, cdk::Error>;
@@ -206,15 +208,18 @@ pub async fn htlc_lock(
 
 #[cfg(test)]
 pub mod tests {
+    use super::*;
     use crate::TStamp;
     use crate::error::Result;
     use async_trait::async_trait;
-    use bcr_common::wire::{keys as wire_keys, melt as wire_melt, mint as wire_mint};
-    use cashu::{
-        nut02 as cdk02, nut03 as cdk03, nut04 as cdk04, nut05 as cdk05, nut06 as cdk06,
-        nut07 as cdk07, nut09 as cdk09, nut23 as cdk23,
+    use bcr_common::{
+        cashu::{
+            nut02 as cdk02, nut03 as cdk03, nut04 as cdk04, nut05 as cdk05, nut06 as cdk06,
+            nut07 as cdk07, nut09 as cdk09, nut23 as cdk23,
+        },
+        cdk_common::Error as CDKError,
+        wire::{keys as wire_keys, melt as wire_melt, mint as wire_mint},
     };
-    use cdk_common::Error as CDKError;
 
     use bcr_common::wire::clowder::{AlphaStateResponse, ConnectedMintResponse};
     type CdkResult<T> = std::result::Result<T, CDKError>;

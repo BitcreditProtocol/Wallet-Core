@@ -9,9 +9,11 @@ use crate::{
     },
 };
 use async_trait::async_trait;
-use bcr_common::wallet::Token;
-use cashu::{Amount, CurrencyUnit, MintUrl, PaymentRequest, nut00 as cdk00, nut18 as cdk18};
-use cdk::wallet::types::TransactionId;
+use bcr_common::{
+    cashu::{Amount, CurrencyUnit, MintUrl, PaymentRequest, nut00 as cdk00, nut18 as cdk18},
+    cdk::wallet::types::TransactionId,
+    wallet::Token,
+};
 use nostr::{nips::nip59::UnwrappedGift, signer::NostrSigner};
 use nostr_sdk::nips::nip19::{Nip19Profile, ToBech32};
 use std::{collections::HashMap, sync::Arc};

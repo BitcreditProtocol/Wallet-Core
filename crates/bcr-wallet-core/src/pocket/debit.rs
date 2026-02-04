@@ -8,10 +8,12 @@ use crate::{
     wallet,
 };
 use async_trait::async_trait;
-use bcr_common::wire::{melt as wire_melt, mint as wire_mint};
-use cashu::{
-    Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00, nut01 as cdk01,
-    nut05 as cdk05,
+use bcr_common::{
+    cashu::{
+        self, Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00,
+        nut01 as cdk01, nut05 as cdk05,
+    },
+    wire::{melt as wire_melt, mint as wire_mint},
 };
 use std::{
     collections::HashMap,

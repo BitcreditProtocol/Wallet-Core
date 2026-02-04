@@ -1,6 +1,8 @@
 use crate::{TStamp, error::Result, sync};
 use async_trait::async_trait;
 use bcr_common::{
+    cashu::{self, Proof},
+    cdk::{self, Error as CdkError},
     client::clowder::Client as ClowderClient,
     wire::{
         clowder::{self as wire_clowder, ConnectedMintsResponse},
@@ -9,8 +11,6 @@ use bcr_common::{
     },
 };
 use bitcoin::base64::prelude::*;
-use cashu::Proof;
-use cdk::Error as CdkError;
 use rand::seq::IndexedRandom;
 use std::str::FromStr;
 use tracing::debug;

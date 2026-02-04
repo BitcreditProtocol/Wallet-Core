@@ -19,7 +19,7 @@ mod command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletSettings {
-    pub mint_url: cashu::MintUrl,
+    pub mint_url: bcr_common::cashu::MintUrl,
     pub mnemonic: bip39::Mnemonic,
     pub log_level: String,
     pub db_path: PathBuf,

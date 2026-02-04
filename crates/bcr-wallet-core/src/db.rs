@@ -1,4 +1,4 @@
-use cashu::CurrencyUnit;
+use bcr_common::cashu::CurrencyUnit;
 
 use super::*;
 

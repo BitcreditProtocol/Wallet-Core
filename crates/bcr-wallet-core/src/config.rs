@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::error::Result;
-use cashu::MintUrl;
+use bcr_common::cashu::MintUrl;
 use nostr_sdk::{Keys, RelayUrl, nips::nip06::FromMnemonic, nips::nip19::Nip19Profile};
 
 pub const LOCK_REDUCTION_SECONDS_PER_HOP: u64 = 600;

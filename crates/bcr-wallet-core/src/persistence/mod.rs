@@ -1,5 +1,6 @@
 pub mod redb;
 use crate::TStamp;
+use bcr_common::cashu;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 struct Commitment {

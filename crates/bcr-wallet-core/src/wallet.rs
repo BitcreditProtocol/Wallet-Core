@@ -12,17 +12,19 @@ use crate::{
     utils::{self, tx_can_be_refreshed},
 };
 use async_trait::async_trait;
-use bcr_common::wire::{
-    clowder::{self as wire_clowder, ConnectedMintResponse},
-    melt as wire_melt,
+use bcr_common::{
+    cashu::{self, Amount, CurrencyUnit, KeySetInfo, MintUrl, Proof},
+    cdk::{
+        StreamExt,
+        wallet::types::{Transaction, TransactionDirection, TransactionId},
+    },
+    wallet::Token,
+    wire::{
+        clowder::{self as wire_clowder, ConnectedMintResponse, ConnectedMintsResponse},
+        melt as wire_melt,
+    },
 };
-use bcr_common::{wallet::Token, wire::clowder::ConnectedMintsResponse};
 use bitcoin::hashes::{Hash, sha256::Hash as Sha256};
-use cashu::{Amount, CurrencyUnit, KeySetInfo, MintUrl, Proof};
-use cdk::{
-    StreamExt,
-    wallet::types::{Transaction, TransactionDirection, TransactionId},
-};
 use futures::stream::FuturesUnordered;
 use nostr_sdk::nips::nip19::{FromBech32, Nip19Profile};
 use std::{collections::HashMap, str::FromStr, sync::Mutex};
