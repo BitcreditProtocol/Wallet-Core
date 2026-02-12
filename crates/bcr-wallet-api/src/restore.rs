@@ -1,5 +1,6 @@
-use crate::{MintConnector, error::Result, pocket::PocketRepository};
+use crate::{MintConnector, error::Result};
 use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09};
+use bcr_wallet_persistence::PocketRepository;
 use std::collections::HashMap;
 
 // as recommended by NUT13
@@ -125,8 +126,9 @@ async fn restore_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{pocket::MockPocketRepository, utils::tests::MockMintConnector};
+    use crate::test_utils::tests::MockMintConnector;
     use bcr_common::{core::signature, core_tests};
+    use bcr_wallet_persistence::MockPocketRepository;
     use cashu::{Amount, KeySet, RestoreResponse, nut07 as cdk07};
     use mockall::predicate::eq;
     use rand::Rng;

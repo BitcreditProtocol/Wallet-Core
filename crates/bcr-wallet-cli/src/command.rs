@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bcr_wallet_core::AppState;
+use bcr_wallet_api::AppState;
 use chrono::{DateTime, Utc};
 use tracing::info;
 
@@ -96,15 +96,6 @@ pub async fn cmd_restore_wallet(app_state: &AppState, name: &str) -> Result<Stri
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!("Restored Wallet for {name} - Wallet ID: {id}.\n"));
-    Ok(res)
-}
-
-pub async fn cmd_clear_wallet(app_state: &AppState, name: &str, id: usize) -> Result<String> {
-    let mut res = String::new();
-    app_state.wallet_clean_local_db(id).await?;
-    push_break(&mut res);
-    push_break(&mut res);
-    res.push_str(&format!("Cleared Wallet for {name} - Wallet ID: {id}.\n"));
     Ok(res)
 }
 

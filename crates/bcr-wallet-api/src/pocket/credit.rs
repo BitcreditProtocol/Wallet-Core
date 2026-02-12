@@ -2,16 +2,16 @@ use crate::{
     MintConnector,
     error::{Error, Result},
     pocket::*,
-    restore,
-    types::{RedemptionSummary, SendSummary},
-    wallet,
+    restore, wallet,
 };
 use anyhow::Error as AnyError;
 use async_trait::async_trait;
 use bcr_common::cashu::{
-    self, Amount, CurrencyUnit, KeySet, KeySetInfo, amount::SplitTarget, nut00 as cdk00,
-    nut01 as cdk01, nut07 as cdk07,
+    self, Amount, CurrencyUnit, KeySet, KeySetInfo, Proof, ProofsMethods, amount::SplitTarget,
+    nut00 as cdk00, nut01 as cdk01, nut07 as cdk07,
 };
+use bcr_wallet_core::types::{RedemptionSummary, SendSummary};
+use bcr_wallet_persistence::PocketRepository;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -92,7 +92,7 @@ impl Pocket {
         // preparing the premints
         let mut premints: HashMap<cashu::Id, cdk00::PreMintSecrets> = HashMap::new();
         for (kid, proofs) in old_proofs.iter() {
-            let total = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
+            let total = proofs.total_amount()?;
             let counter = self.db.counter(*kid).await?;
             let premint = cdk00::PreMintSecrets::from_seed(
                 *kid,
@@ -130,10 +130,8 @@ impl wallet::Pocket for Pocket {
     }
 
     async fn balance(&self) -> Result<Amount> {
-        let proofs = self.db.list_unspent().await?;
-        let total = proofs
-            .into_iter()
-            .fold(Amount::ZERO, |acc, (_, proof)| acc + proof.amount);
+        let proofs: Vec<Proof> = self.db.list_unspent().await?.into_values().collect();
+        let total = proofs.total_amount()?;
         Ok(total)
     }
 
@@ -250,11 +248,11 @@ impl wallet::Pocket for Pocket {
         Ok(sending_proofs)
     }
 
-    async fn clean_local_proofs(
+    async fn cleanup_local_proofs(
         &self,
         client: &dyn MintConnector,
     ) -> Result<Vec<cdk01::PublicKey>> {
-        let cleaned_ys = clean_local_proofs(self.db.as_ref(), client).await?;
+        let cleaned_ys = cleanup_local_proofs(self.db.as_ref(), client).await?;
         Ok(cleaned_ys)
     }
 
@@ -325,7 +323,7 @@ impl wallet::Pocket for Pocket {
         send_amount: Amount,
     ) -> Result<Vec<cashu::Proof>> {
         let mut swapped_proofs = Vec::new();
-        let total_amount = proofs.iter().fold(Amount::ZERO, |acc, p| acc + p.amount);
+        let total_amount = proofs.total_amount()?;
         let change_amount = total_amount - send_amount;
         tracing::debug!(
             "Swapping to unlocked substitute credit proofs - {change_amount} will be lost."
@@ -502,10 +500,11 @@ impl wallet::CreditPocket for Pocket {
 mod tests {
     use super::*;
     use crate::{
-        utils::tests::MockMintConnector,
+        test_utils::tests::MockMintConnector,
         wallet::{CreditPocket, Pocket},
     };
     use bcr_common::core_tests;
+    use bcr_wallet_persistence::MockPocketRepository;
     use mockall::predicate::*;
 
     fn pocket(db: Arc<dyn PocketRepository>) -> super::Pocket {

@@ -1,3 +1,9 @@
+# 0.7.9
+
+* Refactoring
+    * Split into multiple crates
+    * Add DB Tests
+
 # 0.7.8
 
 * Add `clowder_id`, `betas` and `mint_keysets` to `WalletConfig` (breaking DB change)

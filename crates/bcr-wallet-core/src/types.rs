@@ -1,7 +1,14 @@
 use bcr_common::cashu::{Amount, CurrencyUnit, KeySetInfo, MintUrl};
-use bitcoin::address::NetworkUnchecked;
+use bitcoin::{address::NetworkUnchecked, secp256k1};
 use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
+
+use crate::TStamp;
+
+#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct JobState {
+    pub last_run: TStamp,
+}
 
 #[derive(Default, Debug, Clone)]
 pub struct RedemptionSummary {
@@ -33,7 +40,7 @@ pub struct WalletConfig {
     pub network: bitcoin::Network,
     pub mint: MintUrl,
     pub mint_keyset_infos: Vec<KeySetInfo>,
-    pub clowder_id: bitcoin::secp256k1::PublicKey,
+    pub clowder_id: secp256k1::PublicKey,
     pub debit: CurrencyUnit,
     pub credit: CurrencyUnit,
     pub pub_key: secp256k1::PublicKey,

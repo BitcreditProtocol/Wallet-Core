@@ -1,19 +1,23 @@
 use crate::{
     MintConnector,
     error::{Error, Result},
-    persistence::redb::PurseDB,
-    sync,
     types::{
         self, MintSummary, PAYMENT_TYPE_METADATA_KEY, PaymentSummary,
-        TRANSACTION_STATUS_METADATA_KEY, WalletConfig,
+        TRANSACTION_STATUS_METADATA_KEY,
     },
 };
 use async_trait::async_trait;
 use bcr_common::{
-    cashu::{Amount, CurrencyUnit, MintUrl, PaymentRequest, nut00 as cdk00, nut18 as cdk18},
+    cashu::{
+        Amount, CurrencyUnit, MintUrl, PaymentRequest, ProofsMethods, nut00 as cdk00,
+        nut18 as cdk18,
+    },
     cdk::wallet::types::TransactionId,
     wallet::Token,
 };
+use bcr_wallet_core::{SendSync, types::WalletConfig};
+use bcr_wallet_persistence::{PurseRepository, redb::purse::PurseDB};
+use bitcoin::secp256k1;
 use nostr::{nips::nip59::UnwrappedGift, signer::NostrSigner};
 use nostr_sdk::nips::nip19::{Nip19Profile, ToBech32};
 use std::{collections::HashMap, sync::Arc};
@@ -24,22 +28,14 @@ use tokio::{
 use uuid::Uuid;
 
 #[async_trait]
-pub trait PurseRepository: sync::SendSync {
-    async fn store(&self, wallet: WalletConfig) -> Result<()>;
-    async fn load(&self, wallet_id: &str) -> Result<WalletConfig>;
-    async fn delete(&self, wallet_id: &str) -> Result<()>;
-    async fn list_ids(&self) -> Result<Vec<String>>;
-}
-
-#[async_trait]
-pub trait Wallet: sync::SendSync {
+pub trait Wallet: SendSync {
     fn config(&self) -> Result<WalletConfig>;
     fn name(&self) -> String;
     fn id(&self) -> String;
     fn mint_url(&self) -> Result<MintUrl>;
     fn betas(&self) -> Vec<MintUrl>;
     #[allow(dead_code)]
-    fn clowder_id(&self) -> bitcoin::secp256k1::PublicKey;
+    fn clowder_id(&self) -> secp256k1::PublicKey;
     fn mint_urls(&self) -> Result<Vec<MintUrl>>;
     async fn prepare_melt(
         &self,
@@ -93,6 +89,8 @@ pub trait Wallet: sync::SendSync {
         memo: Option<String>,
         now: u64,
     ) -> Result<(TransactionId, Option<Token>)>;
+
+    async fn cleanup_local_proofs(&self) -> Result<()>;
 }
 
 struct PaymentReference {
@@ -130,11 +128,13 @@ impl<Wlt> Purse<Wlt> {
 
 impl<Wlt> Purse<Wlt> {
     pub async fn load_wallet_config(&self, wallet_id: &str) -> Result<WalletConfig> {
-        self.repo.load(wallet_id).await
+        let res = self.repo.load(wallet_id).await?;
+        Ok(res)
     }
 
     pub async fn list_wallets(&self) -> Result<Vec<String>> {
-        self.repo.list_ids().await
+        let res = self.repo.list_ids().await?;
+        Ok(res)
     }
 
     pub async fn get_wallet(&self, idx: usize) -> Option<Arc<RwLock<Wlt>>> {
@@ -167,6 +167,7 @@ where
             return Err(Error::WalletNotFound(idx));
         };
         let id = wlt.read().await.id();
+        wlt.write().await.cleanup_local_proofs().await?;
         self.repo.delete(&id).await?;
         self.wallets.write().await.remove(idx);
         Ok(())
@@ -528,10 +529,7 @@ where
         return Ok(None);
     }
 
-    let amount = payload
-        .proofs
-        .iter()
-        .fold(Amount::ZERO, |total, p| total + p.amount);
+    let amount = payload.proofs.total_amount()?;
     if amount < expected {
         tracing::warn!(
             "Received amount {} is less than expected {}",

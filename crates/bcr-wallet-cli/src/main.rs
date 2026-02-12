@@ -1,7 +1,7 @@
 use std::{path::PathBuf, str::FromStr};
 
 use anyhow::Result;
-use bcr_wallet_core::{
+use bcr_wallet_api::{
     AppState,
     config::{AppStateConfig, SameMintSafeMode},
     generate_random_mnemonic, is_valid_token,
@@ -41,8 +41,6 @@ struct Cli {
 enum Commands {
     #[command(name = "info")]
     Info,
-    #[command(name = "clear")]
-    Clear { id: usize },
     #[command(name = "add_wallet")]
     AddWallet,
     #[command(name = "delete_wallet")]
@@ -138,13 +136,6 @@ async fn main() -> Result<()> {
                 "Info for {}: {}",
                 cli.wallet,
                 command::cmd_info(&app_state).await?
-            );
-        }
-        Commands::Clear { id } => {
-            info!(
-                "Clearing Wallet DB for {}: {}",
-                cli.wallet,
-                command::cmd_clear_wallet(&app_state, &cli.wallet, id).await?
             );
         }
         Commands::Receive { id, token } => {
