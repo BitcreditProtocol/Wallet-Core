@@ -1,4 +1,4 @@
-use crate::{MintConnector, error::Result};
+use crate::{ClowderMintConnector, error::Result};
 use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09};
 use bcr_wallet_persistence::PocketRepository;
 use std::collections::HashMap;
@@ -10,7 +10,7 @@ const BATCH_SIZE: u32 = 100;
 pub async fn restore_keysetid(
     seed: &[u8; 64],
     kid: cashu::Id,
-    client: &dyn MintConnector,
+    client: &dyn ClowderMintConnector,
     db: &dyn PocketRepository,
 ) -> Result<usize> {
     let mut zero_response_counter = 0;
@@ -36,7 +36,7 @@ pub async fn restore_keysetid(
 async fn restore_batch(
     seed: &[u8; 64],
     kid: cashu::Id,
-    client: &dyn MintConnector,
+    client: &dyn ClowderMintConnector,
     db: &dyn PocketRepository,
     counter: u32,
     batch_size: u32,
@@ -126,7 +126,7 @@ async fn restore_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::tests::MockMintConnector;
+    use crate::external::test_utils::tests::MockMintConnector;
     use bcr_common::{core::signature, core_tests};
     use bcr_wallet_persistence::MockPocketRepository;
     use cashu::{Amount, KeySet, RestoreResponse, nut07 as cdk07};

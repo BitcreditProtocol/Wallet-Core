@@ -1,8 +1,8 @@
 pub mod error;
 #[cfg(feature = "redb")]
 pub mod redb;
-#[cfg(test)]
-mod test_utils;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
 
 use crate::error::Result;
 use async_trait::async_trait;

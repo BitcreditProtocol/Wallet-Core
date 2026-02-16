@@ -1,100 +1,17 @@
 use crate::{
-    MintConnector,
+    ClowderMintConnector,
     error::{Error, Result},
-    wallet::SafeMode,
+    wallet::types::SafeMode,
 };
+use bcr_common::cdk::{self};
 use bcr_common::{
     cashu::{self, HTLCWitness, Proof, ProofsMethods},
-    cdk::{self, Error as CdkError},
     wire::keys::ProofFingerprint,
 };
-use bcr_wallet_core::TStamp;
-use bitcoin::{
-    hashes::sha256::Hash as Sha256,
-    secp256k1::{PublicKey, schnorr::Signature},
-};
+use bitcoin::{hashes::sha256::Hash as Sha256, secp256k1};
+use secp256k1::schnorr::Signature;
 
-type CdkResult<T> = std::result::Result<T, cdk::Error>;
-
-pub fn tx_can_be_refreshed(tx: &cdk::wallet::types::Transaction) -> bool {
-    // Only refresh outgoing transactions
-    if matches!(
-        tx.direction,
-        cdk::wallet::types::TransactionDirection::Incoming
-    ) {
-        return false;
-    }
-
-    // Only refresh pending transactions
-    let p_status = crate::types::get_transaction_status(&tx.metadata);
-    if !matches!(p_status, crate::types::TransactionStatus::Pending) {
-        return false;
-    }
-    true
-}
-
-pub fn validate_offline_conditions(
-    wallet_pubkey: PublicKey,
-    conditions: &cashu::Conditions,
-    tstamp: u64,
-) -> CdkResult<u64> {
-    tracing::info!("Verifying spending conditions {:?}", conditions);
-
-    let lock_time = conditions.locktime.ok_or(CdkError::LocktimeNotProvided)?;
-    let num_sigs = conditions.num_sigs.ok_or(CdkError::PubkeyRequired)?;
-    let pubkeys = conditions
-        .pubkeys
-        .as_ref()
-        .ok_or(CdkError::PubkeyRequired)?;
-    let refund_len = conditions
-        .refund_keys
-        .as_ref()
-        .map(|r| r.len())
-        .unwrap_or(0);
-
-    if pubkeys.len() != 1 || num_sigs != 1 {
-        return Err(CdkError::PubkeyRequired);
-    }
-    if refund_len != 0 {
-        return Err(CdkError::InvalidSpendConditions(
-            "Beta proofs refund not allowed".into(),
-        ));
-    }
-    if *pubkeys[0] != wallet_pubkey {
-        return Err(CdkError::InvalidSpendConditions(
-            "Pubkey must be wallet pubkey".into(),
-        ));
-    }
-    if lock_time < tstamp + crate::config::LOCK_REDUCTION_SECONDS_PER_HOP {
-        return Err(CdkError::InvalidSpendConditions(
-            "Lock time too short".into(),
-        ));
-    }
-
-    Ok(lock_time)
-}
-
-pub async fn compel_commitment(
-    inputs: Vec<cashu::Proof>,
-    outputs: Vec<cashu::BlindedMessage>,
-    expiration: chrono::TimeDelta,
-    alpha_pk: secp256k1::PublicKey,
-    client: &dyn MintConnector,
-) -> Result<(
-    Vec<cashu::PublicKey>,
-    Vec<cashu::BlindedMessage>,
-    TStamp,
-    secp256k1::schnorr::Signature,
-)> {
-    let result = client
-        .post_commitment(inputs, outputs, expiration, alpha_pk)
-        .await;
-    match result {
-        Ok(response) => Ok(response),
-        Err(e) => Err(e),
-    }
-}
-
+//////////////////////////////////// utils
 pub fn proofs_to_fingerprints(
     proofs: Vec<Proof>,
 ) -> Result<(Vec<ProofFingerprint>, Vec<cashu::secret::Secret>)> {
@@ -126,7 +43,7 @@ pub fn sign_htlc_proof(
     let msg: Vec<u8> = proof.secret.to_bytes();
     let signature: Signature = wallet_secret
         .sign(&msg)
-        .map_err(|err| Error::Internal(format!("signing error: {err}")))?;
+        .map_err(|err| Error::SchnorrSignature(format!("signing error: {err}")))?;
 
     let signatures = vec![signature.to_string()];
 
@@ -141,7 +58,7 @@ pub fn sign_htlc_proof(
 pub async fn htlc_lock(
     unit: cashu::CurrencyUnit,
     tstamp: u64,
-    client: &dyn MintConnector,
+    client: &dyn ClowderMintConnector,
     is_credit: bool,
     proofs: Vec<cashu::Proof>,
     hash_lock: Sha256,
@@ -186,14 +103,14 @@ pub async fn htlc_lock(
         cashu::PreMintSecrets::with_conditions(active_keyset_id, amount, &split_target, &htlc)?;
 
     if let SafeMode::Enabled { expire, alpha_pk } = safe_mode {
-        crate::utils::compel_commitment(
-            proofs.clone(),
-            premints.blinded_messages(),
-            expire,
-            alpha_pk,
-            client,
-        )
-        .await?;
+        client
+            .post_commitment(
+                proofs.clone(),
+                premints.blinded_messages(),
+                expire,
+                alpha_pk,
+            )
+            .await?;
     }
     let swap_request = cashu::SwapRequest::new(proofs, premints.blinded_messages());
     let swap = client.post_swap(swap_request).await?;
@@ -202,4 +119,21 @@ pub async fn htlc_lock(
     let proofs = crate::pocket::unblind_proofs(&keyset, swap.signatures, premints);
 
     Ok(proofs)
+}
+
+pub fn tx_can_be_refreshed(tx: &cdk::wallet::types::Transaction) -> bool {
+    // Only refresh outgoing transactions
+    if matches!(
+        tx.direction,
+        cdk::wallet::types::TransactionDirection::Incoming
+    ) {
+        return false;
+    }
+
+    // Only refresh pending transactions
+    let p_status = crate::types::get_transaction_status(&tx.metadata);
+    if !matches!(p_status, crate::types::TransactionStatus::Pending) {
+        return false;
+    }
+    true
 }

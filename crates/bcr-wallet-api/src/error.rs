@@ -1,4 +1,3 @@
-use anyhow::Error as AnyError;
 use bcr_common::{
     cashu::{self, MintUrl},
     cdk,
@@ -11,6 +10,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("BorshSignature: {0}")]
     BorshSignature(#[from] bcr_common::core::signature::BorshMsgSignatureError),
+    #[error("SchnorrSignature: {0}")]
+    SchnorrSignature(String),
     #[error("Borsh: {0}")]
     Borsh(#[from] borsh::io::Error),
     #[error("cashu::mint_url::Error: {0}")]
@@ -67,16 +68,14 @@ pub enum Error {
     NoActiveKeyset,
     #[error("unknown keyset ID")]
     UnknownKeysetId(cashu::Id),
+    #[error("inactive keyset {0}")]
+    InactiveKeyset(cashu::Id),
     #[error("invalid currency unit: {0}")]
     InvalidCurrencyUnit(String),
-    #[error("unknown mint: {0}")]
-    UnknownMint(cashu::MintUrl),
     #[error("currency unit mismatch: mine {0}, his {1}")]
     CurrencyUnitMismatch(cashu::CurrencyUnit, cashu::CurrencyUnit),
     #[error("no reference to prepare request_id: {0}")]
     NoPrepareRef(uuid::Uuid),
-    #[error("inactive keyset {0}")]
-    InactiveKeyset(cashu::Id),
     #[error("transaction can't be reclaimed - not outgoing or pending {0}")]
     TransactionCantBeReclaimed(cdk::wallet::types::TransactionId),
     #[error("Mint not supporting debit currency")]
@@ -87,6 +86,8 @@ pub enum Error {
     InvalidMnemonic,
     #[error("mint url mismatch, ours: {0}, theirs: {1}")]
     InvalidMintUrl(MintUrl, MintUrl),
+    #[error("unknown mint: {0}")]
+    UnknownMint(cashu::MintUrl),
     #[error("payment request, missing amount")]
     MissingAmount,
     #[error("payment request unknown {0}")]
@@ -123,9 +124,6 @@ pub enum Error {
     InsufficientOnChainMintAmount(u64),
     #[error("Database Error: {0}")]
     Database(#[from] bcr_wallet_persistence::error::Error),
-
-    #[error("internal error: {0}")]
-    Internal(String),
-    #[error("internal, generic: {0}")]
-    Any(AnyError),
+    #[error("External Error: {0}")]
+    External(#[from] crate::external::Error),
 }

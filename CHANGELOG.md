@@ -1,8 +1,17 @@
-# 0.7.9
+# 0.8.0
 
-* Refactoring
+* Refactoring (breaking DB changes)
     * Split into multiple crates
     * Add DB Tests
+    * Move some types and utils to core, or where they belong
+    * Restructure purse/wallet/pocket and mint code
+        * Mods for wallet, purse and mint
+        * Move traits to their impls
+        * Split up Wallet for structure
+        * Move wallet specific functions directly to wallet, not going through purse
+    * Add Purse Tests
+    * Rework Errors structure
+    * Clean up outer types a bit
 
 # 0.7.8
 

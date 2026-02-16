@@ -74,8 +74,9 @@ pub struct MintSummary {
     pub expiry: u64,
 }
 
-#[derive(strum::EnumString, strum::Display, Debug, Clone)]
+#[derive(strum::EnumString, strum::Display, Debug, Clone, Copy, Default)]
 pub enum PaymentType {
+    #[default]
     NotApplicable,
     Token,
     Cdk18,
@@ -93,7 +94,7 @@ pub struct PaymentSummary {
     pub ptype: PaymentType,
 }
 
-#[derive(strum::Display, strum::EnumString, Default)]
+#[derive(strum::Display, strum::EnumString, Debug, Clone, Copy, Default)]
 pub enum TransactionStatus {
     #[default]
     NotApplicable,

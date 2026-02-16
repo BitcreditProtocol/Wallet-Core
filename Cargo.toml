@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.7.9"
+version = "0.8.0"
 edition = "2024"
 license = "MIT"
 
@@ -9,7 +9,6 @@ resolver = "3"
 members = ["crates/bcr-wallet-core", "crates/bcr-wallet-cli", "crates/bcr-wallet-persistence", "crates/bcr-wallet-api"]
 
 [workspace.dependencies]
-anyhow = {version = "1"}
 async-trait = {version = "0.1"}
 bcr-common = {git = "https://github.com/BitcreditProtocol/bcr-common.git", tag = "v0.7.0"}
 bcr-wallet-core = {path = "./crates/bcr-wallet-core"}

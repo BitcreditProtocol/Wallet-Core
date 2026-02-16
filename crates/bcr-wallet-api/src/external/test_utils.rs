@@ -77,7 +77,7 @@ pub mod tests {
             ) -> CdkResult<cashu::MeltQuoteBolt11Response<String>>;
         }
         #[async_trait]
-        impl crate::MintConnector for MintConnector {
+        impl crate::ClowderMintConnector for MintConnector {
             async fn get_clowder_betas(&self) -> CdkResult<Vec<cashu::MintUrl>>;
             fn mint_url(&self) -> cashu::MintUrl;
 

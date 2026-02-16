@@ -1,5 +1,5 @@
 pub mod types;
-pub mod utils;
+pub mod util;
 
 pub type TStamp = chrono::DateTime<chrono::Utc>;
 

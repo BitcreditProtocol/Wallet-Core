@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-anyhow.workspace = true
+anyhow = {version = "1"}
 bcr-common.workspace = true
 bcr-wallet-api= {path = "../bcr-wallet-api"}
 bip39.workspace = true
