@@ -31,3 +31,50 @@ just cli -w alice mint 0 1200
 
 just cli -w alice reclaim 0 $txid
 ```
+
+## wallet_ffi
+
+Rust<>Flutter FFI for [Wallet-Core](https://github.com/BitcreditProtocol/Wallet-Core/)
+
+## Prerequisites
+
+* Install Rust
+* Install Flutter
+* `cargo install flutter_rust_bridge_codegen`
+
+## Generate bindings
+
+```bash
+flutter_rust_bridge_codegen generate
+```
+
+## Import this package
+
+This package can be imported as follows:
+
+In `pubspec.yaml`:
+
+```yaml
+   wallet_ffi:
+     git:
+       url: git@github.com:BitcreditProtocol/wallet-ffi.git
+       ref: master
+```
+
+The `ref` can either be a commit hash, a branch or a tag.
+
+Then, in `main.dart`:
+
+```dart
+import 'package:wallet_ffi/wallet_ffi.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final conf = WalletFfiConfig(dbFolderPath: '..db directory..');
+  await RustLib.init();
+
+  await initWalletFfi(conf: conf);
+  runApp(const MyApp());
+}
+```
+

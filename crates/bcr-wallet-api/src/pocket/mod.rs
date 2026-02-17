@@ -11,21 +11,25 @@ use bcr_common::cashu::{
 use bcr_wallet_core::{SendSync, types::SendSummary};
 use bcr_wallet_persistence::PocketRepository;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use uuid::Uuid;
 
 pub mod credit;
 pub mod debit;
 mod restore;
+#[cfg(test)]
+pub mod test_utils;
 
 /// trait that represents a single compartment in our wallet where we store proofs/tokens of the
 /// same currency emitted by the same mint
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait PocketApi: SendSync {
     fn unit(&self) -> CurrencyUnit;
     async fn balance(&self) -> Result<Amount>;
     async fn receive_proofs(
         &self,
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
         keysets_info: &[KeySetInfo],
         proofs: Vec<cashu::Proof>,
         safe_mode: SafeMode,
@@ -35,17 +39,17 @@ pub trait PocketApi: SendSync {
         &self,
         rid: Uuid,
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
         safe_mode: SafeMode,
     ) -> Result<HashMap<cashu::PublicKey, cashu::Proof>>;
     async fn cleanup_local_proofs(
         &self,
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
     ) -> Result<Vec<cashu::PublicKey>>;
     async fn restore_local_proofs(
         &self,
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
     ) -> Result<usize>;
     async fn delete_proofs(&self) -> Result<HashMap<cashu::Id, Vec<cashu::Proof>>>;
     async fn return_proofs_to_send_for_offline_payment(
@@ -57,7 +61,7 @@ pub trait PocketApi: SendSync {
         &self,
         proofs: Vec<cashu::Proof>,
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
         send_amount: Amount,
     ) -> Result<Vec<cashu::Proof>>;
 }
@@ -74,7 +78,7 @@ struct SendReference {
 // Removes Spent proofs from local DB
 async fn cleanup_local_proofs(
     db: &dyn PocketRepository,
-    client: &dyn ClowderMintConnector,
+    client: Arc<dyn ClowderMintConnector>,
 ) -> Result<Vec<cdk01::PublicKey>> {
     let ys = db.list_all().await?;
     let request = cdk07::CheckStateRequest { ys };
@@ -130,7 +134,7 @@ async fn swap(
     inputs: Vec<cdk00::Proof>,
     mut premints: HashMap<cashu::Id, cdk00::PreMintSecrets>,
     keysets: HashMap<cashu::Id, KeySet>,
-    client: &dyn ClowderMintConnector,
+    client: Arc<dyn ClowderMintConnector>,
     db: &dyn PocketRepository,
     safe_mode: SafeMode,
 ) -> Result<Amount> {
@@ -191,7 +195,7 @@ async fn swap_proof_to_target(
     target_amount: Amount,
     seed: &[u8; 64],
     db: &dyn PocketRepository,
-    client: &dyn ClowderMintConnector,
+    client: &Arc<dyn ClowderMintConnector>,
     safe_mode: SafeMode,
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
     let target = SplitTarget::Value(target_amount);
@@ -272,7 +276,7 @@ async fn send_proofs(
     swap_proof: Option<(Amount, cdk01::PublicKey)>,
     seed: &[u8; 64],
     db: &dyn PocketRepository,
-    client: &dyn ClowderMintConnector,
+    client: &Arc<dyn ClowderMintConnector>,
     target_swap_keysetid: Option<cashu::Id>,
     safe_mode: SafeMode,
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
@@ -443,13 +447,15 @@ mod tests {
             let y = p.y().expect("Hash to curve should not fail");
             Ok(y)
         });
+
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
         let proofs = super::swap_proof_to_target(
             proof,
             &KeySet::from(keyset),
             target,
             &seed,
             &mockdb,
-            &mockclient,
+            &arc_client,
             SafeMode::Disabled,
         )
         .await
@@ -490,12 +496,14 @@ mod tests {
             let y = p.y().expect("Hash to curve should not fail");
             Ok(y)
         });
+
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
         let amount = super::swap(
             unit,
             inputs,
             premints,
             keysets,
-            &mockclient,
+            arc_client,
             &mockdb,
             SafeMode::Disabled,
         )

@@ -1,0 +1,4 @@
+rust_input: crate::api
+rust_root: crates/bcr-wallet-ffi/
+dart_output: lib/src/rust
+build_runner: false
