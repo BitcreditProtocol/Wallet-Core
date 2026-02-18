@@ -26,7 +26,7 @@ use bcr_wallet_core::{
 };
 use bitcoin::secp256k1;
 use futures::stream::FuturesUnordered;
-use std::{collections::HashMap, str::FromStr, time::Instant};
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::Instant};
 use tokio::time;
 use uuid::Uuid;
 
@@ -78,7 +78,7 @@ pub trait WalletApi: SendSync {
     async fn check_pending_mints(&self) -> Result<Vec<TransactionId>>;
     async fn migrate_pockets_substitute(
         &mut self,
-        substitute: Box<dyn ClowderMintConnector>,
+        substitute: Arc<dyn ClowderMintConnector>,
     ) -> Result<MintUrl>;
     async fn receive_proofs(
         &self,
@@ -147,7 +147,7 @@ impl WalletApi for super::Wallet {
 
         let m_summary = self
             .debit
-            .prepare_onchain_melt(invoice.clone(), &infos, self.client.as_ref())
+            .prepare_onchain_melt(invoice.clone(), &infos, self.client.clone())
             .await?;
         let summary = PaymentSummary::from(m_summary);
         let pref = PayReference {
@@ -321,7 +321,7 @@ impl WalletApi for super::Wallet {
                         .send_proofs(
                             request_id,
                             &infos,
-                            self.client.as_ref(),
+                            self.client.clone(),
                             SafeMode::new(self.safe_mode, self.clowder_id),
                         )
                         .await?
@@ -330,7 +330,7 @@ impl WalletApi for super::Wallet {
                         .send_proofs(
                             request_id,
                             &infos,
-                            self.client.as_ref(),
+                            self.client.clone(),
                             SafeMode::new(self.safe_mode, self.clowder_id),
                         )
                         .await?
@@ -391,7 +391,7 @@ impl WalletApi for super::Wallet {
                         .send_proofs(
                             request_id,
                             &infos,
-                            self.client.as_ref(),
+                            self.client.clone(),
                             SafeMode::new(self.safe_mode, self.clowder_id),
                         )
                         .await?;
@@ -410,7 +410,7 @@ impl WalletApi for super::Wallet {
                         .send_proofs(
                             request_id,
                             &infos,
-                            self.client.as_ref(),
+                            self.client.clone(),
                             SafeMode::new(self.safe_mode, self.clowder_id),
                         )
                         .await?;
@@ -460,7 +460,7 @@ impl WalletApi for super::Wallet {
                     .pay_onchain_melt(
                         request_id,
                         &infos,
-                        self.client.as_ref(),
+                        self.client.clone(),
                         SafeMode::new(self.safe_mode, self.clowder_id),
                     )
                     .await?;
@@ -501,10 +501,7 @@ impl WalletApi for super::Wallet {
     }
 
     async fn mint(&self, amount: bitcoin::Amount) -> Result<MintSummary> {
-        let summary = self
-            .debit
-            .mint_onchain(amount, self.client.as_ref())
-            .await?;
+        let summary = self.debit.mint_onchain(amount, self.client.clone()).await?;
         Ok(summary)
     }
 
@@ -516,7 +513,7 @@ impl WalletApi for super::Wallet {
             .debit
             .check_pending_mints(
                 &keysets_info,
-                self.client.as_ref(),
+                self.client.clone(),
                 now.timestamp() as u64,
                 SafeMode::new(self.safe_mode, self.clowder_id),
             )
@@ -685,7 +682,7 @@ impl WalletApi for super::Wallet {
 
     async fn migrate_pockets_substitute(
         &mut self,
-        substitute: Box<dyn ClowderMintConnector>,
+        substitute: Arc<dyn ClowderMintConnector>,
     ) -> Result<MintUrl> {
         let debit_proofs = self.debit.delete_proofs().await?;
         let credit_proofs = self.credit.delete_proofs().await?;
@@ -712,7 +709,7 @@ impl WalletApi for super::Wallet {
 
         self.client = substitute;
         self.clowder_id = self.client.get_clowder_id().await?;
-        let mut beta_clients = HashMap::<cashu::MintUrl, Box<dyn ClowderMintConnector>>::new();
+        let mut beta_clients = HashMap::<cashu::MintUrl, Arc<dyn ClowderMintConnector>>::new();
 
         for beta in self.client.as_ref().get_clowder_betas().await? {
             let beta_client = (self.client_factory)(beta.clone());
@@ -725,7 +722,7 @@ impl WalletApi for super::Wallet {
         let keysets_info = self.get_wallet_mint_keyset_infos().await?;
         self.debit
             .receive_proofs(
-                self.client.as_ref(),
+                self.client.clone(),
                 &keysets_info,
                 exchanged_debit,
                 SafeMode::new(self.safe_mode, self.clowder_id),
@@ -733,7 +730,7 @@ impl WalletApi for super::Wallet {
             .await?;
         self.credit
             .receive_proofs(
-                self.client.as_ref(),
+                self.client.clone(),
                 &keysets_info,
                 exchanged_credit,
                 SafeMode::new(self.safe_mode, self.clowder_id),
@@ -837,7 +834,7 @@ impl WalletApi for super::Wallet {
                     .swap_to_unlocked_substitute_proofs(
                         substitute_proofs,
                         &keysets_info,
-                        substitute_client.as_ref(),
+                        substitute_client.clone(),
                         send_amount,
                     )
                     .await?
@@ -846,7 +843,7 @@ impl WalletApi for super::Wallet {
                     .swap_to_unlocked_substitute_proofs(
                         substitute_proofs,
                         &keysets_info,
-                        substitute_client.as_ref(),
+                        substitute_client.clone(),
                         send_amount,
                     )
                     .await?
@@ -911,11 +908,9 @@ impl WalletApi for super::Wallet {
 
     async fn cleanup_local_proofs(&self) -> Result<()> {
         self.credit
-            .cleanup_local_proofs(self.client.as_ref())
+            .cleanup_local_proofs(self.client.clone())
             .await?;
-        self.debit
-            .cleanup_local_proofs(self.client.as_ref())
-            .await?;
+        self.debit.cleanup_local_proofs(self.client.clone()).await?;
         Ok(())
     }
 }

@@ -33,9 +33,9 @@ use uuid::Uuid;
 
 pub struct Wallet {
     network: bitcoin::Network,
-    client: Box<dyn ClowderMintConnector>,
+    client: Arc<dyn ClowderMintConnector>,
     mint_keyset_infos: Vec<cashu::KeySetInfo>,
-    beta_clients: HashMap<cashu::MintUrl, Box<dyn ClowderMintConnector>>,
+    beta_clients: HashMap<cashu::MintUrl, Arc<dyn ClowderMintConnector>>,
     tx_repo: Box<dyn TransactionRepository>,
     debit: Box<dyn DebitPocketApi>,
     credit: Box<dyn CreditPocketApi>,
@@ -45,14 +45,14 @@ pub struct Wallet {
     current_payment: Mutex<Option<PayReference>>,
     current_payment_request: Mutex<Option<PaymentRequest>>,
     clowder_id: secp256k1::PublicKey,
-    client_factory: Box<dyn Fn(cashu::MintUrl) -> Box<dyn ClowderMintConnector> + Send + Sync>,
+    client_factory: Box<dyn Fn(cashu::MintUrl) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
     safe_mode: SameMintSafeMode,
 }
 
 impl Wallet {
     pub async fn new(
         network: bitcoin::Network,
-        client: Box<dyn ClowderMintConnector>,
+        client: Arc<dyn ClowderMintConnector>,
         mint_keyset_infos: Vec<cashu::KeySetInfo>,
         tx_repo: Box<dyn TransactionRepository>,
         (debit, credit): (Box<dyn DebitPocketApi>, Box<dyn CreditPocketApi>),
@@ -60,8 +60,8 @@ impl Wallet {
         id: String,
         pub_key: secp256k1::PublicKey,
         clowder_id: secp256k1::PublicKey,
-        beta_clients: HashMap<cashu::MintUrl, Box<dyn ClowderMintConnector>>,
-        client_factory: Box<dyn Fn(cashu::MintUrl) -> Box<dyn ClowderMintConnector> + Send + Sync>,
+        beta_clients: HashMap<cashu::MintUrl, Arc<dyn ClowderMintConnector>>,
+        client_factory: Box<dyn Fn(cashu::MintUrl) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
         safe_mode: SameMintSafeMode,
     ) -> Result<Self> {
         Ok(Self {
@@ -234,10 +234,8 @@ impl Wallet {
 
     pub async fn redeem_credit(&self) -> Result<Amount> {
         let keysets_info = self.get_wallet_mint_keyset_infos().await?;
-        let credit_proofs: Vec<cashu::Proof> = self
-            .credit
-            .get_redeemable_proofs(&keysets_info, self.client.as_ref())
-            .await?;
+        let credit_proofs: Vec<cashu::Proof> =
+            self.credit.get_redeemable_proofs(&keysets_info).await?;
         let amount = self
             .redeem_credit_proofs(credit_proofs, &keysets_info)
             .await?;
@@ -255,7 +253,7 @@ impl Wallet {
             let (amount, _) = self
                 .debit
                 .receive_proofs(
-                    self.client.as_ref(),
+                    self.client.clone(),
                     keysets_info,
                     credit_proofs,
                     SafeMode::new(self.safe_mode, self.clowder_id),
@@ -269,9 +267,9 @@ impl Wallet {
         let keysets_info = self.get_wallet_mint_keyset_infos().await?;
         let (debit, credit) = futures::join!(
             self.debit
-                .restore_local_proofs(&keysets_info, self.client.as_ref()),
+                .restore_local_proofs(&keysets_info, self.client.clone()),
             self.credit
-                .restore_local_proofs(&keysets_info, self.client.as_ref())
+                .restore_local_proofs(&keysets_info, self.client.clone())
         );
         debit?;
         credit?;
@@ -328,7 +326,7 @@ impl Wallet {
                 .reclaim_proofs(
                     &tx.ys,
                     &infos,
-                    self.client.as_ref(),
+                    self.client.clone(),
                     SafeMode::new(self.safe_mode, self.clowder_id),
                 )
                 .await?
@@ -339,7 +337,7 @@ impl Wallet {
                 .reclaim_proofs(
                     &tx.ys,
                     &infos,
-                    self.client.as_ref(),
+                    self.client.clone(),
                     SafeMode::new(self.safe_mode, self.clowder_id),
                 )
                 .await?;
@@ -467,7 +465,7 @@ impl Wallet {
         let (stored_amount, ys) = if unit == self.debit.unit() {
             self.debit
                 .receive_proofs(
-                    self.client.as_ref(),
+                    self.client.clone(),
                     local_alpha_keysets_info,
                     proofs,
                     SafeMode::new(self.safe_mode, self.clowder_id),
@@ -476,7 +474,7 @@ impl Wallet {
         } else if unit == self.credit.unit() {
             self.credit
                 .receive_proofs(
-                    self.client.as_ref(),
+                    self.client.clone(),
                     local_alpha_keysets_info,
                     proofs,
                     SafeMode::new(self.safe_mode, self.clowder_id),
@@ -826,5 +824,153 @@ impl Wallet {
             Ok(txid) => Ok(Some(txid)),
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bcr_wallet_persistence::{MockTransactionRepository, test_utils::tests::test_pub_key};
+
+    use super::*;
+    use crate::{
+        external::{mint::HttpClientExt, test_utils::tests::MockMintConnector},
+        pocket::test_utils::tests::{MockCreditPocket, MockDebitPocket},
+    };
+
+    struct MockWalletCtx {
+        pub client: MockMintConnector,
+        pub tx_repo: MockTransactionRepository,
+        pub debit: MockDebitPocket,
+        pub credit: MockCreditPocket,
+    }
+
+    fn wallet_ctx() -> MockWalletCtx {
+        MockWalletCtx {
+            client: MockMintConnector::new(),
+            tx_repo: MockTransactionRepository::new(),
+            debit: MockDebitPocket::new(),
+            credit: MockCreditPocket::new(),
+        }
+    }
+
+    fn wallet(ctx: MockWalletCtx) -> Wallet {
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(ctx.client);
+        Wallet {
+            network: bitcoin::Network::Testnet,
+            client: arc_client,
+            mint_keyset_infos: vec![],
+            beta_clients: HashMap::new(),
+            tx_repo: Box::new(ctx.tx_repo),
+            debit: Box::new(ctx.debit),
+            credit: Box::new(ctx.credit),
+            name: "wallet-1".to_owned(),
+            id: "w-1".to_owned(),
+            pub_key: test_pub_key(),
+            current_payment: Mutex::new(None),
+            current_payment_request: Mutex::new(None),
+            clowder_id: test_pub_key(),
+            client_factory: Box::new(|url| Arc::new(HttpClientExt::new(url))),
+            safe_mode: SameMintSafeMode::Disabled,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_name() {
+        let ctx = wallet_ctx();
+        let wlt = wallet(ctx);
+
+        let res = wlt.name();
+        assert_eq!(res, "wallet-1".to_owned());
+    }
+
+    #[tokio::test]
+    async fn test_credit_unit() {
+        let mut ctx = wallet_ctx();
+        let crsat = CurrencyUnit::Custom("crsat".to_string());
+        ctx.credit.expect_unit().times(1).returning({
+            let crsat = crsat.clone();
+            move || crsat.clone()
+        });
+        let wlt = wallet(ctx);
+
+        let res = wlt.credit_unit();
+        assert_eq!(res, crsat);
+    }
+
+    #[tokio::test]
+    async fn test_debit_unit() {
+        let mut ctx = wallet_ctx();
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+        let wlt = wallet(ctx);
+
+        let res = wlt.debit_unit();
+        assert_eq!(res, CurrencyUnit::Sat);
+    }
+
+    #[tokio::test]
+    async fn test_balance() {
+        let mut ctx = wallet_ctx();
+        ctx.debit
+            .expect_balance()
+            .times(1)
+            .returning(|| Ok(Amount::ZERO));
+        ctx.credit
+            .expect_balance()
+            .times(1)
+            .returning(|| Ok(Amount::ZERO));
+        let wlt = wallet(ctx);
+
+        let res = wlt.balance().await.expect("balance works");
+        assert_eq!(res.credit, Amount::ZERO);
+        assert_eq!(res.debit, Amount::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_list_tx_ids() {
+        let mut ctx = wallet_ctx();
+        ctx.tx_repo
+            .expect_list_tx_ids()
+            .times(1)
+            .returning(|| Ok(vec![]));
+        let wlt = wallet(ctx);
+
+        let res = wlt.list_tx_ids().await.unwrap();
+        assert!(res.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_txs() {
+        let mut ctx = wallet_ctx();
+        ctx.tx_repo
+            .expect_list_txs()
+            .times(1)
+            .returning(|| Ok(vec![]));
+        let wlt = wallet(ctx);
+
+        let res = wlt.list_txs().await.unwrap();
+        assert!(res.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_redemptions() {
+        let mut ctx = wallet_ctx();
+        ctx.credit
+            .expect_list_redemptions()
+            .times(1)
+            .returning(|_, _| Ok(vec![]));
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(cashu::KeysetResponse { keysets: vec![] }));
+        let wlt = wallet(ctx);
+
+        let res = wlt
+            .list_redemptions(std::time::Duration::from_secs(15))
+            .await
+            .unwrap();
+        assert!(res.is_empty());
     }
 }

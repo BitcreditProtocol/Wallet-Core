@@ -895,18 +895,18 @@ async fn build_wallet(
         seed,
     ));
 
-    let mut beta_clients = HashMap::<cashu::MintUrl, Box<dyn ClowderMintConnector>>::new();
+    let mut beta_clients = HashMap::<cashu::MintUrl, Arc<dyn ClowderMintConnector>>::new();
     for beta in w_cfg.betas.clone() {
         let beta_client = HttpClientExt::new(beta.clone());
-        beta_clients.insert(beta, Box::new(beta_client));
+        beta_clients.insert(beta, Arc::new(beta_client));
     }
     // When same_mint_safe_mode is enabled, wrap the client with SentinelClient
     // to send events to sentinel nodes for monitoring
     let client = if matches!(same_mint_safe_mode, SameMintSafeMode::Disabled) {
-        Box::new(client) as Box<dyn ClowderMintConnector>
+        Arc::new(client) as Arc<dyn ClowderMintConnector>
     } else {
         let cl = external::mint::SentinelClient::new(client, w_cfg.betas);
-        Box::new(cl) as Box<dyn ClowderMintConnector>
+        Arc::new(cl) as Arc<dyn ClowderMintConnector>
     };
     let new_wallet: wallet::Wallet = wallet::Wallet::new(
         w_cfg.network,
@@ -919,7 +919,7 @@ async fn build_wallet(
         w_cfg.pub_key,
         w_cfg.clowder_id,
         beta_clients,
-        Box::new(|url| Box::new(external::mint::HttpClientExt::new(url))),
+        Box::new(|url| Arc::new(external::mint::HttpClientExt::new(url))),
         same_mint_safe_mode,
     )
     .await?;

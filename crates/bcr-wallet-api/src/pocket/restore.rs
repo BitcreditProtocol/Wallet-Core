@@ -1,7 +1,7 @@
 use crate::{ClowderMintConnector, error::Result};
 use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09};
 use bcr_wallet_persistence::PocketRepository;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 // as recommended by NUT13
 const EMPTY_RESPONSES_BEFORE_ABORT: usize = 3;
@@ -10,7 +10,7 @@ const BATCH_SIZE: u32 = 100;
 pub async fn restore_keysetid(
     seed: &[u8; 64],
     kid: cashu::Id,
-    client: &dyn ClowderMintConnector,
+    client: &Arc<dyn ClowderMintConnector>,
     db: &dyn PocketRepository,
 ) -> Result<usize> {
     let mut zero_response_counter = 0;
@@ -36,7 +36,7 @@ pub async fn restore_keysetid(
 async fn restore_batch(
     seed: &[u8; 64],
     kid: cashu::Id,
-    client: &dyn ClowderMintConnector,
+    client: &Arc<dyn ClowderMintConnector>,
     db: &dyn PocketRepository,
     counter: u32,
     batch_size: u32,
@@ -148,7 +148,8 @@ mod tests {
             })
         });
 
-        super::restore_batch(&seed, keyset.id, &client, &db, 0, BATCH_SIZE)
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        super::restore_batch(&seed, keyset.id, &arc_client, &db, 0, BATCH_SIZE)
             .await
             .unwrap();
     }
@@ -204,7 +205,8 @@ mod tests {
                 Ok(response)
             });
 
-        super::restore_batch(&seed, keyset.id, &client, &db, 0, BATCH_SIZE)
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        super::restore_batch(&seed, keyset.id, &arc_client, &db, 0, BATCH_SIZE)
             .await
             .unwrap();
     }
@@ -263,9 +265,11 @@ mod tests {
             .times(BATCH_SIZE as usize)
             .returning(|p| Ok(p.y().expect("proof should have y")));
 
-        let restored_proofs = super::restore_batch(&seed, keyset.id, &client, &db, 0, BATCH_SIZE)
-            .await
-            .unwrap();
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let restored_proofs =
+            super::restore_batch(&seed, keyset.id, &arc_client, &db, 0, BATCH_SIZE)
+                .await
+                .unwrap();
         assert_eq!(restored_proofs, BATCH_SIZE as usize);
     }
 
@@ -323,9 +327,11 @@ mod tests {
             .times(BATCH_SIZE as usize)
             .returning(|p| Ok(p.y().expect("proof should have y")));
 
-        let restored_proofs = super::restore_batch(&seed, keyset.id, &client, &db, 0, BATCH_SIZE)
-            .await
-            .unwrap();
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let restored_proofs =
+            super::restore_batch(&seed, keyset.id, &arc_client, &db, 0, BATCH_SIZE)
+                .await
+                .unwrap();
         assert_eq!(restored_proofs, BATCH_SIZE as usize);
     }
 
@@ -400,7 +406,8 @@ mod tests {
                 };
                 Ok(response)
             });
-        let total_restored = restore_keysetid(&seed, mintkeyset.id, &client, &db)
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let total_restored = restore_keysetid(&seed, mintkeyset.id, &arc_client, &db)
             .await
             .unwrap();
         assert_eq!(total_restored, BATCH_SIZE as usize);
@@ -485,7 +492,8 @@ mod tests {
                 };
                 Ok(response)
             });
-        let total_restored = restore_keysetid(&seed, mintkeyset.id, &client, &db)
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let total_restored = restore_keysetid(&seed, mintkeyset.id, &arc_client, &db)
             .await
             .unwrap();
         assert_eq!(total_restored, BATCH_SIZE as usize);
@@ -572,7 +580,8 @@ mod tests {
                 Ok(response)
             });
         //
-        let total_restored = restore_keysetid(&seed, mintkeyset.id, &client, &db)
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let total_restored = restore_keysetid(&seed, mintkeyset.id, &arc_client, &db)
             .await
             .unwrap();
         assert_eq!(total_restored, (BATCH_SIZE / 3) as usize);

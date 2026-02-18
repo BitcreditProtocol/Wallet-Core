@@ -90,7 +90,7 @@ where
                     let new_mint_url = wlt
                         .write()
                         .await
-                        .migrate_pockets_substitute(Box::new(substitute_client))
+                        .migrate_pockets_substitute(Arc::new(substitute_client))
                         .await?;
                     res.insert(wallet_id, new_mint_url);
                     self.repo.store(wlt.read().await.config()?).await?;

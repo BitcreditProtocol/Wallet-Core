@@ -1,6 +1,6 @@
 # 0.8.0
 
-* Refactoring (breaking DB changes)
+* Refactoring (breaking DB and API changes)
     * Split into multiple crates
     * Add DB Tests
     * Move some types and utils to core, or where they belong
@@ -12,6 +12,8 @@
     * Add Purse Tests
     * Rework Errors structure
     * Clean up outer types a bit
+* Move wallet-ffi to Wallet-Core repo
+* Remove `clean_local_db` endpoint
 
 # 0.7.8
 

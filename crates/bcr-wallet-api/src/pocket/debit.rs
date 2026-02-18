@@ -31,31 +31,31 @@ pub trait DebitPocketApi: super::PocketApi {
         &self,
         ys: &[cashu::PublicKey],
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
         safe_mode: SafeMode,
     ) -> Result<Amount>;
     async fn prepare_onchain_melt(
         &self,
         invoice: wire_melt::OnchainInvoice,
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
     ) -> Result<MeltSummary>;
     async fn pay_onchain_melt(
         &self,
         rid: Uuid,
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
         safe_mode: SafeMode,
     ) -> Result<(bitcoin::Txid, HashMap<cashu::PublicKey, cashu::Proof>)>;
     async fn mint_onchain(
         &self,
         amount: bitcoin::Amount,
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
     ) -> Result<MintSummary>;
     async fn check_pending_mints(
         &self,
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
         tstamp: u64,
         safe_mode: SafeMode,
     ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>>;
@@ -110,7 +110,7 @@ impl Pocket {
     async fn find_active_keyset(
         &self,
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: &Arc<dyn ClowderMintConnector>,
     ) -> Result<(KeySetInfo, KeySet)> {
         let active_info = self.find_active_keysetid(keysets_info)?;
         let active_keyset = client.get_mint_keyset(active_info.id).await?;
@@ -119,7 +119,7 @@ impl Pocket {
 
     async fn digest_proofs(
         &self,
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
         (active_info, active_keyset): (cashu::KeySetInfo, cashu::KeySet),
         inputs: HashMap<cdk01::PublicKey, cdk00::Proof>,
         safe_mode: SafeMode,
@@ -202,7 +202,7 @@ impl Pocket {
         &self,
         qid: Uuid,
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
         tstamp: u64,
         safe_mode: SafeMode,
     ) -> Result<Option<(cashu::Amount, Vec<cashu::PublicKey>)>> {
@@ -223,7 +223,7 @@ impl Pocket {
                     cashu::MintQuoteState::Paid => {
                         tracing::info!("Mint {qid} paid - attempting to mint..");
                         let (active_keyset_info, active_keyset) =
-                            self.find_active_keyset(keysets_info, client).await?;
+                            self.find_active_keyset(keysets_info, &client).await?;
                         let kid = active_keyset.id;
 
                         let counter = self.pdb.counter(kid).await?;
@@ -312,7 +312,7 @@ impl super::PocketApi for Pocket {
 
     async fn receive_proofs(
         &self,
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
         keysets_info: &[KeySetInfo],
         inputs: Vec<cdk00::Proof>,
         safe_mode: SafeMode,
@@ -324,7 +324,7 @@ impl super::PocketApi for Pocket {
             let y = input.y()?;
             proofs.insert(y, input);
         }
-        let active_keys = self.find_active_keyset(keysets_info, client).await?;
+        let active_keys = self.find_active_keyset(keysets_info, &client).await?;
         self.digest_proofs(client, active_keys, proofs, safe_mode)
             .await
     }
@@ -343,7 +343,7 @@ impl super::PocketApi for Pocket {
         &self,
         rid: Uuid,
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
         safe_mode: SafeMode,
     ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         let send_ref = {
@@ -362,7 +362,7 @@ impl super::PocketApi for Pocket {
             send_ref.swap_proof,
             &self.seed,
             self.pdb.as_ref(),
-            client,
+            &client,
             Some(info.id),
             safe_mode,
         )
@@ -373,7 +373,7 @@ impl super::PocketApi for Pocket {
 
     async fn cleanup_local_proofs(
         &self,
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
     ) -> Result<Vec<cdk01::PublicKey>> {
         let cleaned_ys = cleanup_local_proofs(self.pdb.as_ref(), client).await?;
         Ok(cleaned_ys)
@@ -382,7 +382,7 @@ impl super::PocketApi for Pocket {
     async fn restore_local_proofs(
         &self,
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
     ) -> Result<usize> {
         let kids = keysets_info.iter().filter_map(|info| {
             if info.unit == self.unit {
@@ -394,7 +394,7 @@ impl super::PocketApi for Pocket {
         let mut total_recovered = 0;
         for kid in kids.into_iter() {
             total_recovered +=
-                restore::restore_keysetid(&self.seed, kid, client, self.pdb.as_ref()).await?;
+                restore::restore_keysetid(&self.seed, kid, &client, self.pdb.as_ref()).await?;
         }
         Ok(total_recovered)
     }
@@ -443,7 +443,7 @@ impl super::PocketApi for Pocket {
         &self,
         proofs: Vec<cdk00::Proof>,
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
         send_amount: Amount,
     ) -> Result<Vec<cashu::Proof>> {
         let mut swapped_proofs = Vec::new();
@@ -453,7 +453,7 @@ impl super::PocketApi for Pocket {
             "Swapping to unlocked substitute debit proofs - {change_amount} will be lost."
         );
         // handle keyset
-        let (active_info, active_keyset) = self.find_active_keyset(keysets_info, client).await?;
+        let (active_info, active_keyset) = self.find_active_keyset(keysets_info, &client).await?;
         // calculate splits
         let send_splits = send_amount.split();
         let send_splits_len = send_splits.len();
@@ -518,12 +518,12 @@ impl DebitPocketApi for Pocket {
         &self,
         ys: &[cdk01::PublicKey],
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
         safe_mode: SafeMode,
     ) -> Result<Amount> {
         let pendings = self.pdb.load_proofs(ys).await?;
         let pendings_len = pendings.len();
-        let active_keys = self.find_active_keyset(keysets_info, client).await?;
+        let active_keys = self.find_active_keyset(keysets_info, &client).await?;
         let (reclaimed, _) = self
             .digest_proofs(client, active_keys, pendings, safe_mode)
             .await?;
@@ -537,7 +537,7 @@ impl DebitPocketApi for Pocket {
         &self,
         invoice: wire_melt::OnchainInvoice,
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
     ) -> Result<MeltSummary> {
         let secret_key = keypair_from_seed(self.seed).secret_key();
         let signature = cdk01::SecretKey::from(secret_key).sign(&[])?; // not used currently - sign empty message
@@ -573,7 +573,7 @@ impl DebitPocketApi for Pocket {
         &self,
         rid: Uuid,
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
         safe_mode: SafeMode,
     ) -> Result<(bitcoin::Txid, HashMap<cdk01::PublicKey, cdk00::Proof>)> {
         let melt_ref = self.current_melt.lock().unwrap().take();
@@ -582,13 +582,13 @@ impl DebitPocketApi for Pocket {
             return Err(Error::NoPrepareRef(rid));
         }
 
-        let (info, keyset) = self.find_active_keyset(keysets_info, client).await?;
+        let (info, keyset) = self.find_active_keyset(keysets_info, &client).await?;
         let sending_proofs = send_proofs(
             melt_ref.send_proofs,
             melt_ref.swap_proof,
             &self.seed,
             self.pdb.as_ref(),
-            client,
+            &client,
             Some(info.id),
             safe_mode,
         )
@@ -639,7 +639,7 @@ impl DebitPocketApi for Pocket {
     async fn mint_onchain(
         &self,
         amount: bitcoin::Amount,
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
     ) -> Result<MintSummary> {
         let request = wire_mint::MintQuoteOnchainRequest {
             amount,
@@ -670,7 +670,7 @@ impl DebitPocketApi for Pocket {
     async fn check_pending_mints(
         &self,
         keysets_info: &[KeySetInfo],
-        client: &dyn ClowderMintConnector,
+        client: Arc<dyn ClowderMintConnector>,
         tstamp: u64,
         safe_mode: SafeMode,
     ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>> {
@@ -680,7 +680,7 @@ impl DebitPocketApi for Pocket {
         tracing::debug!("check pending mints for {} mints", mint_ids.len());
         for qid in mint_ids {
             match self
-                .check_pending_mint(qid, keysets_info, client, tstamp, safe_mode.clone())
+                .check_pending_mint(qid, keysets_info, client.clone(), tstamp, safe_mode.clone())
                 .await
             {
                 Ok(Some(mint_res)) => {
@@ -760,7 +760,7 @@ mod tests {
         });
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
         let (cashed, _) = pocket
-            .receive_proofs(&connector, &k_infos, proofs, SafeMode::Disabled)
+            .receive_proofs(Arc::new(connector), &k_infos, proofs, SafeMode::Disabled)
             .await
             .unwrap();
         assert_eq!(cashed, Amount::from(24u64));
@@ -825,7 +825,7 @@ mod tests {
 
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
         let reclaimed = pocket
-            .reclaim_proofs(&ys, &k_infos, &connector, SafeMode::Disabled)
+            .reclaim_proofs(&ys, &k_infos, Arc::new(connector), SafeMode::Disabled)
             .await
             .expect("reclaim works");
         assert_eq!(reclaimed, Amount::from(24u64));
@@ -878,7 +878,7 @@ mod tests {
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
 
         let summary = pocket
-            .prepare_onchain_melt(invoice, &k_infos, &connector)
+            .prepare_onchain_melt(invoice, &k_infos, Arc::new(connector))
             .await
             .expect("prepare melt works");
         assert_eq!(summary.amount, Amount::from(amount.to_sat()));
@@ -934,7 +934,7 @@ mod tests {
         pocket.current_melt.lock().unwrap().replace(melt_ref);
 
         let res = pocket
-            .pay_onchain_melt(uuid, &k_infos, &connector, SafeMode::Disabled)
+            .pay_onchain_melt(uuid, &k_infos, Arc::new(connector), SafeMode::Disabled)
             .await
             .expect("pay melt works");
         assert_eq!(res.0, tx_id);
@@ -971,7 +971,7 @@ mod tests {
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
 
         let summary = pocket
-            .mint_onchain(amount, &connector)
+            .mint_onchain(amount, Arc::new(connector))
             .await
             .expect("mint onchain works");
         assert_eq!(summary.amount, amount);
@@ -1023,7 +1023,7 @@ mod tests {
         let res = pocket
             .check_pending_mints(
                 &k_infos,
-                &connector,
+                Arc::new(connector),
                 chrono::Utc::now().timestamp() as u64,
                 SafeMode::Disabled,
             )
