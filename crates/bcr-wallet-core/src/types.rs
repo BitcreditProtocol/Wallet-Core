@@ -3,7 +3,8 @@ use bitcoin::{address::NetworkUnchecked, secp256k1};
 use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
 
-use crate::TStamp;
+pub type TStamp = chrono::DateTime<chrono::Utc>;
+pub type Seed = [u8; 64];
 
 #[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct JobState {
@@ -102,6 +103,7 @@ pub enum TransactionStatus {
     Settled,
     Canceled,
 }
+
 pub const TRANSACTION_STATUS_METADATA_KEY: &str = "transaction_status";
 pub fn get_transaction_status(metas: &HashMap<String, String>) -> TransactionStatus {
     let Some(status) = metas.get(TRANSACTION_STATUS_METADATA_KEY) else {

@@ -8,7 +8,10 @@ use bcr_common::cashu::{
     self, Amount, CurrencyUnit, KeySet, KeySetInfo, ProofsMethods, amount::SplitTarget,
     nut00 as cdk00, nut01 as cdk01, nut03 as cdk03, nut07 as cdk07,
 };
-use bcr_wallet_core::{SendSync, types::SendSummary};
+use bcr_wallet_core::{
+    SendSync,
+    types::{Seed, SendSummary},
+};
 use bcr_wallet_persistence::PocketRepository;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -193,7 +196,7 @@ async fn swap_proof_to_target(
     proof: cdk00::Proof,
     target_keyset: &KeySet,
     target_amount: Amount,
-    seed: &[u8; 64],
+    seed: &Seed,
     db: &dyn PocketRepository,
     client: &Arc<dyn ClowderMintConnector>,
     safe_mode: SafeMode,
@@ -274,7 +277,7 @@ fn group_ys_by_keyset_id<'a>(
 async fn send_proofs(
     send_proofs: Vec<cdk01::PublicKey>,
     swap_proof: Option<(Amount, cdk01::PublicKey)>,
-    seed: &[u8; 64],
+    seed: &Seed,
     db: &dyn PocketRepository,
     client: &Arc<dyn ClowderMintConnector>,
     target_swap_keysetid: Option<cashu::Id>,
@@ -343,7 +346,7 @@ mod tests {
     use super::*;
     use crate::external::test_utils::tests::MockMintConnector;
     use bcr_common::{cashu::Proof, core::signature, core_tests};
-    use bcr_wallet_persistence::MockPocketRepository;
+    use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
     use cashu::nut02 as cdk02;
     use mockall::predicate::*;
 
@@ -414,7 +417,7 @@ mod tests {
         let amount = Amount::from(16u64);
         let target = Amount::from(13u64);
         let proof = core_tests::generate_random_ecash_proofs(&keyset, &[amount])[0].clone();
-        let seed = [0u8; 64];
+        let seed = zero_seed();
         let mut mockdb = MockPocketRepository::new();
         let mut mockclient = MockMintConnector::new();
         mockdb

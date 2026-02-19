@@ -1,3 +1,4 @@
+use bcr_wallet_core::types::{get_btc_tx_id, get_payment_type, get_transaction_status};
 use nostr_sdk::RelayUrl;
 use once_cell::sync::Lazy;
 use std::{panic, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
@@ -10,11 +11,11 @@ use bcr_common::{
     cdk,
 };
 use bcr_wallet_api::{
+    AppState,
     config::{AppStateConfig, SameMintSafeMode},
     error::Error as BcrWalletError,
-    AppState,
 };
-use flutter_rust_bridge::{frb, JoinHandle};
+use flutter_rust_bridge::{JoinHandle, frb};
 use log::{error, info};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -733,6 +734,7 @@ impl std::convert::From<cdk::wallet::types::TransactionDirection> for Transactio
         }
     }
 }
+
 #[derive(Clone, Copy, Default, Debug)]
 pub enum PaymentType {
     #[default]
@@ -761,6 +763,7 @@ pub enum TransactionStatus {
     Settled,
     Canceled,
 }
+
 impl std::convert::From<bcr_wallet_core::types::TransactionStatus> for TransactionStatus {
     fn from(status: bcr_wallet_core::types::TransactionStatus) -> Self {
         match status {
@@ -789,21 +792,22 @@ pub struct Transaction {
     pub quote_id: Option<String>,
 }
 
-impl std::convert::From<bcr_wallet_api::Transaction> for Transaction {
-    fn from(tx: bcr_wallet_api::Transaction) -> Self {
-        let status = TransactionStatus::from(tx.status);
-        let ptype = PaymentType::from(tx.ptype);
+impl std::convert::From<cdk::wallet::types::Transaction> for Transaction {
+    fn from(tx: cdk::wallet::types::Transaction) -> Self {
+        let status = get_transaction_status(&tx.metadata);
+        let ptype = get_payment_type(&tx.metadata);
+        let btc_tx_id = get_btc_tx_id(&tx.metadata);
         Self {
-            id: tx.id,
-            amount: tx.amount,
-            fees: tx.fees,
+            id: tx.id().to_string(),
+            amount: u64::from(tx.amount),
+            fees: u64::from(tx.fee),
             unit: tx.unit.to_string(),
             direction: TransactionDirection::from(tx.direction),
-            tstamp: tx.tstamp,
+            tstamp: tx.timestamp,
             memo: tx.memo,
-            ptype,
-            status,
-            btc_tx_id: tx.btc_tx_id.map(|id| id.to_string()),
+            ptype: ptype.into(),
+            status: status.into(),
+            btc_tx_id: btc_tx_id.map(|id| id.to_string()),
             quote_id: tx.quote_id,
         }
     }

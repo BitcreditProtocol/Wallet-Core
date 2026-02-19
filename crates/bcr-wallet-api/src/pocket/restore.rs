@@ -1,5 +1,6 @@
 use crate::{ClowderMintConnector, error::Result};
 use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09};
+use bcr_wallet_core::types::Seed;
 use bcr_wallet_persistence::PocketRepository;
 use std::{collections::HashMap, sync::Arc};
 
@@ -8,7 +9,7 @@ const EMPTY_RESPONSES_BEFORE_ABORT: usize = 3;
 const BATCH_SIZE: u32 = 100;
 
 pub async fn restore_keysetid(
-    seed: &[u8; 64],
+    seed: &Seed,
     kid: cashu::Id,
     client: &Arc<dyn ClowderMintConnector>,
     db: &dyn PocketRepository,
@@ -34,7 +35,7 @@ pub async fn restore_keysetid(
 }
 
 async fn restore_batch(
-    seed: &[u8; 64],
+    seed: &Seed,
     kid: cashu::Id,
     client: &Arc<dyn ClowderMintConnector>,
     db: &dyn PocketRepository,
@@ -128,14 +129,14 @@ mod tests {
     use super::*;
     use crate::external::test_utils::tests::MockMintConnector;
     use bcr_common::{core::signature, core_tests};
-    use bcr_wallet_persistence::MockPocketRepository;
+    use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
     use cashu::{Amount, KeySet, RestoreResponse, nut07 as cdk07};
     use mockall::predicate::eq;
     use rand::Rng;
 
     #[tokio::test]
     async fn restore_batch_empty_response() {
-        let seed = [0u8; 64];
+        let seed = zero_seed();
         let (_, keyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(keyset);
         let mut client = MockMintConnector::new();
@@ -156,7 +157,7 @@ mod tests {
 
     #[tokio::test]
     async fn restore_batch_all_spent() {
-        let seed = [0u8; 64];
+        let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();
@@ -213,7 +214,7 @@ mod tests {
 
     #[tokio::test]
     async fn restore_batch_all_unspent() {
-        let seed = [0u8; 64];
+        let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();
@@ -275,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn restore_batch_all_pending() {
-        let seed = [0u8; 64];
+        let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();
@@ -337,7 +338,7 @@ mod tests {
 
     #[tokio::test]
     async fn restore_keysetid_1stbatch() {
-        let seed = [0u8; 64];
+        let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();
@@ -415,7 +416,7 @@ mod tests {
 
     #[tokio::test]
     async fn restore_keysetid_2ndbatch() {
-        let seed = [0u8; 64];
+        let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();
@@ -501,7 +502,7 @@ mod tests {
 
     #[tokio::test]
     async fn restore_keysetid_2ndpartial() {
-        let seed = [0u8; 64];
+        let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
         let mut client = MockMintConnector::new();

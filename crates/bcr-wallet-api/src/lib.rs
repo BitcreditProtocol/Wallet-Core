@@ -6,16 +6,14 @@ use crate::{
     pocket::credit::CreditPocketApi,
     wallet::api::WalletApi,
 };
+use bcr_common::cdk_common::wallet::Transaction;
 use bcr_common::{
     cashu::{self, CurrencyUnit, MintUrl, nut18 as cdk18},
-    cdk::{
-        self,
-        wallet::{MintConnector as MintCon, types::TransactionId},
-    },
+    cdk::wallet::{MintConnector as MintCon, types::TransactionId},
     wallet::Token,
 };
 use bcr_wallet_core::types::{
-    self, JobState, MintSummary, PaymentSummary, RedemptionSummary, WalletConfig,
+    self, JobState, MintSummary, PaymentSummary, RedemptionSummary, Seed, WalletConfig,
 };
 use bcr_wallet_core::util::{build_wallet_id, keypair_from_mnemonic, seed_from_mnemonic};
 use bcr_wallet_persistence::redb::jobs::JobsDB;
@@ -556,7 +554,7 @@ impl AppState {
         let wallet = self.get_wallet(idx).await?;
         let mut txs = wallet.read().await.list_txs().await?;
         txs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp)); // sort by timestamp desc
-        Ok(txs.into_iter().map(|t| t.into()).collect())
+        Ok(txs)
     }
 
     pub async fn wallet_load_tx(&self, idx: usize, tx_id: &str) -> Result<Transaction> {
@@ -565,7 +563,7 @@ impl AppState {
         let tx_id = TransactionId::from_str(tx_id)?;
         let wallet = self.get_wallet(idx).await?;
         let tx = wallet.read().await.load_tx(tx_id).await?;
-        Ok(Transaction::from(tx))
+        Ok(tx)
     }
 
     pub async fn wallet_reclaim_tx(&self, idx: usize, tx_id: &str) -> Result<cashu::Amount> {
@@ -756,42 +754,6 @@ pub struct WalletCurrencyUnit {
 }
 
 #[derive(Clone, Debug)]
-pub struct Transaction {
-    pub id: String,
-    pub amount: u64,
-    pub fees: u64,
-    pub unit: String,
-    pub tstamp: u64,
-    pub direction: cdk::wallet::types::TransactionDirection,
-    pub memo: Option<String>,
-    pub ptype: types::PaymentType,
-    pub status: types::TransactionStatus,
-    pub btc_tx_id: Option<bitcoin::Txid>,
-    pub quote_id: Option<String>,
-}
-
-impl std::convert::From<cdk::wallet::types::Transaction> for Transaction {
-    fn from(tx: cdk::wallet::types::Transaction) -> Self {
-        let status = types::get_transaction_status(&tx.metadata);
-        let ptype = types::get_payment_type(&tx.metadata);
-        let btc_tx_id = types::get_btc_tx_id(&tx.metadata);
-        Self {
-            id: tx.id().to_string(),
-            amount: u64::from(tx.amount),
-            fees: u64::from(tx.fee),
-            unit: tx.unit.to_string(),
-            direction: tx.direction,
-            tstamp: tx.timestamp,
-            memo: tx.memo,
-            ptype,
-            status,
-            btc_tx_id,
-            quote_id: tx.quote_id,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
 pub struct CreatedToken {
     pub tx_id: TransactionId,
     pub token: Token,
@@ -869,7 +831,7 @@ async fn build_wallet(
     db_version: u32,
     same_mint_safe_mode: SameMintSafeMode,
     db: Arc<Database>,
-    seed: [u8; 64],
+    seed: Seed,
 ) -> Result<wallet::Wallet> {
     // building wallet dbs
     let (tx_repo, ((debitdb, mintmeltdb), creditdb)) = build_wallet_dbs(

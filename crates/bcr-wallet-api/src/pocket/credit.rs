@@ -9,7 +9,7 @@ use bcr_common::cashu::{
     self, Amount, CurrencyUnit, KeySet, KeySetInfo, Proof, ProofsMethods, amount::SplitTarget,
     nut00 as cdk00, nut01 as cdk01, nut07 as cdk07,
 };
-use bcr_wallet_core::types::{RedemptionSummary, SendSummary};
+use bcr_wallet_core::types::{RedemptionSummary, Seed, SendSummary};
 use bcr_wallet_persistence::PocketRepository;
 use std::{
     collections::HashMap,
@@ -42,12 +42,12 @@ pub trait CreditPocketApi: super::PocketApi {
 pub struct Pocket {
     pub unit: cashu::CurrencyUnit,
     pub db: Arc<dyn PocketRepository>,
-    seed: [u8; 64],
+    seed: Seed,
     current_send: Mutex<Option<SendReference>>,
 }
 
 impl Pocket {
-    pub fn new(unit: CurrencyUnit, db: Arc<dyn PocketRepository>, seed: [u8; 64]) -> Self {
+    pub fn new(unit: CurrencyUnit, db: Arc<dyn PocketRepository>, seed: Seed) -> Self {
         Self {
             unit,
             db,
@@ -523,12 +523,12 @@ mod tests {
         pocket::{PocketApi, credit::CreditPocketApi},
     };
     use bcr_common::core_tests;
-    use bcr_wallet_persistence::MockPocketRepository;
+    use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
     use mockall::predicate::*;
 
     fn pocket(db: Arc<dyn PocketRepository>) -> super::Pocket {
         let unit = CurrencyUnit::Sat;
-        let seed = [0u8; 64];
+        let seed = zero_seed();
         super::Pocket::new(unit, db, seed)
     }
 

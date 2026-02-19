@@ -1,14 +1,18 @@
 pub mod tests {
-    use bcr_wallet_core::util;
+    use bcr_wallet_core::{types::Seed, util};
     use bitcoin::secp256k1;
     use std::str::FromStr;
+
+    pub fn zero_seed() -> Seed {
+        [0u8; 64]
+    }
 
     pub fn valid_payment_address_testnet() -> bitcoin::Address<bitcoin::address::NetworkUnchecked> {
         bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0").unwrap()
     }
 
     pub fn wallet_id() -> String {
-        let seed = [0u8; 64];
+        let seed = zero_seed();
         util::build_wallet_id(&seed)
     }
 

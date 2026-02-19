@@ -13,7 +13,7 @@ use bcr_common::{
     wire::{melt as wire_melt, mint as wire_mint},
 };
 use bcr_wallet_core::{
-    types::{MeltSummary, MintSummary, SendSummary},
+    types::{MeltSummary, MintSummary, Seed, SendSummary},
     util::keypair_from_seed,
 };
 use bcr_wallet_persistence::{MintMeltRepository, PocketRepository};
@@ -74,7 +74,7 @@ pub struct Pocket {
     pub unit: cashu::CurrencyUnit,
     pub pdb: Arc<dyn PocketRepository>,
     pub mdb: Arc<dyn MintMeltRepository>,
-    seed: [u8; 64],
+    seed: Seed,
 
     current_send: Mutex<Option<SendReference>>,
     current_melt: Mutex<Option<MeltReference>>,
@@ -85,7 +85,7 @@ impl Pocket {
         unit: CurrencyUnit,
         pdb: Arc<dyn PocketRepository>,
         mdb: Arc<dyn MintMeltRepository>,
-        seed: [u8; 64],
+        seed: Seed,
     ) -> Self {
         Self {
             unit,

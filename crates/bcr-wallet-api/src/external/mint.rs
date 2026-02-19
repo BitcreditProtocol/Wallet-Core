@@ -10,7 +10,7 @@ use bcr_common::{
         swap as wire_swap,
     },
 };
-use bcr_wallet_core::{SendSync, TStamp};
+use bcr_wallet_core::{SendSync, types::TStamp};
 use bitcoin::base64::prelude::*;
 use bitcoin::secp256k1;
 use rand::seq::IndexedRandom;
