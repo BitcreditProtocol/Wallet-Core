@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow = {version = "1"}
 bcr-common.workspace = true
+bcr-wallet-core = {workspace = true}
 bcr-wallet-api = {workspace = true}
 bip39.workspace = true
 bitcoin.workspace = true

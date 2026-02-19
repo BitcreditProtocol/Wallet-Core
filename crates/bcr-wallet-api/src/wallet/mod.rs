@@ -829,12 +829,19 @@ impl Wallet {
 
 #[cfg(test)]
 mod tests {
-    use bcr_wallet_persistence::{MockTransactionRepository, test_utils::tests::test_pub_key};
+    use bcr_common::wire::clowder as wire_clowder;
+    use bcr_wallet_core::types::MintSummary;
+    use bcr_wallet_persistence::{
+        MockTransactionRepository,
+        test_utils::tests::{test_pub_key, valid_payment_address_testnet},
+    };
+    use nostr::nips::nip19::ToBech32;
 
     use super::*;
     use crate::{
         external::{mint::HttpClientExt, test_utils::tests::MockMintConnector},
         pocket::test_utils::tests::{MockCreditPocket, MockDebitPocket},
+        wallet::{api::WalletApi, types::WalletPaymentType},
     };
 
     struct MockWalletCtx {
@@ -845,8 +852,10 @@ mod tests {
     }
 
     fn wallet_ctx() -> MockWalletCtx {
+        let mut client = MockMintConnector::new();
+        client.expect_fmt().returning(|_| Ok(()));
         MockWalletCtx {
-            client: MockMintConnector::new(),
+            client,
             tx_repo: MockTransactionRepository::new(),
             debit: MockDebitPocket::new(),
             credit: MockCreditPocket::new(),
@@ -874,6 +883,50 @@ mod tests {
         }
     }
 
+    fn wallet_with_betas(
+        mut w: Wallet,
+        betas: Vec<(cashu::MintUrl, Arc<dyn ClowderMintConnector>)>,
+    ) -> Wallet {
+        let mut map = HashMap::new();
+        for (url, cl) in betas {
+            map.insert(url, cl);
+        }
+        w.beta_clients = map;
+        w
+    }
+
+    #[tokio::test]
+    async fn test_config_builds_expected_config() {
+        let mut ctx = wallet_ctx();
+
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+        ctx.credit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Custom("crsat".to_string()));
+
+        ctx.client
+            .expect_mint_url()
+            .times(1)
+            .returning(|| cashu::MintUrl::from_str("https://mint.example").unwrap());
+
+        let wlt = wallet(ctx);
+        let cfg = wlt.config().expect("config works");
+
+        assert_eq!(cfg.wallet_id, "w-1");
+        assert_eq!(cfg.name, "wallet-1");
+        assert_eq!(cfg.network, bitcoin::Network::Testnet);
+        assert_eq!(cfg.debit, CurrencyUnit::Sat);
+        assert_eq!(cfg.credit, CurrencyUnit::Custom("crsat".to_string()));
+        assert_eq!(cfg.mint.to_string(), "https://mint.example");
+        assert_eq!(cfg.pub_key, test_pub_key());
+        assert_eq!(cfg.clowder_id, test_pub_key());
+        assert!(cfg.betas.is_empty());
+    }
+
     #[tokio::test]
     async fn test_name() {
         let ctx = wallet_ctx();
@@ -881,6 +934,62 @@ mod tests {
 
         let res = wlt.name();
         assert_eq!(res, "wallet-1".to_owned());
+    }
+
+    #[tokio::test]
+    async fn test_id() {
+        let ctx = wallet_ctx();
+        let wlt = wallet(ctx);
+        assert_eq!(wlt.id(), "w-1".to_string());
+    }
+
+    #[tokio::test]
+    async fn test_mint_url() {
+        let mut ctx = wallet_ctx();
+        ctx.client
+            .expect_mint_url()
+            .times(1)
+            .returning(|| cashu::MintUrl::from_str("https://mint.example").unwrap());
+
+        let wlt = wallet(ctx);
+        let url = wlt.mint_url().unwrap();
+        assert_eq!(url.to_string(), "https://mint.example");
+    }
+
+    #[tokio::test]
+    async fn test_betas_and_mint_urls() {
+        let mut ctx = wallet_ctx();
+        ctx.client
+            .expect_mint_url()
+            .times(1)
+            .returning(|| cashu::MintUrl::from_str("https://mint.example").unwrap());
+        let mut wlt = wallet(ctx);
+
+        let b1 = cashu::MintUrl::from_str("https://beta1.example").unwrap();
+        let b2 = cashu::MintUrl::from_str("https://beta2.example").unwrap();
+
+        let beta1: Arc<dyn ClowderMintConnector> = Arc::new(MockMintConnector::new());
+        let beta2: Arc<dyn ClowderMintConnector> = Arc::new(MockMintConnector::new());
+
+        wlt = wallet_with_betas(wlt, vec![(b1.clone(), beta1), (b2.clone(), beta2)]);
+
+        let betas = wlt.betas();
+        assert_eq!(betas.len(), 2);
+        assert!(betas.contains(&b1));
+        assert!(betas.contains(&b2));
+
+        let urls = wlt.mint_urls().unwrap();
+        assert!(urls.contains(&b1));
+        assert!(urls.contains(&b2));
+        assert!(urls.contains(&cashu::MintUrl::from_str("https://mint.example").unwrap()));
+        assert_eq!(urls.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_clowder_id() {
+        let ctx = wallet_ctx();
+        let wlt = wallet(ctx);
+        assert_eq!(wlt.clowder_id(), test_pub_key());
     }
 
     #[tokio::test]
@@ -895,6 +1004,89 @@ mod tests {
 
         let res = wlt.credit_unit();
         assert_eq!(res, crsat);
+    }
+
+    #[tokio::test]
+    async fn test_prepare_pay_unknown_payment_request() {
+        let mut ctx = wallet_ctx();
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(cashu::KeysetResponse { keysets: vec![] }));
+        let wlt = wallet(ctx);
+
+        let err = wlt
+            .prepare_pay("not-a-request".to_string())
+            .await
+            .unwrap_err();
+
+        match err {
+            Error::UnknownPaymentRequest(s) => assert_eq!(s, "not-a-request"),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_prepare_payment_request_sets_current_request() {
+        let mut ctx = wallet_ctx();
+
+        ctx.client
+            .expect_mint_url()
+            .times(1)
+            .returning(|| cashu::MintUrl::from_str("https://mint.example").unwrap());
+
+        let wlt = wallet(ctx);
+        let nostr_transport = cdk18::Transport {
+            _type: cdk18::TransportType::Nostr,
+            target: nostr::PublicKey::from(test_pub_key().x_only_public_key().0)
+                .to_bech32()
+                .unwrap(),
+            tags: Some(vec![vec![String::from("n"), String::from("17")]]),
+        };
+
+        let req = wlt
+            .prepare_payment_request(
+                cashu::Amount::from(123),
+                CurrencyUnit::Sat,
+                Some("hello".to_string()),
+                nostr_transport,
+            )
+            .await
+            .unwrap();
+
+        let stored = wlt.current_payment_request.lock().await.clone();
+        assert!(stored.is_some());
+        assert_eq!(stored.unwrap().payment_id, req.payment_id);
+        assert_eq!(req.amount, Some(cashu::Amount::from(123)));
+        assert_eq!(req.unit, Some(CurrencyUnit::Sat));
+        assert_eq!(req.description, Some("hello".to_string()));
+        assert_eq!(req.single_use, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_check_received_payment_errors_if_no_current_request() {
+        let ctx = wallet_ctx();
+        let wlt = wallet(ctx);
+
+        let nostr_cl = nostr_sdk::Client::new(nostr_sdk::Keys::generate());
+
+        let pid = Uuid::new_v4();
+        let err = wlt
+            .check_received_payment(
+                std::time::Duration::from_millis(0),
+                std::time::Duration::from_millis(1),
+                std::time::Duration::from_millis(1),
+                pid,
+                &nostr_cl,
+                nostr::PublicKey::from(test_pub_key().x_only_public_key().0),
+            )
+            .await
+            .unwrap_err();
+
+        match err {
+            Error::NoPrepareRef(x) => assert_eq!(x, pid),
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -972,5 +1164,239 @@ mod tests {
             .await
             .unwrap();
         assert!(res.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_local_proofs_calls_both_pockets() {
+        let mut ctx = wallet_ctx();
+
+        ctx.credit
+            .expect_cleanup_local_proofs()
+            .times(1)
+            .returning(|_client| Ok(vec![]));
+
+        ctx.debit
+            .expect_cleanup_local_proofs()
+            .times(1)
+            .returning(|_client| Ok(vec![]));
+
+        let wlt = wallet(ctx);
+        wlt.cleanup_local_proofs().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_is_wallet_mint_offline_majority_true() {
+        let ctx = wallet_ctx();
+        let mut wlt = wallet(ctx);
+
+        let b1 = cashu::MintUrl::from_str("https://b1.example").unwrap();
+        let b2 = cashu::MintUrl::from_str("https://b2.example").unwrap();
+        let b3 = cashu::MintUrl::from_str("https://b3.example").unwrap();
+
+        let mut m1 = MockMintConnector::new();
+        let mut m2 = MockMintConnector::new();
+        let mut m3 = MockMintConnector::new();
+
+        m1.expect_get_alpha_status().returning(|_pk| {
+            Ok(wire_clowder::AlphaStateResponse {
+                state: wire_clowder::SimpleAlphaState::Offline(0),
+            })
+        });
+        m2.expect_get_alpha_status().returning(|_pk| {
+            Ok(wire_clowder::AlphaStateResponse {
+                state: wire_clowder::SimpleAlphaState::Offline(0),
+            })
+        });
+        m3.expect_get_alpha_status().returning(|_pk| {
+            Ok(wire_clowder::AlphaStateResponse {
+                state: wire_clowder::SimpleAlphaState::Online(0),
+            })
+        });
+
+        wlt = wallet_with_betas(
+            wlt,
+            vec![(b1, Arc::new(m1)), (b2, Arc::new(m2)), (b3, Arc::new(m3))],
+        );
+
+        let res = wlt.is_wallet_mint_offline().await.unwrap();
+        assert!(res);
+    }
+
+    #[tokio::test]
+    async fn test_is_wallet_mint_rabid_majority_false() {
+        let ctx = wallet_ctx();
+        let mut wlt = wallet(ctx);
+
+        let b1 = cashu::MintUrl::from_str("https://b1.example").unwrap();
+        let b2 = cashu::MintUrl::from_str("https://b2.example").unwrap();
+
+        let mut m1 = MockMintConnector::new();
+        let mut m2 = MockMintConnector::new();
+
+        m1.expect_get_alpha_status().returning(|_pk| {
+            Ok(wire_clowder::AlphaStateResponse {
+                state: wire_clowder::SimpleAlphaState::Rabid("rabid".to_string()),
+            })
+        });
+        m2.expect_get_alpha_status().returning(|_pk| {
+            Ok(wire_clowder::AlphaStateResponse {
+                state: wire_clowder::SimpleAlphaState::Online(0),
+            })
+        });
+
+        wlt = wallet_with_betas(wlt, vec![(b1, Arc::new(m1)), (b2, Arc::new(m2))]);
+
+        let res = wlt.is_wallet_mint_rabid().await.unwrap();
+        assert!(!res);
+    }
+
+    #[tokio::test]
+    async fn test_mint_substitute_returns_some_on_majority_vote() {
+        let ctx = wallet_ctx();
+        let mut wlt = wallet(ctx);
+
+        let b1 = cashu::MintUrl::from_str("https://b1.example").unwrap();
+        let b2 = cashu::MintUrl::from_str("https://b2.example").unwrap();
+        let b3 = cashu::MintUrl::from_str("https://b3.example").unwrap();
+
+        let substitute = cashu::MintUrl::from_str("https://sub.example").unwrap();
+        let other = cashu::MintUrl::from_str("https://other.example").unwrap();
+
+        let mut m1 = MockMintConnector::new();
+        let mut m2 = MockMintConnector::new();
+        let mut m3 = MockMintConnector::new();
+
+        m1.expect_get_alpha_substitute().returning({
+            let substitute = substitute.clone();
+            move |_pk| {
+                Ok(wire_clowder::ConnectedMintResponse {
+                    mint: substitute.clone(),
+                    clowder: url::Url::from_str("https://clowder.example").unwrap(),
+                    node_id: test_pub_key(),
+                })
+            }
+        });
+        m2.expect_get_alpha_substitute().returning({
+            let substitute = substitute.clone();
+            move |_pk| {
+                Ok(wire_clowder::ConnectedMintResponse {
+                    mint: substitute.clone(),
+                    clowder: url::Url::from_str("https://clowder.example").unwrap(),
+                    node_id: test_pub_key(),
+                })
+            }
+        });
+        m3.expect_get_alpha_substitute().returning({
+            let other = other.clone();
+            move |_pk| {
+                Ok(wire_clowder::ConnectedMintResponse {
+                    mint: other.clone(),
+                    clowder: url::Url::from_str("https://clowder.example").unwrap(),
+                    node_id: test_pub_key(),
+                })
+            }
+        });
+
+        wlt = wallet_with_betas(
+            wlt,
+            vec![(b1, Arc::new(m1)), (b2, Arc::new(m2)), (b3, Arc::new(m3))],
+        );
+
+        let res = wlt.mint_substitute().await.unwrap();
+        assert_eq!(res, Some(substitute));
+    }
+
+    #[tokio::test]
+    async fn test_offline_pay_by_token_errors_if_no_substitute() {
+        // no betas = no substitute
+        let ctx = wallet_ctx();
+        let wlt = wallet(ctx);
+
+        let err = wlt
+            .offline_pay_by_token(
+                Uuid::new_v4(),
+                CurrencyUnit::Sat,
+                cashu::Amount::ZERO,
+                None,
+                123,
+            )
+            .await
+            .unwrap_err();
+
+        match err {
+            Error::NoSubstitute => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pay_token_stores_tx_and_returns_token() {
+        let mut ctx = wallet_ctx();
+
+        let pid = Uuid::new_v4();
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(cashu::KeysetResponse { keysets: vec![] }));
+        ctx.client
+            .expect_mint_url()
+            .times(2) // token creation + tx mint_url
+            .returning(|| cashu::MintUrl::from_str("https://mint.example").unwrap());
+
+        ctx.debit
+            .expect_unit()
+            .times(2)
+            .returning(|| CurrencyUnit::Sat);
+        ctx.credit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Custom("crsat".to_string()));
+
+        ctx.debit
+            .expect_send_proofs()
+            .times(1)
+            .returning(|_rid, _infos, _client, _safe| Ok(HashMap::default()));
+
+        ctx.tx_repo
+            .expect_store_tx()
+            .times(1)
+            .returning(|_tx| Ok(TransactionId::new(vec![])));
+
+        let wlt = wallet(ctx);
+        *wlt.current_payment.lock().await = Some(PayReference {
+            request_id: pid,
+            unit: CurrencyUnit::Sat,
+            fees: cashu::Amount::ZERO,
+            ptype: WalletPaymentType::Token,
+            memo: Some("memo".to_string()),
+        });
+
+        let nostr_cl = nostr_sdk::Client::new(nostr_sdk::Keys::generate());
+        let http_cl = reqwest::Client::new();
+
+        let (_txid, token) = wlt.pay(pid, &nostr_cl, &http_cl, 123).await.unwrap();
+
+        assert!(token.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_mint_uses_debit() {
+        let mut ctx = wallet_ctx();
+
+        ctx.debit
+            .expect_mint_onchain()
+            .times(1)
+            .returning(|_amount, _client| {
+                Ok(MintSummary {
+                    quote_id: Uuid::new_v4(),
+                    amount: bitcoin::Amount::from_sat(1000),
+                    address: valid_payment_address_testnet(),
+                    expiry: 0,
+                })
+            });
+
+        let wlt = wallet(ctx);
+        let _ = wlt.mint(bitcoin::Amount::from_sat(1000)).await.unwrap();
     }
 }

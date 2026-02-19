@@ -1,5 +1,6 @@
 use anyhow::Result;
 use bcr_wallet_api::AppState;
+use bcr_wallet_core::types::{get_btc_tx_id, get_payment_type, get_transaction_status};
 use chrono::{DateTime, Utc};
 use tracing::info;
 
@@ -52,7 +53,10 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
             push_break(&mut res);
 
             for (idx, tx) in transactions.iter().enumerate() {
-                let quote_or_btc_tx_id = match (tx.btc_tx_id, &tx.quote_id) {
+                let status = get_transaction_status(&tx.metadata);
+                let ptype = get_payment_type(&tx.metadata);
+                let btc_tx_id = get_btc_tx_id(&tx.metadata);
+                let quote_or_btc_tx_id = match (btc_tx_id, &tx.quote_id) {
                     (Some(_), Some(_)) => String::default(),
                     (Some(btc_tx_id), None) => btc_tx_id.to_string(),
                     (None, Some(quote_id)) => quote_id.to_string(),
@@ -60,7 +64,7 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
                 };
                 res.push_str(&format!(
                     "\t\tId: {} \t Amount: {} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {} \t BTC TxID/Quote ID: {}",
-                    tx.id, tx.amount, tx.unit, tx.fees,  tx.status, format_timestamp(tx.tstamp), &format!("{:?}", tx.ptype), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id 
+                    tx.id(), tx.amount, tx.unit, tx.fee,  status, format_timestamp(tx.timestamp), &format!("{:?}", ptype), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id 
                 ));
                 push_break(&mut res);
                 if idx > 20 {

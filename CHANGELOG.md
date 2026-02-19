@@ -14,6 +14,7 @@
     * Clean up outer types a bit
 * Move wallet-ffi to Wallet-Core repo
 * Remove `clean_local_db` endpoint
+* Improve FFI types
 
 # 0.7.8
 

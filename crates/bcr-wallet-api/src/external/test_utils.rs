@@ -116,7 +116,7 @@ pub mod tests {
             ) -> Result<(
             Vec<cashu::PublicKey>,
             Vec<cashu::BlindedMessage>,
-            bcr_wallet_core::TStamp,
+            bcr_wallet_core::types::TStamp,
             secp256k1::schnorr::Signature,
             )>;
             async fn post_melt_quote_onchain(

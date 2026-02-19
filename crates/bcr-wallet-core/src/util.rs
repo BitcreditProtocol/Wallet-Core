@@ -4,7 +4,9 @@ use bitcoin::{
     secp256k1::{self, Keypair, SECP256K1},
 };
 
-pub fn build_wallet_id(seed: &[u8; 64]) -> String {
+use crate::types::Seed;
+
+pub fn build_wallet_id(seed: &Seed) -> String {
     let mut hasher = sha256::HashEngine::default();
     hasher.input(seed);
     sha256::Hash::from_engine(hasher)
@@ -13,11 +15,11 @@ pub fn build_wallet_id(seed: &[u8; 64]) -> String {
         .to_string()
 }
 
-pub fn seed_from_mnemonic(mnemonic: &bip39::Mnemonic) -> [u8; 64] {
+pub fn seed_from_mnemonic(mnemonic: &bip39::Mnemonic) -> Seed {
     mnemonic.to_seed("")
 }
 
-pub fn keypair_from_seed(seed: [u8; 64]) -> Keypair {
+pub fn keypair_from_seed(seed: Seed) -> Keypair {
     let (key, _) = seed.split_at(secp256k1::constants::SECRET_KEY_SIZE);
     Keypair::from_seckey_slice(SECP256K1, key).expect("key to be correct size")
 }
