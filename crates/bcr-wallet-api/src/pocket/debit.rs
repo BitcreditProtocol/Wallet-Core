@@ -10,7 +10,10 @@ use bcr_common::{
         self, Amount, CurrencyUnit, KeySet, KeySetInfo, Proof, ProofsMethods, amount::SplitTarget,
         nut00 as cdk00, nut01 as cdk01, nut05 as cdk05,
     },
-    wire::{melt as wire_melt, mint as wire_mint},
+    wire::{
+        melt::{self as wire_melt, MeltTx},
+        mint as wire_mint,
+    },
 };
 use bcr_wallet_core::{
     types::{MeltSummary, MintSummary, Seed, SendSummary},
@@ -46,7 +49,7 @@ pub trait DebitPocketApi: super::PocketApi {
         keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
         safe_mode: SafeMode,
-    ) -> Result<(bitcoin::Txid, HashMap<cashu::PublicKey, cashu::Proof>)>;
+    ) -> Result<(MeltTx, HashMap<cashu::PublicKey, cashu::Proof>)>;
     async fn mint_onchain(
         &self,
         amount: bitcoin::Amount,
@@ -575,7 +578,7 @@ impl DebitPocketApi for Pocket {
         keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
         safe_mode: SafeMode,
-    ) -> Result<(bitcoin::Txid, HashMap<cdk01::PublicKey, cdk00::Proof>)> {
+    ) -> Result<(MeltTx, HashMap<cdk01::PublicKey, cdk00::Proof>)> {
         let melt_ref = self.current_melt.lock().unwrap().take();
         let melt_ref = melt_ref.ok_or(Error::NoPrepareRef(rid))?;
         if melt_ref.rid != rid {
@@ -891,6 +894,10 @@ mod tests {
             "c66bdb3be47c2252cf60bf98da828c595592b91637e4bab88471a7eb76e81562",
         )
         .unwrap();
+        let melt_tx = MeltTx {
+            alpha_txid: Some(tx_id),
+            beta_txid: None,
+        };
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
         let k_infos = vec![KeySetInfo::from(info)];
@@ -907,13 +914,14 @@ mod tests {
             .with(eq(kid))
             .returning(move |_| Ok(KeySet::from(cloned_keyset.clone())));
 
+        let melt_tx_clone = melt_tx.clone();
         connector
             .expect_post_melt_onchain()
             .times(1)
             .returning(move |_| {
                 Ok(wire_melt::MeltQuoteOnchainResponse {
                     quote: uuid,
-                    txid: Some(tx_id),
+                    txid: Some(melt_tx_clone.clone()),
                     fee_reserve: bitcoin::Amount::ZERO,
                     amount,
                     state: cashu::MeltQuoteState::Paid,
@@ -937,7 +945,8 @@ mod tests {
             .pay_onchain_melt(uuid, &k_infos, Arc::new(connector), SafeMode::Disabled)
             .await
             .expect("pay melt works");
-        assert_eq!(res.0, tx_id);
+        assert_eq!(res.0.alpha_txid, melt_tx.alpha_txid);
+        assert_eq!(res.0.beta_txid, melt_tx.beta_txid);
     }
 
     #[tokio::test]

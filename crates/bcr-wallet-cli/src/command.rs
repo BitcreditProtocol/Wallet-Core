@@ -1,6 +1,8 @@
 use anyhow::Result;
 use bcr_wallet_api::AppState;
-use bcr_wallet_core::types::{get_btc_tx_id, get_payment_type, get_transaction_status};
+use bcr_wallet_core::types::{
+    get_btc_alpha_tx_id, get_btc_beta_tx_id, get_payment_type, get_transaction_status,
+};
 use chrono::{DateTime, Utc};
 use tracing::info;
 
@@ -55,12 +57,19 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
             for (idx, tx) in transactions.iter().enumerate() {
                 let status = get_transaction_status(&tx.metadata);
                 let ptype = get_payment_type(&tx.metadata);
-                let btc_tx_id = get_btc_tx_id(&tx.metadata);
-                let quote_or_btc_tx_id = match (btc_tx_id, &tx.quote_id) {
-                    (Some(_), Some(_)) => String::default(),
-                    (Some(btc_tx_id), None) => btc_tx_id.to_string(),
-                    (None, Some(quote_id)) => quote_id.to_string(),
-                    (None, None) => String::default(),
+                let alpha_btc_tx_id = get_btc_alpha_tx_id(&tx.metadata);
+                let beta_btc_tx_id = get_btc_beta_tx_id(&tx.metadata);
+                let quote_or_btc_tx_id = match (beta_btc_tx_id, alpha_btc_tx_id, &tx.quote_id) {
+                    (Some(_), Some(_), Some(_)) => String::default(),
+                    (None, Some(_), Some(_)) => String::default(),
+                    (Some(_), None, Some(_)) => String::default(),
+                    (Some(beta_btc_tx_id), None, None) => beta_btc_tx_id.to_string(),
+                    (None, Some(alpha_btc_tx_id), None) => alpha_btc_tx_id.to_string(),
+                    (Some(beta_btc_tx_id), Some(alpha_btc_tx_id), None) => {
+                        format!("alpha: {}, beta: {}", alpha_btc_tx_id, beta_btc_tx_id)
+                    }
+                    (None, None, Some(quote_id)) => quote_id.to_string(),
+                    (None, None, None) => String::default(),
                 };
                 res.push_str(&format!(
                     "\t\tId: {} \t Amount: {} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {} \t BTC TxID/Quote ID: {}",

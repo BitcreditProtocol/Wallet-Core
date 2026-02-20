@@ -1724,6 +1724,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  MeltTx dco_decode_melt_tx(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return MeltTx(
+      alphaTxId: dco_decode_opt_String(arr[0]),
+      betaTxId: dco_decode_opt_String(arr[1]),
+    );
+  }
+
+  @protected
   MigrateRabidResponse dco_decode_migrate_rabid_response(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -1855,7 +1867,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       memo: dco_decode_opt_String(arr[6]),
       ptype: dco_decode_payment_type(arr[7]),
       status: dco_decode_transaction_status(arr[8]),
-      btcTxId: dco_decode_opt_String(arr[9]),
+      meltTx: dco_decode_melt_tx(arr[9]),
       quoteId: dco_decode_opt_String(arr[10]),
     );
   }
@@ -2610,6 +2622,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  MeltTx sse_decode_melt_tx(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_alphaTxId = sse_decode_opt_String(deserializer);
+    var var_betaTxId = sse_decode_opt_String(deserializer);
+    return MeltTx(alphaTxId: var_alphaTxId, betaTxId: var_betaTxId);
+  }
+
+  @protected
   MigrateRabidResponse sse_decode_migrate_rabid_response(
     SseDeserializer deserializer,
   ) {
@@ -2735,7 +2755,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_memo = sse_decode_opt_String(deserializer);
     var var_ptype = sse_decode_payment_type(deserializer);
     var var_status = sse_decode_transaction_status(deserializer);
-    var var_btcTxId = sse_decode_opt_String(deserializer);
+    var var_meltTx = sse_decode_melt_tx(deserializer);
     var var_quoteId = sse_decode_opt_String(deserializer);
     return Transaction(
       id: var_id,
@@ -2747,7 +2767,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       memo: var_memo,
       ptype: var_ptype,
       status: var_status,
-      btcTxId: var_btcTxId,
+      meltTx: var_meltTx,
       quoteId: var_quoteId,
     );
   }
@@ -3462,6 +3482,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_melt_tx(MeltTx self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_String(self.alphaTxId, serializer);
+    sse_encode_opt_String(self.betaTxId, serializer);
+  }
+
+  @protected
   void sse_encode_migrate_rabid_response(
     MigrateRabidResponse self,
     SseSerializer serializer,
@@ -3587,7 +3614,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.memo, serializer);
     sse_encode_payment_type(self.ptype, serializer);
     sse_encode_transaction_status(self.status, serializer);
-    sse_encode_opt_String(self.btcTxId, serializer);
+    sse_encode_melt_tx(self.meltTx, serializer);
     sse_encode_opt_String(self.quoteId, serializer);
   }
 

@@ -1,3 +1,8 @@
+# 0.8.1
+
+* Persist alpha_tx_id and beta_tx_id for melts as per https://github.com/BitcreditProtocol/Clowder/pull/207 (breaking DB change)
+    * replace `btc_tx_id` with optional `melt_tx` struct on `Transaction` (breaking API change)
+
 # 0.8.0
 
 * Refactoring (breaking DB and API changes)

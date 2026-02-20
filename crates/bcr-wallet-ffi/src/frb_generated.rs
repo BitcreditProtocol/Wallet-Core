@@ -1654,6 +1654,18 @@ impl SseDecode for Vec<crate::api::Transaction> {
     }
 }
 
+impl SseDecode for crate::api::MeltTx {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_alphaTxId = <Option<String>>::sse_decode(deserializer);
+        let mut var_betaTxId = <Option<String>>::sse_decode(deserializer);
+        return crate::api::MeltTx {
+            alpha_tx_id: var_alphaTxId,
+            beta_tx_id: var_betaTxId,
+        };
+    }
+}
+
 impl SseDecode for crate::api::MigrateRabidResponse {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -1803,7 +1815,7 @@ impl SseDecode for crate::api::Transaction {
         let mut var_memo = <Option<String>>::sse_decode(deserializer);
         let mut var_ptype = <crate::api::PaymentType>::sse_decode(deserializer);
         let mut var_status = <crate::api::TransactionStatus>::sse_decode(deserializer);
-        let mut var_btcTxId = <Option<String>>::sse_decode(deserializer);
+        let mut var_meltTx = <crate::api::MeltTx>::sse_decode(deserializer);
         let mut var_quoteId = <Option<String>>::sse_decode(deserializer);
         return crate::api::Transaction {
             id: var_id,
@@ -1815,7 +1827,7 @@ impl SseDecode for crate::api::Transaction {
             memo: var_memo,
             ptype: var_ptype,
             status: var_status,
-            btc_tx_id: var_btcTxId,
+            melt_tx: var_meltTx,
             quote_id: var_quoteId,
         };
     }
@@ -2442,6 +2454,22 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::IsValidTokenResponse>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::MeltTx {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.alpha_tx_id.into_into_dart().into_dart(),
+            self.beta_tx_id.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::MeltTx {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::MeltTx> for crate::api::MeltTx {
+    fn into_into_dart(self) -> crate::api::MeltTx {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::MigrateRabidResponse {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [self.migrated_to_mint.into_into_dart().into_dart()].into_dart()
@@ -2635,7 +2663,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::Transaction {
             self.memo.into_into_dart().into_dart(),
             self.ptype.into_into_dart().into_dart(),
             self.status.into_into_dart().into_dart(),
-            self.btc_tx_id.into_into_dart().into_dart(),
+            self.melt_tx.into_into_dart().into_dart(),
             self.quote_id.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -3493,6 +3521,14 @@ impl SseEncode for Vec<crate::api::Transaction> {
     }
 }
 
+impl SseEncode for crate::api::MeltTx {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.alpha_tx_id, serializer);
+        <Option<String>>::sse_encode(self.beta_tx_id, serializer);
+    }
+}
+
 impl SseEncode for crate::api::MigrateRabidResponse {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -3611,7 +3647,7 @@ impl SseEncode for crate::api::Transaction {
         <Option<String>>::sse_encode(self.memo, serializer);
         <crate::api::PaymentType>::sse_encode(self.ptype, serializer);
         <crate::api::TransactionStatus>::sse_encode(self.status, serializer);
-        <Option<String>>::sse_encode(self.btc_tx_id, serializer);
+        <crate::api::MeltTx>::sse_encode(self.melt_tx, serializer);
         <Option<String>>::sse_encode(self.quote_id, serializer);
     }
 }

@@ -120,9 +120,15 @@ pub fn get_payment_type(metas: &HashMap<String, String>) -> PaymentType {
     PaymentType::from_str(ptype).unwrap_or(PaymentType::NotApplicable)
 }
 
-pub const BTC_TX_ID_TYPE_METADATA_KEY: &str = "btc_tx_id";
-pub fn get_btc_tx_id(metas: &HashMap<String, String>) -> Option<bitcoin::Txid> {
-    let tx_id = metas.get(BTC_TX_ID_TYPE_METADATA_KEY)?;
+pub const BTC_ALPHA_TX_ID_TYPE_METADATA_KEY: &str = "btc_alpha_tx_id";
+pub fn get_btc_alpha_tx_id(metas: &HashMap<String, String>) -> Option<bitcoin::Txid> {
+    let tx_id = metas.get(BTC_ALPHA_TX_ID_TYPE_METADATA_KEY)?;
+    bitcoin::Txid::from_str(tx_id).ok()
+}
+
+pub const BTC_BETA_TX_ID_TYPE_METADATA_KEY: &str = "btc_beta_tx_id";
+pub fn get_btc_beta_tx_id(metas: &HashMap<String, String>) -> Option<bitcoin::Txid> {
+    let tx_id = metas.get(BTC_BETA_TX_ID_TYPE_METADATA_KEY)?;
     bitcoin::Txid::from_str(tx_id).ok()
 }
 
