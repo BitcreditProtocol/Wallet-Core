@@ -119,6 +119,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<Transaction> dco_decode_list_transaction(dynamic raw);
 
   @protected
+  MeltTx dco_decode_melt_tx(dynamic raw);
+
+  @protected
   MigrateRabidResponse dco_decode_migrate_rabid_response(dynamic raw);
 
   @protected
@@ -460,6 +463,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Transaction> sse_decode_list_transaction(SseDeserializer deserializer);
+
+  @protected
+  MeltTx sse_decode_melt_tx(SseDeserializer deserializer);
 
   @protected
   MigrateRabidResponse sse_decode_migrate_rabid_response(
@@ -857,6 +863,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     List<Transaction> self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_melt_tx(MeltTx self, SseSerializer serializer);
 
   @protected
   void sse_encode_migrate_rabid_response(

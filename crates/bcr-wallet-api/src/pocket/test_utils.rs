@@ -79,7 +79,7 @@ pub mod tests {
                 keysets_info: &[KeySetInfo],
                 client: Arc<dyn ClowderMintConnector>,
                 safe_mode: SafeMode,
-            ) -> Result<(bitcoin::Txid, HashMap<cashu::PublicKey, cashu::Proof>)>;
+            ) -> Result<(wire_melt::MeltTx, HashMap<cashu::PublicKey, cashu::Proof>)>;
             async fn mint_onchain(
                 &self,
                 amount: bitcoin::Amount,

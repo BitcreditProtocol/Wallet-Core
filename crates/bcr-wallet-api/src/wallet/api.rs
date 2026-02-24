@@ -2,8 +2,8 @@ use crate::{
     ClowderMintConnector,
     error::{Error, Result},
     types::{
-        BTC_TX_ID_TYPE_METADATA_KEY, MintSummary, PAYMENT_TYPE_METADATA_KEY, PaymentSummary,
-        TRANSACTION_STATUS_METADATA_KEY, WalletConfig,
+        MintSummary, PAYMENT_TYPE_METADATA_KEY, PaymentSummary, TRANSACTION_STATUS_METADATA_KEY,
+        WalletConfig,
     },
     wallet::types::{PayReference, SafeMode, WalletPaymentType},
 };
@@ -22,7 +22,10 @@ use bcr_common::{
 };
 use bcr_wallet_core::{
     SendSync,
-    types::{PaymentType, TransactionStatus},
+    types::{
+        BTC_ALPHA_TX_ID_TYPE_METADATA_KEY, BTC_BETA_TX_ID_TYPE_METADATA_KEY, PaymentType,
+        TransactionStatus,
+    },
 };
 use bitcoin::secp256k1;
 use futures::stream::FuturesUnordered;
@@ -477,10 +480,19 @@ impl WalletApi for super::Wallet {
                     TransactionStatus::Settled.to_string(),
                 );
 
-                metadata.insert(
-                    BTC_TX_ID_TYPE_METADATA_KEY.to_owned(),
-                    btc_tx_id.to_string(),
-                );
+                if let Some(alpha_tx_id) = btc_tx_id.alpha_txid {
+                    metadata.insert(
+                        BTC_ALPHA_TX_ID_TYPE_METADATA_KEY.to_owned(),
+                        alpha_tx_id.to_string(),
+                    );
+                }
+
+                if let Some(beta_tx_id) = btc_tx_id.beta_txid {
+                    metadata.insert(
+                        BTC_BETA_TX_ID_TYPE_METADATA_KEY.to_owned(),
+                        beta_tx_id.to_string(),
+                    );
+                }
 
                 let partial_tx = Transaction {
                     mint_url: self.client.mint_url(),
