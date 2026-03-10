@@ -20,6 +20,7 @@ use bcr_wallet_core::{
     util::keypair_from_seed,
 };
 use bcr_wallet_persistence::{MintMeltRepository, PocketRepository};
+use bitcoin::base64::Engine;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -53,7 +54,9 @@ pub trait DebitPocketApi: super::PocketApi {
     async fn mint_onchain(
         &self,
         amount: bitcoin::Amount,
+        keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
+        clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<MintSummary>;
     async fn check_pending_mints(
         &self,
@@ -209,7 +212,7 @@ impl Pocket {
         tstamp: u64,
         safe_mode: SafeMode,
     ) -> Result<Option<(cashu::Amount, Vec<cashu::PublicKey>)>> {
-        let mint_summary = self.mdb.load_mint(qid).await?;
+        let (mint_summary, premint) = self.mdb.load_mint(qid).await?;
         let mint_state = client.get_mint_quote_onchain(qid.to_string()).await?;
 
         match mint_state.state {
@@ -217,7 +220,7 @@ impl Pocket {
                 match mint_quote_state {
                     cashu::MintQuoteState::Unpaid => {
                         tracing::info!("Mint {qid} not paid yet - skipping");
-                        if mint_state.expiry < tstamp {
+                        if mint_state.body.expiry < tstamp {
                             tracing::info!("Mint request with id {qid} expired - deleting.");
                             self.mdb.delete_mint(qid).await?;
                         }
@@ -227,18 +230,6 @@ impl Pocket {
                         tracing::info!("Mint {qid} paid - attempting to mint..");
                         let (active_keyset_info, active_keyset) =
                             self.find_active_keyset(keysets_info, &client).await?;
-                        let kid = active_keyset.id;
-
-                        let counter = self.pdb.counter(kid).await?;
-                        let premint = cashu::PreMintSecrets::from_seed(
-                            kid,
-                            counter,
-                            &self.seed,
-                            cashu::Amount::from(mint_summary.amount.to_sat()),
-                            &SplitTarget::None,
-                        )?;
-                        let increment = premint.len() as u32;
-                        self.pdb.increment_counter(kid, counter, increment).await?;
 
                         let mint_req = cashu::MintRequest {
                             quote: mint_summary.quote_id.to_string(),
@@ -642,29 +633,62 @@ impl DebitPocketApi for Pocket {
     async fn mint_onchain(
         &self,
         amount: bitcoin::Amount,
+        keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
+        clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<MintSummary> {
+        let active_info = self.find_active_keysetid(keysets_info)?;
+        let kid = active_info.id;
+        let counter = self.pdb.counter(kid).await?;
+        let premint = cdk00::PreMintSecrets::from_seed(
+            kid,
+            counter,
+            &self.seed,
+            cashu::Amount::from(amount.to_sat()),
+            &SplitTarget::None,
+        )?;
+        self.pdb
+            .increment_counter(kid, counter, premint.len() as u32)
+            .await?;
+
+        let blinded_messages = premint.blinded_messages();
         let request = wire_mint::MintQuoteOnchainRequest {
             amount,
             unit: self.unit.clone(),
+            blinded_messages: blinded_messages.clone(),
         };
 
         // Request mint quote
         let response = client.post_mint_quote_onchain(request).await?;
+
+        let borsh_bytes = borsh::to_vec(&response.body)?;
+        let content = bitcoin::base64::prelude::BASE64_STANDARD.encode(borsh_bytes);
+        bcr_common::core::signature::schnorr_verify_b64(
+            &content,
+            &response.commitment,
+            &clowder_id.x_only_public_key().0,
+        )?;
+
+        if response.body.blinded_messages != blinded_messages {
+            return Err(Error::MintingError(
+                "blinded messages mismatch in mint quote response".to_string(),
+            ));
+        }
+
         let mint_summary = MintSummary {
-            quote_id: response.quote,
-            amount: response.amount,
-            address: response.address,
-            expiry: response.expiry,
+            quote_id: response.body.quote,
+            amount: response.body.amount,
+            address: response.body.address.clone(),
+            expiry: response.body.expiry,
         };
 
-        // Store mint quote
         self.mdb
             .store_mint(
                 mint_summary.quote_id,
                 mint_summary.amount,
                 mint_summary.address.clone(),
                 mint_summary.expiry,
+                premint,
             )
             .await?;
         Ok(mint_summary)
@@ -951,21 +975,42 @@ mod tests {
 
     #[tokio::test]
     async fn mint_onchain() {
+        let (info, _keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = vec![KeySetInfo::from(info)];
         let amount = bitcoin::Amount::from_sat(24);
 
         let mut mdb = MockMintMeltRepository::new();
-        let pdb = MockPocketRepository::new();
+        let mut pdb = MockPocketRepository::new();
         let mut connector = MockMintConnector::new();
+
+        pdb.expect_counter()
+            .times(1)
+            .with(eq(kid))
+            .returning(|_| Ok(0));
+        pdb.expect_increment_counter()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
 
         mdb.expect_store_mint()
             .times(1)
-            .returning(|_, _, _, _| Ok(Uuid::new_v4()));
+            .returning(|_, _, _, _, _| Ok(Uuid::new_v4()));
+
+        let clowder_keypair = {
+            let secret_bytes: [u8; 32] = rand::random();
+            bitcoin::secp256k1::Keypair::from_seckey_slice(
+                bitcoin::secp256k1::SECP256K1,
+                &secret_bytes,
+            )
+            .unwrap()
+        };
+        let clowder_pk = bitcoin::secp256k1::PublicKey::from_keypair(&clowder_keypair);
 
         connector
             .expect_post_mint_quote_onchain()
             .times(1)
-            .returning(move |_| {
-                Ok(wire_mint::MintQuoteOnchainResponse {
+            .returning(move |req| {
+                let body = wire_mint::MintQuoteOnchainResponseBody {
                     quote: Uuid::new_v4(),
                     address: bitcoin::Address::from_str(
                         "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0",
@@ -973,6 +1018,17 @@ mod tests {
                     .unwrap(),
                     amount,
                     expiry: chrono::Utc::now().timestamp() as u64,
+                    blinded_messages: req.blinded_messages,
+                };
+                let (_, commitment) =
+                    bcr_common::core::signature::serialize_n_schnorr_sign_borsh_msg(
+                        &body,
+                        &clowder_keypair,
+                    )
+                    .unwrap();
+                Ok(wire_mint::MintQuoteOnchainResponse {
+                    body,
+                    commitment,
                     state: Some(cashu::MintQuoteState::Unpaid),
                 })
             });
@@ -980,7 +1036,7 @@ mod tests {
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
 
         let summary = pocket
-            .mint_onchain(amount, Arc::new(connector))
+            .mint_onchain(amount, &k_infos, Arc::new(connector), clowder_pk)
             .await
             .expect("mint onchain works");
         assert_eq!(summary.amount, amount);
@@ -990,7 +1046,7 @@ mod tests {
     async fn check_pending_mints() {
         let uuid = Uuid::new_v4();
         let amount = bitcoin::Amount::from_sat(24);
-        let (info, _) = core_tests::generate_random_ecash_keyset();
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let k_infos = vec![KeySetInfo::from(info)];
 
         let mut mdb = MockMintMeltRepository::new();
@@ -1001,21 +1057,42 @@ mod tests {
             .times(1)
             .returning(move || Ok(vec![uuid]));
 
+        let keyset_clone = keyset.clone();
         mdb.expect_load_mint().times(1).returning(move |_| {
-            Ok(MintSummary {
-                quote_id: uuid,
-                amount,
-                address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
+            let premint = cdk00::PreMintSecrets::random(
+                cashu::KeySet::from(keyset_clone.clone()).id,
+                Amount::from(amount.to_sat()),
+                &SplitTarget::None,
+            )
+            .unwrap();
+            Ok((
+                MintSummary {
+                    quote_id: uuid,
+                    amount,
+                    address: bitcoin::Address::from_str(
+                        "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0",
+                    )
                     .unwrap(),
-                expiry: chrono::Utc::now().timestamp() as u64,
-            })
+                    expiry: chrono::Utc::now().timestamp() as u64,
+                },
+                premint,
+            ))
         });
+
+        let clowder_keypair = {
+            let secret_bytes: [u8; 32] = rand::random();
+            bitcoin::secp256k1::Keypair::from_seckey_slice(
+                bitcoin::secp256k1::SECP256K1,
+                &secret_bytes,
+            )
+            .unwrap()
+        };
 
         connector
             .expect_get_mint_quote_onchain()
             .times(1)
             .returning(move |_| {
-                Ok(wire_mint::MintQuoteOnchainResponse {
+                let body = wire_mint::MintQuoteOnchainResponseBody {
                     quote: uuid,
                     address: bitcoin::Address::from_str(
                         "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0",
@@ -1023,6 +1100,17 @@ mod tests {
                     .unwrap(),
                     amount,
                     expiry: chrono::Utc::now().timestamp() as u64,
+                    blinded_messages: vec![],
+                };
+                let (_, commitment) =
+                    bcr_common::core::signature::serialize_n_schnorr_sign_borsh_msg(
+                        &body,
+                        &clowder_keypair,
+                    )
+                    .unwrap();
+                Ok(wire_mint::MintQuoteOnchainResponse {
+                    body,
+                    commitment,
                     state: Some(cashu::MintQuoteState::Unpaid),
                 })
             });

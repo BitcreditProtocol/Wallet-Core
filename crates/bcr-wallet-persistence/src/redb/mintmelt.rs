@@ -76,6 +76,13 @@ struct MintEntry {
     amount: bitcoin::Amount,
     address: bitcoin::Address<NetworkUnchecked>,
     expiry: u64,
+    premints: Vec<(
+        cdk00::BlindedMessage,
+        cashu::secret::Secret,
+        cdk01::SecretKey,
+        Amount,
+    )>,
+    kid: cashu::Id,
 }
 
 fn convert_mint_entry_from(
@@ -83,22 +90,47 @@ fn convert_mint_entry_from(
     amount: bitcoin::Amount,
     address: bitcoin::Address<NetworkUnchecked>,
     expiry: u64,
+    premints: cdk00::PreMintSecrets,
 ) -> MintEntry {
-    MintEntry {
+    let cdk00::PreMintSecrets { secrets, keyset_id } = premints;
+    let mut entry = MintEntry {
         quote_id,
         amount,
         address,
         expiry,
+        premints: Vec::with_capacity(secrets.len()),
+        kid: keyset_id,
+    };
+    for premint in secrets {
+        entry.premints.push((
+            premint.blinded_message,
+            premint.secret,
+            premint.r,
+            premint.amount,
+        ));
     }
+    entry
 }
 
-fn convert_mint_entry_to(entry: MintEntry) -> MintSummary {
-    MintSummary {
+fn convert_mint_entry_to(entry: MintEntry) -> (MintSummary, cdk00::PreMintSecrets) {
+    let summary = MintSummary {
         quote_id: entry.quote_id,
         amount: entry.amount,
         address: entry.address,
         expiry: entry.expiry,
+    };
+    let keyset_id = entry.kid;
+    let mut secrets: Vec<cdk00::PreMint> = Vec::with_capacity(entry.premints.len());
+    for premint in entry.premints {
+        let pre = cdk00::PreMint {
+            blinded_message: premint.0,
+            secret: premint.1,
+            r: premint.2,
+            amount: premint.3,
+        };
+        secrets.push(pre);
     }
+    (summary, cdk00::PreMintSecrets { secrets, keyset_id })
 }
 
 ///////////////////////////////////////////// MintMeltDB
@@ -330,20 +362,20 @@ impl MintMeltRepository for MintMeltDB {
         amount: bitcoin::Amount,
         address: bitcoin::Address<NetworkUnchecked>,
         expiry: u64,
+        premints: cdk00::PreMintSecrets,
     ) -> Result<Uuid> {
         let db_clone = self.db.clone();
         let table = self.mint_table;
-        let entry = convert_mint_entry_from(quote_id, amount, address, expiry);
+        let entry = convert_mint_entry_from(quote_id, amount, address, expiry, premints);
         spawn_blocking(move || Self::store_mint_sync(db_clone, table, entry)).await?
     }
 
-    async fn load_mint(&self, qid: Uuid) -> Result<MintSummary> {
+    async fn load_mint(&self, qid: Uuid) -> Result<(MintSummary, cdk00::PreMintSecrets)> {
         let db_clone = self.db.clone();
         let table = self.mint_table;
         let res = spawn_blocking(move || Self::load_mint_sync(db_clone, table, qid)).await??;
         let entry = res.ok_or(Error::MintNotFound(qid.clone().to_string()))?;
-        let summary = convert_mint_entry_to(entry);
-        Ok(summary)
+        Ok(convert_mint_entry_to(entry))
     }
 
     async fn list_mints(&self) -> Result<Vec<Uuid>> {
@@ -489,17 +521,24 @@ mod tests {
         let address = valid_payment_address_testnet();
         let expiry = Utc::now().timestamp() as u64;
 
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let keyset = cdk02::KeySet::from(mintkeyset.clone());
+        let premint =
+            cdk00::PreMintSecrets::random(keyset.id, Amount::from(12345u64), &SplitTarget::None)
+                .unwrap();
+
         let stored = repo
-            .store_mint(qid, amount, address.clone(), expiry)
+            .store_mint(qid, amount, address.clone(), expiry, premint.clone())
             .await
             .expect("store_mint works");
         assert_eq!(stored, qid);
 
-        let loaded = repo.load_mint(qid).await.expect("load_mint works");
+        let (loaded, loaded_premint) = repo.load_mint(qid).await.expect("load_mint works");
         assert_eq!(loaded.quote_id, qid);
         assert_eq!(loaded.amount, amount);
         assert_eq!(loaded.address, address);
         assert_eq!(loaded.expiry, expiry);
+        assert_eq!(loaded_premint, premint);
     }
 
     #[tokio::test]
@@ -509,11 +548,21 @@ mod tests {
         let q1 = Uuid::new_v4();
         let q2 = Uuid::new_v4();
 
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let keyset = cdk02::KeySet::from(mintkeyset.clone());
+        let premint1 =
+            cdk00::PreMintSecrets::random(keyset.id, Amount::from(1u64), &SplitTarget::None)
+                .unwrap();
+        let premint2 =
+            cdk00::PreMintSecrets::random(keyset.id, Amount::from(2u64), &SplitTarget::None)
+                .unwrap();
+
         repo.store_mint(
             q1,
             bitcoin::Amount::from_sat(1),
             valid_payment_address_testnet(),
             111,
+            premint1,
         )
         .await
         .expect("store_mint q1");
@@ -522,6 +571,7 @@ mod tests {
             bitcoin::Amount::from_sat(2),
             valid_payment_address_testnet(),
             222,
+            premint2,
         )
         .await
         .expect("store_mint q2");
@@ -540,11 +590,18 @@ mod tests {
         let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
 
         let qid = Uuid::new_v4();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let keyset = cdk02::KeySet::from(mintkeyset.clone());
+        let premint =
+            cdk00::PreMintSecrets::random(keyset.id, Amount::from(42u64), &SplitTarget::None)
+                .unwrap();
+
         repo.store_mint(
             qid,
             bitcoin::Amount::from_sat(42),
             valid_payment_address_testnet(),
             999,
+            premint,
         )
         .await
         .expect("store_mint works");

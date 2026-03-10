@@ -1384,17 +1384,21 @@ mod tests {
     async fn test_mint_uses_debit() {
         let mut ctx = wallet_ctx();
 
-        ctx.debit
-            .expect_mint_onchain()
+        ctx.client
+            .expect_get_mint_keysets()
             .times(1)
-            .returning(|_amount, _client| {
+            .returning(|| Ok(cashu::KeysetResponse { keysets: vec![] }));
+
+        ctx.debit.expect_mint_onchain().times(1).returning(
+            |_amount, _keysets_info, _client, _clowder_id| {
                 Ok(MintSummary {
                     quote_id: Uuid::new_v4(),
                     amount: bitcoin::Amount::from_sat(1000),
                     address: valid_payment_address_testnet(),
                     expiry: 0,
                 })
-            });
+            },
+        );
 
         let wlt = wallet(ctx);
         let _ = wlt.mint(bitcoin::Amount::from_sat(1000)).await.unwrap();

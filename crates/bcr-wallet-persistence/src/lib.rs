@@ -91,8 +91,12 @@ pub trait MintMeltRepository: SendSync {
         amount: bitcoin::Amount,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         expiry: u64,
+        premints: cdk00::PreMintSecrets,
     ) -> Result<Uuid>;
-    async fn load_mint(&self, qid: Uuid) -> Result<bcr_wallet_core::types::MintSummary>;
+    async fn load_mint(
+        &self,
+        qid: Uuid,
+    ) -> Result<(bcr_wallet_core::types::MintSummary, cdk00::PreMintSecrets)>;
     async fn list_mints(&self) -> Result<Vec<Uuid>>;
     async fn delete_mint(&self, qid: Uuid) -> Result<()>;
 }

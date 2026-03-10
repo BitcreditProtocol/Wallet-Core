@@ -83,7 +83,9 @@ pub mod tests {
             async fn mint_onchain(
                 &self,
                 amount: bitcoin::Amount,
+                keysets_info: &[KeySetInfo],
                 client: Arc<dyn ClowderMintConnector>,
+                clowder_id: bitcoin::secp256k1::PublicKey,
             ) -> Result<MintSummary>;
             async fn check_pending_mints(
                 &self,
