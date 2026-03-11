@@ -81,16 +81,16 @@ pub trait ClowderMintConnector: cdk::wallet::MintConnector + SendSync {
     ) -> Result<wire_melt::MeltQuoteOnchainResponse>;
     async fn post_mint_quote_onchain(
         &self,
-        req: wire_mint::MintQuoteOnchainRequest,
-    ) -> Result<wire_mint::MintQuoteOnchainResponse>;
+        req: wire_mint::OnchainMintQuoteRequest,
+    ) -> Result<wire_mint::OnchainMintQuoteResponse>;
     async fn get_mint_quote_onchain(
         &self,
         quote_id: String,
-    ) -> Result<wire_mint::MintQuoteOnchainResponse>;
+    ) -> Result<wire_mint::OnchainMintQuoteResponse>;
     async fn post_mint_onchain(
         &self,
-        req: cashu::MintRequest<String>,
-    ) -> Result<cashu::MintResponse>;
+        req: wire_mint::OnchainMintRequest,
+    ) -> Result<wire_mint::MintResponse>;
 }
 
 #[derive(Debug, Clone)]
@@ -441,8 +441,8 @@ impl ClowderMintConnector for HttpClientExt {
 
     async fn post_mint_quote_onchain(
         &self,
-        req: wire_mint::MintQuoteOnchainRequest,
-    ) -> Result<wire_mint::MintQuoteOnchainResponse> {
+        req: wire_mint::OnchainMintQuoteRequest,
+    ) -> Result<wire_mint::OnchainMintQuoteResponse> {
         let url = self
             .url
             .join("v1/mint/quote/onchain")
@@ -450,14 +450,14 @@ impl ClowderMintConnector for HttpClientExt {
         debug!("HTTP call to mint_quote_onchain on {url}");
 
         let res = self.secondary.post(url).json(&req).send().await?;
-        let response: wire_mint::MintQuoteOnchainResponse = res.json().await?;
+        let response: wire_mint::OnchainMintQuoteResponse = res.json().await?;
         Ok(response)
     }
 
     async fn get_mint_quote_onchain(
         &self,
         quote_id: String,
-    ) -> Result<wire_mint::MintQuoteOnchainResponse> {
+    ) -> Result<wire_mint::OnchainMintQuoteResponse> {
         let url = self
             .url
             .join(&format!("v1/mint/quote/onchain/{quote_id}"))
@@ -465,14 +465,14 @@ impl ClowderMintConnector for HttpClientExt {
         debug!("HTTP call to get mint_quote_onchain on {url}");
 
         let res = self.secondary.get(url).send().await?;
-        let response: wire_mint::MintQuoteOnchainResponse = res.json().await?;
+        let response: wire_mint::OnchainMintQuoteResponse = res.json().await?;
         Ok(response)
     }
 
     async fn post_mint_onchain(
         &self,
-        req: cashu::MintRequest<String>,
-    ) -> Result<cashu::MintResponse> {
+        req: wire_mint::OnchainMintRequest,
+    ) -> Result<wire_mint::MintResponse> {
         let url = self
             .url
             .join("v1/mint/onchain")
@@ -480,7 +480,7 @@ impl ClowderMintConnector for HttpClientExt {
         debug!("HTTP call to mint_onchain on {url}");
 
         let res = self.secondary.post(url).json(&req).send().await?;
-        let response: cashu::MintResponse = res.json().await?;
+        let response: wire_mint::MintResponse = res.json().await?;
         Ok(response)
     }
 }
@@ -896,8 +896,8 @@ impl ClowderMintConnector for SentinelClient {
 
     async fn post_mint_quote_onchain(
         &self,
-        req: wire_mint::MintQuoteOnchainRequest,
-    ) -> Result<wire_mint::MintQuoteOnchainResponse> {
+        req: wire_mint::OnchainMintQuoteRequest,
+    ) -> Result<wire_mint::OnchainMintQuoteResponse> {
         let url = self
             .url
             .join("v1/mint/quote/onchain")
@@ -905,14 +905,14 @@ impl ClowderMintConnector for SentinelClient {
         debug!("HTTP call on sentinel to mint_quote_onchain on {url}");
 
         let res = self.secondary.post(url).json(&req).send().await?;
-        let response: wire_mint::MintQuoteOnchainResponse = res.json().await?;
+        let response: wire_mint::OnchainMintQuoteResponse = res.json().await?;
         Ok(response)
     }
 
     async fn get_mint_quote_onchain(
         &self,
         quote_id: String,
-    ) -> Result<wire_mint::MintQuoteOnchainResponse> {
+    ) -> Result<wire_mint::OnchainMintQuoteResponse> {
         let url = self
             .url
             .join(&format!("v1/mint/quote/onchain/{quote_id}"))
@@ -920,14 +920,14 @@ impl ClowderMintConnector for SentinelClient {
         debug!("HTTP call on sentinel to get mint_quote_onchain on {url}");
 
         let res = self.secondary.get(url).send().await?;
-        let response: wire_mint::MintQuoteOnchainResponse = res.json().await?;
+        let response: wire_mint::OnchainMintQuoteResponse = res.json().await?;
         Ok(response)
     }
 
     async fn post_mint_onchain(
         &self,
-        req: cashu::MintRequest<String>,
-    ) -> Result<cashu::MintResponse> {
+        req: wire_mint::OnchainMintRequest,
+    ) -> Result<wire_mint::MintResponse> {
         let url = self
             .url
             .join("v1/mint/onchain")
@@ -935,7 +935,7 @@ impl ClowderMintConnector for SentinelClient {
         debug!("HTTP call on sentinel to mint_onchain on {url}");
 
         let res = self.secondary.post(url).json(&req).send().await?;
-        let response: cashu::MintResponse = res.json().await?;
+        let response: wire_mint::MintResponse = res.json().await?;
         Ok(response)
     }
 }

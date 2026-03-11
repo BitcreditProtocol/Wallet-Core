@@ -20,7 +20,6 @@ use bcr_wallet_core::{
     util::keypair_from_seed,
 };
 use bcr_wallet_persistence::{MintMeltRepository, PocketRepository};
-use bitcoin::base64::Engine;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -214,79 +213,60 @@ impl Pocket {
     ) -> Result<Option<(cashu::Amount, Vec<cashu::PublicKey>)>> {
         let (mint_summary, premint) = self.mdb.load_mint(qid).await?;
         let mint_state = client.get_mint_quote_onchain(qid.to_string()).await?;
+        let body: wire_mint::OnchainMintQuoteResponseBody =
+            bcr_common::core::signature::deserialize_borsh_msg(&mint_state.content)?;
 
-        match mint_state.state {
-            Some(mint_quote_state) => {
-                match mint_quote_state {
-                    cashu::MintQuoteState::Unpaid => {
-                        tracing::info!("Mint {qid} not paid yet - skipping");
-                        if mint_state.body.expiry < tstamp {
-                            tracing::info!("Mint request with id {qid} expired - deleting.");
-                            self.mdb.delete_mint(qid).await?;
-                        }
-                        Ok(None)
-                    }
-                    cashu::MintQuoteState::Paid => {
-                        tracing::info!("Mint {qid} paid - attempting to mint..");
-                        let (active_keyset_info, active_keyset) =
-                            self.find_active_keyset(keysets_info, &client).await?;
+        if body.expiry < tstamp {
+            tracing::info!("Mint request with id {qid} expired - deleting.");
+            self.mdb.delete_mint(qid).await?;
+            return Ok(None);
+        }
 
-                        let mint_req = cashu::MintRequest {
-                            quote: mint_summary.quote_id.to_string(),
-                            outputs: premint.blinded_messages(),
-                            signature: None,
-                        };
-                        match client.post_mint_onchain(mint_req).await {
-                            Ok(mint_response) => {
-                                // create proofs
-                                let blinded_signatures = mint_response.signatures;
-                                let inputs = cashu::dhke::construct_proofs(
-                                    blinded_signatures,
-                                    premint.rs(),
-                                    premint.secrets(),
-                                    &active_keyset.keys,
-                                )?;
+        tracing::info!("Mint {qid} - attempting to mint..");
+        let (active_keyset_info, active_keyset) =
+            self.find_active_keyset(keysets_info, &client).await?;
 
-                                let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
-                                    HashMap::with_capacity(inputs.len());
-                                for input in inputs.into_iter() {
-                                    let y = input.y()?;
-                                    proofs.insert(y, input);
-                                }
-                                let safe_mode_clone = safe_mode.clone();
+        let mint_req = wire_mint::OnchainMintRequest {
+            quote: mint_summary.quote_id,
+        };
+        match client.post_mint_onchain(mint_req).await {
+            Ok(mint_response) => {
+                // create proofs
+                let blinded_signatures = mint_response.signatures;
+                let inputs = cashu::dhke::construct_proofs(
+                    blinded_signatures,
+                    premint.rs(),
+                    premint.secrets(),
+                    &active_keyset.keys,
+                )?;
 
-                                // swap proofs
-                                let (amount, ys) = self
-                                    .digest_proofs(
-                                        client,
-                                        (active_keyset_info, active_keyset),
-                                        proofs,
-                                        safe_mode_clone,
-                                    )
-                                    .await?;
-
-                                // delete local record
-                                self.mdb.delete_mint(qid).await?;
-
-                                tracing::info!("Minted {qid} successfully for {amount}");
-                                Ok(Some((amount, ys)))
-                            }
-                            Err(e) => {
-                                tracing::error!("Couldn't mint quote {qid}: {e}");
-                                Err(Error::MintingError(qid.to_string()))
-                            }
-                        }
-                    }
-                    cashu::MintQuoteState::Issued => {
-                        tracing::warn!("Mint {qid} already issued - deleting");
-                        self.mdb.delete_mint(qid).await?;
-                        Ok(None)
-                    }
+                let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
+                    HashMap::with_capacity(inputs.len());
+                for input in inputs.into_iter() {
+                    let y = input.y()?;
+                    proofs.insert(y, input);
                 }
+                let safe_mode_clone = safe_mode.clone();
+
+                // swap proofs
+                let (amount, ys) = self
+                    .digest_proofs(
+                        client,
+                        (active_keyset_info, active_keyset),
+                        proofs,
+                        safe_mode_clone,
+                    )
+                    .await?;
+
+                // delete local record
+                self.mdb.delete_mint(qid).await?;
+
+                tracing::info!("Minted {qid} successfully for {amount}");
+                Ok(Some((amount, ys)))
             }
-            None => {
-                tracing::warn!("Mint {qid} has no state set - skipping");
-                Ok(None)
+            Err(e) => {
+                tracing::error!("Couldn't mint quote {qid}: {e}");
+                Err(Error::MintingError(qid.to_string()))
             }
         }
     }
@@ -652,34 +632,33 @@ impl DebitPocketApi for Pocket {
             .await?;
 
         let blinded_messages = premint.blinded_messages();
-        let request = wire_mint::MintQuoteOnchainRequest {
-            amount,
-            unit: self.unit.clone(),
+        let request = wire_mint::OnchainMintQuoteRequest {
             blinded_messages: blinded_messages.clone(),
         };
 
         // Request mint quote
         let response = client.post_mint_quote_onchain(request).await?;
 
-        let borsh_bytes = borsh::to_vec(&response.body)?;
-        let content = bitcoin::base64::prelude::BASE64_STANDARD.encode(borsh_bytes);
         bcr_common::core::signature::schnorr_verify_b64(
-            &content,
+            &response.content,
             &response.commitment,
             &clowder_id.x_only_public_key().0,
         )?;
 
-        if response.body.blinded_messages != blinded_messages {
+        let body: wire_mint::OnchainMintQuoteResponseBody =
+            bcr_common::core::signature::deserialize_borsh_msg(&response.content)?;
+
+        if body.blinded_messages != blinded_messages {
             return Err(Error::MintingError(
                 "blinded messages mismatch in mint quote response".to_string(),
             ));
         }
 
         let mint_summary = MintSummary {
-            quote_id: response.body.quote,
-            amount: response.body.amount,
-            address: response.body.address.clone(),
-            expiry: response.body.expiry,
+            quote_id: body.quote,
+            amount: body.payment_amount,
+            address: body.address.clone(),
+            expiry: body.expiry,
         };
 
         self.mdb
@@ -1010,26 +989,25 @@ mod tests {
             .expect_post_mint_quote_onchain()
             .times(1)
             .returning(move |req| {
-                let body = wire_mint::MintQuoteOnchainResponseBody {
+                let body = wire_mint::OnchainMintQuoteResponseBody {
                     quote: Uuid::new_v4(),
                     address: bitcoin::Address::from_str(
                         "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0",
                     )
                     .unwrap(),
-                    amount,
+                    payment_amount: amount,
                     expiry: chrono::Utc::now().timestamp() as u64,
                     blinded_messages: req.blinded_messages,
                 };
-                let (_, commitment) =
+                let (content, commitment) =
                     bcr_common::core::signature::serialize_n_schnorr_sign_borsh_msg(
                         &body,
                         &clowder_keypair,
                     )
                     .unwrap();
-                Ok(wire_mint::MintQuoteOnchainResponse {
-                    body,
+                Ok(wire_mint::OnchainMintQuoteResponse {
+                    content,
                     commitment,
-                    state: Some(cashu::MintQuoteState::Unpaid),
                 })
             });
 
@@ -1088,30 +1066,31 @@ mod tests {
             .unwrap()
         };
 
+        mdb.expect_delete_mint().times(1).returning(move |_| Ok(()));
+
         connector
             .expect_get_mint_quote_onchain()
             .times(1)
             .returning(move |_| {
-                let body = wire_mint::MintQuoteOnchainResponseBody {
+                let body = wire_mint::OnchainMintQuoteResponseBody {
                     quote: uuid,
                     address: bitcoin::Address::from_str(
                         "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0",
                     )
                     .unwrap(),
-                    amount,
-                    expiry: chrono::Utc::now().timestamp() as u64,
+                    payment_amount: amount,
+                    expiry: 0, // expired
                     blinded_messages: vec![],
                 };
-                let (_, commitment) =
+                let (content, commitment) =
                     bcr_common::core::signature::serialize_n_schnorr_sign_borsh_msg(
                         &body,
                         &clowder_keypair,
                     )
                     .unwrap();
-                Ok(wire_mint::MintQuoteOnchainResponse {
-                    body,
+                Ok(wire_mint::OnchainMintQuoteResponse {
+                    content,
                     commitment,
-                    state: Some(cashu::MintQuoteState::Unpaid),
                 })
             });
 
