@@ -93,6 +93,7 @@ pub mod tests {
                 client: Arc<dyn ClowderMintConnector>,
                 tstamp: u64,
                 safe_mode: SafeMode,
+                clowder_id: bitcoin::secp256k1::PublicKey,
             ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>>;
         }
     }

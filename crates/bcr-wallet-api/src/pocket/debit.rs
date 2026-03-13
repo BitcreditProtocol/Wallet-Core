@@ -63,6 +63,7 @@ pub trait DebitPocketApi: super::PocketApi {
         client: Arc<dyn ClowderMintConnector>,
         tstamp: u64,
         safe_mode: SafeMode,
+        clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>>;
 }
 
@@ -210,6 +211,7 @@ impl Pocket {
         client: Arc<dyn ClowderMintConnector>,
         tstamp: u64,
         safe_mode: SafeMode,
+        clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<Option<(cashu::Amount, Vec<cashu::PublicKey>)>> {
         let (mint_summary, premint) = self.mdb.load_mint(qid).await?;
         let mint_state = client.get_mint_quote_onchain(qid.to_string()).await?;
@@ -228,6 +230,7 @@ impl Pocket {
 
         let mint_req = wire_mint::OnchainMintRequest {
             quote: mint_summary.quote_id,
+            alpha_id: clowder_id,
         };
         match client.post_mint_onchain(mint_req).await {
             Ok(mint_response) => {
@@ -654,10 +657,15 @@ impl DebitPocketApi for Pocket {
             ));
         }
 
+        let address: bitcoin::Address<bitcoin::address::NetworkUnchecked> = body
+            .address
+            .parse()
+            .map_err(|e| Error::MintingError(format!("invalid address: {e}")))?;
+
         let mint_summary = MintSummary {
             quote_id: body.quote,
             amount: body.payment_amount,
-            address: body.address.clone(),
+            address: address.clone(),
             expiry: body.expiry,
         };
 
@@ -679,6 +687,7 @@ impl DebitPocketApi for Pocket {
         client: Arc<dyn ClowderMintConnector>,
         tstamp: u64,
         safe_mode: SafeMode,
+        clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>> {
         let mint_ids = self.mdb.list_mints().await?;
         let mut res = HashMap::with_capacity(mint_ids.len());
@@ -686,7 +695,7 @@ impl DebitPocketApi for Pocket {
         tracing::debug!("check pending mints for {} mints", mint_ids.len());
         for qid in mint_ids {
             match self
-                .check_pending_mint(qid, keysets_info, client.clone(), tstamp, safe_mode.clone())
+                .check_pending_mint(qid, keysets_info, client.clone(), tstamp, safe_mode.clone(), clowder_id)
                 .await
             {
                 Ok(Some(mint_res)) => {
@@ -991,10 +1000,7 @@ mod tests {
             .returning(move |req| {
                 let body = wire_mint::OnchainMintQuoteResponseBody {
                     quote: Uuid::new_v4(),
-                    address: bitcoin::Address::from_str(
-                        "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0",
-                    )
-                    .unwrap(),
+                    address: "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0".to_string(),
                     payment_amount: amount,
                     expiry: chrono::Utc::now().timestamp() as u64,
                     blinded_messages: req.blinded_messages,
@@ -1074,10 +1080,7 @@ mod tests {
             .returning(move |_| {
                 let body = wire_mint::OnchainMintQuoteResponseBody {
                     quote: uuid,
-                    address: bitcoin::Address::from_str(
-                        "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0",
-                    )
-                    .unwrap(),
+                    address: "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0".to_string(),
                     payment_amount: amount,
                     expiry: 0, // expired
                     blinded_messages: vec![],
@@ -1096,12 +1099,14 @@ mod tests {
 
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
 
+        let clowder_id = bitcoin::secp256k1::PublicKey::from_keypair(&clowder_keypair);
         let res = pocket
             .check_pending_mints(
                 &k_infos,
                 Arc::new(connector),
                 chrono::Utc::now().timestamp() as u64,
                 SafeMode::Disabled,
+                clowder_id,
             )
             .await
             .expect("check pending mint works");

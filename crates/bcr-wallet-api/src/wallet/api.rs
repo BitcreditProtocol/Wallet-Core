@@ -532,6 +532,7 @@ impl WalletApi for super::Wallet {
                 self.client.clone(),
                 now.timestamp() as u64,
                 SafeMode::new(self.safe_mode, self.clowder_id),
+                self.clowder_id,
             )
             .await?;
 
