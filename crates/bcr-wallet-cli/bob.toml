@@ -1,7 +1,6 @@
-mint_url = "https://mint.wildcat1.clowder1.minibill.tech"
-# mint_url = "https://wildcat-dev-docker.minibill.tech"
+mint_url = "https://mint.wildcat1.clowder-dev.minibill.tech"
 mnemonic = "spoil frost juice sketch spirit fine trophy puzzle crater roast holiday payment"
 log_level = "DEBUG"
 db_path = "./bob.db"
 network = "testnet"
-nostr_relays = ["wss://bcr-relay-dev.minibill.tech"]
+nostr_relays = ["wss://relay.wildcat0.clowder-dev.minibill.tech"]
