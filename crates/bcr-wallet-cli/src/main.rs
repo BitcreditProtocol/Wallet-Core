@@ -78,6 +78,8 @@ enum Commands {
     },
     #[command(name = "mint")]
     Mint { id: usize, amount: u64 },
+    #[command(name = "protest_mint")]
+    ProtestMint { id: usize, quote_id: String },
     #[command(name = "migrate_rabid")]
     MigrateRabid,
     #[command(name = "run_jobs")]
@@ -251,6 +253,13 @@ async fn main() -> Result<()> {
                 "Mint for {}: {}",
                 cli.wallet,
                 command::cmd_mint(&app_state, &cli.wallet, id, amount).await?
+            );
+        }
+        Commands::ProtestMint { id, quote_id } => {
+            info!(
+                "Protest Mint for {}: {}",
+                cli.wallet,
+                command::cmd_protest_mint(&app_state, &cli.wallet, id, &quote_id).await?
             );
         }
         Commands::MigrateRabid => {

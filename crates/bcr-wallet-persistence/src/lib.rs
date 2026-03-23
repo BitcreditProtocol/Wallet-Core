@@ -72,6 +72,15 @@ pub trait TransactionRepository: SendSync {
 }
 
 ///////////////////////////////////////////// Mint Melt Repository
+
+#[derive(Debug)]
+pub struct MintRecord {
+    pub summary: bcr_wallet_core::types::MintSummary,
+    pub premint: cdk00::PreMintSecrets,
+    pub content: String,
+    pub commitment: bitcoin::secp256k1::schnorr::Signature,
+}
+
 #[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
 #[async_trait]
 pub trait MintMeltRepository: SendSync {
@@ -92,11 +101,10 @@ pub trait MintMeltRepository: SendSync {
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         expiry: u64,
         premints: cdk00::PreMintSecrets,
+        content: String,
+        commitment: bitcoin::secp256k1::schnorr::Signature,
     ) -> Result<Uuid>;
-    async fn load_mint(
-        &self,
-        qid: Uuid,
-    ) -> Result<(bcr_wallet_core::types::MintSummary, cdk00::PreMintSecrets)>;
+    async fn load_mint(&self, qid: Uuid) -> Result<MintRecord>;
     async fn list_mints(&self) -> Result<Vec<Uuid>>;
     async fn delete_mint(&self, qid: Uuid) -> Result<()>;
 }

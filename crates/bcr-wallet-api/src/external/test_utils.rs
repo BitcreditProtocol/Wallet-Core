@@ -141,6 +141,11 @@ pub mod tests {
                 &self,
                 req: wire_mint::OnchainMintRequest,
             ) -> Result<wire_mint::MintResponse>;
+
+            async fn post_protest_mint(
+                &self,
+                req: wire_mint::MintProtestRequest,
+            ) -> Result<wire_mint::MintProtestResponse>;
         }
     }
 }

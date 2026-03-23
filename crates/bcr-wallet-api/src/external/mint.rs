@@ -91,6 +91,10 @@ pub trait ClowderMintConnector: cdk::wallet::MintConnector + SendSync {
         &self,
         req: wire_mint::OnchainMintRequest,
     ) -> Result<wire_mint::MintResponse>;
+    async fn post_protest_mint(
+        &self,
+        req: wire_mint::MintProtestRequest,
+    ) -> Result<wire_mint::MintProtestResponse>;
 }
 
 #[derive(Debug, Clone)]
@@ -481,6 +485,27 @@ impl ClowderMintConnector for HttpClientExt {
 
         let res = self.secondary.post(url).json(&req).send().await?;
         let response: wire_mint::MintResponse = res.json().await?;
+        Ok(response)
+    }
+
+    async fn post_protest_mint(
+        &self,
+        req: wire_mint::MintProtestRequest,
+    ) -> Result<wire_mint::MintProtestResponse> {
+        let url = self
+            .url
+            .join("v1/protest/mint")
+            .expect("protest_mint url error");
+        debug!("HTTP call to protest_mint on {url}");
+
+        let res = self
+            .secondary
+            .post(url)
+            .json(&req)
+            .send()
+            .await?
+            .error_for_status()?;
+        let response: wire_mint::MintProtestResponse = res.json().await?;
         Ok(response)
     }
 }
@@ -936,6 +961,27 @@ impl ClowderMintConnector for SentinelClient {
 
         let res = self.secondary.post(url).json(&req).send().await?;
         let response: wire_mint::MintResponse = res.json().await?;
+        Ok(response)
+    }
+
+    async fn post_protest_mint(
+        &self,
+        req: wire_mint::MintProtestRequest,
+    ) -> Result<wire_mint::MintProtestResponse> {
+        let url = self
+            .url
+            .join("v1/protest/mint")
+            .expect("protest_mint url error");
+        debug!("HTTP call on sentinel to protest_mint on {url}");
+
+        let res = self
+            .secondary
+            .post(url)
+            .json(&req)
+            .send()
+            .await?
+            .error_for_status()?;
+        let response: wire_mint::MintProtestResponse = res.json().await?;
         Ok(response)
     }
 }

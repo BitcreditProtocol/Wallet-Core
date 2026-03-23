@@ -6,7 +6,7 @@ pub mod tests {
     use crate::types::{MeltSummary, MintSummary, SendSummary};
     use crate::wallet::types::SafeMode;
     use async_trait::async_trait;
-    use bcr_common::wire::melt as wire_melt;
+    use bcr_common::wire::{melt as wire_melt, mint as wire_mint};
     use std::collections::HashMap;
     use std::sync::Arc;
     use uuid::Uuid;
@@ -95,6 +95,14 @@ pub mod tests {
                 safe_mode: SafeMode,
                 clowder_id: bitcoin::secp256k1::PublicKey,
             ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>>;
+            async fn protest_mint(
+                &self,
+                qid: Uuid,
+                keysets_info: &[KeySetInfo],
+                client: Arc<dyn ClowderMintConnector>,
+                safe_mode: SafeMode,
+                clowder_id: bitcoin::secp256k1::PublicKey,
+            ) -> Result<(wire_mint::ProtestStatus, Option<(cashu::Amount, Vec<cashu::PublicKey>)>)>;
         }
     }
 

@@ -83,6 +83,8 @@ struct MintEntry {
         Amount,
     )>,
     kid: cashu::Id,
+    content: String,
+    commitment: bitcoin::secp256k1::schnorr::Signature,
 }
 
 fn convert_mint_entry_from(
@@ -91,6 +93,8 @@ fn convert_mint_entry_from(
     address: bitcoin::Address<NetworkUnchecked>,
     expiry: u64,
     premints: cdk00::PreMintSecrets,
+    content: String,
+    commitment: bitcoin::secp256k1::schnorr::Signature,
 ) -> MintEntry {
     let cdk00::PreMintSecrets { secrets, keyset_id } = premints;
     let mut entry = MintEntry {
@@ -100,6 +104,8 @@ fn convert_mint_entry_from(
         expiry,
         premints: Vec::with_capacity(secrets.len()),
         kid: keyset_id,
+        content,
+        commitment,
     };
     for premint in secrets {
         entry.premints.push((
@@ -112,7 +118,7 @@ fn convert_mint_entry_from(
     entry
 }
 
-fn convert_mint_entry_to(entry: MintEntry) -> (MintSummary, cdk00::PreMintSecrets) {
+fn convert_mint_entry_to(entry: MintEntry) -> crate::MintRecord {
     let summary = MintSummary {
         quote_id: entry.quote_id,
         amount: entry.amount,
@@ -130,7 +136,12 @@ fn convert_mint_entry_to(entry: MintEntry) -> (MintSummary, cdk00::PreMintSecret
         };
         secrets.push(pre);
     }
-    (summary, cdk00::PreMintSecrets { secrets, keyset_id })
+    crate::MintRecord {
+        summary,
+        premint: cdk00::PreMintSecrets { secrets, keyset_id },
+        content: entry.content,
+        commitment: entry.commitment,
+    }
 }
 
 ///////////////////////////////////////////// MintMeltDB
@@ -363,14 +374,18 @@ impl MintMeltRepository for MintMeltDB {
         address: bitcoin::Address<NetworkUnchecked>,
         expiry: u64,
         premints: cdk00::PreMintSecrets,
+        content: String,
+        commitment: bitcoin::secp256k1::schnorr::Signature,
     ) -> Result<Uuid> {
         let db_clone = self.db.clone();
         let table = self.mint_table;
-        let entry = convert_mint_entry_from(quote_id, amount, address, expiry, premints);
+        let entry = convert_mint_entry_from(
+            quote_id, amount, address, expiry, premints, content, commitment,
+        );
         spawn_blocking(move || Self::store_mint_sync(db_clone, table, entry)).await?
     }
 
-    async fn load_mint(&self, qid: Uuid) -> Result<(MintSummary, cdk00::PreMintSecrets)> {
+    async fn load_mint(&self, qid: Uuid) -> Result<crate::MintRecord> {
         let db_clone = self.db.clone();
         let table = self.mint_table;
         let res = spawn_blocking(move || Self::load_mint_sync(db_clone, table, qid)).await??;
@@ -404,6 +419,13 @@ mod tests {
     };
     use chrono::Utc;
     use redb::{Builder, backends::InMemoryBackend};
+
+    fn dummy_commitment() -> (String, bitcoin::secp256k1::schnorr::Signature) {
+        let content = "dGVzdA==".to_string(); // base64 "test"
+        let sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64])
+            .expect("valid signature bytes");
+        (content, sig)
+    }
 
     fn get_db(wallet_id: &str, unit: CurrencyUnit) -> MintMeltDB {
         let in_mem = InMemoryBackend::new();
@@ -520,6 +542,7 @@ mod tests {
         let amount = bitcoin::Amount::from_sat(12345);
         let address = valid_payment_address_testnet();
         let expiry = Utc::now().timestamp() as u64;
+        let (content, commitment) = dummy_commitment();
 
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = cdk02::KeySet::from(mintkeyset.clone());
@@ -528,17 +551,27 @@ mod tests {
                 .unwrap();
 
         let stored = repo
-            .store_mint(qid, amount, address.clone(), expiry, premint.clone())
+            .store_mint(
+                qid,
+                amount,
+                address.clone(),
+                expiry,
+                premint.clone(),
+                content.clone(),
+                commitment,
+            )
             .await
             .expect("store_mint works");
         assert_eq!(stored, qid);
 
-        let (loaded, loaded_premint) = repo.load_mint(qid).await.expect("load_mint works");
-        assert_eq!(loaded.quote_id, qid);
-        assert_eq!(loaded.amount, amount);
-        assert_eq!(loaded.address, address);
-        assert_eq!(loaded.expiry, expiry);
-        assert_eq!(loaded_premint, premint);
+        let record = repo.load_mint(qid).await.expect("load_mint works");
+        assert_eq!(record.summary.quote_id, qid);
+        assert_eq!(record.summary.amount, amount);
+        assert_eq!(record.summary.address, address);
+        assert_eq!(record.summary.expiry, expiry);
+        assert_eq!(record.premint, premint);
+        assert_eq!(record.content, content);
+        assert_eq!(record.commitment, commitment);
     }
 
     #[tokio::test]
@@ -547,6 +580,7 @@ mod tests {
 
         let q1 = Uuid::new_v4();
         let q2 = Uuid::new_v4();
+        let (content, commitment) = dummy_commitment();
 
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = cdk02::KeySet::from(mintkeyset.clone());
@@ -563,6 +597,8 @@ mod tests {
             valid_payment_address_testnet(),
             111,
             premint1,
+            content.clone(),
+            commitment,
         )
         .await
         .expect("store_mint q1");
@@ -572,6 +608,8 @@ mod tests {
             valid_payment_address_testnet(),
             222,
             premint2,
+            content.clone(),
+            commitment,
         )
         .await
         .expect("store_mint q2");
@@ -590,6 +628,7 @@ mod tests {
         let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
 
         let qid = Uuid::new_v4();
+        let (content, commitment) = dummy_commitment();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = cdk02::KeySet::from(mintkeyset.clone());
         let premint =
@@ -602,6 +641,8 @@ mod tests {
             valid_payment_address_testnet(),
             999,
             premint,
+            content,
+            commitment,
         )
         .await
         .expect("store_mint works");
