@@ -126,7 +126,7 @@ pub mod tests {
             async fn post_melt_onchain(
                 &self,
                 req: cashu::MeltRequest<String>,
-            ) -> Result<wire_melt::MeltQuoteOnchainResponse>;
+            ) -> Result<wire_melt::MeltOnchainResponse>;
             async fn post_mint_quote_onchain(
                 &self,
                 req: wire_mint::OnchainMintQuoteRequest,

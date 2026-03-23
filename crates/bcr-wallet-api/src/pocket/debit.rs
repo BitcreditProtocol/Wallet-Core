@@ -15,10 +15,7 @@ use bcr_common::{
         mint as wire_mint,
     },
 };
-use bcr_wallet_core::{
-    types::{MeltSummary, MintSummary, Seed, SendSummary},
-    util::keypair_from_seed,
-};
+use bcr_wallet_core::types::{MeltSummary, MintSummary, Seed, SendSummary};
 use bcr_wallet_persistence::{MintMeltRepository, PocketRepository};
 use std::{
     collections::HashMap,
@@ -516,13 +513,10 @@ impl DebitPocketApi for Pocket {
         keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
     ) -> Result<MeltSummary> {
-        let secret_key = keypair_from_seed(self.seed).secret_key();
-        let signature = cdk01::SecretKey::from(secret_key).sign(&[])?; // not used currently - sign empty message
         let request = wire_melt::MeltQuoteOnchainRequest {
             request: invoice,
             unit: self.unit.clone(),
-            options: None,
-            signature,
+            change: Vec::new(),
         };
         let response = client.post_melt_quote_onchain(request).await?;
         let total_amount = response.amount + response.fee_reserve;
@@ -605,7 +599,7 @@ impl DebitPocketApi for Pocket {
         };
 
         if let Some(premints) = premints {
-            let change = unblind_proofs(&keyset, response.change.unwrap_or(Vec::new()), premints);
+            let change = unblind_proofs(&keyset, response.change, premints);
             for proof in change {
                 self.pdb.store_new(proof).await?;
             }
@@ -695,7 +689,14 @@ impl DebitPocketApi for Pocket {
         tracing::debug!("check pending mints for {} mints", mint_ids.len());
         for qid in mint_ids {
             match self
-                .check_pending_mint(qid, keysets_info, client.clone(), tstamp, safe_mode.clone(), clowder_id)
+                .check_pending_mint(
+                    qid,
+                    keysets_info,
+                    client.clone(),
+                    tstamp,
+                    safe_mode.clone(),
+                    clowder_id,
+                )
                 .await
             {
                 Ok(Some(mint_res)) => {
@@ -874,13 +875,11 @@ mod tests {
             .returning(move |_| {
                 Ok(wire_melt::MeltQuoteOnchainResponse {
                     quote: Uuid::new_v4(),
-                    txid: None,
                     fee_reserve: bitcoin::Amount::ZERO,
                     amount,
                     state: cashu::MeltQuoteState::Pending,
                     expiry: chrono::Utc::now().timestamp() as u64,
                     unit: Some(CurrencyUnit::Sat),
-                    change: None,
                 })
             });
 
@@ -931,15 +930,11 @@ mod tests {
             .expect_post_melt_onchain()
             .times(1)
             .returning(move |_| {
-                Ok(wire_melt::MeltQuoteOnchainResponse {
+                Ok(wire_melt::MeltOnchainResponse {
                     quote: uuid,
                     txid: Some(melt_tx_clone.clone()),
-                    fee_reserve: bitcoin::Amount::ZERO,
-                    amount,
                     state: cashu::MeltQuoteState::Paid,
-                    expiry: chrono::Utc::now().timestamp() as u64,
-                    unit: Some(CurrencyUnit::Sat),
-                    change: None,
+                    change: Vec::new(),
                 })
             });
 

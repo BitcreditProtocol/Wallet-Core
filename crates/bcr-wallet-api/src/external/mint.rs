@@ -78,7 +78,7 @@ pub trait ClowderMintConnector: cdk::wallet::MintConnector + SendSync {
     async fn post_melt_onchain(
         &self,
         req: cashu::MeltRequest<String>,
-    ) -> Result<wire_melt::MeltQuoteOnchainResponse>;
+    ) -> Result<wire_melt::MeltOnchainResponse>;
     async fn post_mint_quote_onchain(
         &self,
         req: wire_mint::OnchainMintQuoteRequest,
@@ -427,7 +427,7 @@ impl ClowderMintConnector for HttpClientExt {
     async fn post_melt_onchain(
         &self,
         req: cashu::MeltRequest<String>,
-    ) -> Result<wire_melt::MeltQuoteOnchainResponse> {
+    ) -> Result<wire_melt::MeltOnchainResponse> {
         let url = self
             .url
             .join("v1/melt/onchain")
@@ -435,7 +435,7 @@ impl ClowderMintConnector for HttpClientExt {
         debug!("HTTP call to melt_onchain on {url}");
 
         let res = self.secondary.post(url).json(&req).send().await?;
-        let response: wire_melt::MeltQuoteOnchainResponse = res.json().await?;
+        let response: wire_melt::MeltOnchainResponse = res.json().await?;
         Ok(response)
     }
 
@@ -882,7 +882,7 @@ impl ClowderMintConnector for SentinelClient {
     async fn post_melt_onchain(
         &self,
         req: cashu::MeltRequest<String>,
-    ) -> Result<wire_melt::MeltQuoteOnchainResponse> {
+    ) -> Result<wire_melt::MeltOnchainResponse> {
         let url = self
             .url
             .join("v1/melt/onchain")
@@ -890,7 +890,7 @@ impl ClowderMintConnector for SentinelClient {
         debug!("HTTP call on sentinel to melt_onchain on {url}");
 
         let res = self.secondary.post(url).json(&req).send().await?;
-        let response: wire_melt::MeltQuoteOnchainResponse = res.json().await?;
+        let response: wire_melt::MeltOnchainResponse = res.json().await?;
         Ok(response)
     }
 
