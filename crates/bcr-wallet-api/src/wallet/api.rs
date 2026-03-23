@@ -513,7 +513,11 @@ impl WalletApi for super::Wallet {
     }
 
     async fn mint(&self, amount: bitcoin::Amount) -> Result<MintSummary> {
-        let summary = self.debit.mint_onchain(amount, self.client.clone()).await?;
+        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
+        let summary = self
+            .debit
+            .mint_onchain(amount, &keysets_info, self.client.clone(), self.clowder_id)
+            .await?;
         Ok(summary)
     }
 
@@ -528,6 +532,7 @@ impl WalletApi for super::Wallet {
                 self.client.clone(),
                 now.timestamp() as u64,
                 SafeMode::new(self.safe_mode, self.clowder_id),
+                self.clowder_id,
             )
             .await?;
 
