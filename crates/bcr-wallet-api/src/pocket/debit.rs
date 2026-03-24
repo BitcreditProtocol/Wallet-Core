@@ -912,7 +912,6 @@ mod tests {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
         let k_infos = vec![KeySetInfo::from(info)];
-        let amount = bitcoin::Amount::from_sat(24);
 
         let mdb = MockMintMeltRepository::new();
         let pdb = MockPocketRepository::new();

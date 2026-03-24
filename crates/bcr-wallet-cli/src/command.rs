@@ -1,9 +1,15 @@
+use std::sync::Arc;
+
 use anyhow::Result;
+use bcr_common::cdk_common::wallet::TransactionId;
 use bcr_wallet_api::AppState;
 use bcr_wallet_core::types::{
-    get_btc_alpha_tx_id, get_btc_beta_tx_id, get_payment_type, get_transaction_status,
+    PaymentResultCallback, get_btc_alpha_tx_id, get_btc_beta_tx_id, get_payment_type,
+    get_transaction_status,
 };
 use chrono::{DateTime, Utc};
+use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 pub async fn cmd_info(app_state: &AppState) -> Result<String> {
@@ -149,25 +155,41 @@ pub async fn cmd_request_payment(
     id: usize,
     description: Option<String>,
 ) -> Result<String> {
-    let mut res = String::new();
     let req = app_state
         .wallet_prepare_payment_request(id, amount, unit.to_string(), description)
         .await?;
-
     info!("Payment Request: {}, {}", &req.request, &req.p_id);
-    let tx_id = app_state
-        .wallet_check_received_payment(id, 2, 60, 1, req.p_id.clone())
+
+    let cancel_token = CancellationToken::new();
+    // Uncomment to test cancellation
+    // let cancel_token_clone = cancel_token.clone();
+    // tokio::spawn(async move {
+    //     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    //     cancel_token_clone.cancel();
+    // });
+    let (tx, rx) = oneshot::channel::<Option<TransactionId>>();
+
+    let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
+
+    let res_cb: PaymentResultCallback = Arc::new(move |tx_id| {
+        if let Some(sender) = tx.lock().unwrap().take() {
+            let _ = sender.send(tx_id);
+        }
+    });
+
+    app_state
+        .wallet_check_received_payment(id, 60, req.p_id.clone(), cancel_token, res_cb)
         .await?;
 
+    let Ok(tx_id) = rx.await else {
+        return Ok("Cancelled".to_string());
+    };
+
+    let mut res = String::new();
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!(
         "Request Payment for {name}, Amount: {amount} - Wallet ID: {id}.\n"
-    ));
-    push_break(&mut res);
-    res.push_str(&format!(
-        "Payment request: {}, p_id: {}",
-        &req.request, &req.p_id
     ));
     push_break(&mut res);
     res.push_str(&format!(

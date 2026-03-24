@@ -8,7 +8,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `get_app_state`, `init_logging`, `init_panic_hook`, `new`, `reset_runtime`, `start_jobs`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `CurrencyUnit`, `WalletCleanLocalDbResponse`, `WalletRuntime`, `WalletsNamesResponse`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`
 
 Future<void> initWalletFfi({required WalletFfiConfig conf}) =>
     RustLib.instance.api.crateApiInitWalletFfi(conf: conf);
@@ -91,9 +91,14 @@ Future<WalletPreparePaymentReqResponse> walletPreparePaymentRequest({
   required WalletPreparePaymentReqRequest req,
 }) => RustLib.instance.api.crateApiWalletPreparePaymentRequest(req: req);
 
-Future<WalletMaybeTransactionIdResponse> walletCheckReceivedPayment({
+Future<WalletPaymentCheckHandle> walletCheckReceivedPayment({
   required WalletCheckReceivedPaymentRequest req,
-}) => RustLib.instance.api.crateApiWalletCheckReceivedPayment(req: req);
+  required FutureOr<void> Function(WalletMaybeTransactionIdResponse)
+  resultCallback,
+}) => RustLib.instance.api.crateApiWalletCheckReceivedPayment(
+  req: req,
+  resultCallback: resultCallback,
+);
 
 Future<WalletCheckPendingMintsResponse> walletCheckPendingMints({
   required WalletRequest req,
@@ -133,6 +138,11 @@ Future<MintIsOfflineResponse> walletMintIsOffline({
 
 Future<MintIsRabidResponse> walletMintIsRabid({required WalletRequest req}) =>
     RustLib.instance.api.crateApiWalletMintIsRabid(req: req);
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<WalletPaymentCheckHandle>>
+abstract class WalletPaymentCheckHandle implements RustOpaqueInterface {
+  Future<void> cancel();
+}
 
 class AddWalletResponse {
   final BigInt walletId;
@@ -526,26 +536,17 @@ class WalletCheckPendingMintsResponse {
 
 class WalletCheckReceivedPaymentRequest {
   final BigInt walletId;
-  final BigInt initialDelaySec;
   final BigInt maxWaitSec;
-  final BigInt checkIntervalSec;
   final String pId;
 
   const WalletCheckReceivedPaymentRequest({
     required this.walletId,
-    required this.initialDelaySec,
     required this.maxWaitSec,
-    required this.checkIntervalSec,
     required this.pId,
   });
 
   @override
-  int get hashCode =>
-      walletId.hashCode ^
-      initialDelaySec.hashCode ^
-      maxWaitSec.hashCode ^
-      checkIntervalSec.hashCode ^
-      pId.hashCode;
+  int get hashCode => walletId.hashCode ^ maxWaitSec.hashCode ^ pId.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -553,9 +554,7 @@ class WalletCheckReceivedPaymentRequest {
       other is WalletCheckReceivedPaymentRequest &&
           runtimeType == other.runtimeType &&
           walletId == other.walletId &&
-          initialDelaySec == other.initialDelaySec &&
           maxWaitSec == other.maxWaitSec &&
-          checkIntervalSec == other.checkIntervalSec &&
           pId == other.pId;
 }
 

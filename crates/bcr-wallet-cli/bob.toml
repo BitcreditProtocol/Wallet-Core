@@ -1,4 +1,5 @@
-mint_url = "https://mint.wildcat1.clowder-dev.minibill.tech"
+#mint_url = "https://mint.wildcat1.clowder-dev.minibill.tech"
+mint_url = "https://mint.wildcat0.clowder1.minibill.tech"
 mnemonic = "spoil frost juice sketch spirit fine trophy puzzle crater roast holiday payment"
 log_level = "DEBUG"
 db_path = "./bob.db"

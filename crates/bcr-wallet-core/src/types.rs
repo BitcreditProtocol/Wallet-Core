@@ -1,10 +1,15 @@
-use bcr_common::cashu::{Amount, CurrencyUnit, KeySetInfo, MintUrl};
+use bcr_common::{
+    cashu::{Amount, CurrencyUnit, KeySetInfo, MintUrl},
+    cdk_common::wallet::TransactionId,
+};
 use bitcoin::{address::NetworkUnchecked, secp256k1};
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 use uuid::Uuid;
 
 pub type TStamp = chrono::DateTime<chrono::Utc>;
 pub type Seed = [u8; 64];
+
+pub type PaymentResultCallback = Arc<dyn Fn(Option<TransactionId>) + Send + Sync + 'static>;
 
 #[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct JobState {

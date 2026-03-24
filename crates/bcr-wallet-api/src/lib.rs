@@ -13,7 +13,8 @@ use bcr_common::{
     wallet::Token,
 };
 use bcr_wallet_core::types::{
-    self, JobState, MintSummary, PaymentSummary, RedemptionSummary, Seed, WalletConfig,
+    self, JobState, MintSummary, PaymentResultCallback, PaymentSummary, RedemptionSummary, Seed,
+    WalletConfig,
 };
 use bcr_wallet_core::util::{build_wallet_id, keypair_from_mnemonic, seed_from_mnemonic};
 use bcr_wallet_persistence::redb::jobs::JobsDB;
@@ -29,6 +30,7 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub mod config;
@@ -63,11 +65,18 @@ impl AppState {
         let jobsdb = Arc::new(build_jobsdb(AppState::DB_VERSION, db.clone()).await?);
 
         let nostr_cfg = NostrConfig::new(cfg.mnemonic.clone(), cfg.nostr_relays.clone())?;
+        let nostr_filter = nostr_sdk::Filter::new()
+            .kind(nostr_sdk::Kind::GiftWrap)
+            .pubkey(nostr_cfg.nostr_signer.public_key());
         let nostr_cl = Arc::new(nostr_sdk::Client::new(nostr_cfg.nostr_signer));
-        for relay in &nostr_cfg.relays {
-            nostr_cl.add_relay(relay).await?;
+        for nostr_relay in &nostr_cfg.relays {
+            nostr_cl.add_relay(nostr_relay).await?;
         }
         nostr_cl.connect().await;
+
+        // create long-running subscription
+        nostr_cl.subscribe(nostr_filter, None).await?;
+
         let http_cl = Arc::new(reqwest::Client::new());
         let purse = purse::Purse::new(pursedb).await?;
         let mut appstate = Self {
@@ -512,32 +521,29 @@ impl AppState {
     pub async fn wallet_check_received_payment(
         &self,
         idx: usize,
-        initial_delay_sec: u64,
         max_wait_sec: u64,
-        check_interval_sec: u64,
         p_id: String,
-    ) -> Result<Option<TransactionId>> {
+        cancel_token: CancellationToken,
+        result_callback: PaymentResultCallback,
+    ) -> Result<()> {
         tracing::debug!("wallet_check_received_payment({p_id})");
 
         let p_id = Uuid::from_str(&p_id)?;
         let wallet = self.get_wallet(idx).await?;
 
-        let initial_delay = core::time::Duration::from_secs(initial_delay_sec);
         let max_wait = core::time::Duration::from_secs(max_wait_sec);
-        let check_interval = core::time::Duration::from_secs(check_interval_sec);
-        let tx_id = wallet
+        wallet
             .read()
             .await
             .check_received_payment(
-                initial_delay,
                 max_wait,
-                check_interval,
                 p_id,
                 &self.nostr_cl,
-                self.myself.public_key,
+                cancel_token,
+                result_callback,
             )
             .await?;
-        Ok(tx_id)
+        Ok(())
     }
 
     pub async fn wallet_list_tx_ids(&self, idx: usize) -> Result<Vec<TransactionId>> {

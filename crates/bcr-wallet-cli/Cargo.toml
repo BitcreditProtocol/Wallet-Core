@@ -17,6 +17,7 @@ config = {version="0.15"}
 nostr-sdk = {workspace = true, features = ["nip06"]}
 serde.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 toml = "0.9"
 tracing-log.workspace = true
 tracing-subscriber.workspace = true
