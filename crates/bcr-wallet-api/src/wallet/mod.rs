@@ -830,12 +830,13 @@ impl Wallet {
 #[cfg(test)]
 mod tests {
     use bcr_common::wire::clowder as wire_clowder;
-    use bcr_wallet_core::types::MintSummary;
+    use bcr_wallet_core::types::{MintSummary, PaymentResultCallback};
     use bcr_wallet_persistence::{
         MockTransactionRepository,
         test_utils::tests::{test_pub_key, valid_payment_address_testnet},
     };
     use nostr::nips::nip19::ToBech32;
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::{
@@ -1070,15 +1071,17 @@ mod tests {
 
         let nostr_cl = nostr_sdk::Client::new(nostr_sdk::Keys::generate());
 
+        let callback: PaymentResultCallback = Arc::new(move |_| {});
+        let cancel_token = CancellationToken::new();
+
         let pid = Uuid::new_v4();
         let err = wlt
             .check_received_payment(
-                std::time::Duration::from_millis(0),
-                std::time::Duration::from_millis(1),
                 std::time::Duration::from_millis(1),
                 pid,
                 &nostr_cl,
-                nostr::PublicKey::from(test_pub_key().x_only_public_key().0),
+                cancel_token,
+                callback,
             )
             .await
             .unwrap_err();

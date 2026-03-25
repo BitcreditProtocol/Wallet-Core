@@ -1,5 +1,6 @@
 use bcr_wallet_core::types::{
-    get_btc_alpha_tx_id, get_btc_beta_tx_id, get_payment_type, get_transaction_status,
+    PaymentResultCallback, get_btc_alpha_tx_id, get_btc_beta_tx_id, get_payment_type,
+    get_transaction_status,
 };
 use nostr_sdk::RelayUrl;
 use once_cell::sync::Lazy;
@@ -17,7 +18,7 @@ use bcr_wallet_api::{
     config::{AppStateConfig, SameMintSafeMode},
     error::Error as BcrWalletError,
 };
-use flutter_rust_bridge::{JoinHandle, frb};
+use flutter_rust_bridge::{DartFnFuture, JoinHandle, frb};
 use log::{error, info};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -507,20 +508,44 @@ pub async fn wallet_prepare_payment_request(
 #[frb]
 pub async fn wallet_check_received_payment(
     req: WalletCheckReceivedPaymentRequest,
-) -> Result<WalletMaybeTransactionIdResponse, WalletError> {
+    result_callback: impl Fn(WalletMaybeTransactionIdResponse) -> DartFnFuture<()>
+    + Send
+    + Sync
+    + 'static,
+) -> Result<WalletPaymentCheckHandle, WalletError> {
     let app_state = get_app_state().await;
-    let tx_id = app_state
-        .wallet_check_received_payment(
-            req.wallet_id,
-            req.initial_delay_sec,
-            req.max_wait_sec,
-            req.check_interval_sec,
-            req.p_id,
-        )
-        .await?;
-    Ok(WalletMaybeTransactionIdResponse {
-        tx_id: tx_id.map(|t| t.to_string()),
-    })
+
+    let dart_callback = Arc::new(result_callback);
+    let callback: PaymentResultCallback = Arc::new(move |tx_id| {
+        let dart_callback = dart_callback.clone();
+        flutter_rust_bridge::spawn(async move {
+            let _ = dart_callback(WalletMaybeTransactionIdResponse {
+                tx_id: tx_id.map(|t| t.to_string()),
+            })
+            .await;
+        });
+    });
+
+    let cancel_token = CancellationToken::new();
+    let handle = WalletPaymentCheckHandle {
+        cancel_token: cancel_token.clone(),
+    };
+    flutter_rust_bridge::spawn(async move {
+        if let Err(e) = app_state
+            .wallet_check_received_payment(
+                req.wallet_id,
+                req.max_wait_sec,
+                req.p_id,
+                cancel_token,
+                callback.clone(),
+            )
+            .await
+        {
+            error!("Error during wallet_check_received_payment: {e}");
+            callback(None);
+        }
+    });
+    Ok(handle)
 }
 
 #[frb]
@@ -718,8 +743,27 @@ pub struct WalletTransactionsResponse {
 }
 
 #[derive(Debug, Clone)]
+pub struct WalletCheckReceivedPaymentRequest {
+    pub wallet_id: usize,
+    pub max_wait_sec: u64,
+    pub p_id: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct WalletMaybeTransactionIdResponse {
     pub tx_id: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct WalletPaymentCheckHandle {
+    cancel_token: CancellationToken,
+}
+
+#[frb]
+impl WalletPaymentCheckHandle {
+    pub fn cancel(&self) {
+        self.cancel_token.cancel();
+    }
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -883,15 +927,6 @@ pub struct WalletMintSummaryResponse {
 pub struct WalletPreparePaymentRequest {
     pub wallet_id: usize,
     pub input: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct WalletCheckReceivedPaymentRequest {
-    pub wallet_id: usize,
-    pub initial_delay_sec: u64,
-    pub max_wait_sec: u64,
-    pub check_interval_sec: u64,
-    pub p_id: String,
 }
 
 #[derive(Debug, Clone)]

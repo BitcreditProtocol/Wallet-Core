@@ -1,6 +1,11 @@
 # 0.8.2
 
 * Change default mint and relays
+* Improve Payment Request Reliability & Performance
+    * Remove `initial_delay` and `check_interval` parameters
+    * We now use a long-running subscription and listen to it when receiving payments only, which is much more efficient
+    * `check_received_payment` returns a `cancel_token` and takes a `result_callback`
+        * This way, the caller can control, when to cancel a payment request asynchronously
 
 # 0.8.1
 

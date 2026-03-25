@@ -23,14 +23,15 @@ use bcr_common::{
 use bcr_wallet_core::{
     SendSync,
     types::{
-        BTC_ALPHA_TX_ID_TYPE_METADATA_KEY, BTC_BETA_TX_ID_TYPE_METADATA_KEY, PaymentType,
-        TransactionStatus,
+        BTC_ALPHA_TX_ID_TYPE_METADATA_KEY, BTC_BETA_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback,
+        PaymentType, TransactionStatus,
     },
 };
 use bitcoin::secp256k1;
 use futures::stream::FuturesUnordered;
-use std::{collections::HashMap, str::FromStr, sync::Arc, time::Instant};
-use tokio::time;
+use nostr_sdk::RelayPoolNotification;
+use std::{collections::HashMap, str::FromStr, sync::Arc};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 #[cfg_attr(test, mockall::automock)]
@@ -60,13 +61,12 @@ pub trait WalletApi: SendSync {
     ) -> Result<cdk18::PaymentRequest>;
     async fn check_received_payment(
         &self,
-        initial_delay: core::time::Duration,
         max_wait: core::time::Duration,
-        check_interval: core::time::Duration,
         p_id: Uuid,
         nostr_cl: &nostr_sdk::Client,
-        public_key: nostr::PublicKey,
-    ) -> Result<Option<TransactionId>>;
+        cancel_token: CancellationToken,
+        result_callback: PaymentResultCallback,
+    ) -> Result<()>;
     async fn is_wallet_mint_rabid(&self) -> Result<bool>;
     async fn is_wallet_mint_offline(&self) -> Result<bool>;
     async fn mint_substitute(&self) -> Result<Option<MintUrl>>;
@@ -219,13 +219,12 @@ impl WalletApi for super::Wallet {
 
     async fn check_received_payment(
         &self,
-        initial_delay: core::time::Duration,
         max_wait: core::time::Duration,
-        check_interval: core::time::Duration,
         p_id: Uuid,
         nostr_cl: &nostr_sdk::Client,
-        public_key: nostr::PublicKey,
-    ) -> Result<Option<TransactionId>> {
+        cancel_token: CancellationToken,
+        result_callback: PaymentResultCallback,
+    ) -> Result<()> {
         let current_request = self.current_payment_request.lock().await.take();
         let Some(req) = current_request else {
             return Err(Error::NoPrepareRef(p_id));
@@ -234,59 +233,53 @@ impl WalletApi for super::Wallet {
             return Err(Error::NoPrepareRef(p_id));
         }
 
-        let filter = nostr_sdk::Filter::new()
-            .kind(nostr_sdk::Kind::GiftWrap)
-            .pubkey(public_key);
-
+        let start = tokio::time::Instant::now();
         let signer = nostr_cl.signer().await?;
 
-        // wait for initial delay before checking
-        time::sleep(initial_delay).await;
-        let start = Instant::now();
-        // timeout a bit less than check interval, so it finishes before the next tick
-        let fetch_timeout = check_interval
-            .checked_sub(std::time::Duration::from_millis(50))
-            .expect("valid duration");
-        let mut interval = time::interval(check_interval);
+        tracing::debug!("Subscribing to events from Nostr...");
+        let mut events = nostr_cl.notifications();
+        let deadline = start + max_wait;
 
         loop {
-            interval.tick().await;
-
-            tracing::debug!("Checking events from Nostr...");
-            let events = match nostr_cl.fetch_events(filter.clone(), fetch_timeout).await {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::error!("Error while fetching events from nostr: {e}");
-                    continue;
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    tracing::info!("check_received_payment cancelled: {p_id}");
+                    result_callback(None);
+                    return Ok(());
+                },
+                _ = tokio::time::sleep_until(deadline) => {
+                    tracing::warn!("check_received_payment timed out: {p_id}");
+                    result_callback(None);
+                    return Ok(());
+                },
+                evt = events.recv() => {
+                    let Ok(received_evt) = evt else {
+                        tracing::warn!("check_received_payment channel closed: {p_id}");
+                        result_callback(None);
+                        return Ok(());
+                    };
+                    if let RelayPoolNotification::Event { event, .. } = received_evt {
+                    match self
+                        .handle_event(*event, signer.clone(), p_id, req.amount.unwrap_or_default())
+                        .await
+                        {
+                            Ok(None) => {
+                                // do nothing
+                                continue;
+                            }
+                            Ok(Some(tx_id)) => {
+                                result_callback(Some(tx_id));
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                tracing::error!("Error while handling Nostr event: {e}");
+                                continue;
+                            }
+                        };
+                    }
                 }
-            };
-
-            for event in events {
-                match self
-                    .handle_event(event, signer.clone(), p_id, req.amount.unwrap_or_default())
-                    .await
-                {
-                    Ok(None) => {
-                        // do nothing
-                        continue;
-                    }
-                    Ok(Some(tx_id)) => {
-                        return Ok(Some(tx_id));
-                    }
-                    Err(e) => {
-                        tracing::error!("Error while handling Nostr event: {e}");
-                        continue;
-                    }
-                };
-            }
-
-            if start.elapsed() >= max_wait {
-                tracing::warn!("check_received_payment timed out");
-                break;
             }
         }
-
-        Ok(None)
     }
 
     async fn pay(
