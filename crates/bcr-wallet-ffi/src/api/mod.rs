@@ -560,6 +560,20 @@ pub async fn wallet_check_pending_mints(
 }
 
 #[frb]
+pub async fn wallet_protest_mint(
+    req: WalletProtestMintRequest,
+) -> Result<WalletProtestMintResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let (status, amount) = app_state
+        .wallet_protest_mint(req.wallet_id, req.quote_id)
+        .await?;
+    Ok(WalletProtestMintResponse {
+        status: status.into(),
+        amount: amount.map(|a| u64::from(a)),
+    })
+}
+
+#[frb]
 pub async fn wallet_get_transaction_ids(
     req: WalletRequest,
 ) -> Result<WalletTransactionIdsResponse, WalletError> {
@@ -823,6 +837,22 @@ impl std::convert::From<bcr_wallet_core::types::TransactionStatus> for Transacti
     }
 }
 
+#[derive(Clone, Copy, Default, Debug)]
+pub enum ProtestStatus {
+    #[default]
+    Resolved,
+    Rabid,
+}
+
+impl From<bcr_common::wire::mint::ProtestStatus> for ProtestStatus {
+    fn from(s: bcr_common::wire::mint::ProtestStatus) -> Self {
+        match s {
+            bcr_common::wire::mint::ProtestStatus::Resolved => ProtestStatus::Resolved,
+            bcr_common::wire::mint::ProtestStatus::Rabid => ProtestStatus::Rabid,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Transaction {
     pub id: String,
@@ -950,6 +980,18 @@ pub struct WalletPreparePaymentReqResponse {
 #[derive(Debug, Clone)]
 pub struct WalletCheckPendingMintsResponse {
     pub tx_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletProtestMintRequest {
+    pub wallet_id: usize,
+    pub quote_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletProtestMintResponse {
+    pub status: ProtestStatus,
+    pub amount: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
