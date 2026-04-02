@@ -1130,7 +1130,7 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::SerdeJson(_error) => WalletError::internal(),
             BcrWalletError::Url(_) => WalletError::bad_request(value.to_string()),
             BcrWalletError::ReqwestClient(_) => WalletError::network(value.to_string()),
-            BcrWalletError::InsufficientFunds => WalletError::internal(),
+            BcrWalletError::InsufficientFunds => WalletError::bad_request(value.to_string()),
             BcrWalletError::WalletNotFound(id) => WalletError::not_found(id.to_string()),
             BcrWalletError::EmptyToken(_) => WalletError::bad_request(value.to_string()),
             BcrWalletError::InvalidToken(_) => WalletError::bad_request(value.to_string()),

@@ -6,6 +6,7 @@
     * We now use a long-running subscription and listen to it when receiving payments only, which is much more efficient
     * `check_received_payment` returns a `cancel_token` and takes a `result_callback`
         * This way, the caller can control, when to cancel a payment request asynchronously
+* Expose `InsufficientFunds` error as `bad request`
 
 # 0.8.1
 
