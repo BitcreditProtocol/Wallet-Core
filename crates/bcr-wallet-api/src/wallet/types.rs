@@ -1,27 +1,11 @@
-use crate::config::SameMintSafeMode;
 use bcr_common::cashu::{self, Amount, CurrencyUnit};
 use bitcoin::secp256k1;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
-pub enum SafeMode {
-    Disabled,
-    Enabled {
-        expire: chrono::TimeDelta,
-        alpha_pk: secp256k1::PublicKey,
-    },
-}
-
-impl SafeMode {
-    pub fn new(safe_mode: SameMintSafeMode, alpha_pk: secp256k1::PublicKey) -> Self {
-        match safe_mode {
-            SameMintSafeMode::Disabled => SafeMode::Disabled,
-            SameMintSafeMode::Enabled { expiration } => SafeMode::Enabled {
-                expire: expiration,
-                alpha_pk,
-            },
-        }
-    }
+pub struct SwapConfig {
+    pub expiry: chrono::TimeDelta,
+    pub alpha_pk: secp256k1::PublicKey,
 }
 
 pub enum WalletPaymentType {

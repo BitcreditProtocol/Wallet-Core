@@ -8,10 +8,22 @@ use crate::error::Result;
 use async_trait::async_trait;
 use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07};
 use bcr_common::cdk::wallet::types::{Transaction, TransactionId};
-use bcr_wallet_core::{SendSync, types::TStamp, types::WalletConfig};
+use bcr_wallet_core::{SendSync, types::WalletConfig};
 use bitcoin::secp256k1;
 use std::collections::HashMap;
 use uuid::Uuid;
+
+///////////////////////////////////////////// SwapCommitmentRecord
+#[derive(Debug, Clone)]
+pub struct SwapCommitmentRecord {
+    pub inputs: Vec<cashu::PublicKey>,
+    pub outputs: Vec<cashu::BlindedMessage>,
+    pub expiry_height: u64,
+    pub commitment: secp256k1::schnorr::Signature,
+    pub ephemeral_secret: secp256k1::SecretKey,
+    pub body_content: String,
+    pub wallet_key: cashu::PublicKey,
+}
 
 ///////////////////////////////////////////// PocketRepository
 #[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
@@ -34,11 +46,15 @@ pub trait PocketRepository: SendSync {
     async fn counter(&self, kid: cashu::Id) -> Result<u32>;
     async fn increment_counter(&self, kid: cashu::Id, old: u32, increment: u32) -> Result<()>;
 
-    async fn store_commitment(
+    async fn store_commitment(&self, record: SwapCommitmentRecord) -> Result<()>;
+
+    async fn load_commitment(
         &self,
-        inputs: Vec<cashu::PublicKey>,
-        outputs: Vec<cashu::BlindedMessage>,
-        expiration: TStamp,
+        commitment: secp256k1::schnorr::Signature,
+    ) -> Result<SwapCommitmentRecord>;
+
+    async fn delete_commitment(
+        &self,
         commitment: secp256k1::schnorr::Signature,
     ) -> Result<()>;
 }

@@ -9,7 +9,7 @@ pub mod tests {
             nut07 as cdk07, nut09 as cdk09, nut23 as cdk23,
         },
         cdk_common::Error as CDKError,
-        wire::{keys as wire_keys, melt as wire_melt, mint as wire_mint},
+        wire::{keys as wire_keys, melt as wire_melt, mint as wire_mint, swap as wire_swap},
     };
     use bitcoin::secp256k1;
 
@@ -107,18 +107,21 @@ pub mod tests {
                 wallet_pubkey: secp256k1::PublicKey,
             ) -> CdkResult<Vec<cashu::Proof>>;
 
-            async fn post_commitment(
+            async fn post_swap_commitment(
                 &self,
                 inputs: Vec<cashu::Proof>,
                 outputs: Vec<cashu::BlindedMessage>,
-                expiration: chrono::TimeDelta,
+                expiry_seconds: chrono::TimeDelta,
                 alpha_pk: secp256k1::PublicKey,
-            ) -> Result<(
-            Vec<cashu::PublicKey>,
-            Vec<cashu::BlindedMessage>,
-            bcr_wallet_core::types::TStamp,
-            secp256k1::schnorr::Signature,
-            )>;
+            ) -> Result<crate::external::mint::SwapCommitmentResult>;
+            async fn post_swap_committed(
+                &self,
+                request: wire_swap::SwapRequest,
+            ) -> Result<wire_swap::SwapResponse>;
+            async fn post_protest_swap(
+                &self,
+                req: wire_swap::SwapProtestRequest,
+            ) -> Result<wire_swap::SwapProtestResponse>;
             async fn post_melt_quote_onchain(
                 &self,
                 req: wire_melt::MeltQuoteOnchainRequest,

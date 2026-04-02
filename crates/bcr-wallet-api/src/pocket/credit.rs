@@ -2,7 +2,7 @@ use crate::{
     ClowderMintConnector,
     error::{Error, Result},
     pocket::*,
-    wallet::types::SafeMode,
+    wallet::types::SwapConfig,
 };
 use async_trait::async_trait;
 use bcr_common::cashu::{
@@ -27,7 +27,7 @@ pub trait CreditPocketApi: super::PocketApi {
         ys: &[cashu::PublicKey],
         keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
-        safe_mode: SafeMode,
+        swap_config: SwapConfig,
     ) -> Result<(Amount, Vec<cashu::Proof>)>;
     async fn get_redeemable_proofs(&self, keysets_info: &[KeySetInfo])
     -> Result<Vec<cashu::Proof>>;
@@ -87,7 +87,7 @@ impl Pocket {
         &self,
         client: Arc<dyn ClowderMintConnector>,
         inputs: HashMap<cdk01::PublicKey, cdk00::Proof>,
-        safe_mode: SafeMode,
+        swap_config: SwapConfig,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
         if inputs.is_empty() {
             tracing::warn!("CrPocket::digest_proofs: empty inputs");
@@ -136,7 +136,7 @@ impl Pocket {
             keysets,
             client,
             self.db.as_ref(),
-            safe_mode,
+            swap_config,
         )
         .await?;
         Ok((cashed_in, ys))
@@ -160,7 +160,7 @@ impl super::PocketApi for Pocket {
         client: Arc<dyn ClowderMintConnector>,
         keysets_info: &[KeySetInfo],
         inputs: Vec<cdk00::Proof>,
-        safe_mode: SafeMode,
+        swap_config: SwapConfig,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
         tracing::info!(
             "Credit receive proofs keyset {:?} proofs {:?}",
@@ -176,7 +176,7 @@ impl super::PocketApi for Pocket {
             proofs.insert(y, input);
         }
         tracing::info!("credit digest proofs");
-        self.digest_proofs(client, proofs, safe_mode).await
+        self.digest_proofs(client, proofs, swap_config).await
     }
 
     async fn prepare_send(
@@ -243,7 +243,7 @@ impl super::PocketApi for Pocket {
         rid: Uuid,
         _: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
-        safe_mode: SafeMode,
+        swap_config: SwapConfig,
     ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         let send_ref = {
             let mut locked = self.current_send.lock().unwrap();
@@ -262,7 +262,7 @@ impl super::PocketApi for Pocket {
             self.db.as_ref(),
             &client,
             None,
-            safe_mode,
+            swap_config,
         )
         .await?;
         Ok(sending_proofs)
@@ -341,6 +341,7 @@ impl super::PocketApi for Pocket {
         keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
         send_amount: Amount,
+        swap_config: SwapConfig,
     ) -> Result<Vec<cashu::Proof>> {
         let mut swapped_proofs = Vec::new();
         let total_amount = proofs.total_amount()?;
@@ -378,9 +379,16 @@ impl super::PocketApi for Pocket {
             .flat_map(|premint| premint.blinded_messages())
             .collect();
 
-        // swap
-        let request = cdk03::SwapRequest::new(proofs, blinds);
-        let response = client.post_swap(request).await?;
+        // swap with commitment
+        let commit_result = client
+            .post_swap_commitment(proofs.clone(), blinds.clone(), swap_config.expiry, swap_config.alpha_pk)
+            .await?;
+        let request = bcr_common::wire::swap::SwapRequest {
+            inputs: proofs,
+            outputs: blinds,
+            commitment: commit_result.commitment,
+        };
+        let response = client.post_swap_committed(request).await?;
 
         // We only take the send_splits signatures, they add up to our send_amount
         let mut send_signatures = response.signatures.clone();
@@ -423,7 +431,7 @@ impl CreditPocketApi for Pocket {
         ys: &[cdk01::PublicKey],
         keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
-        safe_mode: SafeMode,
+        swap_config: SwapConfig,
     ) -> Result<(Amount, Vec<cdk00::Proof>)> {
         let mut pendings = self.db.load_proofs(ys).await?;
         let infos = collect_keyset_infos_from_proofs(pendings.values(), keysets_info)?;
@@ -452,7 +460,7 @@ impl CreditPocketApi for Pocket {
                     .expect("infos map is built from unspent_proofs keyset_id");
                 info.unit == self.unit && info.active
             });
-        let (reclaimed, _) = self.digest_proofs(client, reclaimable, safe_mode).await?;
+        let (reclaimed, _) = self.digest_proofs(client, reclaimable, swap_config).await?;
         tracing::debug!(
             "CrPocket::reclaim_proofs: reclaimed: {reclaimed}, redeemable: {}",
             redeemable.len()
@@ -532,6 +540,10 @@ mod tests {
         super::Pocket::new(unit, db, seed)
     }
 
+    use crate::pocket::test_utils::tests::{
+        setup_commitment_mocks, test_swap_config,
+    };
+
     #[tokio::test]
     async fn credit_receive_proofs() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
@@ -555,18 +567,18 @@ mod tests {
             .times(1)
             .with(eq(kid), eq(0), eq(2))
             .returning(|_, _, _| Ok(()));
+        setup_commitment_mocks(&mut connector, &mut db);
         connector
-            .expect_post_swap()
+            .expect_post_swap_committed()
             .times(1)
             .returning(move |request| {
                 let amounts = request
-                    .outputs()
+                    .outputs
                     .iter()
                     .map(|b| b.amount)
                     .collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
-                let response = cdk03::SwapResponse { signatures };
-                Ok(response)
+                Ok(bcr_common::wire::swap::SwapResponse { signatures })
             });
         db.expect_store_new().times(2).returning(|p| {
             let y = p.y().expect("Hash to curve should not fail");
@@ -574,7 +586,7 @@ mod tests {
         });
         let pocket = pocket(Arc::new(db));
         let (cashed, _) = pocket
-            .receive_proofs(Arc::new(connector), &k_infos, proofs, SafeMode::Disabled)
+            .receive_proofs(Arc::new(connector), &k_infos, proofs, test_swap_config())
             .await
             .unwrap();
         assert_eq!(cashed, Amount::from(24u64));
@@ -591,7 +603,7 @@ mod tests {
         let connector = MockMintConnector::new();
         let crpocket = pocket(Arc::new(db));
         let result = crpocket
-            .receive_proofs(Arc::new(connector), &k_infos, proofs, SafeMode::Disabled)
+            .receive_proofs(Arc::new(connector), &k_infos, proofs, test_swap_config())
             .await;
         assert!(matches!(result, Err(Error::InactiveKeyset(_))));
     }
@@ -607,7 +619,7 @@ mod tests {
         let connector = MockMintConnector::new();
         let crpocket = pocket(Arc::new(db));
         let result = crpocket
-            .receive_proofs(Arc::new(connector), &k_infos, proofs, SafeMode::Disabled)
+            .receive_proofs(Arc::new(connector), &k_infos, proofs, test_swap_config())
             .await;
         assert!(matches!(result, Err(Error::CurrencyUnitMismatch(_, _))));
     }
@@ -780,18 +792,18 @@ mod tests {
             .times(1)
             .with(eq(kid), eq(0), eq(2))
             .returning(|_, _, _| Ok(()));
+        setup_commitment_mocks(&mut connector, &mut pdb);
         connector
-            .expect_post_swap()
+            .expect_post_swap_committed()
             .times(1)
             .returning(move |request| {
                 let amounts = request
-                    .outputs()
+                    .outputs
                     .iter()
                     .map(|b| b.amount)
                     .collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
-                let response = cdk03::SwapResponse { signatures };
-                Ok(response)
+                Ok(bcr_common::wire::swap::SwapResponse { signatures })
             });
         pdb.expect_store_new().times(2).returning(|p| {
             let y = p.y().expect("Hash to curve should not fail");
@@ -802,7 +814,7 @@ mod tests {
 
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(connector);
         let (reclaimed, _) = pocket
-            .reclaim_proofs(&ys, &k_infos, arc_client, SafeMode::Disabled)
+            .reclaim_proofs(&ys, &k_infos, arc_client, test_swap_config())
             .await
             .expect("reclaim works");
         assert_eq!(reclaimed, Amount::from(24u64));

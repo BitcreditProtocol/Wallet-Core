@@ -2,7 +2,7 @@ use crate::config::AppStateConfig;
 use crate::external::mint::{ClowderMintConnector, HttpClientExt};
 use crate::wallet::types::WalletBalance;
 use crate::{
-    config::{NostrConfig, SameMintSafeMode},
+    config::NostrConfig,
     pocket::credit::CreditPocketApi,
     wallet::api::WalletApi,
 };
@@ -173,7 +173,7 @@ impl AppState {
                 w_cfg,
                 client,
                 Self::DB_VERSION,
-                self.cfg.same_mint_safe_mode,
+                self.cfg.swap_expiry,
                 db.clone(),
                 seed,
             )
@@ -224,7 +224,7 @@ impl AppState {
             mint_url,
             self.cfg.mnemonic.clone(),
             AppState::DB_VERSION,
-            self.cfg.same_mint_safe_mode,
+            self.cfg.swap_expiry,
             self.get_db(),
         )
         .await?;
@@ -248,7 +248,7 @@ impl AppState {
             mint_url,
             self.cfg.mnemonic.clone(),
             AppState::DB_VERSION,
-            self.cfg.same_mint_safe_mode,
+            self.cfg.swap_expiry,
             self.get_db(),
         )
         .await?;
@@ -468,6 +468,19 @@ impl AppState {
         let qid = Uuid::from_str(&quote_id)?;
         let wallet = self.get_wallet(idx).await?;
         let (status, result) = wallet.read().await.protest_mint(qid).await?;
+        Ok((status, result.map(|(amount, _)| amount)))
+    }
+
+    pub async fn wallet_protest_swap(
+        &self,
+        idx: usize,
+        commitment_sig: String,
+    ) -> Result<(bcr_common::wire::common::ProtestStatus, Option<cashu::Amount>)> {
+        tracing::debug!("wallet_protest_swap({idx}, {commitment_sig})");
+        let sig = bitcoin::secp256k1::schnorr::Signature::from_str(&commitment_sig)
+            .map_err(|e| Error::SchnorrSignature(e.to_string()))?;
+        let wallet = self.get_wallet(idx).await?;
+        let (status, result) = wallet.read().await.protest_swap(sig).await?;
         Ok((status, result.map(|(amount, _)| amount)))
     }
 
@@ -783,7 +796,7 @@ async fn create_new_wallet(
     mint_url: cashu::MintUrl,
     mnemonic: bip39::Mnemonic,
     db_version: u32,
-    same_mint_safe_mode: SameMintSafeMode,
+    swap_expiry: chrono::TimeDelta,
     db: Arc<Database>,
 ) -> Result<wallet::Wallet> {
     let seed = seed_from_mnemonic(&mnemonic);
@@ -840,14 +853,14 @@ async fn create_new_wallet(
         pub_key: keypair.public_key(),
         betas,
     };
-    build_wallet(w_cfg, client, db_version, same_mint_safe_mode, db, seed).await
+    build_wallet(w_cfg, client, db_version, swap_expiry, db, seed).await
 }
 
 async fn build_wallet(
     w_cfg: WalletConfig,
     client: HttpClientExt,
     db_version: u32,
-    same_mint_safe_mode: SameMintSafeMode,
+    swap_expiry: chrono::TimeDelta,
     db: Arc<Database>,
     seed: Seed,
 ) -> Result<wallet::Wallet> {
@@ -880,11 +893,8 @@ async fn build_wallet(
         let beta_client = HttpClientExt::new(beta.clone());
         beta_clients.insert(beta, Arc::new(beta_client));
     }
-    // When same_mint_safe_mode is enabled, wrap the client with SentinelClient
-    // to send events to sentinel nodes for monitoring
-    let client = if matches!(same_mint_safe_mode, SameMintSafeMode::Disabled) {
-        Arc::new(client) as Arc<dyn ClowderMintConnector>
-    } else {
+    // Wrap the client with SentinelClient to send events to sentinel nodes
+    let client = {
         let cl = external::mint::SentinelClient::new(client, w_cfg.betas);
         Arc::new(cl) as Arc<dyn ClowderMintConnector>
     };
@@ -900,7 +910,7 @@ async fn build_wallet(
         w_cfg.clowder_id,
         beta_clients,
         Box::new(|url| Arc::new(external::mint::HttpClientExt::new(url))),
-        same_mint_safe_mode,
+        swap_expiry,
     )
     .await?;
     Ok(new_wallet)

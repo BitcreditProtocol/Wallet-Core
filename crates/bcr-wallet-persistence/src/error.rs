@@ -44,4 +44,6 @@ pub enum Error {
     CounterKidMismatch,
     #[error("counter in local DB not found: {0}")]
     CounterNotFound(cdk02::Id),
+    #[error("{0}")]
+    Custom(String),
 }

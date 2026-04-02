@@ -2186,7 +2186,7 @@ impl SseDecode for crate::api::WalletFfiConfig {
         let mut var_bitcoinNetwork = <String>::sse_decode(deserializer);
         let mut var_mnemonic = <String>::sse_decode(deserializer);
         let mut var_nostrRelays = <Vec<String>>::sse_decode(deserializer);
-        let mut var_useSameMintSafeMode = <bool>::sse_decode(deserializer);
+        let mut var_swapExpiryMinutes = <u32>::sse_decode(deserializer);
         return crate::api::WalletFfiConfig {
             db_folder_path: var_dbFolderPath,
             log_level: var_logLevel,
@@ -2196,7 +2196,7 @@ impl SseDecode for crate::api::WalletFfiConfig {
             bitcoin_network: var_bitcoinNetwork,
             mnemonic: var_mnemonic,
             nostr_relays: var_nostrRelays,
-            use_same_mint_safe_mode: var_useSameMintSafeMode,
+            swap_expiry_minutes: var_swapExpiryMinutes,
         };
     }
 }
@@ -3120,7 +3120,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::WalletFfiConfig {
             self.bitcoin_network.into_into_dart().into_dart(),
             self.mnemonic.into_into_dart().into_dart(),
             self.nostr_relays.into_into_dart().into_dart(),
-            self.use_same_mint_safe_mode.into_into_dart().into_dart(),
+            self.swap_expiry_minutes.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4181,7 +4181,7 @@ impl SseEncode for crate::api::WalletFfiConfig {
         <String>::sse_encode(self.bitcoin_network, serializer);
         <String>::sse_encode(self.mnemonic, serializer);
         <Vec<String>>::sse_encode(self.nostr_relays, serializer);
-        <bool>::sse_encode(self.use_same_mint_safe_mode, serializer);
+        <u32>::sse_encode(self.swap_expiry_minutes, serializer);
     }
 }
 
