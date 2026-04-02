@@ -79,7 +79,7 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
                 };
                 res.push_str(&format!(
                     "\t\tId: {} \t Amount: {} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {} \t BTC TxID/Quote ID: {}",
-                    tx.id(), tx.amount, tx.unit, tx.fee,  status, format_timestamp(tx.timestamp), &format!("{:?}", ptype), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id 
+                    tx.id(), tx.amount, tx.unit, tx.fee,  status, format_timestamp(tx.timestamp), &format!("{:?}", ptype), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id
                 ));
                 push_break(&mut res);
                 if idx > 20 {
@@ -347,6 +347,41 @@ pub async fn cmd_mint(app_state: &AppState, name: &str, id: usize, amount: u64) 
         "Mint Summary - Pay {amount} to address {}",
         mint_summary.address.assume_checked()
     ));
+
+    Ok(res)
+}
+
+pub async fn cmd_protest_mint(
+    app_state: &AppState,
+    name: &str,
+    id: usize,
+    quote_id: &str,
+) -> Result<String> {
+    let mut res = String::new();
+
+    let (status, amount) = app_state
+        .wallet_protest_mint(id, quote_id.to_owned())
+        .await?;
+
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Protest Mint for {name}, Quote ID: {quote_id} - Wallet ID: {id}.\n"
+    ));
+    push_break(&mut res);
+    match status {
+        bcr_common::wire::mint::ProtestStatus::Resolved => match amount {
+            Some(amount) => {
+                res.push_str(&format!("Protest Resolved - Received {amount}"));
+            }
+            None => {
+                res.push_str("Protest Resolved - Warning: no amount returned despite resolution");
+            }
+        },
+        bcr_common::wire::mint::ProtestStatus::Rabid => {
+            res.push_str("Protest returned Rabid - mint declared rabid by betas");
+        }
+    }
 
     Ok(res)
 }

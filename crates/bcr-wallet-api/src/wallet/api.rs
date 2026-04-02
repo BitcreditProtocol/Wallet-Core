@@ -79,6 +79,13 @@ pub trait WalletApi: SendSync {
     ) -> Result<(TransactionId, Option<Token>)>;
     async fn mint(&self, amount: bitcoin::Amount) -> Result<MintSummary>;
     async fn check_pending_mints(&self) -> Result<Vec<TransactionId>>;
+    async fn protest_mint(
+        &self,
+        quote_id: Uuid,
+    ) -> Result<(
+        bcr_common::wire::mint::ProtestStatus,
+        Option<(Amount, Vec<cashu::PublicKey>)>,
+    )>;
     async fn migrate_pockets_substitute(
         &mut self,
         substitute: Arc<dyn ClowderMintConnector>,
@@ -556,6 +563,55 @@ impl WalletApi for super::Wallet {
             res.push(tx_id);
         }
         Ok(res)
+    }
+
+    async fn protest_mint(
+        &self,
+        quote_id: Uuid,
+    ) -> Result<(
+        bcr_common::wire::mint::ProtestStatus,
+        Option<(Amount, Vec<cashu::PublicKey>)>,
+    )> {
+        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
+        let (status, result) = self
+            .debit
+            .protest_mint(
+                quote_id,
+                &keysets_info,
+                self.client.clone(),
+                SafeMode::new(self.safe_mode, self.clowder_id),
+                self.clowder_id,
+            )
+            .await?;
+
+        if let Some((amount, ref ys)) = result {
+            let now = chrono::Utc::now();
+            let mut metadata = HashMap::default();
+            metadata.insert(
+                PAYMENT_TYPE_METADATA_KEY.to_owned(),
+                PaymentType::OnChain.to_string(),
+            );
+            metadata.insert(
+                TRANSACTION_STATUS_METADATA_KEY.to_owned(),
+                TransactionStatus::Settled.to_string(),
+            );
+
+            let tx = Transaction {
+                mint_url: self.client.mint_url(),
+                fee: cashu::Amount::ZERO,
+                direction: TransactionDirection::Incoming,
+                memo: Some("Mint protest resolved".to_string()),
+                timestamp: now.timestamp() as u64,
+                unit: self.debit_unit(),
+                ys: ys.clone(),
+                amount,
+                metadata,
+                quote_id: Some(quote_id.to_string()),
+            };
+            self.tx_repo.store_tx(tx).await?;
+        }
+
+        Ok((status, result))
     }
 
     async fn receive_proofs(

@@ -459,6 +459,18 @@ impl AppState {
         Ok(tx_ids)
     }
 
+    pub async fn wallet_protest_mint(
+        &self,
+        idx: usize,
+        quote_id: String,
+    ) -> Result<(bcr_common::wire::mint::ProtestStatus, Option<cashu::Amount>)> {
+        tracing::debug!("wallet_protest_mint({idx}, {quote_id})");
+        let qid = Uuid::from_str(&quote_id)?;
+        let wallet = self.get_wallet(idx).await?;
+        let (status, result) = wallet.read().await.protest_mint(qid).await?;
+        Ok((status, result.map(|(amount, _)| amount)))
+    }
+
     pub async fn wallet_prepare_payment(
         &self,
         idx: usize,

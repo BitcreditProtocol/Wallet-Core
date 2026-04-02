@@ -1,5 +1,7 @@
 # 0.8.2
 
+* Add protest mint flow via `POST /v1/protest/mint` (Resolved/Rabid)
+    * Breaking change: `store_mint`/`load_mint` now include `content` and `commitment`; existing pending mints won't deserialize
 * Change default mint and relays
 * Improve Payment Request Reliability & Performance
     * Remove `initial_delay` and `check_interval` parameters

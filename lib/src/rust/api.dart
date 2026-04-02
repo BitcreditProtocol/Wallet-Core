@@ -8,7 +8,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `get_app_state`, `init_logging`, `init_panic_hook`, `new`, `reset_runtime`, `start_jobs`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `CurrencyUnit`, `WalletCleanLocalDbResponse`, `WalletRuntime`, `WalletsNamesResponse`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
 
 Future<void> initWalletFfi({required WalletFfiConfig conf}) =>
     RustLib.instance.api.crateApiInitWalletFfi(conf: conf);
@@ -103,6 +103,10 @@ Future<WalletPaymentCheckHandle> walletCheckReceivedPayment({
 Future<WalletCheckPendingMintsResponse> walletCheckPendingMints({
   required WalletRequest req,
 }) => RustLib.instance.api.crateApiWalletCheckPendingMints(req: req);
+
+Future<WalletProtestMintResponse> walletProtestMint({
+  required WalletProtestMintRequest req,
+}) => RustLib.instance.api.crateApiWalletProtestMint(req: req);
 
 Future<WalletTransactionIdsResponse> walletGetTransactionIds({
   required WalletRequest req,
@@ -371,6 +375,14 @@ enum PaymentType {
 
   static Future<PaymentType> default_() =>
       RustLib.instance.api.crateApiPaymentTypeDefault();
+}
+
+enum ProtestStatus {
+  resolved,
+  rabid;
+
+  static Future<ProtestStatus> default_() =>
+      RustLib.instance.api.crateApiProtestStatusDefault();
 }
 
 class RedemptionSummary {
@@ -998,6 +1010,45 @@ class WalletPreparePaymentResponse {
       other is WalletPreparePaymentResponse &&
           runtimeType == other.runtimeType &&
           paymentSummary == other.paymentSummary;
+}
+
+class WalletProtestMintRequest {
+  final BigInt walletId;
+  final String quoteId;
+
+  const WalletProtestMintRequest({
+    required this.walletId,
+    required this.quoteId,
+  });
+
+  @override
+  int get hashCode => walletId.hashCode ^ quoteId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletProtestMintRequest &&
+          runtimeType == other.runtimeType &&
+          walletId == other.walletId &&
+          quoteId == other.quoteId;
+}
+
+class WalletProtestMintResponse {
+  final ProtestStatus status;
+  final BigInt? amount;
+
+  const WalletProtestMintResponse({required this.status, this.amount});
+
+  @override
+  int get hashCode => status.hashCode ^ amount.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletProtestMintResponse &&
+          runtimeType == other.runtimeType &&
+          status == other.status &&
+          amount == other.amount;
 }
 
 class WalletReceiveRequest {

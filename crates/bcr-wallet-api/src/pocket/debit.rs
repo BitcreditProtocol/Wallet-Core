@@ -62,6 +62,17 @@ pub trait DebitPocketApi: super::PocketApi {
         safe_mode: SafeMode,
         clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>>;
+    async fn protest_mint(
+        &self,
+        qid: Uuid,
+        keysets_info: &[KeySetInfo],
+        client: Arc<dyn ClowderMintConnector>,
+        safe_mode: SafeMode,
+        clowder_id: bitcoin::secp256k1::PublicKey,
+    ) -> Result<(
+        wire_mint::ProtestStatus,
+        Option<(cashu::Amount, Vec<cashu::PublicKey>)>,
+    )>;
 }
 
 struct MeltReference {
@@ -210,7 +221,8 @@ impl Pocket {
         safe_mode: SafeMode,
         clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<Option<(cashu::Amount, Vec<cashu::PublicKey>)>> {
-        let (mint_summary, premint) = self.mdb.load_mint(qid).await?;
+        let record = self.mdb.load_mint(qid).await?;
+        let (mint_summary, premint) = (record.summary, record.premint);
         let mint_state = client.get_mint_quote_onchain(qid.to_string()).await?;
         let body: wire_mint::OnchainMintQuoteResponseBody =
             bcr_common::core::signature::deserialize_borsh_msg(&mint_state.content)?;
@@ -670,6 +682,8 @@ impl DebitPocketApi for Pocket {
                 mint_summary.address.clone(),
                 mint_summary.expiry,
                 premint,
+                response.content,
+                response.commitment,
             )
             .await?;
         Ok(mint_summary)
@@ -709,6 +723,72 @@ impl DebitPocketApi for Pocket {
             };
         }
         Ok(res)
+    }
+
+    async fn protest_mint(
+        &self,
+        qid: Uuid,
+        keysets_info: &[KeySetInfo],
+        client: Arc<dyn ClowderMintConnector>,
+        safe_mode: SafeMode,
+        clowder_id: bitcoin::secp256k1::PublicKey,
+    ) -> Result<(
+        wire_mint::ProtestStatus,
+        Option<(cashu::Amount, Vec<cashu::PublicKey>)>,
+    )> {
+        let record = self.mdb.load_mint(qid).await?;
+
+        let request = wire_mint::MintProtestRequest {
+            alpha_id: clowder_id,
+            quote_id: record.summary.quote_id,
+            content: record.content,
+            commitment: record.commitment,
+        };
+
+        let response = client.post_protest_mint(request).await?;
+
+        match response.status {
+            wire_mint::ProtestStatus::Resolved => {
+                let signatures = response.signatures.ok_or(Error::MintingError(
+                    "protest resolved but no signatures returned".to_string(),
+                ))?;
+
+                let (active_keyset_info, active_keyset) =
+                    self.find_active_keyset(keysets_info, &client).await?;
+
+                let inputs = cashu::dhke::construct_proofs(
+                    signatures,
+                    record.premint.rs(),
+                    record.premint.secrets(),
+                    &active_keyset.keys,
+                )?;
+
+                let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
+                    HashMap::with_capacity(inputs.len());
+                for input in inputs.into_iter() {
+                    let y = input.y()?;
+                    proofs.insert(y, input);
+                }
+
+                let (amount, ys) = self
+                    .digest_proofs(
+                        client,
+                        (active_keyset_info, active_keyset),
+                        proofs,
+                        safe_mode,
+                    )
+                    .await?;
+
+                self.mdb.delete_mint(qid).await?;
+
+                tracing::info!("Protest resolved for {qid}, minted {amount}");
+                Ok((wire_mint::ProtestStatus::Resolved, Some((amount, ys))))
+            }
+            wire_mint::ProtestStatus::Rabid => {
+                tracing::warn!("Protest for {qid} returned rabid");
+                Ok((wire_mint::ProtestStatus::Rabid, None))
+            }
+        }
     }
 }
 
@@ -976,7 +1056,7 @@ mod tests {
 
         mdb.expect_store_mint()
             .times(1)
-            .returning(|_, _, _, _, _| Ok(Uuid::new_v4()));
+            .returning(|_, _, _, _, _, _, _| Ok(Uuid::new_v4()));
 
         let clowder_keypair = {
             let secret_bytes: [u8; 32] = rand::random();
@@ -1043,8 +1123,10 @@ mod tests {
                 &SplitTarget::None,
             )
             .unwrap();
-            Ok((
-                MintSummary {
+            let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64])
+                .expect("valid sig bytes");
+            Ok(bcr_wallet_persistence::MintRecord {
+                summary: MintSummary {
                     quote_id: uuid,
                     amount,
                     address: bitcoin::Address::from_str(
@@ -1054,7 +1136,9 @@ mod tests {
                     expiry: chrono::Utc::now().timestamp() as u64,
                 },
                 premint,
-            ))
+                content: "dGVzdA==".to_string(),
+                commitment: dummy_sig,
+            })
         });
 
         let clowder_keypair = {
@@ -1105,5 +1189,190 @@ mod tests {
             .await
             .expect("check pending mint works");
         assert_eq!(res.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn protest_mint_resolved() {
+        let uuid = Uuid::new_v4();
+        let amount = bitcoin::Amount::from_sat(24);
+        let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = vec![KeySetInfo::from(info)];
+        let premint =
+            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None)
+                .unwrap();
+
+        let blind_sigs: Vec<cdk00::BlindSignature> = premint
+            .blinded_messages()
+            .iter()
+            .map(|bm| {
+                bcr_common::core::signature::sign_ecash(&mintkeyset, bm)
+                    .expect("signing should work")
+            })
+            .collect();
+
+        let premint_clone = premint.clone();
+        let mut mdb = MockMintMeltRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        let mut connector = MockMintConnector::new();
+
+        let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64])
+            .expect("valid sig bytes");
+        mdb.expect_load_mint().times(1).returning(move |_| {
+            Ok(bcr_wallet_persistence::MintRecord {
+                summary: MintSummary {
+                    quote_id: uuid,
+                    amount,
+                    address: bitcoin::Address::from_str(
+                        "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0",
+                    )
+                    .unwrap(),
+                    expiry: chrono::Utc::now().timestamp() as u64,
+                },
+                premint: premint_clone.clone(),
+                content: "dGVzdA==".to_string(),
+                commitment: dummy_sig,
+            })
+        });
+
+        connector
+            .expect_post_protest_mint()
+            .times(1)
+            .returning(move |_| {
+                Ok(wire_mint::MintProtestResponse {
+                    status: wire_mint::ProtestStatus::Resolved,
+                    signatures: Some(blind_sigs.clone()),
+                })
+            });
+
+        let keyset_clone = mintkeyset.clone();
+        connector
+            .expect_get_mint_keyset()
+            .times(1)
+            .with(eq(kid))
+            .returning(move |_| Ok(KeySet::from(keyset_clone.clone())));
+
+        pdb.expect_counter()
+            .times(1)
+            .with(eq(kid))
+            .returning(|_| Ok(0));
+        pdb.expect_increment_counter()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+
+        let swap_keyset = mintkeyset.clone();
+        connector
+            .expect_post_swap()
+            .times(1)
+            .returning(move |request| {
+                let amounts: Vec<_> = request.outputs().iter().map(|b| b.amount).collect();
+                let signatures = core_tests::generate_ecash_signatures(&swap_keyset, &amounts);
+                Ok(cdk03::SwapResponse { signatures })
+            });
+
+        pdb.expect_store_new().returning(|p| {
+            let y = p.y().expect("Hash to curve should not fail");
+            Ok(y)
+        });
+
+        mdb.expect_delete_mint().times(1).returning(move |_| Ok(()));
+
+        let clowder_keypair = {
+            let secret_bytes: [u8; 32] = rand::random();
+            bitcoin::secp256k1::Keypair::from_seckey_slice(
+                bitcoin::secp256k1::SECP256K1,
+                &secret_bytes,
+            )
+            .unwrap()
+        };
+        let clowder_id = bitcoin::secp256k1::PublicKey::from_keypair(&clowder_keypair);
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let (status, result) = pocket
+            .protest_mint(
+                uuid,
+                &k_infos,
+                Arc::new(connector),
+                SafeMode::Disabled,
+                clowder_id,
+            )
+            .await
+            .expect("protest_mint resolved works");
+
+        assert!(matches!(status, wire_mint::ProtestStatus::Resolved));
+        let (minted_amount, ys) = result.expect("resolved should return proofs");
+        assert_eq!(minted_amount, Amount::from(amount.to_sat()));
+        assert!(!ys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn protest_mint_rabid() {
+        let uuid = Uuid::new_v4();
+        let amount = bitcoin::Amount::from_sat(24);
+        let (info, _mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = vec![KeySetInfo::from(info)];
+
+        let premint =
+            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None)
+                .unwrap();
+
+        let mut mdb = MockMintMeltRepository::new();
+        let pdb = MockPocketRepository::new();
+        let mut connector = MockMintConnector::new();
+
+        let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64])
+            .expect("valid sig bytes");
+        mdb.expect_load_mint().times(1).returning(move |_| {
+            Ok(bcr_wallet_persistence::MintRecord {
+                summary: MintSummary {
+                    quote_id: uuid,
+                    amount,
+                    address: bitcoin::Address::from_str(
+                        "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0",
+                    )
+                    .unwrap(),
+                    expiry: chrono::Utc::now().timestamp() as u64,
+                },
+                premint: premint.clone(),
+                content: "dGVzdA==".to_string(),
+                commitment: dummy_sig,
+            })
+        });
+
+        connector
+            .expect_post_protest_mint()
+            .times(1)
+            .returning(move |_| {
+                Ok(wire_mint::MintProtestResponse {
+                    status: wire_mint::ProtestStatus::Rabid,
+                    signatures: None,
+                })
+            });
+
+        let clowder_keypair = {
+            let secret_bytes: [u8; 32] = rand::random();
+            bitcoin::secp256k1::Keypair::from_seckey_slice(
+                bitcoin::secp256k1::SECP256K1,
+                &secret_bytes,
+            )
+            .unwrap()
+        };
+        let clowder_id = bitcoin::secp256k1::PublicKey::from_keypair(&clowder_keypair);
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let (status, result) = pocket
+            .protest_mint(
+                uuid,
+                &k_infos,
+                Arc::new(connector),
+                SafeMode::Disabled,
+                clowder_id,
+            )
+            .await
+            .expect("protest_mint rabid works");
+
+        assert!(matches!(status, wire_mint::ProtestStatus::Rabid));
+        assert!(result.is_none());
     }
 }
