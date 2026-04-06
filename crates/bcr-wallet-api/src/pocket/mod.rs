@@ -162,7 +162,7 @@ async fn swap(
     db.store_commitment(bcr_wallet_persistence::SwapCommitmentRecord {
         inputs: commit_result.inputs_ys,
         outputs: commit_result.outputs,
-        expiry_height: commit_result.expiry_height,
+        expiry: commit_result.expiry,
         commitment: commitment_sig,
         ephemeral_secret: commit_result.ephemeral_secret,
         body_content: commit_result.body_content,
@@ -244,7 +244,7 @@ async fn swap_proof_to_target(
     db.store_commitment(bcr_wallet_persistence::SwapCommitmentRecord {
         inputs: commit_result.inputs_ys,
         outputs: commit_result.outputs,
-        expiry_height: commit_result.expiry_height,
+        expiry: commit_result.expiry,
         commitment: commitment_sig,
         ephemeral_secret: commit_result.ephemeral_secret,
         body_content: commit_result.body_content,

@@ -459,6 +459,13 @@ impl AppState {
         Ok(tx_ids)
     }
 
+    pub async fn wallet_check_pending_commitments(&self, idx: usize) -> Result<()> {
+        tracing::debug!("wallet_check_pending_commitments({idx})");
+        let wallet = self.get_wallet(idx).await?;
+        wallet.read().await.check_pending_commitments().await?;
+        Ok(())
+    }
+
     pub async fn wallet_protest_mint(
         &self,
         idx: usize,
@@ -711,6 +718,17 @@ impl AppState {
                     job_failed = true;
                     tracing::error!(
                         "Error running wallet_check_pending_mints job for wallet {wallet_id}: {e}"
+                    );
+                }
+            }
+            match self.wallet_check_pending_commitments(*wallet_id as usize).await {
+                Ok(()) => {
+                    tracing::info!("Checked pending commitments for wallet {wallet_id}");
+                }
+                Err(e) => {
+                    job_failed = true;
+                    tracing::error!(
+                        "Error running wallet_check_pending_commitments job for wallet {wallet_id}: {e}"
                     );
                 }
             }

@@ -76,6 +76,7 @@ pub trait DebitPocketApi: super::PocketApi {
         wire_mint::ProtestStatus,
         Option<(cashu::Amount, Vec<cashu::PublicKey>)>,
     )>;
+    async fn check_pending_commitments(&self, tstamp: u64) -> Result<()>;
     async fn protest_swap(
         &self,
         commitment_sig: bitcoin::secp256k1::schnorr::Signature,
@@ -759,6 +760,21 @@ impl DebitPocketApi for Pocket {
             };
         }
         Ok(res)
+    }
+
+    async fn check_pending_commitments(&self, tstamp: u64) -> Result<()> {
+        let commitments = self.pdb.list_commitments().await?;
+        tracing::debug!("check pending commitments for {} entries", commitments.len());
+        for record in commitments {
+            if record.expiry < tstamp {
+                tracing::info!(
+                    "Swap commitment {} expired - deleting.",
+                    record.commitment
+                );
+                self.pdb.delete_commitment(record.commitment).await?;
+            }
+        }
+        Ok(())
     }
 
     async fn protest_mint(
@@ -1555,7 +1571,7 @@ mod tests {
                 Ok(bcr_wallet_persistence::SwapCommitmentRecord {
                     inputs: record_inputs.clone(),
                     outputs: vec![],
-                    expiry_height: 1000,
+                    expiry: 1000,
                     commitment: record_commitment,
                     ephemeral_secret: record_secret,
                     body_content: "dGVzdA==".to_string(),
@@ -1675,7 +1691,7 @@ mod tests {
                 Ok(bcr_wallet_persistence::SwapCommitmentRecord {
                     inputs: record_inputs.clone(),
                     outputs: vec![],
-                    expiry_height: 1000,
+                    expiry: 1000,
                     commitment: record_commitment,
                     ephemeral_secret: record_secret,
                     body_content: "dGVzdA==".to_string(),

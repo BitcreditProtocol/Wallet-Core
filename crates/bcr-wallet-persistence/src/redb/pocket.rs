@@ -17,7 +17,7 @@ use tokio::task::spawn_blocking;
 struct Commitment {
     inputs: Vec<cashu::PublicKey>,
     outputs: Vec<cashu::BlindedMessage>,
-    expiry_height: u64,
+    expiry: u64,
     commitment: secp256k1::schnorr::Signature,
     ephemeral_secret: Vec<u8>,
     body_content: String,
@@ -395,7 +395,7 @@ impl PocketDB {
         let entry = Commitment {
             inputs: record.inputs,
             outputs: record.outputs,
-            expiry_height: record.expiry_height,
+            expiry: record.expiry,
             commitment,
             ephemeral_secret: record.ephemeral_secret.secret_bytes().to_vec(),
             body_content: record.body_content,
@@ -433,7 +433,7 @@ impl PocketDB {
                         Ok(SwapCommitmentRecord {
                             inputs: c.inputs,
                             outputs: c.outputs,
-                            expiry_height: c.expiry_height,
+                            expiry: c.expiry,
                             commitment: c.commitment,
                             ephemeral_secret: secret,
                             body_content: c.body_content,
@@ -450,6 +450,36 @@ impl PocketDB {
                 "commitment not found: {}",
                 commitment
             ))),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn list_commitments_sync(
+        db: Arc<Database>,
+        commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    ) -> Result<Vec<SwapCommitmentRecord>> {
+        let read_txn = db.begin_read()?;
+
+        match read_txn.open_table(commitment_table) {
+            Ok(table) => {
+                let mut res = Vec::new();
+                for (_, v) in table.range::<&[u8]>(..)?.flatten() {
+                    let c: Commitment = ciborium::from_reader(v.value().as_slice())?;
+                    let secret = secp256k1::SecretKey::from_slice(&c.ephemeral_secret)
+                        .map_err(|e| Error::Custom(format!("invalid ephemeral secret: {e}")))?;
+                    res.push(SwapCommitmentRecord {
+                        inputs: c.inputs,
+                        outputs: c.outputs,
+                        expiry: c.expiry,
+                        commitment: c.commitment,
+                        ephemeral_secret: secret,
+                        body_content: c.body_content,
+                        wallet_key: c.wallet_key,
+                    });
+                }
+                Ok(res)
+            }
+            Err(TableError::TableDoesNotExist(_)) => Ok(vec![]),
             Err(e) => Err(e.into()),
         }
     }
@@ -632,6 +662,12 @@ impl PocketRepository for PocketDB {
         let table = self.commitment_table;
         spawn_blocking(move || Self::delete_commitment_sync(db_clone, table, commitment)).await?
     }
+
+    async fn list_commitments(&self) -> Result<Vec<SwapCommitmentRecord>> {
+        let db_clone = self.db.clone();
+        let table = self.commitment_table;
+        spawn_blocking(move || Self::list_commitments_sync(db_clone, table)).await?
+    }
 }
 
 #[cfg(test)]
@@ -795,7 +831,7 @@ mod tests {
         repo.store_commitment(crate::SwapCommitmentRecord {
             inputs: vec![],
             outputs: vec![],
-            expiry_height: 1000u64,
+            expiry: 1000u64,
             commitment: sig,
             ephemeral_secret,
             body_content: "test_content".to_string(),
@@ -805,7 +841,7 @@ mod tests {
         .expect("store_commitment works");
 
         let record = repo.load_commitment(sig).await.expect("load_commitment works");
-        assert_eq!(record.expiry_height, 1000u64);
+        assert_eq!(record.expiry, 1000u64);
         assert_eq!(record.body_content, "test_content");
 
         repo.delete_commitment(sig).await.expect("delete_commitment works");

@@ -80,6 +80,7 @@ pub trait WalletApi: SendSync {
     ) -> Result<(TransactionId, Option<Token>)>;
     async fn mint(&self, amount: bitcoin::Amount) -> Result<MintSummary>;
     async fn check_pending_mints(&self) -> Result<Vec<TransactionId>>;
+    async fn check_pending_commitments(&self) -> Result<()>;
     async fn protest_mint(
         &self,
         quote_id: Uuid,
@@ -571,6 +572,11 @@ impl WalletApi for super::Wallet {
             res.push(tx_id);
         }
         Ok(res)
+    }
+
+    async fn check_pending_commitments(&self) -> Result<()> {
+        let now = chrono::Utc::now().timestamp() as u64;
+        self.debit.check_pending_commitments(now).await
     }
 
     async fn protest_mint(

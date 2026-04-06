@@ -18,7 +18,7 @@ use uuid::Uuid;
 pub struct SwapCommitmentRecord {
     pub inputs: Vec<cashu::PublicKey>,
     pub outputs: Vec<cashu::BlindedMessage>,
-    pub expiry_height: u64,
+    pub expiry: u64,
     pub commitment: secp256k1::schnorr::Signature,
     pub ephemeral_secret: secp256k1::SecretKey,
     pub body_content: String,
@@ -57,6 +57,8 @@ pub trait PocketRepository: SendSync {
         &self,
         commitment: secp256k1::schnorr::Signature,
     ) -> Result<()>;
+
+    async fn list_commitments(&self) -> Result<Vec<SwapCommitmentRecord>>;
 }
 
 ///////////////////////////////////////////// PurseRepository

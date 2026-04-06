@@ -28,7 +28,7 @@ pub mod tests {
         crate::external::mint::SwapCommitmentResult {
             inputs_ys: vec![],
             outputs: vec![],
-            expiry_height: 1000,
+            expiry: 1000,
             commitment: key.sign(&[0u8; 32]).unwrap(),
             ephemeral_secret: secp256k1::SecretKey::from_keypair(&ephemeral),
             body_content: "test".to_string(),
@@ -135,6 +135,7 @@ pub mod tests {
                 swap_config: SwapConfig,
                 clowder_id: bitcoin::secp256k1::PublicKey,
             ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>>;
+            async fn check_pending_commitments(&self, tstamp: u64) -> Result<()>;
             async fn protest_mint(
                 &self,
                 qid: Uuid,

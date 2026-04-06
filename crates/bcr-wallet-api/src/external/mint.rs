@@ -20,7 +20,7 @@ use tracing::debug;
 pub struct SwapCommitmentResult {
     pub inputs_ys: Vec<cashu::PublicKey>,
     pub outputs: Vec<cashu::BlindedMessage>,
-    pub expiry_height: u64,
+    pub expiry: u64,
     pub commitment: secp256k1::schnorr::Signature,
     pub ephemeral_secret: secp256k1::SecretKey,
     pub body_content: String,
@@ -401,11 +401,11 @@ impl ClowderMintConnector for HttpClientExt {
             .into_iter()
             .map(wire_keys::ProofFingerprint::try_from)
             .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
-        let expiry_height = (chrono::Utc::now() + expiry_seconds).timestamp() as u64;
+        let expiry = (chrono::Utc::now() + expiry_seconds).timestamp() as u64;
         let body = wire_swap::SwapCommitmentRequestBody {
             inputs: fingerprints,
             outputs,
-            expiry_height,
+            expiry,
         };
 
         // Serialize body, sign with ephemeral key
@@ -443,7 +443,7 @@ impl ClowderMintConnector for HttpClientExt {
         Ok(SwapCommitmentResult {
             inputs_ys,
             outputs: body.outputs,
-            expiry_height,
+            expiry,
             commitment: response.commitment,
             ephemeral_secret,
             body_content: content,
@@ -938,11 +938,11 @@ impl ClowderMintConnector for SentinelClient {
             .into_iter()
             .map(wire_keys::ProofFingerprint::try_from)
             .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
-        let expiry_height = (chrono::Utc::now() + expiry_seconds).timestamp() as u64;
+        let expiry = (chrono::Utc::now() + expiry_seconds).timestamp() as u64;
         let body = wire_swap::SwapCommitmentRequestBody {
             inputs: fingerprints,
             outputs,
-            expiry_height,
+            expiry,
         };
 
         let (content, wallet_signature) =
@@ -978,7 +978,7 @@ impl ClowderMintConnector for SentinelClient {
         Ok(SwapCommitmentResult {
             inputs_ys,
             outputs: body.outputs,
-            expiry_height,
+            expiry,
             commitment: response.commitment,
             ephemeral_secret,
             body_content: content,
