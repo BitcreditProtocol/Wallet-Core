@@ -8,7 +8,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `get_app_state`, `init_logging`, `init_panic_hook`, `new`, `reset_runtime`, `start_jobs`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `CurrencyUnit`, `WalletCleanLocalDbResponse`, `WalletRuntime`, `WalletsNamesResponse`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
 
 Future<void> initWalletFfi({required WalletFfiConfig conf}) =>
     RustLib.instance.api.crateApiInitWalletFfi(conf: conf);
@@ -107,6 +107,10 @@ Future<WalletCheckPendingMintsResponse> walletCheckPendingMints({
 Future<WalletProtestMintResponse> walletProtestMint({
   required WalletProtestMintRequest req,
 }) => RustLib.instance.api.crateApiWalletProtestMint(req: req);
+
+Future<WalletProtestSwapResponse> walletProtestSwap({
+  required WalletProtestSwapRequest req,
+}) => RustLib.instance.api.crateApiWalletProtestSwap(req: req);
 
 Future<WalletTransactionIdsResponse> walletGetTransactionIds({
   required WalletRequest req,
@@ -636,7 +640,7 @@ class WalletFfiConfig {
   final String bitcoinNetwork;
   final String mnemonic;
   final List<String> nostrRelays;
-  final bool useSameMintSafeMode;
+  final int swapExpiryMinutes;
 
   const WalletFfiConfig({
     required this.dbFolderPath,
@@ -647,7 +651,7 @@ class WalletFfiConfig {
     required this.bitcoinNetwork,
     required this.mnemonic,
     required this.nostrRelays,
-    required this.useSameMintSafeMode,
+    required this.swapExpiryMinutes,
   });
 
   @override
@@ -660,7 +664,7 @@ class WalletFfiConfig {
       bitcoinNetwork.hashCode ^
       mnemonic.hashCode ^
       nostrRelays.hashCode ^
-      useSameMintSafeMode.hashCode;
+      swapExpiryMinutes.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -675,7 +679,7 @@ class WalletFfiConfig {
           bitcoinNetwork == other.bitcoinNetwork &&
           mnemonic == other.mnemonic &&
           nostrRelays == other.nostrRelays &&
-          useSameMintSafeMode == other.useSameMintSafeMode;
+          swapExpiryMinutes == other.swapExpiryMinutes;
 }
 
 class WalletListRedemptionsRequest {
@@ -1046,6 +1050,45 @@ class WalletProtestMintResponse {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is WalletProtestMintResponse &&
+          runtimeType == other.runtimeType &&
+          status == other.status &&
+          amount == other.amount;
+}
+
+class WalletProtestSwapRequest {
+  final BigInt walletId;
+  final String commitmentSig;
+
+  const WalletProtestSwapRequest({
+    required this.walletId,
+    required this.commitmentSig,
+  });
+
+  @override
+  int get hashCode => walletId.hashCode ^ commitmentSig.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletProtestSwapRequest &&
+          runtimeType == other.runtimeType &&
+          walletId == other.walletId &&
+          commitmentSig == other.commitmentSig;
+}
+
+class WalletProtestSwapResponse {
+  final ProtestStatus status;
+  final BigInt? amount;
+
+  const WalletProtestSwapResponse({required this.status, this.amount});
+
+  @override
+  int get hashCode => status.hashCode ^ amount.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletProtestSwapResponse &&
           runtimeType == other.runtimeType &&
           status == other.status &&
           amount == other.amount;

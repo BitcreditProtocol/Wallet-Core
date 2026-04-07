@@ -116,6 +116,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletProtestSwapRequest dco_decode_box_autoadd_wallet_protest_swap_request(
+    dynamic raw,
+  );
+
+  @protected
   WalletReceiveRequest dco_decode_box_autoadd_wallet_receive_request(
     dynamic raw,
   );
@@ -333,6 +338,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletProtestSwapRequest dco_decode_wallet_protest_swap_request(dynamic raw);
+
+  @protected
+  WalletProtestSwapResponse dco_decode_wallet_protest_swap_response(
+    dynamic raw,
+  );
+
+  @protected
   WalletReceiveRequest dco_decode_wallet_receive_request(dynamic raw);
 
   @protected
@@ -495,6 +508,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletProtestMintRequest sse_decode_box_autoadd_wallet_protest_mint_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletProtestSwapRequest sse_decode_box_autoadd_wallet_protest_swap_request(
     SseDeserializer deserializer,
   );
 
@@ -754,6 +772,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletProtestSwapRequest sse_decode_wallet_protest_swap_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletProtestSwapResponse sse_decode_wallet_protest_swap_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   WalletReceiveRequest sse_decode_wallet_receive_request(
     SseDeserializer deserializer,
   );
@@ -945,6 +973,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_wallet_protest_mint_request(
     WalletProtestMintRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_wallet_protest_swap_request(
+    WalletProtestSwapRequest self,
     SseSerializer serializer,
   );
 
@@ -1272,6 +1306,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_protest_mint_response(
     WalletProtestMintResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_protest_swap_request(
+    WalletProtestSwapRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_protest_swap_response(
+    WalletProtestSwapResponse self,
     SseSerializer serializer,
   );
 

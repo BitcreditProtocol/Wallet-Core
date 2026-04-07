@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.11.1';
 
   @override
-  int get rustContentHash => -940089913;
+  int get rustContentHash => 1781489191;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -203,6 +203,10 @@ abstract class RustLibApi extends BaseApi {
 
   Future<WalletProtestMintResponse> crateApiWalletProtestMint({
     required WalletProtestMintRequest req,
+  });
+
+  Future<WalletProtestSwapResponse> crateApiWalletProtestSwap({
+    required WalletProtestSwapRequest req,
   });
 
   Future<WalletTransactionIdResponse> crateApiWalletReceive({
@@ -1455,6 +1459,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "wallet_protest_mint", argNames: ["req"]);
 
   @override
+  Future<WalletProtestSwapResponse> crateApiWalletProtestSwap({
+    required WalletProtestSwapRequest req,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_wallet_protest_swap_request(req, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 40,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_wallet_protest_swap_response,
+          decodeErrorData: sse_decode_wallet_error,
+        ),
+        constMeta: kCrateApiWalletProtestSwapConstMeta,
+        argValues: [req],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWalletProtestSwapConstMeta =>
+      const TaskConstMeta(debugName: "wallet_protest_swap", argNames: ["req"]);
+
+  @override
   Future<WalletTransactionIdResponse> crateApiWalletReceive({
     required WalletReceiveRequest req,
   }) {
@@ -1466,7 +1500,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 41,
             port: port_,
           );
         },
@@ -1499,7 +1533,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 41,
+            funcId: 42,
             port: port_,
           );
         },
@@ -1532,7 +1566,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 42,
+            funcId: 43,
             port: port_,
           );
         },
@@ -1565,7 +1599,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 43,
+            funcId: 44,
             port: port_,
           );
         },
@@ -1598,7 +1632,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 45,
             port: port_,
           );
         },
@@ -1628,7 +1662,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 45,
+            funcId: 46,
             port: port_,
           );
         },
@@ -1858,6 +1892,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_wallet_protest_mint_request(raw);
+  }
+
+  @protected
+  WalletProtestSwapRequest dco_decode_box_autoadd_wallet_protest_swap_request(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_wallet_protest_swap_request(raw);
   }
 
   @protected
@@ -2249,7 +2291,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       bitcoinNetwork: dco_decode_String(arr[5]),
       mnemonic: dco_decode_String(arr[6]),
       nostrRelays: dco_decode_list_String(arr[7]),
-      useSameMintSafeMode: dco_decode_bool(arr[8]),
+      swapExpiryMinutes: dco_decode_u_32(arr[8]),
     );
   }
 
@@ -2483,6 +2525,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (arr.length != 2)
       throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
     return WalletProtestMintResponse(
+      status: dco_decode_protest_status(arr[0]),
+      amount: dco_decode_opt_box_autoadd_u_64(arr[1]),
+    );
+  }
+
+  @protected
+  WalletProtestSwapRequest dco_decode_wallet_protest_swap_request(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return WalletProtestSwapRequest(
+      walletId: dco_decode_usize(arr[0]),
+      commitmentSig: dco_decode_String(arr[1]),
+    );
+  }
+
+  @protected
+  WalletProtestSwapResponse dco_decode_wallet_protest_swap_response(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return WalletProtestSwapResponse(
       status: dco_decode_protest_status(arr[0]),
       amount: dco_decode_opt_box_autoadd_u_64(arr[1]),
     );
@@ -2831,6 +2899,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_wallet_protest_mint_request(deserializer));
+  }
+
+  @protected
+  WalletProtestSwapRequest sse_decode_box_autoadd_wallet_protest_swap_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_wallet_protest_swap_request(deserializer));
   }
 
   @protected
@@ -3251,7 +3327,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_bitcoinNetwork = sse_decode_String(deserializer);
     var var_mnemonic = sse_decode_String(deserializer);
     var var_nostrRelays = sse_decode_list_String(deserializer);
-    var var_useSameMintSafeMode = sse_decode_bool(deserializer);
+    var var_swapExpiryMinutes = sse_decode_u_32(deserializer);
     return WalletFfiConfig(
       dbFolderPath: var_dbFolderPath,
       logLevel: var_logLevel,
@@ -3261,7 +3337,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       bitcoinNetwork: var_bitcoinNetwork,
       mnemonic: var_mnemonic,
       nostrRelays: var_nostrRelays,
-      useSameMintSafeMode: var_useSameMintSafeMode,
+      swapExpiryMinutes: var_swapExpiryMinutes,
     );
   }
 
@@ -3473,6 +3549,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_status = sse_decode_protest_status(deserializer);
     var var_amount = sse_decode_opt_box_autoadd_u_64(deserializer);
     return WalletProtestMintResponse(status: var_status, amount: var_amount);
+  }
+
+  @protected
+  WalletProtestSwapRequest sse_decode_wallet_protest_swap_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_walletId = sse_decode_usize(deserializer);
+    var var_commitmentSig = sse_decode_String(deserializer);
+    return WalletProtestSwapRequest(
+      walletId: var_walletId,
+      commitmentSig: var_commitmentSig,
+    );
+  }
+
+  @protected
+  WalletProtestSwapResponse sse_decode_wallet_protest_swap_response(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_status = sse_decode_protest_status(deserializer);
+    var var_amount = sse_decode_opt_box_autoadd_u_64(deserializer);
+    return WalletProtestSwapResponse(status: var_status, amount: var_amount);
   }
 
   @protected
@@ -3828,6 +3927,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_wallet_protest_mint_request(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_wallet_protest_swap_request(
+    WalletProtestSwapRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_wallet_protest_swap_request(self, serializer);
   }
 
   @protected
@@ -4231,7 +4339,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.bitcoinNetwork, serializer);
     sse_encode_String(self.mnemonic, serializer);
     sse_encode_list_String(self.nostrRelays, serializer);
-    sse_encode_bool(self.useSameMintSafeMode, serializer);
+    sse_encode_u_32(self.swapExpiryMinutes, serializer);
   }
 
   @protected
@@ -4409,6 +4517,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   void sse_encode_wallet_protest_mint_response(
     WalletProtestMintResponse self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_protest_status(self.status, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.amount, serializer);
+  }
+
+  @protected
+  void sse_encode_wallet_protest_swap_request(
+    WalletProtestSwapRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(self.walletId, serializer);
+    sse_encode_String(self.commitmentSig, serializer);
+  }
+
+  @protected
+  void sse_encode_wallet_protest_swap_response(
+    WalletProtestSwapResponse self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
