@@ -81,6 +81,7 @@ pub trait DebitPocketApi: super::PocketApi {
         &self,
         commitment_sig: bitcoin::secp256k1::schnorr::Signature,
         keysets_info: &[KeySetInfo],
+        alpha_client: Arc<dyn ClowderMintConnector>,
         beta_client: Arc<dyn ClowderMintConnector>,
         alpha_id: bitcoin::secp256k1::PublicKey,
         swap_config: SwapConfig,
@@ -490,19 +491,18 @@ impl super::PocketApi for Pocket {
             .flat_map(|premint| premint.blinded_messages())
             .collect();
 
-        // swap with commitment
-        let commit_result = client
-            .post_swap_commitment(proofs.clone(), blinds.clone(), swap_config.expiry, swap_config.alpha_pk)
-            .await?;
-        let request = bcr_common::wire::swap::SwapRequest {
-            inputs: proofs,
-            outputs: blinds,
-            commitment: commit_result.commitment,
-        };
-        let response = client.post_swap_committed(request).await?;
+        let all_signatures = super::committed_swap(
+            client.as_ref(),
+            None,
+            proofs,
+            blinds,
+            &swap_config,
+            HashMap::new(),
+        )
+        .await?;
 
         // We only take the send_splits signatures, they add up to our send_amount
-        let mut send_signatures = response.signatures.clone();
+        let mut send_signatures = all_signatures;
         send_signatures.truncate(send_splits_len);
 
         let mut signatures: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
@@ -767,9 +767,9 @@ impl DebitPocketApi for Pocket {
         tracing::debug!("check pending commitments for {} entries", commitments.len());
         for record in commitments {
             if record.expiry < tstamp {
-                tracing::info!(
-                    "Swap commitment {} expired - deleting.",
-                    record.commitment
+                tracing::warn!(
+                    "Swap commitment {} expired at {} (now: {tstamp}) - deleting record.",
+                    record.commitment, record.expiry,
                 );
                 self.pdb.delete_commitment(record.commitment).await?;
             }
@@ -831,6 +831,7 @@ impl DebitPocketApi for Pocket {
         &self,
         commitment_sig: bitcoin::secp256k1::schnorr::Signature,
         keysets_info: &[KeySetInfo],
+        alpha_client: Arc<dyn ClowderMintConnector>,
         beta_client: Arc<dyn ClowderMintConnector>,
         alpha_id: bitcoin::secp256k1::PublicKey,
         swap_config: SwapConfig,
@@ -871,43 +872,36 @@ impl DebitPocketApi for Pocket {
                     "swap protest resolved but no signatures returned".to_string(),
                 ))?;
 
+                // Use alpha client for keyset lookup — signatures were issued by alpha
                 let (active_keyset_info, active_keyset) =
-                    self.find_active_keyset(keysets_info, &beta_client).await?;
+                    self.find_active_keyset(keysets_info, &alpha_client).await?;
 
-                let premint_counter = self.pdb.counter(active_keyset_info.id).await?;
-                let total_amount: Amount = signatures.iter().fold(Amount::ZERO, |acc, s| acc + s.amount);
-                let premint_secrets = cdk00::PreMintSecrets::from_seed(
-                    active_keyset_info.id,
-                    premint_counter,
-                    &self.seed,
-                    total_amount,
-                    &SplitTarget::None,
-                )?;
-                self.pdb
-                    .increment_counter(
-                        active_keyset_info.id,
-                        premint_counter,
-                        premint_secrets.len() as u32,
-                    )
-                    .await?;
-
-                let inputs = cashu::dhke::construct_proofs(
-                    signatures,
-                    premint_secrets.rs(),
-                    premint_secrets.secrets(),
-                    &active_keyset.keys,
-                )?;
+                // Unblind using the ORIGINAL premint secrets stored with the commitment
+                let all_premints = {
+                    let mut secrets = Vec::new();
+                    let mut kid = active_keyset_info.id;
+                    for (k, ps) in record.premints {
+                        kid = k;
+                        secrets.extend(ps.secrets);
+                    }
+                    cdk00::PreMintSecrets {
+                        secrets,
+                        keyset_id: kid,
+                    }
+                };
+                let unblinded =
+                    super::unblind_proofs(&active_keyset, signatures, all_premints);
 
                 let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
-                    HashMap::with_capacity(inputs.len());
-                for input in inputs.into_iter() {
-                    let y = input.y()?;
-                    proofs.insert(y, input);
+                    HashMap::with_capacity(unblinded.len());
+                for proof in unblinded {
+                    let y = proof.y()?;
+                    proofs.insert(y, proof);
                 }
 
                 let (amount, ys) = self
                     .digest_proofs(
-                        beta_client,
+                        alpha_client,
                         (active_keyset_info, active_keyset),
                         proofs,
                         swap_config,
@@ -1535,7 +1529,7 @@ mod tests {
             .map(|p| (p.y().unwrap(), p.clone()))
             .collect();
 
-        // Generate blind signatures for the protest response
+        // Generate premint secrets and sign them — these are the ORIGINAL blinding factors
         let premint =
             cdk00::PreMintSecrets::random(kid, amount, &SplitTarget::None).unwrap();
         let blind_sigs: Vec<cdk00::BlindSignature> = premint
@@ -1546,6 +1540,7 @@ mod tests {
                     .expect("signing should work")
             })
             .collect();
+        let stored_premints = HashMap::from([(kid, premint)]);
 
         // Create ephemeral keypair for the commitment record
         let ephemeral_keypair =
@@ -1559,12 +1554,14 @@ mod tests {
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut beta_connector = MockMintConnector::new();
+        let mut alpha_connector = MockMintConnector::new();
 
         let record_inputs = input_ys.clone();
         let record_secret = ephemeral_secret;
         let record_commitment = commitment_sig;
         let record_wallet_key = wallet_key;
+        let record_premints = stored_premints.clone();
         pdb.expect_load_commitment()
             .times(1)
             .returning(move |_| {
@@ -1576,6 +1573,7 @@ mod tests {
                     ephemeral_secret: record_secret,
                     body_content: "dGVzdA==".to_string(),
                     wallet_key: record_wallet_key,
+                    premints: record_premints.clone(),
                 })
             });
 
@@ -1584,7 +1582,8 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(proofs_map.clone()));
 
-        connector
+        // Beta handles the protest request
+        beta_connector
             .expect_post_protest_swap()
             .times(1)
             .returning(move |_| {
@@ -1594,23 +1593,21 @@ mod tests {
                 })
             });
 
+        // Alpha handles keyset lookup (for unblinding + digest_proofs)
         let keyset_clone = mintkeyset.clone();
-        connector
+        alpha_connector
             .expect_get_mint_keyset()
-            .times(1)
-            .with(eq(kid))
             .returning(move |_| Ok(KeySet::from(keyset_clone.clone())));
 
+        // Mocks for digest_proofs swap (runs against alpha)
         pdb.expect_counter()
             .with(eq(kid))
             .returning(|_| Ok(0));
         pdb.expect_increment_counter()
             .returning(|_, _, _| Ok(()));
-
-        // Mocks for digest_proofs swap
-        setup_commitment_mocks(&mut connector, &mut pdb);
+        setup_commitment_mocks(&mut alpha_connector, &mut pdb);
         let swap_keyset = mintkeyset.clone();
-        connector
+        alpha_connector
             .expect_post_swap_committed()
             .times(1)
             .returning(move |request| {
@@ -1639,7 +1636,8 @@ mod tests {
             .protest_swap(
                 commitment_sig,
                 &k_infos,
-                Arc::new(connector),
+                Arc::new(alpha_connector),
+                Arc::new(beta_connector),
                 clowder_id,
                 test_swap_config(),
             )
@@ -1679,7 +1677,8 @@ mod tests {
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut beta_connector = MockMintConnector::new();
+        let alpha_connector = MockMintConnector::new();
 
         let record_inputs = input_ys.clone();
         let record_secret = ephemeral_secret;
@@ -1696,6 +1695,7 @@ mod tests {
                     ephemeral_secret: record_secret,
                     body_content: "dGVzdA==".to_string(),
                     wallet_key: record_wallet_key,
+                    premints: HashMap::new(),
                 })
             });
 
@@ -1704,7 +1704,7 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(proofs_map.clone()));
 
-        connector
+        beta_connector
             .expect_post_protest_swap()
             .times(1)
             .returning(move |_| {
@@ -1725,7 +1725,8 @@ mod tests {
             .protest_swap(
                 commitment_sig,
                 &k_infos,
-                Arc::new(connector),
+                Arc::new(alpha_connector),
+                Arc::new(beta_connector),
                 clowder_id,
                 test_swap_config(),
             )

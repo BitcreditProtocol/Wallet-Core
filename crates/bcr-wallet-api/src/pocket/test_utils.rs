@@ -148,6 +148,7 @@ pub mod tests {
                 &self,
                 commitment_sig: bitcoin::secp256k1::schnorr::Signature,
                 keysets_info: &[KeySetInfo],
+                alpha_client: Arc<dyn ClowderMintConnector>,
                 beta_client: Arc<dyn ClowderMintConnector>,
                 alpha_id: bitcoin::secp256k1::PublicKey,
                 swap_config: SwapConfig,

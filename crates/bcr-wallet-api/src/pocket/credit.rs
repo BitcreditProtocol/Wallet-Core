@@ -379,19 +379,18 @@ impl super::PocketApi for Pocket {
             .flat_map(|premint| premint.blinded_messages())
             .collect();
 
-        // swap with commitment
-        let commit_result = client
-            .post_swap_commitment(proofs.clone(), blinds.clone(), swap_config.expiry, swap_config.alpha_pk)
-            .await?;
-        let request = bcr_common::wire::swap::SwapRequest {
-            inputs: proofs,
-            outputs: blinds,
-            commitment: commit_result.commitment,
-        };
-        let response = client.post_swap_committed(request).await?;
+        let all_signatures = super::committed_swap(
+            client.as_ref(),
+            None,
+            proofs,
+            blinds,
+            &swap_config,
+            HashMap::new(),
+        )
+        .await?;
 
         // We only take the send_splits signatures, they add up to our send_amount
-        let mut send_signatures = response.signatures.clone();
+        let mut send_signatures = all_signatures;
         send_signatures.truncate(send_splits_len);
 
         let mut signatures: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();

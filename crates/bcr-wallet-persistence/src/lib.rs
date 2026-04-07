@@ -23,6 +23,7 @@ pub struct SwapCommitmentRecord {
     pub ephemeral_secret: secp256k1::SecretKey,
     pub body_content: String,
     pub wallet_key: cashu::PublicKey,
+    pub premints: HashMap<cashu::Id, cdk00::PreMintSecrets>,
 }
 
 ///////////////////////////////////////////// PocketRepository

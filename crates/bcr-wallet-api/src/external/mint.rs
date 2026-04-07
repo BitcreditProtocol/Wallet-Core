@@ -27,6 +27,72 @@ pub struct SwapCommitmentResult {
     pub wallet_key: cashu::PublicKey,
 }
 
+async fn do_post_swap_commitment(
+    http_client: &reqwest::Client,
+    url: reqwest::Url,
+    inputs: Vec<cashu::Proof>,
+    outputs: Vec<cashu::BlindedMessage>,
+    expiry_seconds: chrono::TimeDelta,
+    alpha_pk: secp256k1::PublicKey,
+) -> Result<SwapCommitmentResult> {
+    let ephemeral_keypair =
+        secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng());
+    let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
+
+    let fingerprints: Vec<_> = inputs
+        .into_iter()
+        .map(wire_keys::ProofFingerprint::try_from)
+        .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
+    let expiry = (chrono::Utc::now() + expiry_seconds).timestamp() as u64;
+    let body = wire_swap::SwapCommitmentRequestBody {
+        inputs: fingerprints,
+        outputs,
+        expiry,
+    };
+
+    let (content, wallet_signature) =
+        bcr_common::core::signature::serialize_n_schnorr_sign_borsh_msg(
+            &body,
+            &ephemeral_keypair,
+        )?;
+    let wallet_key =
+        cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
+
+    let request = wire_swap::SwapCommitmentRequest {
+        content: content.clone(),
+        wallet_key,
+        wallet_signature,
+    };
+
+    let response = http_client
+        .post(url)
+        .json(&request)
+        .send()
+        .await?
+        .error_for_status()?;
+    let wire_swap::SwapCommitmentResponse {
+        content: committed_content,
+        commitment,
+    } = response.json().await?;
+
+    bcr_common::core::signature::schnorr_verify_b64(
+        &committed_content,
+        &commitment,
+        &alpha_pk.x_only_public_key().0,
+    )?;
+
+    let inputs_ys: Vec<cashu::PublicKey> = body.inputs.into_iter().map(|fp| fp.y).collect();
+    Ok(SwapCommitmentResult {
+        inputs_ys,
+        outputs: body.outputs,
+        expiry,
+        commitment,
+        ephemeral_secret,
+        body_content: committed_content,
+        wallet_key,
+    })
+}
+
 fn clowder_err_to_cdk(e: bcr_common::client::clowder::Error) -> CdkError {
     match e {
         bcr_common::client::clowder::Error::NotFound => {
@@ -390,65 +456,8 @@ impl ClowderMintConnector for HttpClientExt {
             .join("v1/swap/commitment")
             .expect("post_swap_commitment url error");
         debug!("HTTP call to post_swap_commitment on {url}");
-
-        // Generate ephemeral keypair for this commitment
-        let ephemeral_keypair =
-            secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng());
-        let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
-
-        // Build commitment body
-        let fingerprints: Vec<_> = inputs
-            .into_iter()
-            .map(wire_keys::ProofFingerprint::try_from)
-            .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
-        let expiry = (chrono::Utc::now() + expiry_seconds).timestamp() as u64;
-        let body = wire_swap::SwapCommitmentRequestBody {
-            inputs: fingerprints,
-            outputs,
-            expiry,
-        };
-
-        // Serialize body, sign with ephemeral key
-        let (content, wallet_signature) =
-            bcr_common::core::signature::serialize_n_schnorr_sign_borsh_msg(
-                &body,
-                &ephemeral_keypair,
-            )?;
-        let wallet_key =
-            cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
-
-        let request = wire_swap::SwapCommitmentRequest {
-            content: content.clone(),
-            wallet_key,
-            wallet_signature,
-        };
-
-        let response = self
-            .secondary
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_swap::SwapCommitmentResponse = response.json().await?;
-
-        // Verify alpha's commitment signature over the response content
-        bcr_common::core::signature::schnorr_verify_b64(
-            &response.content,
-            &response.commitment,
-            &alpha_pk.x_only_public_key().0,
-        )?;
-
-        let inputs_ys: Vec<cashu::PublicKey> = body.inputs.into_iter().map(|fp| fp.y).collect();
-        Ok(SwapCommitmentResult {
-            inputs_ys,
-            outputs: body.outputs,
-            expiry,
-            commitment: response.commitment,
-            ephemeral_secret,
-            body_content: content,
-            wallet_key,
-        })
+        do_post_swap_commitment(&self.secondary, url, inputs, outputs, expiry_seconds, alpha_pk)
+            .await
     }
 
     async fn post_swap_committed(
@@ -929,61 +938,8 @@ impl ClowderMintConnector for SentinelClient {
             .join("v1/swap/commitment")
             .expect("post_swap_commitment url error");
         debug!("HTTP call to post_swap_commitment on sentinel {url}");
-
-        let ephemeral_keypair =
-            secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng());
-        let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
-
-        let fingerprints: Vec<_> = inputs
-            .into_iter()
-            .map(wire_keys::ProofFingerprint::try_from)
-            .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
-        let expiry = (chrono::Utc::now() + expiry_seconds).timestamp() as u64;
-        let body = wire_swap::SwapCommitmentRequestBody {
-            inputs: fingerprints,
-            outputs,
-            expiry,
-        };
-
-        let (content, wallet_signature) =
-            bcr_common::core::signature::serialize_n_schnorr_sign_borsh_msg(
-                &body,
-                &ephemeral_keypair,
-            )?;
-        let wallet_key =
-            cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
-
-        let request = wire_swap::SwapCommitmentRequest {
-            content: content.clone(),
-            wallet_key,
-            wallet_signature,
-        };
-
-        let response = self
-            .secondary
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_swap::SwapCommitmentResponse = response.json().await?;
-
-        bcr_common::core::signature::schnorr_verify_b64(
-            &response.content,
-            &response.commitment,
-            &alpha_pk.x_only_public_key().0,
-        )?;
-
-        let inputs_ys: Vec<cashu::PublicKey> = body.inputs.into_iter().map(|fp| fp.y).collect();
-        Ok(SwapCommitmentResult {
-            inputs_ys,
-            outputs: body.outputs,
-            expiry,
-            commitment: response.commitment,
-            ephemeral_secret,
-            body_content: content,
-            wallet_key,
-        })
+        do_post_swap_commitment(&self.secondary, url, inputs, outputs, expiry_seconds, alpha_pk)
+            .await
     }
 
     async fn post_swap_committed(

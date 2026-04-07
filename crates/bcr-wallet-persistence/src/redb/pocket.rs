@@ -22,6 +22,58 @@ struct Commitment {
     ephemeral_secret: Vec<u8>,
     body_content: String,
     wallet_key: cashu::PublicKey,
+    #[serde(default)]
+    premints: Vec<(
+        cashu::Id,
+        Vec<(
+            cdk00::BlindedMessage,
+            Secret,
+            cdk01::SecretKey,
+            cashu::Amount,
+        )>,
+    )>,
+}
+
+fn premints_to_storage(
+    premints: HashMap<cashu::Id, cdk00::PreMintSecrets>,
+) -> Vec<(
+    cashu::Id,
+    Vec<(cdk00::BlindedMessage, Secret, cdk01::SecretKey, cashu::Amount)>,
+)> {
+    premints
+        .into_iter()
+        .map(|(kid, ps)| {
+            let tuples = ps
+                .secrets
+                .into_iter()
+                .map(|p| (p.blinded_message, p.secret, p.r, p.amount))
+                .collect();
+            (kid, tuples)
+        })
+        .collect()
+}
+
+fn premints_from_storage(
+    stored: Vec<(
+        cashu::Id,
+        Vec<(cdk00::BlindedMessage, Secret, cdk01::SecretKey, cashu::Amount)>,
+    )>,
+) -> HashMap<cashu::Id, cdk00::PreMintSecrets> {
+    stored
+        .into_iter()
+        .map(|(kid, tuples)| {
+            let secrets = tuples
+                .into_iter()
+                .map(|(bm, secret, r, amount)| cdk00::PreMint {
+                    blinded_message: bm,
+                    secret,
+                    r,
+                    amount,
+                })
+                .collect();
+            (kid, cdk00::PreMintSecrets { secrets, keyset_id: kid })
+        })
+        .collect()
 }
 
 ///////////////////////////////////////////// ProofEntry
@@ -400,6 +452,7 @@ impl PocketDB {
             ephemeral_secret: record.ephemeral_secret.secret_bytes().to_vec(),
             body_content: record.body_content,
             wallet_key: record.wallet_key,
+            premints: premints_to_storage(record.premints),
         };
         let write_txn = db.begin_write()?;
 
@@ -438,6 +491,7 @@ impl PocketDB {
                             ephemeral_secret: secret,
                             body_content: c.body_content,
                             wallet_key: c.wallet_key,
+                            premints: premints_from_storage(c.premints),
                         })
                     }
                     None => Err(Error::Custom(format!(
@@ -475,6 +529,7 @@ impl PocketDB {
                         ephemeral_secret: secret,
                         body_content: c.body_content,
                         wallet_key: c.wallet_key,
+                        premints: premints_from_storage(c.premints),
                     });
                 }
                 Ok(res)
@@ -836,6 +891,7 @@ mod tests {
             ephemeral_secret,
             body_content: "test_content".to_string(),
             wallet_key,
+            premints: HashMap::new(),
         })
         .await
         .expect("store_commitment works");
@@ -843,6 +899,7 @@ mod tests {
         let record = repo.load_commitment(sig).await.expect("load_commitment works");
         assert_eq!(record.expiry, 1000u64);
         assert_eq!(record.body_content, "test_content");
+        assert!(record.premints.is_empty());
 
         repo.delete_commitment(sig).await.expect("delete_commitment works");
         assert!(repo.load_commitment(sig).await.is_err());

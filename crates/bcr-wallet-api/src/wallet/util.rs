@@ -102,23 +102,18 @@ pub async fn htlc_lock(
     let premints =
         cashu::PreMintSecrets::with_conditions(active_keyset_id, amount, &split_target, &htlc)?;
 
-    let commit_result = client
-        .post_swap_commitment(
-            proofs.clone(),
-            premints.blinded_messages(),
-            swap_config.expiry,
-            swap_config.alpha_pk,
-        )
-        .await?;
-    let swap_request = bcr_common::wire::swap::SwapRequest {
-        inputs: proofs,
-        outputs: premints.blinded_messages(),
-        commitment: commit_result.commitment,
-    };
-    let swap = client.post_swap_committed(swap_request).await?;
+    let signatures = crate::pocket::committed_swap(
+        client,
+        None,
+        proofs,
+        premints.blinded_messages(),
+        &swap_config,
+        std::collections::HashMap::new(),
+    )
+    .await?;
 
     let keyset = client.get_mint_keyset(active_keyset_id).await?;
-    let proofs = crate::pocket::unblind_proofs(&keyset, swap.signatures, premints);
+    let proofs = crate::pocket::unblind_proofs(&keyset, signatures, premints);
 
     Ok(proofs)
 }

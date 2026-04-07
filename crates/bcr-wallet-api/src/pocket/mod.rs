@@ -132,6 +132,57 @@ pub(crate) fn unblind_proofs(
     proofs
 }
 
+///////////////////////////////////////////// committed_swap
+/// Commit → optionally store → swap → optionally delete.
+/// Returns the blind signatures from the swap response.
+pub(crate) async fn committed_swap(
+    client: &dyn ClowderMintConnector,
+    db: Option<&dyn PocketRepository>,
+    inputs: Vec<cdk00::Proof>,
+    outputs: Vec<cdk00::BlindedMessage>,
+    swap_config: &SwapConfig,
+    premints: HashMap<cashu::Id, cdk00::PreMintSecrets>,
+) -> Result<Vec<cdk00::BlindSignature>> {
+    let commit_result = client
+        .post_swap_commitment(
+            inputs.clone(),
+            outputs.clone(),
+            swap_config.expiry,
+            swap_config.alpha_pk,
+        )
+        .await?;
+    let commitment_sig = commit_result.commitment;
+
+    if let Some(db) = db {
+        db.store_commitment(bcr_wallet_persistence::SwapCommitmentRecord {
+            inputs: commit_result.inputs_ys,
+            outputs: commit_result.outputs,
+            expiry: commit_result.expiry,
+            commitment: commitment_sig,
+            ephemeral_secret: commit_result.ephemeral_secret,
+            body_content: commit_result.body_content,
+            wallet_key: commit_result.wallet_key,
+            premints,
+        })
+        .await?;
+    }
+
+    let request = bcr_common::wire::swap::SwapRequest {
+        inputs,
+        outputs,
+        commitment: commitment_sig,
+    };
+    let response = client.post_swap_committed(request).await?;
+
+    if let Some(db) = db {
+        if let Err(e) = db.delete_commitment(commitment_sig).await {
+            tracing::warn!("Failed to delete commitment after swap: {e}");
+        }
+    }
+
+    Ok(response.signatures)
+}
+
 ///////////////////////////////////////////// swap
 async fn swap(
     output_unit: CurrencyUnit,
@@ -149,59 +200,35 @@ async fn swap(
         .flat_map(|premint| premint.blinded_messages())
         .collect();
 
-    // Commitment phase
-    let commit_result = client
-        .post_swap_commitment(
-            inputs.clone(),
-            blinds.clone(),
-            swap_config.expiry,
-            swap_config.alpha_pk,
-        )
-        .await?;
-    let commitment_sig = commit_result.commitment;
-    db.store_commitment(bcr_wallet_persistence::SwapCommitmentRecord {
-        inputs: commit_result.inputs_ys,
-        outputs: commit_result.outputs,
-        expiry: commit_result.expiry,
-        commitment: commitment_sig,
-        ephemeral_secret: commit_result.ephemeral_secret,
-        body_content: commit_result.body_content,
-        wallet_key: commit_result.wallet_key,
-    })
+    let signatures = committed_swap(
+        client.as_ref(),
+        Some(db),
+        inputs,
+        blinds,
+        &swap_config,
+        premints.iter().map(|(k, v)| (*k, v.clone())).collect(),
+    )
     .await?;
 
-    // Swap phase
-    let request = bcr_common::wire::swap::SwapRequest {
-        inputs,
-        outputs: blinds,
-        commitment: commitment_sig,
-    };
-    let response = client.post_swap_committed(request).await?;
-
-    // Clean up commitment after successful swap
-    if let Err(e) = db.delete_commitment(commitment_sig).await {
-        tracing::warn!("Failed to delete commitment after swap: {e}");
-    }
-    let output_len = response.signatures.len();
-    let total_output = response
-        .signatures
+    let output_len = signatures.len();
+    let total_output = signatures
         .iter()
         .fold(Amount::ZERO, |acc, sig| acc + sig.amount);
     tracing::debug!(
         "swap to {output_unit}: inputs: {input_len} {total_input}, outputs: {output_len} {total_output}",
     );
-    let mut signatures: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
-    for signature in response.signatures {
-        signatures
+    let mut sigs_by_kid: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
+    for signature in signatures {
+        sigs_by_kid
             .entry(signature.keyset_id)
             .and_modify(|v| v.push(signature.clone()))
             .or_insert_with(|| vec![signature]);
     }
     let mut total_cashed_in = Amount::ZERO;
-    for (kid, signatures) in signatures.into_iter() {
+    for (kid, sigs) in sigs_by_kid.into_iter() {
         let premint = premints.remove(&kid).expect("premint should be here");
         let keyset = keysets.get(&kid).expect("keyset should be here");
-        let proofs = unblind_proofs(keyset, signatures, premint);
+        let proofs = unblind_proofs(keyset, sigs, premint);
 
         for proof in proofs {
             let amount = proof.amount;
@@ -231,41 +258,18 @@ async fn swap_proof_to_target(
     let premint =
         cdk00::PreMintSecrets::from_seed(target_keyset.id, counter, seed, proof.amount, &target)?;
     let blinds = premint.blinded_messages();
-    // Commitment phase
-    let commit_result = client
-        .post_swap_commitment(
-            vec![proof.clone()],
-            blinds.clone(),
-            swap_config.expiry,
-            swap_config.alpha_pk,
-        )
-        .await?;
-    let commitment_sig = commit_result.commitment;
-    db.store_commitment(bcr_wallet_persistence::SwapCommitmentRecord {
-        inputs: commit_result.inputs_ys,
-        outputs: commit_result.outputs,
-        expiry: commit_result.expiry,
-        commitment: commitment_sig,
-        ephemeral_secret: commit_result.ephemeral_secret,
-        body_content: commit_result.body_content,
-        wallet_key: commit_result.wallet_key,
-    })
-    .await?;
-
-    // Swap phase
-    let request = bcr_common::wire::swap::SwapRequest {
-        inputs: vec![proof],
-        outputs: blinds,
-        commitment: commitment_sig,
-    };
     db.increment_counter(target_keyset.id, counter, premint.len() as u32)
         .await?;
-    let signatures = client.post_swap_committed(request).await?.signatures;
 
-    // Clean up commitment after successful swap
-    if let Err(e) = db.delete_commitment(commitment_sig).await {
-        tracing::warn!("Failed to delete commitment after swap: {e}");
-    }
+    let signatures = committed_swap(
+        client.as_ref(),
+        Some(db),
+        vec![proof],
+        blinds,
+        &swap_config,
+        HashMap::from([(target_keyset.id, premint.clone())]),
+    )
+    .await?;
     let mut on_target: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
     let mut proofs = unblind_proofs(target_keyset, signatures, premint);
     proofs.sort_by_key(|proof| std::cmp::Reverse(proof.amount));

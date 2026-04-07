@@ -651,6 +651,7 @@ impl WalletApi for super::Wallet {
             .protest_swap(
                 commitment_sig,
                 &keysets_info,
+                self.client.clone(),
                 beta_client,
                 self.clowder_id,
                 swap_config,
