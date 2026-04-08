@@ -116,6 +116,8 @@ pub enum Error {
     BetaNotFound(cashu::MintUrl),
     #[error("No Substitute could be determined")]
     NoSubstitute,
+    #[error("No beta mints available")]
+    NoBetas,
     #[error("Unsupported: {0}")]
     Unsupported(String),
     #[error("insufficient amount for melting {0}")]

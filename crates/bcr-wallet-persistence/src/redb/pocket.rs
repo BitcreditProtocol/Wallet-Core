@@ -1,5 +1,5 @@
 use crate::{
-    PocketRepository, TStamp,
+    PocketRepository, SwapCommitmentRecord,
     error::{Error, Result},
 };
 use async_trait::async_trait;
@@ -13,12 +13,66 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::task::spawn_blocking;
 
 ///////////////////////////////////////////// Commitment
+
+type PremintStorage = Vec<(
+    cashu::Id,
+    Vec<(
+        cdk00::BlindedMessage,
+        Secret,
+        cdk01::SecretKey,
+        cashu::Amount,
+    )>,
+)>;
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 struct Commitment {
     inputs: Vec<cashu::PublicKey>,
     outputs: Vec<cashu::BlindedMessage>,
-    expiration: TStamp,
+    expiry: u64,
     commitment: secp256k1::schnorr::Signature,
+    ephemeral_secret: Vec<u8>,
+    body_content: String,
+    wallet_key: cashu::PublicKey,
+    #[serde(default)]
+    premints: PremintStorage,
+}
+
+fn premints_to_storage(premints: HashMap<cashu::Id, cdk00::PreMintSecrets>) -> PremintStorage {
+    premints
+        .into_iter()
+        .map(|(kid, ps)| {
+            let tuples = ps
+                .secrets
+                .into_iter()
+                .map(|p| (p.blinded_message, p.secret, p.r, p.amount))
+                .collect();
+            (kid, tuples)
+        })
+        .collect()
+}
+
+fn premints_from_storage(stored: PremintStorage) -> HashMap<cashu::Id, cdk00::PreMintSecrets> {
+    stored
+        .into_iter()
+        .map(|(kid, tuples)| {
+            let secrets = tuples
+                .into_iter()
+                .map(|(bm, secret, r, amount)| cdk00::PreMint {
+                    blinded_message: bm,
+                    secret,
+                    r,
+                    amount,
+                })
+                .collect();
+            (
+                kid,
+                cdk00::PreMintSecrets {
+                    secrets,
+                    keyset_id: kid,
+                },
+            )
+        })
+        .collect()
 }
 
 ///////////////////////////////////////////// ProofEntry
@@ -386,16 +440,18 @@ impl PocketDB {
     fn store_commitment_sync(
         db: Arc<Database>,
         commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        inputs: Vec<bcr_common::cashu::PublicKey>,
-        outputs: Vec<bcr_common::cashu::BlindedMessage>,
-        expiration: TStamp,
-        commitment: secp256k1::schnorr::Signature,
+        record: crate::SwapCommitmentRecord,
     ) -> Result<()> {
+        let commitment = record.commitment;
         let entry = Commitment {
-            inputs,
-            outputs,
-            expiration,
+            inputs: record.inputs,
+            outputs: record.outputs,
+            expiry: record.expiry,
             commitment,
+            ephemeral_secret: record.ephemeral_secret.secret_bytes().to_vec(),
+            body_content: record.body_content,
+            wallet_key: record.wallet_key,
+            premints: premints_to_storage(record.premints),
         };
         let write_txn = db.begin_write()?;
 
@@ -405,6 +461,93 @@ impl PocketDB {
             let mut serialized = Vec::new();
             ciborium::into_writer(&entry, &mut serialized)?;
             table.insert(commitment.serialize().as_slice(), serialized)?;
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    fn load_commitment_sync(
+        db: Arc<Database>,
+        commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        commitment: secp256k1::schnorr::Signature,
+    ) -> Result<SwapCommitmentRecord> {
+        let read_txn = db.begin_read()?;
+
+        match read_txn.open_table(commitment_table) {
+            Ok(table) => {
+                let entry = table.get(commitment.serialize().as_slice())?;
+                match entry {
+                    Some(e) => {
+                        let c: Commitment = ciborium::from_reader(e.value().as_slice())?;
+                        let secret = secp256k1::SecretKey::from_slice(&c.ephemeral_secret)
+                            .map_err(|e| Error::Custom(format!("invalid ephemeral secret: {e}")))?;
+                        Ok(SwapCommitmentRecord {
+                            inputs: c.inputs,
+                            outputs: c.outputs,
+                            expiry: c.expiry,
+                            commitment: c.commitment,
+                            ephemeral_secret: secret,
+                            body_content: c.body_content,
+                            wallet_key: c.wallet_key,
+                            premints: premints_from_storage(c.premints),
+                        })
+                    }
+                    None => Err(Error::Custom(format!(
+                        "commitment not found: {}",
+                        commitment
+                    ))),
+                }
+            }
+            Err(TableError::TableDoesNotExist(_)) => Err(Error::Custom(format!(
+                "commitment not found: {}",
+                commitment
+            ))),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn list_commitments_sync(
+        db: Arc<Database>,
+        commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    ) -> Result<Vec<SwapCommitmentRecord>> {
+        let read_txn = db.begin_read()?;
+
+        match read_txn.open_table(commitment_table) {
+            Ok(table) => {
+                let mut res = Vec::new();
+                for (_, v) in table.range::<&[u8]>(..)?.flatten() {
+                    let c: Commitment = ciborium::from_reader(v.value().as_slice())?;
+                    let secret = secp256k1::SecretKey::from_slice(&c.ephemeral_secret)
+                        .map_err(|e| Error::Custom(format!("invalid ephemeral secret: {e}")))?;
+                    res.push(SwapCommitmentRecord {
+                        inputs: c.inputs,
+                        outputs: c.outputs,
+                        expiry: c.expiry,
+                        commitment: c.commitment,
+                        ephemeral_secret: secret,
+                        body_content: c.body_content,
+                        wallet_key: c.wallet_key,
+                        premints: premints_from_storage(c.premints),
+                    });
+                }
+                Ok(res)
+            }
+            Err(TableError::TableDoesNotExist(_)) => Ok(vec![]),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn delete_commitment_sync(
+        db: Arc<Database>,
+        commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        commitment: secp256k1::schnorr::Signature,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(commitment_table)?;
+            table.remove(commitment.serialize().as_slice())?;
         }
 
         write_txn.commit()?;
@@ -550,19 +693,31 @@ impl PocketRepository for PocketDB {
         spawn_blocking(move || Self::increment_counter_sync(db_clone, table, old, new)).await?
     }
 
-    async fn store_commitment(
-        &self,
-        inputs: Vec<bcr_common::cashu::PublicKey>,
-        outputs: Vec<bcr_common::cashu::BlindedMessage>,
-        expiration: TStamp,
-        commitment: secp256k1::schnorr::Signature,
-    ) -> Result<()> {
+    async fn store_commitment(&self, record: crate::SwapCommitmentRecord) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.commitment_table;
-        spawn_blocking(move || {
-            Self::store_commitment_sync(db_clone, table, inputs, outputs, expiration, commitment)
-        })
-        .await?
+        spawn_blocking(move || Self::store_commitment_sync(db_clone, table, record)).await?
+    }
+
+    async fn load_commitment(
+        &self,
+        commitment: secp256k1::schnorr::Signature,
+    ) -> Result<SwapCommitmentRecord> {
+        let db_clone = self.db.clone();
+        let table = self.commitment_table;
+        spawn_blocking(move || Self::load_commitment_sync(db_clone, table, commitment)).await?
+    }
+
+    async fn delete_commitment(&self, commitment: secp256k1::schnorr::Signature) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.commitment_table;
+        spawn_blocking(move || Self::delete_commitment_sync(db_clone, table, commitment)).await?
+    }
+
+    async fn list_commitments(&self) -> Result<Vec<SwapCommitmentRecord>> {
+        let db_clone = self.db.clone();
+        let table = self.commitment_table;
+        spawn_blocking(move || Self::list_commitments_sync(db_clone, table)).await?
     }
 }
 
@@ -576,7 +731,6 @@ mod tests {
         cashu::{self, Amount},
         core_tests,
     };
-    use chrono::Utc;
     use redb::{Builder, backends::InMemoryBackend};
 
     fn get_db(wallet_id: &str, unit: CurrencyUnit) -> PocketDB {
@@ -715,15 +869,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_store_commitment() {
+    async fn test_store_load_delete_commitment() {
         let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
-        let expiration: TStamp = Utc::now();
 
         let key = cashu::SecretKey::generate();
         let sig = key.sign(&[0u8; 32]).unwrap();
+        let ephemeral_keypair =
+            secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng());
+        let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
+        let wallet_key =
+            cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
 
-        repo.store_commitment(vec![], vec![], expiration, sig)
+        repo.store_commitment(crate::SwapCommitmentRecord {
+            inputs: vec![],
+            outputs: vec![],
+            expiry: 1000u64,
+            commitment: sig,
+            ephemeral_secret,
+            body_content: "test_content".to_string(),
+            wallet_key,
+            premints: HashMap::new(),
+        })
+        .await
+        .expect("store_commitment works");
+
+        let record = repo
+            .load_commitment(sig)
             .await
-            .expect("store_commitment works");
+            .expect("load_commitment works");
+        assert_eq!(record.expiry, 1000u64);
+        assert_eq!(record.body_content, "test_content");
+        assert!(record.premints.is_empty());
+
+        repo.delete_commitment(sig)
+            .await
+            .expect("delete_commitment works");
+        assert!(repo.load_commitment(sig).await.is_err());
     }
 }

@@ -13,11 +13,7 @@ use bcr_common::{
     cashu::{self, MintUrl},
     cdk,
 };
-use bcr_wallet_api::{
-    AppState,
-    config::{AppStateConfig, SameMintSafeMode},
-    error::Error as BcrWalletError,
-};
+use bcr_wallet_api::{AppState, config::AppStateConfig, error::Error as BcrWalletError};
 use flutter_rust_bridge::{DartFnFuture, JoinHandle, frb};
 use log::{error, info};
 use tokio::sync::Mutex;
@@ -87,8 +83,8 @@ pub struct WalletFfiConfig {
     pub mnemonic: String,
     // The nostr relays to use
     pub nostr_relays: Vec<String>,
-    // Whether to use same-mint-safe-mode
-    pub use_same_mint_safe_mode: bool,
+    // Swap commitment expiry in minutes
+    pub swap_expiry_minutes: u32,
 }
 
 #[frb]
@@ -110,13 +106,7 @@ pub async fn init_wallet_ffi(conf: WalletFfiConfig) {
     let parsed_network = bitcoin::Network::from_str(&conf.bitcoin_network).expect(
         "Not a valid bitcoin network - use one of bitcoin, testnet, testnet4, signet, regtest",
     );
-    let same_mint_safe_mode = if conf.use_same_mint_safe_mode {
-        SameMintSafeMode::Enabled {
-            expiration: chrono::TimeDelta::minutes(15),
-        }
-    } else {
-        SameMintSafeMode::Disabled
-    };
+    let swap_expiry = chrono::TimeDelta::minutes(conf.swap_expiry_minutes as i64);
 
     let mut rt = WALLET_RUNTIME.lock().await;
 
@@ -140,7 +130,7 @@ pub async fn init_wallet_ffi(conf: WalletFfiConfig) {
         network: parsed_network,
         nostr_relays: parsed_nostr_relays,
         mnemonic: parsed_mnemonic,
-        same_mint_safe_mode,
+        swap_expiry,
         default_mint_url: parsed_url,
     };
 
@@ -574,6 +564,20 @@ pub async fn wallet_protest_mint(
 }
 
 #[frb]
+pub async fn wallet_protest_swap(
+    req: WalletProtestSwapRequest,
+) -> Result<WalletProtestSwapResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let (status, amount) = app_state
+        .wallet_protest_swap(req.wallet_id, req.commitment_sig)
+        .await?;
+    Ok(WalletProtestSwapResponse {
+        status: status.into(),
+        amount: amount.map(|a| u64::from(a)),
+    })
+}
+
+#[frb]
 pub async fn wallet_get_transaction_ids(
     req: WalletRequest,
 ) -> Result<WalletTransactionIdsResponse, WalletError> {
@@ -802,6 +806,7 @@ pub enum PaymentType {
     Token,
     Cdk18,
     OnChain,
+    Swap,
 }
 
 impl std::convert::From<bcr_wallet_core::types::PaymentType> for PaymentType {
@@ -811,6 +816,7 @@ impl std::convert::From<bcr_wallet_core::types::PaymentType> for PaymentType {
             bcr_wallet_core::types::PaymentType::Token => PaymentType::Token,
             bcr_wallet_core::types::PaymentType::Cdk18 => PaymentType::Cdk18,
             bcr_wallet_core::types::PaymentType::OnChain => PaymentType::OnChain,
+            bcr_wallet_core::types::PaymentType::Swap => PaymentType::Swap,
         }
     }
 }
@@ -990,6 +996,18 @@ pub struct WalletProtestMintRequest {
 
 #[derive(Debug, Clone)]
 pub struct WalletProtestMintResponse {
+    pub status: ProtestStatus,
+    pub amount: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletProtestSwapRequest {
+    pub wallet_id: usize,
+    pub commitment_sig: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletProtestSwapResponse {
     pub status: ProtestStatus,
     pub amount: Option<u64>,
 }
@@ -1222,6 +1240,7 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::InterMintButNoClowderPath => WalletError::internal(),
             BcrWalletError::SchnorrSignature(_) => WalletError::internal(),
             BcrWalletError::Database(_) => WalletError::internal(),
+            BcrWalletError::NoBetas => WalletError::internal(),
         }
     }
 }

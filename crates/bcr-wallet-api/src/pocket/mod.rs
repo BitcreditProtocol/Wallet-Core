@@ -1,12 +1,12 @@
 use crate::{
     ClowderMintConnector,
     error::{Error, Result},
-    wallet::types::SafeMode,
+    wallet::types::SwapConfig,
 };
 use async_trait::async_trait;
 use bcr_common::cashu::{
     self, Amount, CurrencyUnit, KeySet, KeySetInfo, ProofsMethods, amount::SplitTarget,
-    nut00 as cdk00, nut01 as cdk01, nut03 as cdk03, nut07 as cdk07,
+    nut00 as cdk00, nut01 as cdk01, nut07 as cdk07,
 };
 use bcr_wallet_core::{
     SendSync,
@@ -35,7 +35,7 @@ pub trait PocketApi: SendSync {
         client: Arc<dyn ClowderMintConnector>,
         keysets_info: &[KeySetInfo],
         proofs: Vec<cashu::Proof>,
-        safe_mode: SafeMode,
+        swap_config: SwapConfig,
     ) -> Result<(Amount, Vec<cashu::PublicKey>)>;
     async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo]) -> Result<SendSummary>;
     async fn send_proofs(
@@ -43,7 +43,7 @@ pub trait PocketApi: SendSync {
         rid: Uuid,
         keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
-        safe_mode: SafeMode,
+        swap_config: SwapConfig,
     ) -> Result<HashMap<cashu::PublicKey, cashu::Proof>>;
     async fn cleanup_local_proofs(
         &self,
@@ -66,6 +66,7 @@ pub trait PocketApi: SendSync {
         keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
         send_amount: Amount,
+        swap_config: SwapConfig,
     ) -> Result<Vec<cashu::Proof>>;
 }
 
@@ -131,6 +132,57 @@ pub(crate) fn unblind_proofs(
     proofs
 }
 
+///////////////////////////////////////////// committed_swap
+/// Commit → optionally store → swap → optionally delete.
+/// Returns the blind signatures from the swap response.
+pub(crate) async fn committed_swap(
+    client: &dyn ClowderMintConnector,
+    db: Option<&dyn PocketRepository>,
+    inputs: Vec<cdk00::Proof>,
+    outputs: Vec<cdk00::BlindedMessage>,
+    swap_config: &SwapConfig,
+    premints: HashMap<cashu::Id, cdk00::PreMintSecrets>,
+) -> Result<Vec<cdk00::BlindSignature>> {
+    let commit_result = client
+        .post_swap_commitment(
+            inputs.clone(),
+            outputs.clone(),
+            swap_config.expiry,
+            swap_config.alpha_pk,
+        )
+        .await?;
+    let commitment_sig = commit_result.commitment;
+
+    if let Some(db) = db {
+        db.store_commitment(bcr_wallet_persistence::SwapCommitmentRecord {
+            inputs: commit_result.inputs_ys,
+            outputs: commit_result.outputs,
+            expiry: commit_result.expiry,
+            commitment: commitment_sig,
+            ephemeral_secret: commit_result.ephemeral_secret,
+            body_content: commit_result.body_content,
+            wallet_key: commit_result.wallet_key,
+            premints,
+        })
+        .await?;
+    }
+
+    let request = bcr_common::wire::swap::SwapRequest {
+        inputs,
+        outputs,
+        commitment: commitment_sig,
+    };
+    let response = client.post_swap_committed(request).await?;
+
+    if let Some(db) = db
+        && let Err(e) = db.delete_commitment(commitment_sig).await
+    {
+        tracing::warn!("Failed to delete commitment after swap: {e}");
+    }
+
+    Ok(response.signatures)
+}
+
 ///////////////////////////////////////////// swap
 async fn swap(
     output_unit: CurrencyUnit,
@@ -139,7 +191,7 @@ async fn swap(
     keysets: HashMap<cashu::Id, KeySet>,
     client: Arc<dyn ClowderMintConnector>,
     db: &dyn PocketRepository,
-    safe_mode: SafeMode,
+    swap_config: SwapConfig,
 ) -> Result<Amount> {
     let total_input = inputs.total_amount()?;
     let input_len = inputs.len();
@@ -147,36 +199,36 @@ async fn swap(
         .values()
         .flat_map(|premint| premint.blinded_messages())
         .collect();
-    if let SafeMode::Enabled { expire, alpha_pk } = safe_mode {
-        let (fps, returned_blinds, exp, commitment) = client
-            .post_commitment(inputs.clone(), blinds.clone(), expire, alpha_pk)
-            .await?;
-        db.store_commitment(fps, returned_blinds, exp, commitment)
-            .await?;
-    }
-    let request = cdk03::SwapRequest::new(inputs, blinds);
-    // sending the swap request
-    let response = client.post_swap(request).await?;
-    let output_len = response.signatures.len();
-    let total_output = response
-        .signatures
+
+    let signatures = committed_swap(
+        client.as_ref(),
+        Some(db),
+        inputs,
+        blinds,
+        &swap_config,
+        premints.iter().map(|(k, v)| (*k, v.clone())).collect(),
+    )
+    .await?;
+
+    let output_len = signatures.len();
+    let total_output = signatures
         .iter()
         .fold(Amount::ZERO, |acc, sig| acc + sig.amount);
     tracing::debug!(
         "swap to {output_unit}: inputs: {input_len} {total_input}, outputs: {output_len} {total_output}",
     );
-    let mut signatures: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
-    for signature in response.signatures {
-        signatures
+    let mut sigs_by_kid: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
+    for signature in signatures {
+        sigs_by_kid
             .entry(signature.keyset_id)
             .and_modify(|v| v.push(signature.clone()))
             .or_insert_with(|| vec![signature]);
     }
     let mut total_cashed_in = Amount::ZERO;
-    for (kid, signatures) in signatures.into_iter() {
+    for (kid, sigs) in sigs_by_kid.into_iter() {
         let premint = premints.remove(&kid).expect("premint should be here");
         let keyset = keysets.get(&kid).expect("keyset should be here");
-        let proofs = unblind_proofs(keyset, signatures, premint);
+        let proofs = unblind_proofs(keyset, sigs, premint);
 
         for proof in proofs {
             let amount = proof.amount;
@@ -199,24 +251,25 @@ async fn swap_proof_to_target(
     seed: &Seed,
     db: &dyn PocketRepository,
     client: &Arc<dyn ClowderMintConnector>,
-    safe_mode: SafeMode,
+    swap_config: SwapConfig,
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
     let target = SplitTarget::Value(target_amount);
     let counter = db.counter(target_keyset.id).await?;
     let premint =
         cdk00::PreMintSecrets::from_seed(target_keyset.id, counter, seed, proof.amount, &target)?;
     let blinds = premint.blinded_messages();
-    if let SafeMode::Enabled { expire, alpha_pk } = safe_mode {
-        let (fps, returned_blinds, exp, commitment) = client
-            .post_commitment(vec![proof.clone()], blinds.clone(), expire, alpha_pk)
-            .await?;
-        db.store_commitment(fps, returned_blinds, exp, commitment)
-            .await?;
-    }
-    let request = cdk03::SwapRequest::new(vec![proof], blinds);
     db.increment_counter(target_keyset.id, counter, premint.len() as u32)
         .await?;
-    let signatures = client.post_swap(request).await?.signatures;
+
+    let signatures = committed_swap(
+        client.as_ref(),
+        Some(db),
+        vec![proof],
+        blinds,
+        &swap_config,
+        HashMap::from([(target_keyset.id, premint.clone())]),
+    )
+    .await?;
     let mut on_target: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
     let mut proofs = unblind_proofs(target_keyset, signatures, premint);
     proofs.sort_by_key(|proof| std::cmp::Reverse(proof.amount));
@@ -281,7 +334,7 @@ async fn send_proofs(
     db: &dyn PocketRepository,
     client: &Arc<dyn ClowderMintConnector>,
     target_swap_keysetid: Option<cashu::Id>,
-    safe_mode: SafeMode,
+    swap_config: SwapConfig,
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
     let mut current_amount = Amount::ZERO;
     let mut sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
@@ -301,7 +354,7 @@ async fn send_proofs(
             seed,
             db,
             client,
-            safe_mode,
+            swap_config,
         )
         .await?
     } else {
@@ -410,10 +463,11 @@ mod tests {
         assert_eq!(proofs.len(), 0);
     }
 
+    use crate::pocket::test_utils::tests::{setup_commitment_mocks, test_swap_config};
+
     #[tokio::test]
     async fn swap_proof_to_target() {
         let (_, keyset) = core_tests::generate_random_ecash_keyset();
-        // 16 --> 13 ==> ( 8 + 4 + 1 ) + 2 + 1
         let amount = Amount::from(16u64);
         let target = Amount::from(13u64);
         let proof = core_tests::generate_random_ecash_proofs(&keyset, &[amount])[0].clone();
@@ -431,18 +485,15 @@ mod tests {
             .with(eq(keyset.id), eq(0), eq(5))
             .returning(|_, _, _| Ok(()));
         let cloned_keyset = keyset.clone();
+        setup_commitment_mocks(&mut mockclient, &mut mockdb);
         mockclient
-            .expect_post_swap()
+            .expect_post_swap_committed()
             .times(1)
             .returning(move |request| {
-                let amounts = request
-                    .outputs()
-                    .iter()
-                    .map(|b| b.amount)
-                    .collect::<Vec<_>>();
+                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let mock_signatures =
                     core_tests::generate_ecash_signatures(&cloned_keyset, &amounts);
-                Ok(cdk03::SwapResponse {
+                Ok(bcr_common::wire::swap::SwapResponse {
                     signatures: mock_signatures,
                 })
             });
@@ -459,7 +510,7 @@ mod tests {
             &seed,
             &mockdb,
             &arc_client,
-            SafeMode::Disabled,
+            test_swap_config(),
         )
         .await
         .unwrap();
@@ -483,17 +534,14 @@ mod tests {
         let keysets = HashMap::from([(info.id, KeySet::from(keyset.clone()))]);
         let mut mockclient = MockMintConnector::new();
         let mut mockdb = MockPocketRepository::new();
+        setup_commitment_mocks(&mut mockclient, &mut mockdb);
         mockclient
-            .expect_post_swap()
+            .expect_post_swap_committed()
             .times(1)
             .returning(move |request| {
-                let amounts = request
-                    .outputs()
-                    .iter()
-                    .map(|b| b.amount)
-                    .collect::<Vec<_>>();
+                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
-                Ok(cdk03::SwapResponse { signatures })
+                Ok(bcr_common::wire::swap::SwapResponse { signatures })
             });
         mockdb.expect_store_new().times(2).returning(|p| {
             let y = p.y().expect("Hash to curve should not fail");
@@ -508,7 +556,7 @@ mod tests {
             keysets,
             arc_client,
             &mockdb,
-            SafeMode::Disabled,
+            test_swap_config(),
         )
         .await
         .unwrap();

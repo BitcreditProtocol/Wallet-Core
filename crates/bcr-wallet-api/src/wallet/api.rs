@@ -5,7 +5,7 @@ use crate::{
         MintSummary, PAYMENT_TYPE_METADATA_KEY, PaymentSummary, TRANSACTION_STATUS_METADATA_KEY,
         WalletConfig,
     },
-    wallet::types::{PayReference, SafeMode, WalletPaymentType},
+    wallet::types::{PayReference, WalletPaymentType},
 };
 use async_trait::async_trait;
 use bcr_common::{
@@ -17,7 +17,7 @@ use bcr_common::{
     wallet::Token,
     wire::{
         clowder::{self as wire_clowder},
-        melt as wire_melt,
+        common as wire_common, melt as wire_melt,
     },
 };
 use bcr_wallet_core::{
@@ -79,11 +79,19 @@ pub trait WalletApi: SendSync {
     ) -> Result<(TransactionId, Option<Token>)>;
     async fn mint(&self, amount: bitcoin::Amount) -> Result<MintSummary>;
     async fn check_pending_mints(&self) -> Result<Vec<TransactionId>>;
+    async fn check_pending_commitments(&self) -> Result<()>;
     async fn protest_mint(
         &self,
         quote_id: Uuid,
     ) -> Result<(
         bcr_common::wire::mint::ProtestStatus,
+        Option<(Amount, Vec<cashu::PublicKey>)>,
+    )>;
+    async fn protest_swap(
+        &self,
+        commitment_sig: bitcoin::secp256k1::schnorr::Signature,
+    ) -> Result<(
+        wire_common::ProtestStatus,
         Option<(Amount, Vec<cashu::PublicKey>)>,
     )>;
     async fn migrate_pockets_substitute(
@@ -321,21 +329,11 @@ impl WalletApi for super::Wallet {
             WalletPaymentType::Cdk18 { transport, id } => {
                 let proofs = if unit == self.credit.unit() {
                     self.credit
-                        .send_proofs(
-                            request_id,
-                            &infos,
-                            self.client.clone(),
-                            SafeMode::new(self.safe_mode, self.clowder_id),
-                        )
+                        .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
                         .await?
                 } else if unit == self.debit.unit() {
                     self.debit
-                        .send_proofs(
-                            request_id,
-                            &infos,
-                            self.client.clone(),
-                            SafeMode::new(self.safe_mode, self.clowder_id),
-                        )
+                        .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
                         .await?
                 } else {
                     return Err(Error::InvalidCurrencyUnit(unit.to_string()));
@@ -391,12 +389,7 @@ impl WalletApi for super::Wallet {
                 let (proofs, token) = if unit == self.credit.unit() {
                     let p = self
                         .credit
-                        .send_proofs(
-                            request_id,
-                            &infos,
-                            self.client.clone(),
-                            SafeMode::new(self.safe_mode, self.clowder_id),
-                        )
+                        .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
                         .await?;
                     (
                         p.clone(),
@@ -410,12 +403,7 @@ impl WalletApi for super::Wallet {
                 } else if unit == self.debit.unit() {
                     let p = self
                         .debit
-                        .send_proofs(
-                            request_id,
-                            &infos,
-                            self.client.clone(),
-                            SafeMode::new(self.safe_mode, self.clowder_id),
-                        )
+                        .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
                         .await?;
                     (
                         p.clone(),
@@ -460,12 +448,7 @@ impl WalletApi for super::Wallet {
             WalletPaymentType::OnChain => {
                 let (btc_tx_id, proofs) = self
                     .debit
-                    .pay_onchain_melt(
-                        request_id,
-                        &infos,
-                        self.client.clone(),
-                        SafeMode::new(self.safe_mode, self.clowder_id),
-                    )
+                    .pay_onchain_melt(request_id, &infos, self.client.clone(), self.swap_config())
                     .await?;
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
@@ -531,7 +514,7 @@ impl WalletApi for super::Wallet {
                 &keysets_info,
                 self.client.clone(),
                 now.timestamp() as u64,
-                SafeMode::new(self.safe_mode, self.clowder_id),
+                self.swap_config(),
                 self.clowder_id,
             )
             .await?;
@@ -565,6 +548,11 @@ impl WalletApi for super::Wallet {
         Ok(res)
     }
 
+    async fn check_pending_commitments(&self) -> Result<()> {
+        let now = chrono::Utc::now().timestamp() as u64;
+        self.debit.check_pending_commitments(now).await
+    }
+
     async fn protest_mint(
         &self,
         quote_id: Uuid,
@@ -579,7 +567,7 @@ impl WalletApi for super::Wallet {
                 quote_id,
                 &keysets_info,
                 self.client.clone(),
-                SafeMode::new(self.safe_mode, self.clowder_id),
+                self.swap_config(),
                 self.clowder_id,
             )
             .await?;
@@ -607,6 +595,66 @@ impl WalletApi for super::Wallet {
                 amount,
                 metadata,
                 quote_id: Some(quote_id.to_string()),
+            };
+            self.tx_repo.store_tx(tx).await?;
+        }
+
+        Ok((status, result))
+    }
+
+    async fn protest_swap(
+        &self,
+        commitment_sig: bitcoin::secp256k1::schnorr::Signature,
+    ) -> Result<(
+        wire_common::ProtestStatus,
+        Option<(Amount, Vec<cashu::PublicKey>)>,
+    )> {
+        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
+        let swap_config = self.swap_config();
+
+        // Pick a beta client
+        let beta_url = self.betas().into_iter().next().ok_or(Error::NoBetas)?;
+        let beta_client = self
+            .beta_clients
+            .get(&beta_url)
+            .ok_or(Error::BetaNotFound(beta_url))?
+            .clone();
+
+        let (status, result) = self
+            .debit
+            .protest_swap(
+                commitment_sig,
+                &keysets_info,
+                self.client.clone(),
+                beta_client,
+                self.clowder_id,
+                swap_config,
+            )
+            .await?;
+
+        if let Some((amount, ref ys)) = result {
+            let now = chrono::Utc::now();
+            let mut metadata = HashMap::default();
+            metadata.insert(
+                PAYMENT_TYPE_METADATA_KEY.to_owned(),
+                PaymentType::Swap.to_string(),
+            );
+            metadata.insert(
+                TRANSACTION_STATUS_METADATA_KEY.to_owned(),
+                TransactionStatus::Settled.to_string(),
+            );
+
+            let tx = Transaction {
+                mint_url: self.client.mint_url(),
+                fee: cashu::Amount::ZERO,
+                direction: TransactionDirection::Incoming,
+                memo: Some("Swap protest resolved".to_string()),
+                timestamp: now.timestamp() as u64,
+                unit: self.debit_unit(),
+                ys: ys.clone(),
+                amount,
+                metadata,
+                quote_id: None,
             };
             self.tx_repo.store_tx(tx).await?;
         }
@@ -791,7 +839,7 @@ impl WalletApi for super::Wallet {
                 self.client.clone(),
                 &keysets_info,
                 exchanged_debit,
-                SafeMode::new(self.safe_mode, self.clowder_id),
+                self.swap_config(),
             )
             .await?;
         self.credit
@@ -799,7 +847,7 @@ impl WalletApi for super::Wallet {
                 self.client.clone(),
                 &keysets_info,
                 exchanged_credit,
-                SafeMode::new(self.safe_mode, self.clowder_id),
+                self.swap_config(),
             )
             .await?;
 
@@ -902,6 +950,7 @@ impl WalletApi for super::Wallet {
                         &keysets_info,
                         substitute_client.clone(),
                         send_amount,
+                        self.swap_config(),
                     )
                     .await?
             } else if unit == self.debit.unit() {
@@ -911,6 +960,7 @@ impl WalletApi for super::Wallet {
                         &keysets_info,
                         substitute_client.clone(),
                         send_amount,
+                        self.swap_config(),
                     )
                     .await?
             } else {

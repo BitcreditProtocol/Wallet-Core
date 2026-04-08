@@ -4,11 +4,10 @@ pub mod util;
 
 use crate::{
     ClowderMintConnector,
-    config::SameMintSafeMode,
     error::{Error, Result},
     pocket::{credit::CreditPocketApi, debit::DebitPocketApi},
     types::{PAYMENT_TYPE_METADATA_KEY, RedemptionSummary, TRANSACTION_STATUS_METADATA_KEY},
-    wallet::types::{PayReference, SafeMode, WalletBalance},
+    wallet::types::{PayReference, SwapConfig, WalletBalance},
 };
 use bcr_common::{
     cashu::{
@@ -46,7 +45,7 @@ pub struct Wallet {
     current_payment_request: Mutex<Option<PaymentRequest>>,
     clowder_id: secp256k1::PublicKey,
     client_factory: Box<dyn Fn(cashu::MintUrl) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
-    safe_mode: SameMintSafeMode,
+    swap_expiry: chrono::TimeDelta,
 }
 
 impl Wallet {
@@ -62,7 +61,7 @@ impl Wallet {
         clowder_id: secp256k1::PublicKey,
         beta_clients: HashMap<cashu::MintUrl, Arc<dyn ClowderMintConnector>>,
         client_factory: Box<dyn Fn(cashu::MintUrl) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
-        safe_mode: SameMintSafeMode,
+        swap_expiry: chrono::TimeDelta,
     ) -> Result<Self> {
         Ok(Self {
             network,
@@ -79,7 +78,7 @@ impl Wallet {
             beta_clients,
             clowder_id,
             client_factory,
-            safe_mode,
+            swap_expiry,
         })
     }
 
@@ -88,6 +87,12 @@ impl Wallet {
     }
     pub fn credit_unit(&self) -> CurrencyUnit {
         self.credit.unit()
+    }
+    fn swap_config(&self) -> SwapConfig {
+        SwapConfig {
+            expiry: self.swap_expiry,
+            alpha_pk: self.clowder_id,
+        }
     }
 
     pub async fn list_redemptions(
@@ -256,7 +261,7 @@ impl Wallet {
                     self.client.clone(),
                     keysets_info,
                     credit_proofs,
-                    SafeMode::new(self.safe_mode, self.clowder_id),
+                    self.swap_config(),
                 )
                 .await?;
             Ok(amount)
@@ -323,23 +328,13 @@ impl Wallet {
         let amount = if tx.unit == self.debit.unit() {
             tracing::debug!("Reclaim Debit Transaction {tx_id}");
             self.debit
-                .reclaim_proofs(
-                    &tx.ys,
-                    &infos,
-                    self.client.clone(),
-                    SafeMode::new(self.safe_mode, self.clowder_id),
-                )
+                .reclaim_proofs(&tx.ys, &infos, self.client.clone(), self.swap_config())
                 .await?
         } else if tx.unit == self.credit.unit() {
             tracing::debug!("Reclaim Credit Transaction {tx_id}");
             let (reclaimed_amount, redeemable_proofs) = self
                 .credit
-                .reclaim_proofs(
-                    &tx.ys,
-                    &infos,
-                    self.client.clone(),
-                    SafeMode::new(self.safe_mode, self.clowder_id),
-                )
+                .reclaim_proofs(&tx.ys, &infos, self.client.clone(), self.swap_config())
                 .await?;
 
             let redeemed_amount = self.redeem_credit_proofs(redeemable_proofs, &infos).await?;
@@ -468,7 +463,7 @@ impl Wallet {
                     self.client.clone(),
                     local_alpha_keysets_info,
                     proofs,
-                    SafeMode::new(self.safe_mode, self.clowder_id),
+                    self.swap_config(),
                 )
                 .await?
         } else if unit == self.credit.unit() {
@@ -477,7 +472,7 @@ impl Wallet {
                     self.client.clone(),
                     local_alpha_keysets_info,
                     proofs,
-                    SafeMode::new(self.safe_mode, self.clowder_id),
+                    self.swap_config(),
                 )
                 .await?
         } else {
@@ -580,7 +575,7 @@ impl Wallet {
             hash_lock,
             key_locks,
             *wallet_pk.public_key(),
-            SafeMode::new(self.safe_mode, self.clowder_id),
+            self.swap_config(),
         )
         .await?;
 
@@ -880,7 +875,7 @@ mod tests {
             current_payment_request: Mutex::new(None),
             clowder_id: test_pub_key(),
             client_factory: Box::new(|url| Arc::new(HttpClientExt::new(url))),
-            safe_mode: SameMintSafeMode::Disabled,
+            swap_expiry: chrono::TimeDelta::seconds(60),
         }
     }
 

@@ -58,7 +58,7 @@ async fn restore_batch(
     let keyset = client.get_mint_keyset(kid).await?;
     let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
     let mut premints_cursor = premints.iter();
-    for (output, signature) in outputs.into_iter().zip(signatures.into_iter()) {
+    for (output, signature) in outputs.into_iter().zip(signatures) {
         let premint = loop {
             let premint = premints_cursor
                 .next()

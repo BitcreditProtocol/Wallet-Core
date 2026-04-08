@@ -10,12 +10,84 @@ use bcr_common::{
         swap as wire_swap,
     },
 };
-use bcr_wallet_core::{SendSync, types::TStamp};
+use bcr_wallet_core::SendSync;
 use bitcoin::base64::prelude::*;
 use bitcoin::secp256k1;
 use rand::seq::IndexedRandom;
 use std::str::FromStr;
 use tracing::debug;
+
+pub struct SwapCommitmentResult {
+    pub inputs_ys: Vec<cashu::PublicKey>,
+    pub outputs: Vec<cashu::BlindedMessage>,
+    pub expiry: u64,
+    pub commitment: secp256k1::schnorr::Signature,
+    pub ephemeral_secret: secp256k1::SecretKey,
+    pub body_content: String,
+    pub wallet_key: cashu::PublicKey,
+}
+
+async fn do_post_swap_commitment(
+    http_client: &reqwest::Client,
+    url: reqwest::Url,
+    inputs: Vec<cashu::Proof>,
+    outputs: Vec<cashu::BlindedMessage>,
+    expiry_seconds: chrono::TimeDelta,
+    alpha_pk: secp256k1::PublicKey,
+) -> Result<SwapCommitmentResult> {
+    let ephemeral_keypair =
+        secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng());
+    let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
+
+    let fingerprints: Vec<_> = inputs
+        .into_iter()
+        .map(wire_keys::ProofFingerprint::try_from)
+        .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
+    let expiry = (chrono::Utc::now() + expiry_seconds).timestamp() as u64;
+    let body = wire_swap::SwapCommitmentRequestBody {
+        inputs: fingerprints,
+        outputs,
+        expiry,
+    };
+
+    let (content, wallet_signature) =
+        bcr_common::core::signature::serialize_n_schnorr_sign_borsh_msg(&body, &ephemeral_keypair)?;
+    let wallet_key = cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
+
+    let request = wire_swap::SwapCommitmentRequest {
+        content: content.clone(),
+        wallet_key,
+        wallet_signature,
+    };
+
+    let response = http_client
+        .post(url)
+        .json(&request)
+        .send()
+        .await?
+        .error_for_status()?;
+    let wire_swap::SwapCommitmentResponse {
+        content: committed_content,
+        commitment,
+    } = response.json().await?;
+
+    bcr_common::core::signature::schnorr_verify_b64(
+        &committed_content,
+        &commitment,
+        &alpha_pk.x_only_public_key().0,
+    )?;
+
+    let inputs_ys: Vec<cashu::PublicKey> = body.inputs.into_iter().map(|fp| fp.y).collect();
+    Ok(SwapCommitmentResult {
+        inputs_ys,
+        outputs: body.outputs,
+        expiry,
+        commitment,
+        ephemeral_secret,
+        body_content: committed_content,
+        wallet_key,
+    })
+}
 
 fn clowder_err_to_cdk(e: bcr_common::client::clowder::Error) -> CdkError {
     match e {
@@ -59,18 +131,21 @@ pub trait ClowderMintConnector: cdk::wallet::MintConnector + SendSync {
         locks: Vec<bitcoin::hashes::sha256::Hash>,
         wallet_pubkey: secp256k1::PublicKey,
     ) -> CdkResult<Vec<Proof>>;
-    async fn post_commitment(
+    async fn post_swap_commitment(
         &self,
         inputs: Vec<cashu::Proof>,
         outputs: Vec<cashu::BlindedMessage>,
-        expiration: chrono::TimeDelta,
+        expiry_seconds: chrono::TimeDelta,
         alpha_pk: secp256k1::PublicKey,
-    ) -> Result<(
-        Vec<cashu::PublicKey>,
-        Vec<cashu::BlindedMessage>,
-        TStamp,
-        secp256k1::schnorr::Signature,
-    )>;
+    ) -> Result<SwapCommitmentResult>;
+    async fn post_swap_committed(
+        &self,
+        request: wire_swap::SwapRequest,
+    ) -> Result<wire_swap::SwapResponse>;
+    async fn post_protest_swap(
+        &self,
+        req: wire_swap::SwapProtestRequest,
+    ) -> Result<wire_swap::SwapProtestResponse>;
     async fn post_melt_quote_onchain(
         &self,
         req: wire_melt::MeltQuoteOnchainRequest,
@@ -365,52 +440,67 @@ impl ClowderMintConnector for HttpClientExt {
             .map_err(clowder_err_to_cdk)
     }
 
-    async fn post_commitment(
+    async fn post_swap_commitment(
         &self,
         inputs: Vec<cashu::Proof>,
         outputs: Vec<cashu::BlindedMessage>,
-        expiration: chrono::TimeDelta,
+        expiry_seconds: chrono::TimeDelta,
         alpha_pk: secp256k1::PublicKey,
-    ) -> Result<(
-        Vec<cashu::PublicKey>,
-        Vec<cashu::BlindedMessage>,
-        TStamp,
-        secp256k1::schnorr::Signature,
-    )> {
+    ) -> Result<SwapCommitmentResult> {
         let url = self
             .url
-            .join("v1/commitment")
-            .expect("post_commitment url error");
-        debug!("HTTP call to post_commitment on {url}");
-        let inputs: Vec<_> = inputs
-            .into_iter()
-            .map(wire_keys::ProofFingerprint::try_from)
-            .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
-        let now = chrono::Utc::now();
-        let payload = wire_swap::CommitmentContent {
+            .join("v1/swap/commitment")
+            .expect("post_swap_commitment url error");
+        debug!("HTTP call to post_swap_commitment on {url}");
+        do_post_swap_commitment(
+            &self.secondary,
+            url,
             inputs,
             outputs,
-            expiration: now + expiration,
-        };
-        let borshed = borsh::to_vec(&payload)?;
-        let content = BASE64_STANDARD.encode(borshed);
-        let request = wire_swap::CommitmentRequest {
-            content: content.clone(),
-        };
-        let response = self.secondary.post(url).json(&request).send().await?;
-        let response: wire_swap::CommitmentResponse = response.json().await?;
-        bcr_common::core::signature::schnorr_verify_b64(
-            &content,
-            &response.commitment,
-            &alpha_pk.x_only_public_key().0,
-        )?;
-        let inputs: Vec<cashu::PublicKey> = payload.inputs.into_iter().map(|fp| fp.y).collect();
-        Ok((
-            inputs,
-            payload.outputs,
-            payload.expiration,
-            response.commitment,
-        ))
+            expiry_seconds,
+            alpha_pk,
+        )
+        .await
+    }
+
+    async fn post_swap_committed(
+        &self,
+        request: wire_swap::SwapRequest,
+    ) -> Result<wire_swap::SwapResponse> {
+        let url = self
+            .url
+            .join("v1/swap")
+            .expect("post_swap_committed url error");
+        debug!("HTTP call to post_swap_committed on {url}");
+        let res = self
+            .secondary
+            .post(url)
+            .json(&request)
+            .send()
+            .await?
+            .error_for_status()?;
+        let response: wire_swap::SwapResponse = res.json().await?;
+        Ok(response)
+    }
+
+    async fn post_protest_swap(
+        &self,
+        req: wire_swap::SwapProtestRequest,
+    ) -> Result<wire_swap::SwapProtestResponse> {
+        let url = self
+            .url
+            .join("v1/protest/swap")
+            .expect("protest_swap url error");
+        debug!("HTTP call to protest_swap on {url}");
+        let res = self
+            .secondary
+            .post(url)
+            .json(&req)
+            .send()
+            .await?
+            .error_for_status()?;
+        let response: wire_swap::SwapProtestResponse = res.json().await?;
+        Ok(response)
     }
 
     async fn post_melt_quote_onchain(
@@ -842,51 +932,79 @@ impl ClowderMintConnector for SentinelClient {
             .map_err(clowder_err_to_cdk)
     }
 
-    async fn post_commitment(
+    async fn post_swap_commitment(
         &self,
         inputs: Vec<cashu::Proof>,
         outputs: Vec<cashu::BlindedMessage>,
-        expiration: chrono::TimeDelta,
+        expiry_seconds: chrono::TimeDelta,
         alpha_pk: secp256k1::PublicKey,
-    ) -> Result<(
-        Vec<cashu::PublicKey>,
-        Vec<cashu::BlindedMessage>,
-        TStamp,
-        secp256k1::schnorr::Signature,
-    )> {
+    ) -> Result<SwapCommitmentResult> {
         let url = self
             .url
-            .join("v1/commitment")
-            .expect("post_commitment url error");
-        let inputs: Vec<_> = inputs
-            .into_iter()
-            .map(wire_keys::ProofFingerprint::try_from)
-            .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
-        let now = chrono::Utc::now();
-        let payload = wire_swap::CommitmentContent {
+            .join("v1/swap/commitment")
+            .expect("post_swap_commitment url error");
+        debug!("HTTP call to post_swap_commitment on sentinel {url}");
+        do_post_swap_commitment(
+            &self.secondary,
+            url,
             inputs,
             outputs,
-            expiration: now + expiration,
-        };
-        let borshed = borsh::to_vec(&payload)?;
-        let content = BASE64_STANDARD.encode(borshed);
-        let request = wire_swap::CommitmentRequest {
-            content: content.clone(),
-        };
-        let response = self.secondary.post(url).json(&request).send().await?;
-        let response: wire_swap::CommitmentResponse = response.json().await?;
-        bcr_common::core::signature::schnorr_verify_b64(
-            &content,
-            &response.commitment,
-            &alpha_pk.x_only_public_key().0,
-        )?;
-        let inputs: Vec<cashu::PublicKey> = payload.inputs.into_iter().map(|fp| fp.y).collect();
-        Ok((
-            inputs,
-            payload.outputs,
-            payload.expiration,
-            response.commitment,
-        ))
+            expiry_seconds,
+            alpha_pk,
+        )
+        .await
+    }
+
+    async fn post_swap_committed(
+        &self,
+        request: wire_swap::SwapRequest,
+    ) -> Result<wire_swap::SwapResponse> {
+        let url = self
+            .url
+            .join("v1/swap")
+            .expect("post_swap_committed url error");
+        debug!("HTTP call to post_swap_committed on sentinel {url}");
+        let response = self
+            .secondary
+            .post(url)
+            .json(&request)
+            .send()
+            .await?
+            .error_for_status()?;
+        let response: wire_swap::SwapResponse = response.json().await?;
+
+        // Send sentinel event
+        if let Some(sentinel_url) = self.random_sentinel() {
+            let event_url = Self::sentinel_ep(sentinel_url);
+            let event = wire_clowder::WalletEvent::Swap {
+                minted: response.signatures.clone(),
+            };
+            let resp = self.secondary.post(event_url).json(&event).send().await;
+            if let Err(e) = resp {
+                tracing::error!("Failed to send swap event to sentinel {sentinel_url}: {e}");
+            }
+        }
+        Ok(response)
+    }
+
+    async fn post_protest_swap(
+        &self,
+        req: wire_swap::SwapProtestRequest,
+    ) -> Result<wire_swap::SwapProtestResponse> {
+        let url = self
+            .url
+            .join("v1/protest/swap")
+            .expect("protest_swap url error");
+        debug!("HTTP call on sentinel to protest_swap on {url}");
+        let res = self
+            .secondary
+            .post(url)
+            .json(&req)
+            .send()
+            .await?
+            .error_for_status()?;
+        let response: wire_swap::SwapProtestResponse = res.json().await?;
+        Ok(response)
     }
 
     async fn post_melt_quote_onchain(

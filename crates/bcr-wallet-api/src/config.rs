@@ -7,19 +7,13 @@ use nostr_sdk::{Keys, RelayUrl, nips::nip06::FromMnemonic, nips::nip19::Nip19Pro
 pub const LOCK_REDUCTION_SECONDS_PER_HOP: u64 = 600;
 pub const MAX_INTERMINT_ATTEMPTS: u64 = 3;
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-pub enum SameMintSafeMode {
-    Enabled { expiration: chrono::TimeDelta },
-    Disabled,
-}
-
 #[derive(Debug, Clone)]
 pub struct AppStateConfig {
     pub db_path: PathBuf,
     pub network: bitcoin::Network,
     pub nostr_relays: Vec<RelayUrl>,
     pub mnemonic: bip39::Mnemonic,
-    pub same_mint_safe_mode: SameMintSafeMode,
+    pub swap_expiry: chrono::TimeDelta,
     pub default_mint_url: MintUrl,
 }
 

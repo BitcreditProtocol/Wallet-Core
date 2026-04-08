@@ -1,7 +1,7 @@
 use crate::{
     ClowderMintConnector,
     error::{Error, Result},
-    wallet::types::SafeMode,
+    wallet::types::SwapConfig,
 };
 use bcr_common::cdk::{self};
 use bcr_common::{
@@ -64,7 +64,7 @@ pub async fn htlc_lock(
     hash_lock: Sha256,
     key_locks: Vec<secp256k1::PublicKey>,
     wallet_pubkey: secp256k1::PublicKey,
-    safe_mode: SafeMode,
+    swap_config: SwapConfig,
 ) -> Result<Vec<cashu::Proof>> {
     tracing::debug!("HTLC-locking proofs");
     let amount = proofs.total_amount()?;
@@ -102,21 +102,18 @@ pub async fn htlc_lock(
     let premints =
         cashu::PreMintSecrets::with_conditions(active_keyset_id, amount, &split_target, &htlc)?;
 
-    if let SafeMode::Enabled { expire, alpha_pk } = safe_mode {
-        client
-            .post_commitment(
-                proofs.clone(),
-                premints.blinded_messages(),
-                expire,
-                alpha_pk,
-            )
-            .await?;
-    }
-    let swap_request = cashu::SwapRequest::new(proofs, premints.blinded_messages());
-    let swap = client.post_swap(swap_request).await?;
+    let signatures = crate::pocket::committed_swap(
+        client,
+        None,
+        proofs,
+        premints.blinded_messages(),
+        &swap_config,
+        std::collections::HashMap::new(),
+    )
+    .await?;
 
     let keyset = client.get_mint_keyset(active_keyset_id).await?;
-    let proofs = crate::pocket::unblind_proofs(&keyset, swap.signatures, premints);
+    let proofs = crate::pocket::unblind_proofs(&keyset, signatures, premints);
 
     Ok(proofs)
 }

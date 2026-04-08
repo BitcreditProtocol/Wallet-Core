@@ -1,11 +1,7 @@
 use std::{path::PathBuf, str::FromStr};
 
 use anyhow::Result;
-use bcr_wallet_api::{
-    AppState,
-    config::{AppStateConfig, SameMintSafeMode},
-    generate_random_mnemonic, is_valid_token,
-};
+use bcr_wallet_api::{AppState, config::AppStateConfig, generate_random_mnemonic, is_valid_token};
 use clap::{Parser, Subcommand};
 use nostr_sdk::RelayUrl;
 use serde::{Deserialize, Serialize};
@@ -80,6 +76,8 @@ enum Commands {
     Mint { id: usize, amount: u64 },
     #[command(name = "protest_mint")]
     ProtestMint { id: usize, quote_id: String },
+    #[command(name = "protest_swap")]
+    ProtestSwap { id: usize, commitment_sig: String },
     #[command(name = "migrate_rabid")]
     MigrateRabid,
     #[command(name = "run_jobs")]
@@ -127,11 +125,7 @@ async fn main() -> Result<()> {
         nostr_relays: settings.nostr_relays.clone(),
         mnemonic: settings.mnemonic.clone(),
         default_mint_url: settings.mint_url.clone(),
-        same_mint_safe_mode: SameMintSafeMode::Disabled,
-        // Disabled for now until Clowder stabilizes more
-        // same_mint_safe_mode: SameMintSafeMode::Enabled {
-        //     expiration: chrono::TimeDelta::minutes(15),
-        // },
+        swap_expiry: chrono::TimeDelta::minutes(15),
     };
     let app_state = AppState::initialize(app_state_cfg).await?;
 
@@ -260,6 +254,13 @@ async fn main() -> Result<()> {
                 "Protest Mint for {}: {}",
                 cli.wallet,
                 command::cmd_protest_mint(&app_state, &cli.wallet, id, &quote_id).await?
+            );
+        }
+        Commands::ProtestSwap { id, commitment_sig } => {
+            info!(
+                "Protest Swap for {}: {}",
+                cli.wallet,
+                command::cmd_protest_swap(&app_state, &cli.wallet, id, &commitment_sig).await?
             );
         }
         Commands::MigrateRabid => {
