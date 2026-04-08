@@ -1,0 +1,6 @@
+mint_url = "http://localhost:4343"
+mnemonic = "royal scheme canoe flame sell jewel valve citizen deal patch stereo walk"
+log_level = "DEBUG"
+db_path = "./local.db"
+network = "regtest"
+nostr_relays = ["ws://localhost:7777"]

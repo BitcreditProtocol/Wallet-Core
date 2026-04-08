@@ -1,11 +1,7 @@
 use crate::config::AppStateConfig;
 use crate::external::mint::{ClowderMintConnector, HttpClientExt};
 use crate::wallet::types::WalletBalance;
-use crate::{
-    config::NostrConfig,
-    pocket::credit::CreditPocketApi,
-    wallet::api::WalletApi,
-};
+use crate::{config::NostrConfig, pocket::credit::CreditPocketApi, wallet::api::WalletApi};
 use bcr_common::cdk_common::wallet::Transaction;
 use bcr_common::{
     cashu::{self, CurrencyUnit, MintUrl, nut18 as cdk18},
@@ -482,7 +478,10 @@ impl AppState {
         &self,
         idx: usize,
         commitment_sig: String,
-    ) -> Result<(bcr_common::wire::common::ProtestStatus, Option<cashu::Amount>)> {
+    ) -> Result<(
+        bcr_common::wire::common::ProtestStatus,
+        Option<cashu::Amount>,
+    )> {
         tracing::debug!("wallet_protest_swap({idx}, {commitment_sig})");
         let sig = bitcoin::secp256k1::schnorr::Signature::from_str(&commitment_sig)
             .map_err(|e| Error::SchnorrSignature(e.to_string()))?;
@@ -591,7 +590,7 @@ impl AppState {
 
         let wallet = self.get_wallet(idx).await?;
         let mut txs = wallet.read().await.list_txs().await?;
-        txs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp)); // sort by timestamp desc
+        txs.sort_by_key(|b| std::cmp::Reverse(b.timestamp)); // sort by timestamp desc
         Ok(txs)
     }
 
@@ -721,7 +720,10 @@ impl AppState {
                     );
                 }
             }
-            match self.wallet_check_pending_commitments(*wallet_id as usize).await {
+            match self
+                .wallet_check_pending_commitments(*wallet_id as usize)
+                .await
+            {
                 Ok(()) => {
                     tracing::info!("Checked pending commitments for wallet {wallet_id}");
                 }

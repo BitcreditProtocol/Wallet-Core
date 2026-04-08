@@ -87,6 +87,7 @@ pub enum PaymentType {
     Token,
     Cdk18,
     OnChain,
+    Swap,
 }
 
 #[derive(Debug, Clone)]

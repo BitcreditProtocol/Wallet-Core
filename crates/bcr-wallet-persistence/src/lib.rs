@@ -54,10 +54,7 @@ pub trait PocketRepository: SendSync {
         commitment: secp256k1::schnorr::Signature,
     ) -> Result<SwapCommitmentRecord>;
 
-    async fn delete_commitment(
-        &self,
-        commitment: secp256k1::schnorr::Signature,
-    ) -> Result<()>;
+    async fn delete_commitment(&self, commitment: secp256k1::schnorr::Signature) -> Result<()>;
 
     async fn list_commitments(&self) -> Result<Vec<SwapCommitmentRecord>>;
 }

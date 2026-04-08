@@ -174,10 +174,10 @@ pub(crate) async fn committed_swap(
     };
     let response = client.post_swap_committed(request).await?;
 
-    if let Some(db) = db {
-        if let Err(e) = db.delete_commitment(commitment_sig).await {
-            tracing::warn!("Failed to delete commitment after swap: {e}");
-        }
+    if let Some(db) = db
+        && let Err(e) = db.delete_commitment(commitment_sig).await
+    {
+        tracing::warn!("Failed to delete commitment after swap: {e}");
     }
 
     Ok(response.signatures)
@@ -463,9 +463,7 @@ mod tests {
         assert_eq!(proofs.len(), 0);
     }
 
-    use crate::pocket::test_utils::tests::{
-        setup_commitment_mocks, test_swap_config,
-    };
+    use crate::pocket::test_utils::tests::{setup_commitment_mocks, test_swap_config};
 
     #[tokio::test]
     async fn swap_proof_to_target() {
@@ -492,11 +490,7 @@ mod tests {
             .expect_post_swap_committed()
             .times(1)
             .returning(move |request| {
-                let amounts = request
-                    .outputs
-                    .iter()
-                    .map(|b| b.amount)
-                    .collect::<Vec<_>>();
+                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let mock_signatures =
                     core_tests::generate_ecash_signatures(&cloned_keyset, &amounts);
                 Ok(bcr_common::wire::swap::SwapResponse {
@@ -545,11 +539,7 @@ mod tests {
             .expect_post_swap_committed()
             .times(1)
             .returning(move |request| {
-                let amounts = request
-                    .outputs
-                    .iter()
-                    .map(|b| b.amount)
-                    .collect::<Vec<_>>();
+                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
                 Ok(bcr_common::wire::swap::SwapResponse { signatures })
             });

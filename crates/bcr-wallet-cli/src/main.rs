@@ -1,11 +1,7 @@
 use std::{path::PathBuf, str::FromStr};
 
 use anyhow::Result;
-use bcr_wallet_api::{
-    AppState,
-    config::AppStateConfig,
-    generate_random_mnemonic, is_valid_token,
-};
+use bcr_wallet_api::{AppState, config::AppStateConfig, generate_random_mnemonic, is_valid_token};
 use clap::{Parser, Subcommand};
 use nostr_sdk::RelayUrl;
 use serde::{Deserialize, Serialize};

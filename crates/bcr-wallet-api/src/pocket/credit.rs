@@ -539,9 +539,7 @@ mod tests {
         super::Pocket::new(unit, db, seed)
     }
 
-    use crate::pocket::test_utils::tests::{
-        setup_commitment_mocks, test_swap_config,
-    };
+    use crate::pocket::test_utils::tests::{setup_commitment_mocks, test_swap_config};
 
     #[tokio::test]
     async fn credit_receive_proofs() {
@@ -571,11 +569,7 @@ mod tests {
             .expect_post_swap_committed()
             .times(1)
             .returning(move |request| {
-                let amounts = request
-                    .outputs
-                    .iter()
-                    .map(|b| b.amount)
-                    .collect::<Vec<_>>();
+                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
                 Ok(bcr_common::wire::swap::SwapResponse { signatures })
             });
@@ -796,11 +790,7 @@ mod tests {
             .expect_post_swap_committed()
             .times(1)
             .returning(move |request| {
-                let amounts = request
-                    .outputs
-                    .iter()
-                    .map(|b| b.amount)
-                    .collect::<Vec<_>>();
+                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
                 Ok(bcr_common::wire::swap::SwapResponse { signatures })
             });

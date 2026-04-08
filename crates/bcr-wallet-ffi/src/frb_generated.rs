@@ -27,7 +27,7 @@
 
 use crate::api::*;
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
-use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
+use flutter_rust_bridge::for_generated::{Lifetimeable, Lockable, transform_result_dco};
 use flutter_rust_bridge::{Handler, IntoIntoDart};
 
 // Section: boilerplate
@@ -1999,6 +1999,7 @@ impl SseDecode for crate::api::PaymentType {
             1 => crate::api::PaymentType::Token,
             2 => crate::api::PaymentType::Cdk18,
             3 => crate::api::PaymentType::OnChain,
+            4 => crate::api::PaymentType::Swap,
             _ => unreachable!("Invalid variant for PaymentType: {}", inner),
         };
     }
@@ -2911,6 +2912,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::PaymentType {
             Self::Token => 1.into_dart(),
             Self::Cdk18 => 2.into_dart(),
             Self::OnChain => 3.into_dart(),
+            Self::Swap => 4.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -4079,6 +4081,7 @@ impl SseEncode for crate::api::PaymentType {
                 crate::api::PaymentType::Token => 1,
                 crate::api::PaymentType::Cdk18 => 2,
                 crate::api::PaymentType::OnChain => 3,
+                crate::api::PaymentType::Swap => 4,
                 _ => {
                     unimplemented!("");
                 }
@@ -4564,7 +4567,7 @@ mod io {
     use flutter_rust_bridge::for_generated::byteorder::{
         NativeEndian, ReadBytesExt, WriteBytesExt,
     };
-    use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
+    use flutter_rust_bridge::for_generated::{Lifetimeable, Lockable, transform_result_dco};
     use flutter_rust_bridge::{Handler, IntoIntoDart};
 
     // Section: boilerplate
@@ -4603,7 +4606,7 @@ mod web {
     };
     use flutter_rust_bridge::for_generated::wasm_bindgen;
     use flutter_rust_bridge::for_generated::wasm_bindgen::prelude::*;
-    use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
+    use flutter_rust_bridge::for_generated::{Lifetimeable, Lockable, transform_result_dco};
     use flutter_rust_bridge::{Handler, IntoIntoDart};
 
     // Section: boilerplate

@@ -51,12 +51,8 @@ async fn do_post_swap_commitment(
     };
 
     let (content, wallet_signature) =
-        bcr_common::core::signature::serialize_n_schnorr_sign_borsh_msg(
-            &body,
-            &ephemeral_keypair,
-        )?;
-    let wallet_key =
-        cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
+        bcr_common::core::signature::serialize_n_schnorr_sign_borsh_msg(&body, &ephemeral_keypair)?;
+    let wallet_key = cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
 
     let request = wire_swap::SwapCommitmentRequest {
         content: content.clone(),
@@ -456,15 +452,25 @@ impl ClowderMintConnector for HttpClientExt {
             .join("v1/swap/commitment")
             .expect("post_swap_commitment url error");
         debug!("HTTP call to post_swap_commitment on {url}");
-        do_post_swap_commitment(&self.secondary, url, inputs, outputs, expiry_seconds, alpha_pk)
-            .await
+        do_post_swap_commitment(
+            &self.secondary,
+            url,
+            inputs,
+            outputs,
+            expiry_seconds,
+            alpha_pk,
+        )
+        .await
     }
 
     async fn post_swap_committed(
         &self,
         request: wire_swap::SwapRequest,
     ) -> Result<wire_swap::SwapResponse> {
-        let url = self.url.join("v1/swap").expect("post_swap_committed url error");
+        let url = self
+            .url
+            .join("v1/swap")
+            .expect("post_swap_committed url error");
         debug!("HTTP call to post_swap_committed on {url}");
         let res = self
             .secondary
@@ -938,15 +944,25 @@ impl ClowderMintConnector for SentinelClient {
             .join("v1/swap/commitment")
             .expect("post_swap_commitment url error");
         debug!("HTTP call to post_swap_commitment on sentinel {url}");
-        do_post_swap_commitment(&self.secondary, url, inputs, outputs, expiry_seconds, alpha_pk)
-            .await
+        do_post_swap_commitment(
+            &self.secondary,
+            url,
+            inputs,
+            outputs,
+            expiry_seconds,
+            alpha_pk,
+        )
+        .await
     }
 
     async fn post_swap_committed(
         &self,
         request: wire_swap::SwapRequest,
     ) -> Result<wire_swap::SwapResponse> {
-        let url = self.url.join("v1/swap").expect("post_swap_committed url error");
+        let url = self
+            .url
+            .join("v1/swap")
+            .expect("post_swap_committed url error");
         debug!("HTTP call to post_swap_committed on sentinel {url}");
         let response = self
             .secondary

@@ -13,8 +13,7 @@ use bcr_common::{
     wire::{
         common as wire_common,
         melt::{self as wire_melt, MeltTx},
-        mint as wire_mint,
-        swap as wire_swap,
+        mint as wire_mint, swap as wire_swap,
     },
 };
 use bcr_wallet_core::types::{MeltSummary, MintSummary, Seed, SendSummary};
@@ -764,12 +763,16 @@ impl DebitPocketApi for Pocket {
 
     async fn check_pending_commitments(&self, tstamp: u64) -> Result<()> {
         let commitments = self.pdb.list_commitments().await?;
-        tracing::debug!("check pending commitments for {} entries", commitments.len());
+        tracing::debug!(
+            "check pending commitments for {} entries",
+            commitments.len()
+        );
         for record in commitments {
             if record.expiry < tstamp {
                 tracing::warn!(
                     "Swap commitment {} expired at {} (now: {tstamp}) - deleting record.",
-                    record.commitment, record.expiry,
+                    record.commitment,
+                    record.expiry,
                 );
                 self.pdb.delete_commitment(record.commitment).await?;
             }
@@ -889,8 +892,7 @@ impl DebitPocketApi for Pocket {
                         keyset_id: kid,
                     }
                 };
-                let unblinded =
-                    super::unblind_proofs(&active_keyset, signatures, all_premints);
+                let unblinded = super::unblind_proofs(&active_keyset, signatures, all_premints);
 
                 let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
                     HashMap::with_capacity(unblinded.len());
@@ -910,9 +912,7 @@ impl DebitPocketApi for Pocket {
 
                 self.pdb.delete_commitment(commitment_sig).await?;
 
-                tracing::info!(
-                    "Swap protest resolved for {commitment_sig}, received {amount}"
-                );
+                tracing::info!("Swap protest resolved for {commitment_sig}, received {amount}");
                 Ok((wire_common::ProtestStatus::Resolved, Some((amount, ys))))
             }
             wire_common::ProtestStatus::Rabid => {
@@ -975,11 +975,7 @@ mod tests {
             .expect_post_swap_committed()
             .times(1)
             .returning(move |request| {
-                let amounts = request
-                    .outputs
-                    .iter()
-                    .map(|b| b.amount)
-                    .collect::<Vec<_>>();
+                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
                 Ok(bcr_common::wire::swap::SwapResponse { signatures })
             });
@@ -1039,11 +1035,7 @@ mod tests {
             .expect_post_swap_committed()
             .times(1)
             .returning(move |request| {
-                let amounts = request
-                    .outputs
-                    .iter()
-                    .map(|b| b.amount)
-                    .collect::<Vec<_>>();
+                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
                 Ok(bcr_common::wire::swap::SwapResponse { signatures })
             });
@@ -1530,8 +1522,7 @@ mod tests {
             .collect();
 
         // Generate premint secrets and sign them — these are the ORIGINAL blinding factors
-        let premint =
-            cdk00::PreMintSecrets::random(kid, amount, &SplitTarget::None).unwrap();
+        let premint = cdk00::PreMintSecrets::random(kid, amount, &SplitTarget::None).unwrap();
         let blind_sigs: Vec<cdk00::BlindSignature> = premint
             .blinded_messages()
             .iter()
@@ -1543,8 +1534,7 @@ mod tests {
         let stored_premints = HashMap::from([(kid, premint)]);
 
         // Create ephemeral keypair for the commitment record
-        let ephemeral_keypair =
-            secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let ephemeral_keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
         let wallet_key =
             cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
@@ -1562,20 +1552,18 @@ mod tests {
         let record_commitment = commitment_sig;
         let record_wallet_key = wallet_key;
         let record_premints = stored_premints.clone();
-        pdb.expect_load_commitment()
-            .times(1)
-            .returning(move |_| {
-                Ok(bcr_wallet_persistence::SwapCommitmentRecord {
-                    inputs: record_inputs.clone(),
-                    outputs: vec![],
-                    expiry: 1000,
-                    commitment: record_commitment,
-                    ephemeral_secret: record_secret,
-                    body_content: "dGVzdA==".to_string(),
-                    wallet_key: record_wallet_key,
-                    premints: record_premints.clone(),
-                })
-            });
+        pdb.expect_load_commitment().times(1).returning(move |_| {
+            Ok(bcr_wallet_persistence::SwapCommitmentRecord {
+                inputs: record_inputs.clone(),
+                outputs: vec![],
+                expiry: 1000,
+                commitment: record_commitment,
+                ephemeral_secret: record_secret,
+                body_content: "dGVzdA==".to_string(),
+                wallet_key: record_wallet_key,
+                premints: record_premints.clone(),
+            })
+        });
 
         let proofs_map = input_proofs_map.clone();
         pdb.expect_load_proofs()
@@ -1600,11 +1588,8 @@ mod tests {
             .returning(move |_| Ok(KeySet::from(keyset_clone.clone())));
 
         // Mocks for digest_proofs swap (runs against alpha)
-        pdb.expect_counter()
-            .with(eq(kid))
-            .returning(|_| Ok(0));
-        pdb.expect_increment_counter()
-            .returning(|_, _, _| Ok(()));
+        pdb.expect_counter().with(eq(kid)).returning(|_| Ok(0));
+        pdb.expect_increment_counter().returning(|_, _, _| Ok(()));
         setup_commitment_mocks(&mut alpha_connector, &mut pdb);
         let swap_keyset = mintkeyset.clone();
         alpha_connector
@@ -1666,8 +1651,7 @@ mod tests {
             .map(|p| (p.y().unwrap(), p.clone()))
             .collect();
 
-        let ephemeral_keypair =
-            secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let ephemeral_keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
         let wallet_key =
             cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
@@ -1684,20 +1668,18 @@ mod tests {
         let record_secret = ephemeral_secret;
         let record_commitment = commitment_sig;
         let record_wallet_key = wallet_key;
-        pdb.expect_load_commitment()
-            .times(1)
-            .returning(move |_| {
-                Ok(bcr_wallet_persistence::SwapCommitmentRecord {
-                    inputs: record_inputs.clone(),
-                    outputs: vec![],
-                    expiry: 1000,
-                    commitment: record_commitment,
-                    ephemeral_secret: record_secret,
-                    body_content: "dGVzdA==".to_string(),
-                    wallet_key: record_wallet_key,
-                    premints: HashMap::new(),
-                })
-            });
+        pdb.expect_load_commitment().times(1).returning(move |_| {
+            Ok(bcr_wallet_persistence::SwapCommitmentRecord {
+                inputs: record_inputs.clone(),
+                outputs: vec![],
+                expiry: 1000,
+                commitment: record_commitment,
+                ephemeral_secret: record_secret,
+                body_content: "dGVzdA==".to_string(),
+                wallet_key: record_wallet_key,
+                premints: HashMap::new(),
+            })
+        });
 
         let proofs_map = input_proofs_map.clone();
         pdb.expect_load_proofs()

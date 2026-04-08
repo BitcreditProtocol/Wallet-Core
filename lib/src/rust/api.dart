@@ -375,7 +375,8 @@ enum PaymentType {
   notApplicable,
   token,
   cdk18,
-  onChain;
+  onChain,
+  swap;
 
   static Future<PaymentType> default_() =>
       RustLib.instance.api.crateApiPaymentTypeDefault();

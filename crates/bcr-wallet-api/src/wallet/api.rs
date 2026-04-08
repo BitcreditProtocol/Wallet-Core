@@ -17,8 +17,7 @@ use bcr_common::{
     wallet::Token,
     wire::{
         clowder::{self as wire_clowder},
-        common as wire_common,
-        melt as wire_melt,
+        common as wire_common, melt as wire_melt,
     },
 };
 use bcr_wallet_core::{
@@ -330,21 +329,11 @@ impl WalletApi for super::Wallet {
             WalletPaymentType::Cdk18 { transport, id } => {
                 let proofs = if unit == self.credit.unit() {
                     self.credit
-                        .send_proofs(
-                            request_id,
-                            &infos,
-                            self.client.clone(),
-                            self.swap_config(),
-                        )
+                        .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
                         .await?
                 } else if unit == self.debit.unit() {
                     self.debit
-                        .send_proofs(
-                            request_id,
-                            &infos,
-                            self.client.clone(),
-                            self.swap_config(),
-                        )
+                        .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
                         .await?
                 } else {
                     return Err(Error::InvalidCurrencyUnit(unit.to_string()));
@@ -400,12 +389,7 @@ impl WalletApi for super::Wallet {
                 let (proofs, token) = if unit == self.credit.unit() {
                     let p = self
                         .credit
-                        .send_proofs(
-                            request_id,
-                            &infos,
-                            self.client.clone(),
-                            self.swap_config(),
-                        )
+                        .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
                         .await?;
                     (
                         p.clone(),
@@ -419,12 +403,7 @@ impl WalletApi for super::Wallet {
                 } else if unit == self.debit.unit() {
                     let p = self
                         .debit
-                        .send_proofs(
-                            request_id,
-                            &infos,
-                            self.client.clone(),
-                            self.swap_config(),
-                        )
+                        .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
                         .await?;
                     (
                         p.clone(),
@@ -469,12 +448,7 @@ impl WalletApi for super::Wallet {
             WalletPaymentType::OnChain => {
                 let (btc_tx_id, proofs) = self
                     .debit
-                    .pay_onchain_melt(
-                        request_id,
-                        &infos,
-                        self.client.clone(),
-                        self.swap_config(),
-                    )
+                    .pay_onchain_melt(request_id, &infos, self.client.clone(), self.swap_config())
                     .await?;
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
@@ -663,7 +637,7 @@ impl WalletApi for super::Wallet {
             let mut metadata = HashMap::default();
             metadata.insert(
                 PAYMENT_TYPE_METADATA_KEY.to_owned(),
-                PaymentType::OnChain.to_string(),
+                PaymentType::Swap.to_string(),
             );
             metadata.insert(
                 TRANSACTION_STATUS_METADATA_KEY.to_owned(),

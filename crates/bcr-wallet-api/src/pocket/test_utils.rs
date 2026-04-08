@@ -44,12 +44,8 @@ pub mod tests {
             .expect_post_swap_commitment()
             .times(1)
             .returning(|_, _, _, _| Ok(mock_commitment_result()));
-        db.expect_store_commitment()
-            .times(1)
-            .returning(|_| Ok(()));
-        db.expect_delete_commitment()
-            .times(1)
-            .returning(|_| Ok(()));
+        db.expect_store_commitment().times(1).returning(|_| Ok(()));
+        db.expect_delete_commitment().times(1).returning(|_| Ok(()));
     }
 
     mockall::mock! {

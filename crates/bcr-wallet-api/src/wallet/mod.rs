@@ -328,23 +328,13 @@ impl Wallet {
         let amount = if tx.unit == self.debit.unit() {
             tracing::debug!("Reclaim Debit Transaction {tx_id}");
             self.debit
-                .reclaim_proofs(
-                    &tx.ys,
-                    &infos,
-                    self.client.clone(),
-                    self.swap_config(),
-                )
+                .reclaim_proofs(&tx.ys, &infos, self.client.clone(), self.swap_config())
                 .await?
         } else if tx.unit == self.credit.unit() {
             tracing::debug!("Reclaim Credit Transaction {tx_id}");
             let (reclaimed_amount, redeemable_proofs) = self
                 .credit
-                .reclaim_proofs(
-                    &tx.ys,
-                    &infos,
-                    self.client.clone(),
-                    self.swap_config(),
-                )
+                .reclaim_proofs(&tx.ys, &infos, self.client.clone(), self.swap_config())
                 .await?;
 
             let redeemed_amount = self.redeem_credit_proofs(redeemable_proofs, &infos).await?;

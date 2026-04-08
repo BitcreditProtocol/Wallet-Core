@@ -13,6 +13,17 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::task::spawn_blocking;
 
 ///////////////////////////////////////////// Commitment
+
+type PremintStorage = Vec<(
+    cashu::Id,
+    Vec<(
+        cdk00::BlindedMessage,
+        Secret,
+        cdk01::SecretKey,
+        cashu::Amount,
+    )>,
+)>;
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 struct Commitment {
     inputs: Vec<cashu::PublicKey>,
@@ -23,23 +34,10 @@ struct Commitment {
     body_content: String,
     wallet_key: cashu::PublicKey,
     #[serde(default)]
-    premints: Vec<(
-        cashu::Id,
-        Vec<(
-            cdk00::BlindedMessage,
-            Secret,
-            cdk01::SecretKey,
-            cashu::Amount,
-        )>,
-    )>,
+    premints: PremintStorage,
 }
 
-fn premints_to_storage(
-    premints: HashMap<cashu::Id, cdk00::PreMintSecrets>,
-) -> Vec<(
-    cashu::Id,
-    Vec<(cdk00::BlindedMessage, Secret, cdk01::SecretKey, cashu::Amount)>,
-)> {
+fn premints_to_storage(premints: HashMap<cashu::Id, cdk00::PreMintSecrets>) -> PremintStorage {
     premints
         .into_iter()
         .map(|(kid, ps)| {
@@ -53,12 +51,7 @@ fn premints_to_storage(
         .collect()
 }
 
-fn premints_from_storage(
-    stored: Vec<(
-        cashu::Id,
-        Vec<(cdk00::BlindedMessage, Secret, cdk01::SecretKey, cashu::Amount)>,
-    )>,
-) -> HashMap<cashu::Id, cdk00::PreMintSecrets> {
+fn premints_from_storage(stored: PremintStorage) -> HashMap<cashu::Id, cdk00::PreMintSecrets> {
     stored
         .into_iter()
         .map(|(kid, tuples)| {
@@ -71,7 +64,13 @@ fn premints_from_storage(
                     amount,
                 })
                 .collect();
-            (kid, cdk00::PreMintSecrets { secrets, keyset_id: kid })
+            (
+                kid,
+                cdk00::PreMintSecrets {
+                    secrets,
+                    keyset_id: kid,
+                },
+            )
         })
         .collect()
 }
@@ -709,10 +708,7 @@ impl PocketRepository for PocketDB {
         spawn_blocking(move || Self::load_commitment_sync(db_clone, table, commitment)).await?
     }
 
-    async fn delete_commitment(
-        &self,
-        commitment: secp256k1::schnorr::Signature,
-    ) -> Result<()> {
+    async fn delete_commitment(&self, commitment: secp256k1::schnorr::Signature) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.commitment_table;
         spawn_blocking(move || Self::delete_commitment_sync(db_clone, table, commitment)).await?
@@ -881,7 +877,8 @@ mod tests {
         let ephemeral_keypair =
             secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng());
         let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
-        let wallet_key = cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
+        let wallet_key =
+            cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
 
         repo.store_commitment(crate::SwapCommitmentRecord {
             inputs: vec![],
@@ -896,12 +893,17 @@ mod tests {
         .await
         .expect("store_commitment works");
 
-        let record = repo.load_commitment(sig).await.expect("load_commitment works");
+        let record = repo
+            .load_commitment(sig)
+            .await
+            .expect("load_commitment works");
         assert_eq!(record.expiry, 1000u64);
         assert_eq!(record.body_content, "test_content");
         assert!(record.premints.is_empty());
 
-        repo.delete_commitment(sig).await.expect("delete_commitment works");
+        repo.delete_commitment(sig)
+            .await
+            .expect("delete_commitment works");
         assert!(repo.load_commitment(sig).await.is_err());
     }
 }

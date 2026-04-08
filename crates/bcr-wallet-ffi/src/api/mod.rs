@@ -13,11 +13,7 @@ use bcr_common::{
     cashu::{self, MintUrl},
     cdk,
 };
-use bcr_wallet_api::{
-    AppState,
-    config::AppStateConfig,
-    error::Error as BcrWalletError,
-};
+use bcr_wallet_api::{AppState, config::AppStateConfig, error::Error as BcrWalletError};
 use flutter_rust_bridge::{DartFnFuture, JoinHandle, frb};
 use log::{error, info};
 use tokio::sync::Mutex;
@@ -810,6 +806,7 @@ pub enum PaymentType {
     Token,
     Cdk18,
     OnChain,
+    Swap,
 }
 
 impl std::convert::From<bcr_wallet_core::types::PaymentType> for PaymentType {
@@ -819,6 +816,7 @@ impl std::convert::From<bcr_wallet_core::types::PaymentType> for PaymentType {
             bcr_wallet_core::types::PaymentType::Token => PaymentType::Token,
             bcr_wallet_core::types::PaymentType::Cdk18 => PaymentType::Cdk18,
             bcr_wallet_core::types::PaymentType::OnChain => PaymentType::OnChain,
+            bcr_wallet_core::types::PaymentType::Swap => PaymentType::Swap,
         }
     }
 }
