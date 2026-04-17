@@ -370,7 +370,7 @@ pub async fn cmd_protest_mint(
     ));
     push_break(&mut res);
     match status {
-        bcr_common::wire::mint::ProtestStatus::Resolved => match amount {
+        bcr_common::wire::common::ProtestStatus::Resolved => match amount {
             Some(amount) => {
                 res.push_str(&format!("Protest Resolved - Received {amount}"));
             }
@@ -378,7 +378,7 @@ pub async fn cmd_protest_mint(
                 res.push_str("Protest Resolved - Warning: no amount returned despite resolution");
             }
         },
-        bcr_common::wire::mint::ProtestStatus::Rabid => {
+        bcr_common::wire::common::ProtestStatus::Rabid => {
             res.push_str("Protest returned Rabid - mint declared rabid by betas");
         }
     }

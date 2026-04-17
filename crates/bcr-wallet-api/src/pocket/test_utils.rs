@@ -2,11 +2,15 @@ pub mod tests {
     use crate::RedemptionSummary;
     use crate::Result;
     use crate::external::mint::ClowderMintConnector;
-    use crate::pocket::{PocketApi, credit::CreditPocketApi, debit::DebitPocketApi};
+    use crate::pocket::{
+        PocketApi,
+        credit::CreditPocketApi,
+        debit::{DebitPocketApi, ProtestResult},
+    };
     use crate::types::{MeltSummary, MintSummary, SendSummary};
     use crate::wallet::types::SwapConfig;
     use async_trait::async_trait;
-    use bcr_common::wire::{melt as wire_melt, mint as wire_mint};
+    use bcr_common::wire::melt as wire_melt;
     use std::collections::HashMap;
     use std::sync::Arc;
     use uuid::Uuid;
@@ -139,7 +143,7 @@ pub mod tests {
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
                 clowder_id: bitcoin::secp256k1::PublicKey,
-            ) -> Result<(wire_mint::ProtestStatus, Option<(cashu::Amount, Vec<cashu::PublicKey>)>)>;
+            ) -> Result<ProtestResult>;
             async fn protest_swap(
                 &self,
                 commitment_sig: bitcoin::secp256k1::schnorr::Signature,
@@ -148,7 +152,7 @@ pub mod tests {
                 beta_client: Arc<dyn ClowderMintConnector>,
                 alpha_id: bitcoin::secp256k1::PublicKey,
                 swap_config: SwapConfig,
-            ) -> Result<(bcr_common::wire::common::ProtestStatus, Option<(cashu::Amount, Vec<cashu::PublicKey>)>)>;
+            ) -> Result<ProtestResult>;
         }
     }
 

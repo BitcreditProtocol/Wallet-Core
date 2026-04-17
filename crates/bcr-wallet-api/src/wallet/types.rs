@@ -1,4 +1,7 @@
-use bcr_common::cashu::{self, Amount, CurrencyUnit};
+use bcr_common::{
+    cashu::{self, Amount, CurrencyUnit},
+    wire::common as wire_common,
+};
 use bitcoin::secp256k1;
 use uuid::Uuid;
 
@@ -29,4 +32,10 @@ pub struct PayReference {
 pub struct WalletBalance {
     pub debit: cashu::Amount,
     pub credit: cashu::Amount,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletProtestResult {
+    pub status: wire_common::ProtestStatus,
+    pub result: Option<(cashu::Amount, Vec<cashu::PublicKey>)>,
 }
