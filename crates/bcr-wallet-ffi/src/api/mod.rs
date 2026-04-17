@@ -270,8 +270,7 @@ pub async fn wallet_get_currency_unit(
     let app_state = get_app_state().await;
     let currency_unit = app_state.wallet_currency_unit(req.wallet_id).await?;
     Ok(WalletCurrencyUnitResponse {
-        debit: currency_unit.debit,
-        credit: currency_unit.credit,
+        unit: currency_unit.unit,
     })
 }
 
@@ -281,7 +280,6 @@ pub async fn wallet_get_balance(req: WalletRequest) -> Result<WalletBalanceRespo
     let balance = app_state.wallet_balance(req.wallet_id).await?;
     Ok(WalletBalanceResponse {
         debit: u64::from(balance.debit),
-        credit: u64::from(balance.credit),
     })
 }
 
@@ -295,28 +293,6 @@ pub async fn wallet_receive(
         .await?;
     Ok(WalletTransactionIdResponse {
         tx_id: tx_id.to_string(),
-    })
-}
-
-#[frb]
-pub async fn wallet_list_redemptions(
-    req: WalletListRedemptionsRequest,
-) -> Result<WalletListRedemptionsResponse, WalletError> {
-    let app_state = get_app_state().await;
-    let redemptions = app_state
-        .wallet_list_redemptions(
-            req.wallet_id,
-            std::time::Duration::from_secs(req.payment_window_seconds),
-        )
-        .await?;
-    Ok(WalletListRedemptionsResponse {
-        redemptions: redemptions
-            .into_iter()
-            .map(|r| RedemptionSummary {
-                tstamp: r.tstamp,
-                amount: u64::from(r.amount),
-            })
-            .collect(),
     })
 }
 
@@ -448,7 +424,7 @@ pub async fn wallet_prepare_pay_by_token(
 ) -> Result<WalletPreparePaymentResponse, WalletError> {
     let app_state = get_app_state().await;
     let payment_summary = app_state
-        .wallet_prepare_pay_by_token(req.wallet_id, req.amount, req.unit, req.description)
+        .wallet_prepare_pay_by_token(req.wallet_id, req.amount, req.description)
         .await?;
     Ok(WalletPreparePaymentResponse {
         payment_summary: PaymentSummary {
@@ -485,7 +461,7 @@ pub async fn wallet_prepare_payment_request(
 ) -> Result<WalletPreparePaymentReqResponse, WalletError> {
     let app_state = get_app_state().await;
     let payment_request = app_state
-        .wallet_prepare_payment_request(req.wallet_id, req.amount, req.unit, req.description)
+        .wallet_prepare_payment_request(req.wallet_id, req.amount, req.description)
         .await?;
     Ok(WalletPreparePaymentReqResponse {
         payment_request: PaymentRequest {
@@ -626,17 +602,6 @@ pub async fn is_valid_token(req: IsValidTokenRequest) -> Result<IsValidTokenResp
 }
 
 #[frb]
-pub async fn wallet_redeem_credit(
-    req: WalletRequest,
-) -> Result<WalletRedeemCreditResponse, WalletError> {
-    let app_state = get_app_state().await;
-    let amount = app_state.wallet_redeem_credit(req.wallet_id).await?;
-    Ok(WalletRedeemCreditResponse {
-        amount: u64::from(amount),
-    })
-}
-
-#[frb]
 pub async fn wallet_get_status() -> Result<StatusResponse, WalletError> {
     Ok(StatusResponse {
         app_version: VERSION.to_owned(),
@@ -707,42 +672,18 @@ pub struct WalletMintUrlResponse {
 
 #[derive(Debug, Clone)]
 pub struct WalletCurrencyUnitResponse {
-    pub credit: String,
-    pub debit: String,
+    pub unit: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct WalletBalanceResponse {
     pub debit: u64,
-    pub credit: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct WalletReceiveRequest {
     pub wallet_id: usize,
     pub token: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct WalletRedeemCreditResponse {
-    pub amount: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct WalletListRedemptionsRequest {
-    pub wallet_id: usize,
-    pub payment_window_seconds: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct WalletListRedemptionsResponse {
-    pub redemptions: Vec<RedemptionSummary>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RedemptionSummary {
-    pub tstamp: u64,
-    pub amount: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1024,12 +965,6 @@ pub struct PaymentSummary {
 }
 
 #[derive(Debug, Clone)]
-pub struct CurrencyUnit {
-    pub credit: String,
-    pub debit: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct WalletCleanLocalDbResponse {
     pub cleaned_proofs: u32,
 }
@@ -1103,7 +1038,6 @@ pub struct WalletPayRequest {
 pub struct WalletPreparePaymentByTokenRequest {
     pub wallet_id: usize,
     pub amount: u64,
-    pub unit: String,
     pub description: Option<String>,
 }
 
@@ -1199,9 +1133,6 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::UnknownKeysetId(_id) => WalletError::bad_request(value.to_string()),
             BcrWalletError::InvalidCurrencyUnit(_) => WalletError::bad_request(value.to_string()),
             BcrWalletError::UnknownMint(_) => WalletError::bad_request(value.to_string()),
-            BcrWalletError::CurrencyUnitMismatch(_, _) => {
-                WalletError::bad_request(value.to_string())
-            }
             BcrWalletError::NoPrepareRef(_) => WalletError::bad_request(value.to_string()),
             BcrWalletError::InactiveKeyset(_) => WalletError::bad_request(value.to_string()),
             BcrWalletError::NoDebitCurrencyInMint(_) => WalletError::bad_request(value.to_string()),

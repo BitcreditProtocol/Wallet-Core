@@ -1,7 +1,7 @@
 use crate::config::AppStateConfig;
 use crate::external::mint::{ClowderMintConnector, HttpClientExt};
 use crate::wallet::types::{WalletBalance, WalletProtestResult};
-use crate::{config::NostrConfig, pocket::credit::CreditPocketApi, wallet::api::WalletApi};
+use crate::{config::NostrConfig, wallet::api::WalletApi};
 use bcr_common::cdk_common::wallet::Transaction;
 use bcr_common::{
     cashu::{self, CurrencyUnit, MintUrl, nut18 as cdk18},
@@ -9,15 +9,10 @@ use bcr_common::{
     wallet::Token,
 };
 use bcr_wallet_core::types::{
-    self, JobState, MintSummary, PaymentResultCallback, PaymentSummary, RedemptionSummary, Seed,
-    WalletConfig,
+    self, MintSummary, PaymentResultCallback, PaymentSummary, Seed, WalletConfig,
 };
 use bcr_wallet_core::util::{build_wallet_id, keypair_from_mnemonic, seed_from_mnemonic};
-use bcr_wallet_persistence::redb::jobs::JobsDB;
-use bcr_wallet_persistence::redb::{
-    Database, build_jobsdb, build_pursedb, build_wallet_dbs, create_db,
-};
-use chrono::Utc;
+use bcr_wallet_persistence::redb::{Database, build_pursedb, build_wallet_dbs, create_db};
 use error::{Error, Result};
 use nostr::nips::nip19::{Nip19Profile, ToBech32};
 use std::{
@@ -38,7 +33,6 @@ mod wallet;
 
 pub struct AppState {
     purse: Arc<purse::Purse<wallet::Wallet>>,
-    jobs: Arc<JobsDB>,
     db: Arc<Database>,
     cfg: AppStateConfig,
     nostr_cl: Arc<nostr_sdk::Client>,
@@ -47,7 +41,6 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub const CREDIT_SAT_UNIT: &str = "crsat";
     pub const DB_VERSION: u32 = 1;
     pub const MINT_MELT_THRESHOLD_SAT: u64 = 1000;
 
@@ -58,7 +51,6 @@ impl AppState {
         let db = Arc::new(create_db(&cfg.db_path)?);
 
         let pursedb = build_pursedb(AppState::DB_VERSION, db.clone()).await?;
-        let jobsdb = Arc::new(build_jobsdb(AppState::DB_VERSION, db.clone()).await?);
 
         let nostr_cfg = NostrConfig::new(cfg.mnemonic.clone(), cfg.nostr_relays.clone())?;
         let nostr_filter = nostr_sdk::Filter::new()
@@ -77,7 +69,6 @@ impl AppState {
         let purse = purse::Purse::new(pursedb).await?;
         let mut appstate = Self {
             purse: Arc::new(purse),
-            jobs: jobsdb,
             db,
             cfg,
             http_cl,
@@ -191,10 +182,6 @@ impl AppState {
         self.purse.clone()
     }
 
-    fn get_jobsdb(&self) -> Arc<JobsDB> {
-        self.jobs.clone()
-    }
-
     fn get_db(&self) -> Arc<Database> {
         self.db.clone()
     }
@@ -289,8 +276,7 @@ impl AppState {
         tracing::debug!("wallet_currency_unit({idx})");
         let wallet = self.get_wallet(idx).await?;
         Ok(WalletCurrencyUnit {
-            credit: wallet.read().await.credit_unit().to_string(),
-            debit: wallet.read().await.debit_unit().to_string(),
+            unit: wallet.read().await.debit_unit().to_string(),
         })
     }
 
@@ -311,29 +297,6 @@ impl AppState {
         Ok(tx_id)
     }
 
-    pub async fn wallet_redeem_credit(&self, idx: usize) -> Result<cashu::Amount> {
-        tracing::debug!("wallet_redeem_credit({idx})");
-
-        let wallet = self.get_wallet(idx).await?;
-        let amount_redeemed = wallet.read().await.redeem_credit().await?;
-        Ok(amount_redeemed)
-    }
-
-    pub async fn wallet_list_redemptions(
-        &self,
-        idx: usize,
-        payment_window: std::time::Duration,
-    ) -> Result<Vec<RedemptionSummary>> {
-        tracing::debug!(
-            "wallet_list_redemptions({idx}, {})",
-            payment_window.as_secs()
-        );
-
-        let wallet = self.get_wallet(idx).await?;
-        let redemptions = wallet.read().await.list_redemptions(payment_window).await?;
-        Ok(redemptions)
-    }
-
     pub async fn wallet_mint_is_rabid(&self, idx: usize) -> Result<bool> {
         tracing::debug!("wallet_is_rabid({idx})");
         let wallet = self.get_wallet(idx).await?;
@@ -352,14 +315,12 @@ impl AppState {
         &self,
         idx: usize,
         amount: u64,
-        unit: String,
         description: Option<String>,
     ) -> Result<PaymentSummary> {
-        tracing::debug!("wallet_prepare_pay_by_token({idx}, {amount}, {unit}, {description:?})");
+        tracing::debug!("wallet_prepare_pay_by_token({idx}, {amount}, {description:?})");
         let amount = cashu::Amount::from(amount);
-        let unit = cashu::CurrencyUnit::from_str(&unit)
-            .map_err(|_| Error::InvalidCurrencyUnit(unit.clone()))?;
         let wallet = self.get_wallet(idx).await?;
+        let unit = wallet.read().await.debit_unit();
 
         let summary = wallet
             .read()
@@ -525,14 +486,11 @@ impl AppState {
         &self,
         idx: usize,
         amount: u64,
-        unit: String,
         description: Option<String>,
     ) -> Result<PaymentRequest> {
-        tracing::debug!("wallet_prepare_pay_request({idx}, {amount}, {unit}, {description:?})");
+        tracing::debug!("wallet_prepare_pay_request({idx}, {amount}, {description:?})");
 
         let amount = cashu::Amount::from(amount);
-        let unit = cashu::CurrencyUnit::from_str(&unit)
-            .map_err(|_| Error::InvalidCurrencyUnit(unit.clone()))?;
 
         let nostr_transport = cdk18::Transport {
             _type: cdk18::TransportType::Nostr,
@@ -541,6 +499,7 @@ impl AppState {
         };
 
         let wallet = self.get_wallet(idx).await?;
+        let unit = wallet.read().await.debit_unit();
         let request = wallet
             .read()
             .await
@@ -654,9 +613,7 @@ impl AppState {
     }
 
     //////////////////////////////////////////////////// General App-Level calls
-    /// Checks when the daily jobs were run the last time and if it's greater than 1 day
-    /// then it runs the daily jobs.
-    /// Also runs the regular jobs for each interval
+    /// Runs the regular jobs for each interval
     /// This should be called in an interval and on app initialization
     pub async fn run_jobs(&self) -> Result<()> {
         tracing::info!("Run Jobs triggered");
@@ -665,24 +622,6 @@ impl AppState {
         } else {
             tracing::info!(
                 "Run Regular Jobs executed with some errors - will run again at the next interval."
-            );
-        }
-        let last_run_ts = self.get_jobsdb().load().await?.last_run;
-        let now = Utc::now();
-
-        let diff = now.signed_duration_since(last_run_ts);
-
-        if diff.num_days() < 1 {
-            tracing::info!("Run Jobs called, but not yet 1 day since last job run.");
-            return Ok(());
-        }
-
-        if self.execute_daily_jobs().await {
-            tracing::info!("Run Jobs executed successfully");
-            self.get_jobsdb().store(JobState { last_run: now }).await?;
-        } else {
-            tracing::info!(
-                "Run Daily Jobs executed with some errors - will run again at the next interval."
             );
         }
 
@@ -742,31 +681,6 @@ impl AppState {
         // successful = true
         !job_failed
     }
-
-    /// Actually runs the daily jobs - gets called via `run_jobs` for creating a
-    /// regular job interval, but calling this directly forces a job run right now
-    /// Returns a boolean indicating if all jobs ran to success
-    pub async fn execute_daily_jobs(&self) -> bool {
-        let mut job_failed = false;
-        let wallet_ids = self.get_purse().ids().await;
-        for wallet_id in wallet_ids.iter() {
-            match self.wallet_redeem_credit(*wallet_id as usize).await {
-                Ok(amount) => {
-                    tracing::info!(
-                        "Redeemed credit for wallet {wallet_id}. Amount redeemed: {amount}"
-                    );
-                }
-                Err(e) => {
-                    job_failed = true;
-                    tracing::error!(
-                        "Error running wallet_redeem_credit job for wallet {wallet_id}: {e}"
-                    );
-                }
-            };
-        }
-        // successful = true
-        !job_failed
-    }
 }
 
 pub fn generate_random_mnemonic(mnemonic_len: u32) -> String {
@@ -803,8 +717,7 @@ pub struct PaymentRequest {
 
 #[derive(Default, Clone, Debug)]
 pub struct WalletCurrencyUnit {
-    pub credit: String,
-    pub debit: String,
+    pub unit: String,
 }
 
 #[derive(Clone, Debug)]
@@ -830,23 +743,17 @@ async fn create_new_wallet(
     let clowder_id = client.get_clowder_id().await?;
     let keyset_infos = client.get_mint_keysets().await?.keysets;
     let betas = client.get_clowder_betas().await?;
-    // Attempt to find debit and credit units in the given keysets
-    // Falls back to crsat for credit, if there is no keyset for it
+    // Attempt to find debit unit in the given keysets
     let currencies = keyset_infos
         .iter()
         .map(|k| k.unit.clone())
         .collect::<HashSet<_>>();
-    if currencies.len() > 2 {
+    if currencies.len() > 1 {
         return Err(Error::Unsupported(
-            "Mint supports more than 2 currencies, not supported yet".into(),
+            "Mint supports more than 1 currency, not supported yet".into(),
         ));
     }
-    let credit_unit = currencies
-        .iter()
-        .find(|unit| unit.to_string().starts_with("cr"));
-    let debit_unit = currencies
-        .iter()
-        .find(|unit| !unit.to_string().starts_with("cr"));
+    let debit_unit = currencies.iter().find(|unit| *unit == &CurrencyUnit::Sat);
 
     let debit_unit = match debit_unit {
         Some(du) => du,
@@ -856,14 +763,6 @@ async fn create_new_wallet(
         }
     };
 
-    let credit_unit: CurrencyUnit = credit_unit.cloned().unwrap_or_else(|| {
-        tracing::warn!(
-            "app::add_wallet: no credit unit in keyset - setting {} for credit_pocket",
-            AppState::CREDIT_SAT_UNIT
-        );
-        CurrencyUnit::from_str(AppState::CREDIT_SAT_UNIT).expect("credit sat is a valid unit")
-    });
-
     let w_cfg = WalletConfig {
         wallet_id,
         name,
@@ -872,7 +771,6 @@ async fn create_new_wallet(
         mint_keyset_infos: keyset_infos,
         clowder_id,
         debit: debit_unit.to_owned(),
-        credit: credit_unit,
         pub_key: keypair.public_key(),
         betas,
     };
@@ -888,26 +786,14 @@ async fn build_wallet(
     seed: Seed,
 ) -> Result<wallet::Wallet> {
     // building wallet dbs
-    let (tx_repo, ((debitdb, mintmeltdb), creditdb)) = build_wallet_dbs(
-        db_version,
-        &w_cfg.wallet_id,
-        &w_cfg.debit,
-        &w_cfg.credit,
-        db,
-    )
-    .await?;
+    let (tx_repo, (debitdb, mintmeltdb)) =
+        build_wallet_dbs(db_version, &w_cfg.wallet_id, &w_cfg.debit, db).await?;
 
     // building the debit pocket
     let debit_pocket = Box::new(pocket::debit::Pocket::new(
         w_cfg.debit.clone(),
         Arc::new(debitdb),
         Arc::new(mintmeltdb),
-        seed,
-    ));
-    // building the credit pocket
-    let credit_pocket: Box<dyn CreditPocketApi> = Box::new(pocket::credit::Pocket::new(
-        w_cfg.credit,
-        Arc::new(creditdb),
         seed,
     ));
 
@@ -926,7 +812,7 @@ async fn build_wallet(
         client,
         w_cfg.mint_keyset_infos,
         Box::new(tx_repo),
-        (debit_pocket, credit_pocket),
+        debit_pocket,
         w_cfg.name,
         w_cfg.wallet_id,
         w_cfg.pub_key,

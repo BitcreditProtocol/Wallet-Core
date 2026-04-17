@@ -59,7 +59,6 @@ pub async fn htlc_lock(
     unit: cashu::CurrencyUnit,
     tstamp: u64,
     client: &dyn ClowderMintConnector,
-    is_credit: bool,
     proofs: Vec<cashu::Proof>,
     hash_lock: Sha256,
     key_locks: Vec<secp256k1::PublicKey>,
@@ -78,15 +77,11 @@ pub async fn htlc_lock(
     // fetch keysets infos for the given client
     let infos = client.get_mint_keysets().await?.keysets;
 
-    let active_keyset_id = if is_credit {
-        proofs.first().ok_or(Error::NoActiveKeyset)?.keyset_id
-    } else {
-        infos
-            .iter()
-            .find(|info| info.active && info.unit == unit)
-            .ok_or(Error::NoActiveKeyset)?
-            .id
-    };
+    let active_keyset_id = infos
+        .iter()
+        .find(|info| info.active && info.unit == unit)
+        .ok_or(Error::NoActiveKeyset)?
+        .id;
 
     let n = key_locks.len() as u64;
     let p2pk = cashu::Conditions::new(

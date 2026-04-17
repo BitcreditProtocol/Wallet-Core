@@ -17,7 +17,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub mod credit;
 pub mod debit;
 mod restore;
 #[cfg(test)]

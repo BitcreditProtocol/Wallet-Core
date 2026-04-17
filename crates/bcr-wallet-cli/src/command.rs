@@ -27,35 +27,12 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
         let unit = app_state.wallet_currency_unit(*id).await?;
         let balance = app_state.wallet_balance(*id).await?;
 
-        let redemptions = app_state
-            .wallet_list_redemptions(*id, std::time::Duration::from_hours(48))
-            .await?;
-
         let transactions = app_state.wallet_list_txs(*id).await?;
 
         res.push_str(&format!("Name: {name}\n"));
         res.push_str(&format!("Wallet ID: {id}\n"));
         res.push_str(&format!("Mint URL: {mint_url}\n"));
-        res.push_str(&format!(
-            "Credit Balance: {} {}\n",
-            balance.credit, unit.credit
-        ));
-        res.push_str(&format!(
-            "Debit Balance: {} {}\n",
-            balance.debit, unit.debit
-        ));
-        if !redemptions.is_empty() {
-            res.push_str("Redemptions plan:");
-            for r in redemptions.iter() {
-                res.push_str(&format!(
-                    "\t\t{} ({}) - {}",
-                    format_timestamp(r.tstamp),
-                    r.tstamp,
-                    r.amount
-                ));
-            }
-            push_break(&mut res);
-        }
+        res.push_str(&format!("Debit Balance: {} {}\n", balance.debit, unit.unit));
         if !transactions.is_empty() {
             res.push_str("Transactions:");
             push_break(&mut res);
@@ -136,27 +113,15 @@ pub async fn cmd_receive(
     Ok(res)
 }
 
-pub async fn cmd_redeem(app_state: &AppState, name: &str, id: usize) -> Result<String> {
-    let mut res = String::new();
-    let redeemed = app_state.wallet_redeem_credit(id).await?;
-    push_break(&mut res);
-    push_break(&mut res);
-    res.push_str(&format!(
-        "Redeemed {redeemed} for {name} - Wallet ID: {id}.\n"
-    ));
-    Ok(res)
-}
-
 pub async fn cmd_request_payment(
     app_state: &AppState,
     name: &str,
     amount: u64,
-    unit: &str,
     id: usize,
     description: Option<String>,
 ) -> Result<String> {
     let req = app_state
-        .wallet_prepare_payment_request(id, amount, unit.to_string(), description)
+        .wallet_prepare_payment_request(id, amount, description)
         .await?;
     info!("Payment Request: {}, {}", &req.request, &req.p_id);
 
@@ -205,12 +170,11 @@ pub async fn cmd_pay_by_token(
     name: &str,
     id: usize,
     amount: u64,
-    unit: &str,
     description: Option<String>,
 ) -> Result<String> {
     let mut res = String::new();
     let payment_summary = app_state
-        .wallet_prepare_pay_by_token(id, amount, unit.to_string(), description)
+        .wallet_prepare_pay_by_token(id, amount, description)
         .await?;
 
     info!(
@@ -278,7 +242,6 @@ pub async fn cmd_send_payment(
 
 pub async fn cmd_run_jobs(app_state: &AppState) -> Result<()> {
     app_state.execute_regular_jobs().await;
-    app_state.execute_daily_jobs().await;
     Ok(())
 }
 

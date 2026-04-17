@@ -1,5 +1,6 @@
-# 0.8.2
+# 0.9.0
 
+* Updated to newest bcr-common
 * Add protest mint flow via `POST /v1/protest/mint` (Resolved/Rabid)
     * Breaking change: `store_mint`/`load_mint` now include `content` and `commitment`; existing pending mints won't deserialize
 * Change default mint and relays
@@ -9,6 +10,10 @@
     * `check_received_payment` returns a `cancel_token` and takes a `result_callback`
         * This way, the caller can control, when to cancel a payment request asynchronously
 * Expose `InsufficientFunds` error as `bad request`
+* Remove the concept of a `credit` currency (fully backwards breaking)
+    * Remove credit pocket
+    * Remove unit from API
+    * Remove the concept of redemption
 
 # 0.8.1
 

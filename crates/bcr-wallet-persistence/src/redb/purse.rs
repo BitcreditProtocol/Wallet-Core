@@ -21,7 +21,6 @@ struct WalletEntry {
     clowder_id: secp256k1::PublicKey,
     pub_key: secp256k1::PublicKey,
     debit: CurrencyUnit,
-    credit: CurrencyUnit,
     betas: Vec<MintUrl>,
 }
 impl std::convert::From<WalletConfig> for WalletEntry {
@@ -35,7 +34,6 @@ impl std::convert::From<WalletConfig> for WalletEntry {
             clowder_id: wallet.clowder_id,
             pub_key: wallet.pub_key,
             debit: wallet.debit,
-            credit: wallet.credit,
             betas: wallet.betas,
         }
     }
@@ -51,7 +49,6 @@ impl std::convert::From<WalletEntry> for WalletConfig {
             clowder_id: wallet.clowder_id,
             pub_key: wallet.pub_key,
             debit: wallet.debit,
-            credit: wallet.credit,
             betas: wallet.betas,
         }
     }
@@ -197,7 +194,6 @@ mod tests {
             clowder_id: test_clowder_id,
             pub_key: test_pub_key(),
             debit: CurrencyUnit::Sat,
-            credit: CurrencyUnit::Sat,
             betas: vec![],
         }
     }

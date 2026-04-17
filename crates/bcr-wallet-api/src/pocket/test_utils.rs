@@ -1,10 +1,8 @@
 pub mod tests {
-    use crate::RedemptionSummary;
     use crate::Result;
     use crate::external::mint::ClowderMintConnector;
     use crate::pocket::{
         PocketApi,
-        credit::CreditPocketApi,
         debit::{DebitPocketApi, ProtestResult},
     };
     use crate::types::{MeltSummary, MintSummary, SendSummary};
@@ -153,71 +151,6 @@ pub mod tests {
                 alpha_id: bitcoin::secp256k1::PublicKey,
                 swap_config: SwapConfig,
             ) -> Result<ProtestResult>;
-        }
-    }
-
-    mockall::mock! {
-        pub CreditPocket {}
-
-        #[async_trait]
-        impl PocketApi for CreditPocket {
-            fn unit(&self) -> CurrencyUnit;
-            async fn balance(&self) -> Result<Amount>;
-            async fn receive_proofs(
-                &self,
-                client: Arc<dyn ClowderMintConnector>,
-                keysets_info: &[KeySetInfo],
-                proofs: Vec<cashu::Proof>,
-                swap_config: SwapConfig,
-            ) -> Result<(Amount, Vec<cashu::PublicKey>)>;
-            async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo]) -> Result<SendSummary>;
-            async fn send_proofs(
-                &self,
-                rid: Uuid,
-                keysets_info: &[KeySetInfo],
-                client: Arc<dyn ClowderMintConnector>,
-                swap_config: SwapConfig,
-            ) -> Result<HashMap<cashu::PublicKey, cashu::Proof>>;
-            async fn cleanup_local_proofs(
-                &self,
-                client: Arc<dyn ClowderMintConnector>,
-            ) -> Result<Vec<cashu::PublicKey>>;
-            async fn restore_local_proofs(
-                &self,
-                keysets_info: &[KeySetInfo],
-                client: Arc<dyn ClowderMintConnector>,
-            ) -> Result<usize>;
-            async fn delete_proofs(&self) -> Result<HashMap<cashu::Id, Vec<cashu::Proof>>>;
-            async fn return_proofs_to_send_for_offline_payment(
-                &self,
-                rid: Uuid,
-            ) -> Result<(Amount, HashMap<cashu::PublicKey, cashu::Proof>)>;
-            async fn swap_to_unlocked_substitute_proofs(
-                &self,
-                proofs: Vec<cashu::Proof>,
-                keysets_info: &[KeySetInfo],
-                client: Arc<dyn ClowderMintConnector>,
-                send_amount: Amount,
-                swap_config: SwapConfig,
-            ) -> Result<Vec<cashu::Proof>>;
-        }
-
-        #[async_trait]
-        impl CreditPocketApi for CreditPocket {
-            async fn reclaim_proofs(
-                &self,
-                ys: &[cashu::PublicKey],
-                keysets_info: &[KeySetInfo],
-                client: Arc<dyn ClowderMintConnector>,
-                swap_config: SwapConfig,
-            ) -> Result<(Amount, Vec<cashu::Proof>)>;
-            async fn get_redeemable_proofs(&self, keysets_info: &[KeySetInfo])
-                -> Result<Vec<cashu::Proof>>;
-            async fn list_redemptions(
-                &self,
-                keysets_info: &[KeySetInfo],
-                payment_window: std::time::Duration,
-            ) -> Result<Vec<RedemptionSummary>>;
         }
     }
 }
