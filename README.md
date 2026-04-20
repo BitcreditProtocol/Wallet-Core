@@ -57,8 +57,8 @@ In `pubspec.yaml`:
 ```yaml
    wallet_ffi:
      git:
-       url: git@github.com:BitcreditProtocol/wallet-ffi.git
-       ref: master
+       url: git@github.com:BitcreditProtocol/Wallet-Core.git
+       ref: vx.x.x
 ```
 
 The `ref` can either be a commit hash, a branch or a tag.

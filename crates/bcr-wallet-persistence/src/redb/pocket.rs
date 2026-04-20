@@ -611,6 +611,18 @@ impl PocketRepository for PocketDB {
             .collect())
     }
 
+    async fn list_spent(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
+        let db_clone = self.db.clone();
+        let table = self.proof_table;
+        let list =
+            spawn_blocking(move || Self::list_sync(db_clone, table, Some(cdk07::State::Spent)))
+                .await??;
+        Ok(list
+            .into_iter()
+            .map(|entry| (entry.y, cdk00::Proof::from(entry)))
+            .collect())
+    }
+
     async fn list_pending(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
         let db_clone = self.db.clone();
         let db_clone_two = self.db.clone();
@@ -662,6 +674,22 @@ impl PocketRepository for PocketDB {
                 y,
                 &[cdk07::State::Unspent],
                 cdk07::State::PendingSpent,
+            )
+        })
+        .await??;
+        Ok(proof.into())
+    }
+
+    async fn mark_pending_as_spent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof> {
+        let db_clone = self.db.clone();
+        let table = self.proof_table;
+        let proof = spawn_blocking(move || {
+            Self::update_entry_state_sync(
+                db_clone,
+                table,
+                y,
+                &[cdk07::State::Pending, cdk07::State::PendingSpent],
+                cdk07::State::Spent,
             )
         })
         .await??;
@@ -828,6 +856,30 @@ mod tests {
 
         let unspent = repo.list_unspent().await.unwrap();
         assert!(!unspent.contains_key(&y));
+    }
+
+    #[tokio::test]
+    async fn test_mark_as_spent() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+
+        let y = repo.store_new(test_proof()).await.unwrap();
+        let _proof = repo
+            .mark_as_pendingspent(y)
+            .await
+            .expect("mark_as_pendingspent works");
+        let _proof = repo
+            .mark_pending_as_spent(y)
+            .await
+            .expect("mark_pending_as_spent works");
+
+        let (_loaded, state) = repo.load_proof(y).await.unwrap();
+        assert_eq!(state, cdk07::State::Spent);
+
+        let pending = repo.list_pending().await.unwrap();
+        assert!(!pending.contains_key(&y));
+
+        let spent = repo.list_spent().await.unwrap();
+        assert!(spent.contains_key(&y));
     }
 
     #[tokio::test]

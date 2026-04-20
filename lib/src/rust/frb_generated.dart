@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.11.1';
 
   @override
-  int get rustContentHash => 1407724778;
+  int get rustContentHash => 526008345;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -212,6 +212,9 @@ abstract class RustLibApi extends BaseApi {
   Future<WalletReclaimTransactionResponse> crateApiWalletReclaimTransaction({
     required WalletReclaimTransactionRequest req,
   });
+
+  Future<WalletRecoverStaleTransactionResponse>
+  crateApiWalletRecoverPendingStaleProofs({required WalletRequest req});
 
   Future<WalletRefreshTransactionResponse> crateApiWalletRefreshTransaction({
     required WalletRefreshTransactionRequest req,
@@ -1511,6 +1514,39 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<WalletRecoverStaleTransactionResponse>
+  crateApiWalletRecoverPendingStaleProofs({required WalletRequest req}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_wallet_request(req, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 42,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_wallet_recover_stale_transaction_response,
+          decodeErrorData: sse_decode_wallet_error,
+        ),
+        constMeta: kCrateApiWalletRecoverPendingStaleProofsConstMeta,
+        argValues: [req],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWalletRecoverPendingStaleProofsConstMeta =>
+      const TaskConstMeta(
+        debugName: "wallet_recover_pending_stale_proofs",
+        argNames: ["req"],
+      );
+
+  @override
   Future<WalletRefreshTransactionResponse> crateApiWalletRefreshTransaction({
     required WalletRefreshTransactionRequest req,
   }) {
@@ -1525,7 +1561,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 42,
+            funcId: 43,
             port: port_,
           );
         },
@@ -1558,7 +1594,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 43,
+            funcId: 44,
             port: port_,
           );
         },
@@ -1588,7 +1624,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 45,
             port: port_,
           );
         },
@@ -2457,6 +2493,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (arr.length != 1)
       throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
     return WalletReclaimTransactionResponse(amount: dco_decode_u_64(arr[0]));
+  }
+
+  @protected
+  WalletRecoverStaleTransactionResponse
+  dco_decode_wallet_recover_stale_transaction_response(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 1)
+      throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
+    return WalletRecoverStaleTransactionResponse(
+      amount: dco_decode_u_64(arr[0]),
+    );
   }
 
   @protected
@@ -3403,6 +3451,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  WalletRecoverStaleTransactionResponse
+  sse_decode_wallet_recover_stale_transaction_response(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_amount = sse_decode_u_64(deserializer);
+    return WalletRecoverStaleTransactionResponse(amount: var_amount);
+  }
+
+  @protected
   WalletRefreshTransactionRequest sse_decode_wallet_refresh_transaction_request(
     SseDeserializer deserializer,
   ) {
@@ -4302,6 +4360,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   void sse_encode_wallet_reclaim_transaction_response(
     WalletReclaimTransactionResponse self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.amount, serializer);
+  }
+
+  @protected
+  void sse_encode_wallet_recover_stale_transaction_response(
+    WalletRecoverStaleTransactionResponse self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs

@@ -105,6 +105,13 @@ pub mod tests {
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
             ) -> Result<Amount>;
+            async fn recover_pending_stale_proofs(
+                &self,
+                pending_txs_ys: &[cashu::PublicKey],
+                keysets_info: &[KeySetInfo],
+                client: Arc<dyn ClowderMintConnector>,
+                swap_config: SwapConfig,
+            ) -> Result<Amount>;
             async fn prepare_onchain_melt(
                 &self,
                 invoice: wire_melt::OnchainInvoice,

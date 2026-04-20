@@ -262,6 +262,18 @@ pub async fn cmd_reclaim(
     Ok(res)
 }
 
+pub async fn cmd_recover_stale(app_state: &AppState, name: &str, id: usize) -> Result<String> {
+    let mut res = String::new();
+    let recovered = app_state.wallet_recover_pending_stale_proofs(id).await?;
+
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Recover Stale Proofs Funds for {name} - Wallet ID: {id} - Recovered: {recovered}.\n"
+    ));
+    Ok(res)
+}
+
 pub async fn cmd_melt(
     app_state: &AppState,
     name: &str,

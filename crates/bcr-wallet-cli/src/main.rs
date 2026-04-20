@@ -61,6 +61,8 @@ enum Commands {
     },
     #[command(name = "reclaim")]
     Reclaim { id: usize, tx_id: String },
+    #[command(name = "recover_stale")]
+    RecoverStale { id: usize },
     #[command(name = "melt")]
     Melt {
         id: usize,
@@ -206,6 +208,13 @@ async fn main() -> Result<()> {
                 "Reclaim for {}: {}",
                 cli.wallet,
                 command::cmd_reclaim(&app_state, &cli.wallet, id, &tx_id).await?
+            );
+        }
+        Commands::RecoverStale { id } => {
+            info!(
+                "Recover Stale proofs for {}: {}",
+                cli.wallet,
+                command::cmd_recover_stale(&app_state, &cli.wallet, id).await?
             );
         }
         Commands::Melt {

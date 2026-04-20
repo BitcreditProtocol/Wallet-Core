@@ -36,6 +36,15 @@ pub trait DebitPocketApi: super::PocketApi {
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
     ) -> Result<Amount>;
+    /// Attempt to recover proofs, which are pending, but not part of
+    /// a pending transaction
+    async fn recover_pending_stale_proofs(
+        &self,
+        pending_txs_ys: &[cashu::PublicKey],
+        keysets_info: &[KeySetInfo],
+        client: Arc<dyn ClowderMintConnector>,
+        swap_config: SwapConfig,
+    ) -> Result<Amount>;
     async fn prepare_onchain_melt(
         &self,
         invoice: wire_melt::OnchainInvoice,
@@ -555,6 +564,81 @@ impl DebitPocketApi for Pocket {
         Ok(reclaimed)
     }
 
+    async fn recover_pending_stale_proofs(
+        &self,
+        pending_txs_ys: &[cashu::PublicKey],
+        keysets_info: &[KeySetInfo],
+        client: Arc<dyn ClowderMintConnector>,
+        swap_config: SwapConfig,
+    ) -> Result<Amount> {
+        // remove pending transaction ys from pending proofs
+        let mut pendings = self.pdb.list_pending().await?;
+        let remove_set: HashSet<&cashu::PublicKey> = pending_txs_ys.iter().collect();
+        pendings.retain(|k, _| !remove_set.contains(k));
+
+        let req = cdk07::CheckStateRequest {
+            ys: pendings.keys().cloned().collect(),
+        };
+        let cdk07::CheckStateResponse { states } = client.post_check_state(req).await?;
+        let mut to_digest = HashMap::new();
+        for state in states.iter() {
+            match state.state {
+                cdk07::State::Spent => {
+                    tracing::warn!(
+                        "Pending Stale Proof returned as SPENT from Mint - not recovering and setting to SPENT"
+                    );
+                    if let Err(e) = self.pdb.mark_pending_as_spent(state.y).await {
+                        tracing::error!(
+                            "Error setting stale proof {} from Pending/PendingSpent to Spent: {e}",
+                            state.y
+                        )
+                    }
+                }
+                cdk07::State::Unspent => {
+                    // collect for digesting later
+                    if let Some(proof) = pendings.get(&state.y) {
+                        to_digest.insert(state.y, proof.to_owned());
+                    }
+                }
+                cdk07::State::Pending => {
+                    tracing::warn!(
+                        "Pending Stale Proof returned as PENDING from Mint - not recovering"
+                    );
+                }
+                cdk07::State::Reserved => {
+                    tracing::warn!(
+                        "Pending Stale Proof returned as RESERVED from Mint - not recovering"
+                    );
+                }
+                cdk07::State::PendingSpent => {
+                    tracing::warn!(
+                        "Pending Stale Proof returned as PENDINGSPENT from Mint - not recovering"
+                    );
+                }
+            }
+        }
+        if to_digest.is_empty() {
+            return Ok(Amount::ZERO);
+        }
+        let active_keys = self.find_active_keyset(keysets_info, &client).await?;
+        // attempt to recover the proofs collected for digesting
+        let to_digest_ys: Vec<cashu::PublicKey> = to_digest.keys().cloned().collect();
+        let (recovered, _) = self
+            .digest_proofs(client, active_keys, to_digest, swap_config)
+            .await?;
+        // if recovery successful, set previous proofs to spent
+        for y in to_digest_ys.into_iter() {
+            if let Err(e) = self.pdb.mark_pending_as_spent(y).await {
+                tracing::error!(
+                    "Error setting recovered stale proof {} from Pending/PendingSpent to Spent: {e}",
+                    y
+                )
+            }
+        }
+
+        Ok(recovered)
+    }
+
     async fn prepare_onchain_melt(
         &self,
         invoice: wire_melt::OnchainInvoice,
@@ -1056,6 +1140,89 @@ mod tests {
             .await
             .expect("reclaim works");
         assert_eq!(reclaimed, Amount::from(24u64));
+    }
+
+    #[tokio::test]
+    async fn debit_recover_pending_stale_proofs() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = vec![KeySetInfo::from(info)];
+        let amounts = [Amount::from(8u64), Amount::from(16u64)];
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
+
+        // we pretend that the second proof belongs to a pending transaction we don't want to recover
+        let pending_tx_y = proofs[1].clone().y().unwrap();
+
+        let mdb = MockMintMeltRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        let mut connector = MockMintConnector::new();
+        let cloned_keyset = keyset.clone();
+
+        connector
+            .expect_get_mint_keyset()
+            .times(1)
+            .with(eq(kid))
+            .returning(move |_| Ok(KeySet::from(cloned_keyset.clone())));
+        connector
+            .expect_post_check_state()
+            .times(1)
+            .returning(move |request| {
+                let states = request
+                    .ys
+                    .iter()
+                    .map(|y| cdk07::ProofState {
+                        y: *y,
+                        state: cdk07::State::Unspent,
+                        witness: None,
+                    })
+                    .collect();
+                let response = cdk07::CheckStateResponse { states };
+                Ok(response)
+            });
+        let proofs_clone = proofs.clone();
+        pdb.expect_list_pending().times(1).returning(move || {
+            let mut map = HashMap::new();
+            map.insert(proofs_clone[0].y().unwrap(), proofs_clone[0].clone());
+            map.insert(proofs_clone[1].y().unwrap(), proofs_clone[1].clone());
+            Ok(map)
+        });
+        pdb.expect_counter()
+            .times(1)
+            .with(eq(kid))
+            .returning(|_| Ok(0));
+        pdb.expect_increment_counter()
+            .times(1)
+            .with(eq(kid), eq(0), eq(1))
+            .returning(|_, _, _| Ok(()));
+        let proofs_clone_mark = proofs.clone();
+        pdb.expect_mark_pending_as_spent()
+            .times(1)
+            .returning(move |_| Ok(proofs_clone_mark[0].clone()));
+        setup_commitment_mocks(&mut connector, &mut pdb);
+        connector
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(move |request| {
+                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
+                let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
+                Ok(bcr_common::wire::swap::SwapResponse { signatures })
+            });
+        pdb.expect_store_new().times(1).returning(|p| {
+            let y = p.y().expect("Hash to curve should not fail");
+            Ok(y)
+        });
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let recovered = pocket
+            .recover_pending_stale_proofs(
+                &[pending_tx_y],
+                &k_infos,
+                Arc::new(connector),
+                test_swap_config(),
+            )
+            .await
+            .expect("recover pending stale proofs works");
+        assert_eq!(recovered, Amount::from(8u64));
     }
 
     #[tokio::test]
