@@ -1,11 +1,12 @@
 use crate::{
     ClowderMintConnector,
     error::{Error, Result},
+    pocket::debit::ProtestResult,
     types::{
         MintSummary, PAYMENT_TYPE_METADATA_KEY, PaymentSummary, TRANSACTION_STATUS_METADATA_KEY,
         WalletConfig,
     },
-    wallet::types::{PayReference, WalletPaymentType},
+    wallet::types::{PayReference, WalletPaymentType, WalletProtestResult},
 };
 use async_trait::async_trait;
 use bcr_common::{
@@ -17,7 +18,7 @@ use bcr_common::{
     wallet::Token,
     wire::{
         clowder::{self as wire_clowder},
-        common as wire_common, melt as wire_melt,
+        melt as wire_melt,
     },
 };
 use bcr_wallet_core::{
@@ -80,20 +81,11 @@ pub trait WalletApi: SendSync {
     async fn mint(&self, amount: bitcoin::Amount) -> Result<MintSummary>;
     async fn check_pending_mints(&self) -> Result<Vec<TransactionId>>;
     async fn check_pending_commitments(&self) -> Result<()>;
-    async fn protest_mint(
-        &self,
-        quote_id: Uuid,
-    ) -> Result<(
-        bcr_common::wire::mint::ProtestStatus,
-        Option<(Amount, Vec<cashu::PublicKey>)>,
-    )>;
+    async fn protest_mint(&self, quote_id: Uuid) -> Result<WalletProtestResult>;
     async fn protest_swap(
         &self,
         commitment_sig: bitcoin::secp256k1::schnorr::Signature,
-    ) -> Result<(
-        wire_common::ProtestStatus,
-        Option<(Amount, Vec<cashu::PublicKey>)>,
-    )>;
+    ) -> Result<WalletProtestResult>;
     async fn migrate_pockets_substitute(
         &mut self,
         substitute: Arc<dyn ClowderMintConnector>,
@@ -553,15 +545,9 @@ impl WalletApi for super::Wallet {
         self.debit.check_pending_commitments(now).await
     }
 
-    async fn protest_mint(
-        &self,
-        quote_id: Uuid,
-    ) -> Result<(
-        bcr_common::wire::mint::ProtestStatus,
-        Option<(Amount, Vec<cashu::PublicKey>)>,
-    )> {
+    async fn protest_mint(&self, quote_id: Uuid) -> Result<WalletProtestResult> {
         let keysets_info = self.get_wallet_mint_keyset_infos().await?;
-        let (status, result) = self
+        let ProtestResult { status, result } = self
             .debit
             .protest_mint(
                 quote_id,
@@ -599,16 +585,13 @@ impl WalletApi for super::Wallet {
             self.tx_repo.store_tx(tx).await?;
         }
 
-        Ok((status, result))
+        Ok(WalletProtestResult { status, result })
     }
 
     async fn protest_swap(
         &self,
         commitment_sig: bitcoin::secp256k1::schnorr::Signature,
-    ) -> Result<(
-        wire_common::ProtestStatus,
-        Option<(Amount, Vec<cashu::PublicKey>)>,
-    )> {
+    ) -> Result<WalletProtestResult> {
         let keysets_info = self.get_wallet_mint_keyset_infos().await?;
         let swap_config = self.swap_config();
 
@@ -620,7 +603,7 @@ impl WalletApi for super::Wallet {
             .ok_or(Error::BetaNotFound(beta_url))?
             .clone();
 
-        let (status, result) = self
+        let ProtestResult { status, result } = self
             .debit
             .protest_swap(
                 commitment_sig,
@@ -659,7 +642,7 @@ impl WalletApi for super::Wallet {
             self.tx_repo.store_tx(tx).await?;
         }
 
-        Ok((status, result))
+        Ok(WalletProtestResult { status, result })
     }
 
     async fn receive_proofs(

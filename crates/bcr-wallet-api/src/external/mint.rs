@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use bcr_common::{
     cashu::{self, Proof},
     cdk::{self, Error as CdkError},
-    client::clowder::Client as ClowderClient,
+    client::mint::Client as MintClient,
     wire::{
         clowder::{self as wire_clowder, ConnectedMintsResponse},
         exchange as wire_exchange, keys as wire_keys, melt as wire_melt, mint as wire_mint,
@@ -89,13 +89,18 @@ async fn do_post_swap_commitment(
     })
 }
 
-fn clowder_err_to_cdk(e: bcr_common::client::clowder::Error) -> CdkError {
+fn clowder_err_to_cdk(e: bcr_common::client::mint::Error) -> CdkError {
     match e {
-        bcr_common::client::clowder::Error::NotFound => {
-            CdkError::HttpError(None, "Wildcat Clowder resource not found".to_string())
+        bcr_common::client::mint::Error::ResourceNotFound(err) => {
+            CdkError::HttpError(None, format!("Wildcat Clowder resource not found: {err}"))
         }
-        bcr_common::client::clowder::Error::Reqwest(e) => CdkError::HttpError(None, e.to_string()),
+        bcr_common::client::mint::Error::Reqwest(e) => CdkError::HttpError(None, e.to_string()),
+        e => CdkError::HttpError(None, e.to_string()),
     }
+}
+
+fn convert_mint_url(mint_url: cashu::MintUrl) -> CdkResult<reqwest::Url> {
+    reqwest::Url::from_str(&mint_url.to_string()).map_err(CdkError::UrlParseError)
 }
 
 #[async_trait]
@@ -177,7 +182,7 @@ pub struct HttpClientExt {
     main: cdk::wallet::HttpClient,
     url: reqwest::Url,
     secondary: reqwest::Client,
-    clowder: ClowderClient,
+    clowder: MintClient,
 }
 
 impl HttpClientExt {
@@ -186,7 +191,7 @@ impl HttpClientExt {
             .expect("cashu::MintUrl is as good as reqwest::Url");
         Self {
             main: cdk::wallet::HttpClient::new(cdk_url),
-            clowder: ClowderClient::new(mint_url.clone()),
+            clowder: MintClient::new(mint_url.clone()),
             url: mint_url,
             secondary: reqwest::Client::new(),
         }
@@ -435,7 +440,7 @@ impl ClowderMintConnector for HttpClientExt {
     ) -> CdkResult<ConnectedMintsResponse> {
         debug!("Clowder client call to post_clowder_path");
         self.clowder
-            .post_path(origin_mint_url)
+            .post_path(convert_mint_url(origin_mint_url)?)
             .await
             .map_err(clowder_err_to_cdk)
     }
@@ -609,7 +614,7 @@ pub struct SentinelClient {
     main: cdk::wallet::HttpClient,
     url: reqwest::Url,
     secondary: reqwest::Client,
-    clowder: ClowderClient,
+    clowder: MintClient,
     sentinels: Vec<reqwest::Url>,
 }
 
@@ -927,7 +932,7 @@ impl ClowderMintConnector for SentinelClient {
     ) -> CdkResult<ConnectedMintsResponse> {
         debug!("Clowder client call to post_clowder_path on sentinel");
         self.clowder
-            .post_path(origin_mint_url)
+            .post_path(convert_mint_url(origin_mint_url)?)
             .await
             .map_err(clowder_err_to_cdk)
     }

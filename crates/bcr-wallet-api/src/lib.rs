@@ -1,6 +1,6 @@
 use crate::config::AppStateConfig;
 use crate::external::mint::{ClowderMintConnector, HttpClientExt};
-use crate::wallet::types::WalletBalance;
+use crate::wallet::types::{WalletBalance, WalletProtestResult};
 use crate::{config::NostrConfig, pocket::credit::CreditPocketApi, wallet::api::WalletApi};
 use bcr_common::cdk_common::wallet::Transaction;
 use bcr_common::{
@@ -466,11 +466,14 @@ impl AppState {
         &self,
         idx: usize,
         quote_id: String,
-    ) -> Result<(bcr_common::wire::mint::ProtestStatus, Option<cashu::Amount>)> {
+    ) -> Result<(
+        bcr_common::wire::common::ProtestStatus,
+        Option<cashu::Amount>,
+    )> {
         tracing::debug!("wallet_protest_mint({idx}, {quote_id})");
         let qid = Uuid::from_str(&quote_id)?;
         let wallet = self.get_wallet(idx).await?;
-        let (status, result) = wallet.read().await.protest_mint(qid).await?;
+        let WalletProtestResult { status, result } = wallet.read().await.protest_mint(qid).await?;
         Ok((status, result.map(|(amount, _)| amount)))
     }
 
@@ -486,7 +489,7 @@ impl AppState {
         let sig = bitcoin::secp256k1::schnorr::Signature::from_str(&commitment_sig)
             .map_err(|e| Error::SchnorrSignature(e.to_string()))?;
         let wallet = self.get_wallet(idx).await?;
-        let (status, result) = wallet.read().await.protest_swap(sig).await?;
+        let WalletProtestResult { status, result } = wallet.read().await.protest_swap(sig).await?;
         Ok((status, result.map(|(amount, _)| amount)))
     }
 

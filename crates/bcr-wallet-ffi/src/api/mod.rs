@@ -850,11 +850,11 @@ pub enum ProtestStatus {
     Rabid,
 }
 
-impl From<bcr_common::wire::mint::ProtestStatus> for ProtestStatus {
-    fn from(s: bcr_common::wire::mint::ProtestStatus) -> Self {
+impl From<bcr_common::wire::common::ProtestStatus> for ProtestStatus {
+    fn from(s: bcr_common::wire::common::ProtestStatus) -> Self {
         match s {
-            bcr_common::wire::mint::ProtestStatus::Resolved => ProtestStatus::Resolved,
-            bcr_common::wire::mint::ProtestStatus::Rabid => ProtestStatus::Rabid,
+            bcr_common::wire::common::ProtestStatus::Resolved => ProtestStatus::Resolved,
+            bcr_common::wire::common::ProtestStatus::Rabid => ProtestStatus::Rabid,
         }
     }
 }

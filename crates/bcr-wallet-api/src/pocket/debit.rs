@@ -71,10 +71,7 @@ pub trait DebitPocketApi: super::PocketApi {
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
         clowder_id: bitcoin::secp256k1::PublicKey,
-    ) -> Result<(
-        wire_mint::ProtestStatus,
-        Option<(cashu::Amount, Vec<cashu::PublicKey>)>,
-    )>;
+    ) -> Result<ProtestResult>;
     async fn check_pending_commitments(&self, tstamp: u64) -> Result<()>;
     async fn protest_swap(
         &self,
@@ -84,10 +81,13 @@ pub trait DebitPocketApi: super::PocketApi {
         beta_client: Arc<dyn ClowderMintConnector>,
         alpha_id: bitcoin::secp256k1::PublicKey,
         swap_config: SwapConfig,
-    ) -> Result<(
-        wire_common::ProtestStatus,
-        Option<(cashu::Amount, Vec<cashu::PublicKey>)>,
-    )>;
+    ) -> Result<ProtestResult>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ProtestResult {
+    pub status: wire_common::ProtestStatus,
+    pub result: Option<(cashu::Amount, Vec<cashu::PublicKey>)>,
 }
 
 struct MeltReference {
@@ -787,10 +787,7 @@ impl DebitPocketApi for Pocket {
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
         clowder_id: bitcoin::secp256k1::PublicKey,
-    ) -> Result<(
-        wire_mint::ProtestStatus,
-        Option<(cashu::Amount, Vec<cashu::PublicKey>)>,
-    )> {
+    ) -> Result<ProtestResult> {
         let record = self.mdb.load_mint(qid).await?;
 
         let request = wire_mint::MintProtestRequest {
@@ -803,7 +800,7 @@ impl DebitPocketApi for Pocket {
         let response = client.post_protest_mint(request).await?;
 
         match response.status {
-            wire_mint::ProtestStatus::Resolved => {
+            wire_common::ProtestStatus::Resolved => {
                 let signatures = response.signatures.ok_or(Error::MintingError(
                     "protest resolved but no signatures returned".to_string(),
                 ))?;
@@ -821,11 +818,17 @@ impl DebitPocketApi for Pocket {
                 self.mdb.delete_mint(qid).await?;
 
                 tracing::info!("Protest resolved for {qid}, minted {amount}");
-                Ok((wire_mint::ProtestStatus::Resolved, Some((amount, ys))))
+                Ok(ProtestResult {
+                    status: wire_common::ProtestStatus::Resolved,
+                    result: Some((amount, ys)),
+                })
             }
-            wire_mint::ProtestStatus::Rabid => {
+            wire_common::ProtestStatus::Rabid => {
                 tracing::warn!("Protest for {qid} returned rabid");
-                Ok((wire_mint::ProtestStatus::Rabid, None))
+                Ok(ProtestResult {
+                    status: wire_common::ProtestStatus::Rabid,
+                    result: None,
+                })
             }
         }
     }
@@ -838,10 +841,7 @@ impl DebitPocketApi for Pocket {
         beta_client: Arc<dyn ClowderMintConnector>,
         alpha_id: bitcoin::secp256k1::PublicKey,
         swap_config: SwapConfig,
-    ) -> Result<(
-        wire_common::ProtestStatus,
-        Option<(cashu::Amount, Vec<cashu::PublicKey>)>,
-    )> {
+    ) -> Result<ProtestResult> {
         let record = self.pdb.load_commitment(commitment_sig).await?;
         let loaded_proofs = self.pdb.load_proofs(&record.inputs).await?;
         let ephemeral_keypair =
@@ -913,11 +913,17 @@ impl DebitPocketApi for Pocket {
                 self.pdb.delete_commitment(commitment_sig).await?;
 
                 tracing::info!("Swap protest resolved for {commitment_sig}, received {amount}");
-                Ok((wire_common::ProtestStatus::Resolved, Some((amount, ys))))
+                Ok(ProtestResult {
+                    status: wire_common::ProtestStatus::Resolved,
+                    result: Some((amount, ys)),
+                })
             }
             wire_common::ProtestStatus::Rabid => {
                 tracing::warn!("Swap protest for {commitment_sig} returned rabid");
-                Ok((wire_common::ProtestStatus::Rabid, None))
+                Ok(ProtestResult {
+                    status: wire_common::ProtestStatus::Rabid,
+                    result: None,
+                })
             }
         }
     }
@@ -1365,7 +1371,7 @@ mod tests {
             .times(1)
             .returning(move |_| {
                 Ok(wire_mint::MintProtestResponse {
-                    status: wire_mint::ProtestStatus::Resolved,
+                    status: wire_common::ProtestStatus::Resolved,
                     signatures: Some(blind_sigs.clone()),
                 })
             });
@@ -1414,7 +1420,7 @@ mod tests {
         let clowder_id = bitcoin::secp256k1::PublicKey::from_keypair(&clowder_keypair);
 
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
-        let (status, result) = pocket
+        let ProtestResult { status, result } = pocket
             .protest_mint(
                 uuid,
                 &k_infos,
@@ -1425,7 +1431,7 @@ mod tests {
             .await
             .expect("protest_mint resolved works");
 
-        assert!(matches!(status, wire_mint::ProtestStatus::Resolved));
+        assert!(matches!(status, wire_common::ProtestStatus::Resolved));
         let (minted_amount, ys) = result.expect("resolved should return proofs");
         assert_eq!(minted_amount, Amount::from(amount.to_sat()));
         assert!(!ys.is_empty());
@@ -1471,7 +1477,7 @@ mod tests {
             .times(1)
             .returning(move |_| {
                 Ok(wire_mint::MintProtestResponse {
-                    status: wire_mint::ProtestStatus::Rabid,
+                    status: wire_common::ProtestStatus::Rabid,
                     signatures: None,
                 })
             });
@@ -1487,7 +1493,7 @@ mod tests {
         let clowder_id = bitcoin::secp256k1::PublicKey::from_keypair(&clowder_keypair);
 
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
-        let (status, result) = pocket
+        let ProtestResult { status, result } = pocket
             .protest_mint(
                 uuid,
                 &k_infos,
@@ -1498,7 +1504,7 @@ mod tests {
             .await
             .expect("protest_mint rabid works");
 
-        assert!(matches!(status, wire_mint::ProtestStatus::Rabid));
+        assert!(matches!(status, wire_common::ProtestStatus::Rabid));
         assert!(result.is_none());
     }
 
@@ -1617,7 +1623,7 @@ mod tests {
         let clowder_id = secp256k1::PublicKey::from_keypair(&clowder_keypair);
 
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
-        let (status, result) = pocket
+        let ProtestResult { status, result } = pocket
             .protest_swap(
                 commitment_sig,
                 &k_infos,
@@ -1703,7 +1709,7 @@ mod tests {
         let clowder_id = secp256k1::PublicKey::from_keypair(&clowder_keypair);
 
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
-        let (status, result) = pocket
+        let ProtestResult { status, result } = pocket
             .protest_swap(
                 commitment_sig,
                 &k_infos,
