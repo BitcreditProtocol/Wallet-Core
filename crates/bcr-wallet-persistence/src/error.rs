@@ -40,6 +40,8 @@ pub enum Error {
     MintNotFound(String),
     #[error("melt op not found: {0}")]
     MeltNotFound(String),
+    #[error("melt commitment not found: {0}")]
+    MeltCommitmentNotFound(String),
     #[error("counter kid mismatch")]
     CounterKidMismatch,
     #[error("counter in local DB not found: {0}")]

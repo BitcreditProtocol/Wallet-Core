@@ -567,6 +567,20 @@ pub async fn wallet_protest_swap(
 }
 
 #[frb]
+pub async fn wallet_protest_melt(
+    req: WalletProtestMeltRequest,
+) -> Result<WalletProtestMeltResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let (status, amount) = app_state
+        .wallet_protest_melt(req.wallet_id, req.quote_id)
+        .await?;
+    Ok(WalletProtestMeltResponse {
+        status: status.into(),
+        amount: amount.map(|a| u64::from(a)),
+    })
+}
+
+#[frb]
 pub async fn wallet_get_transaction_ids(
     req: WalletRequest,
 ) -> Result<WalletTransactionIdsResponse, WalletError> {
@@ -967,6 +981,18 @@ pub struct WalletProtestSwapRequest {
 
 #[derive(Debug, Clone)]
 pub struct WalletProtestSwapResponse {
+    pub status: ProtestStatus,
+    pub amount: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletProtestMeltRequest {
+    pub wallet_id: usize,
+    pub quote_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletProtestMeltResponse {
     pub status: ProtestStatus,
     pub amount: Option<u64>,
 }

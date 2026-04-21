@@ -85,8 +85,10 @@ struct MintEntry {
     kid: cashu::Id,
     content: String,
     commitment: bitcoin::secp256k1::schnorr::Signature,
+    ephemeral_secret: Vec<u8>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn convert_mint_entry_from(
     quote_id: Uuid,
     amount: bitcoin::Amount,
@@ -95,6 +97,7 @@ fn convert_mint_entry_from(
     premints: cdk00::PreMintSecrets,
     content: String,
     commitment: bitcoin::secp256k1::schnorr::Signature,
+    ephemeral_secret: bitcoin::secp256k1::SecretKey,
 ) -> MintEntry {
     let cdk00::PreMintSecrets { secrets, keyset_id } = premints;
     let mut entry = MintEntry {
@@ -106,6 +109,7 @@ fn convert_mint_entry_from(
         kid: keyset_id,
         content,
         commitment,
+        ephemeral_secret: ephemeral_secret.secret_bytes().to_vec(),
     };
     for premint in secrets {
         entry.premints.push((
@@ -118,7 +122,7 @@ fn convert_mint_entry_from(
     entry
 }
 
-fn convert_mint_entry_to(entry: MintEntry) -> crate::MintRecord {
+fn convert_mint_entry_to(entry: MintEntry) -> Result<crate::MintRecord> {
     let summary = MintSummary {
         quote_id: entry.quote_id,
         amount: entry.amount,
@@ -136,12 +140,26 @@ fn convert_mint_entry_to(entry: MintEntry) -> crate::MintRecord {
         };
         secrets.push(pre);
     }
-    crate::MintRecord {
+    let ephemeral_secret = bitcoin::secp256k1::SecretKey::from_slice(&entry.ephemeral_secret)
+        .map_err(|e| Error::Custom(format!("invalid ephemeral secret: {e}")))?;
+    Ok(crate::MintRecord {
         summary,
         premint: cdk00::PreMintSecrets { secrets, keyset_id },
         content: entry.content,
         commitment: entry.commitment,
-    }
+        ephemeral_secret,
+    })
+}
+
+///////////////////////////////////////////// MeltCommitmentEntry
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct MeltCommitmentEntry {
+    quote_id: Uuid,
+    expiry: u64,
+    commitment: bitcoin::secp256k1::schnorr::Signature,
+    ephemeral_secret: Vec<u8>,
+    body_content: String,
 }
 
 ///////////////////////////////////////////// MintMeltDB
@@ -149,11 +167,13 @@ pub struct MintMeltDB {
     db: Arc<Database>,
     melt_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     mint_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    melt_commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
 }
 
 impl MintMeltDB {
     const MELT_BASE_DB_NAME: &'static str = "melts";
     const MINT_BASE_DB_NAME: &'static str = "mints";
+    const MELT_COMMITMENT_BASE_DB_NAME: &'static str = "melt_commitments";
 
     pub fn new(db: Arc<Database>, wallet_id: &str, unit: &CurrencyUnit) -> Result<Self> {
         // Leak once to get static string, because of dynamically generated table names
@@ -161,12 +181,17 @@ impl MintMeltDB {
             Box::leak(format!("{wallet_id}_{unit}_{}", Self::MELT_BASE_DB_NAME).into_boxed_str());
         let mint_name: &'static str =
             Box::leak(format!("{wallet_id}_{unit}_{}", Self::MINT_BASE_DB_NAME).into_boxed_str());
+        let melt_commitment_name: &'static str = Box::leak(
+            format!("{wallet_id}_{unit}_{}", Self::MELT_COMMITMENT_BASE_DB_NAME).into_boxed_str(),
+        );
         let melt_table = TableDefinition::new(melt_name);
         let mint_table = TableDefinition::new(mint_name);
+        let melt_commitment_table = TableDefinition::new(melt_commitment_name);
         Ok(MintMeltDB {
             db,
             melt_table,
             mint_table,
+            melt_commitment_table,
         })
     }
 
@@ -328,6 +353,103 @@ impl MintMeltDB {
             Err(e) => Err(e.into()),
         }
     }
+
+    // melt commitment
+    fn store_melt_commitment_sync(
+        db: Arc<Database>,
+        table_def: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        record: crate::MeltCommitmentRecord,
+    ) -> Result<()> {
+        let entry = MeltCommitmentEntry {
+            quote_id: record.quote_id,
+            expiry: record.expiry,
+            commitment: record.commitment,
+            ephemeral_secret: record.ephemeral_secret.secret_bytes().to_vec(),
+            body_content: record.body_content,
+        };
+        let write_txn = db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(table_def)?;
+            let mut serialized = Vec::new();
+            ciborium::into_writer(&entry, &mut serialized)?;
+            table.insert(entry.quote_id.as_bytes().as_slice(), serialized)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    fn load_melt_commitment_sync(
+        db: Arc<Database>,
+        table_def: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        quote_id: Uuid,
+    ) -> Result<crate::MeltCommitmentRecord> {
+        let read_txn = db.begin_read()?;
+        match read_txn.open_table(table_def) {
+            Ok(table) => {
+                let entry = table.get(quote_id.as_bytes().as_slice())?;
+                match entry {
+                    Some(e) => {
+                        let c: MeltCommitmentEntry = ciborium::from_reader(e.value().as_slice())?;
+                        let secret = bitcoin::secp256k1::SecretKey::from_slice(&c.ephemeral_secret)
+                            .map_err(|e| Error::Custom(format!("invalid ephemeral secret: {e}")))?;
+                        Ok(crate::MeltCommitmentRecord {
+                            quote_id: c.quote_id,
+                            expiry: c.expiry,
+                            commitment: c.commitment,
+                            ephemeral_secret: secret,
+                            body_content: c.body_content,
+                        })
+                    }
+                    None => Err(Error::MeltCommitmentNotFound(quote_id.to_string())),
+                }
+            }
+            Err(TableError::TableDoesNotExist(_)) => {
+                Err(Error::MeltCommitmentNotFound(quote_id.to_string()))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn delete_melt_commitment_sync(
+        db: Arc<Database>,
+        table_def: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        quote_id: Uuid,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(table_def)?;
+            table.remove(quote_id.as_bytes().as_slice())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    fn list_melt_commitments_sync(
+        db: Arc<Database>,
+        table_def: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    ) -> Result<Vec<crate::MeltCommitmentRecord>> {
+        let read_txn = db.begin_read()?;
+        match read_txn.open_table(table_def) {
+            Ok(table) => {
+                let mut res = Vec::new();
+                for (_, v) in table.range::<&[u8]>(..)?.flatten() {
+                    let c: MeltCommitmentEntry = ciborium::from_reader(v.value().as_slice())?;
+                    let secret = bitcoin::secp256k1::SecretKey::from_slice(&c.ephemeral_secret)
+                        .map_err(|e| Error::Custom(format!("invalid ephemeral secret: {e}")))?;
+                    res.push(crate::MeltCommitmentRecord {
+                        quote_id: c.quote_id,
+                        expiry: c.expiry,
+                        commitment: c.commitment,
+                        ephemeral_secret: secret,
+                        body_content: c.body_content,
+                    });
+                }
+                Ok(res)
+            }
+            Err(TableError::TableDoesNotExist(_)) => Ok(vec![]),
+            Err(e) => Err(e.into()),
+        }
+    }
 }
 
 #[async_trait]
@@ -376,11 +498,19 @@ impl MintMeltRepository for MintMeltDB {
         premints: cdk00::PreMintSecrets,
         content: String,
         commitment: bitcoin::secp256k1::schnorr::Signature,
+        ephemeral_secret: bitcoin::secp256k1::SecretKey,
     ) -> Result<Uuid> {
         let db_clone = self.db.clone();
         let table = self.mint_table;
         let entry = convert_mint_entry_from(
-            quote_id, amount, address, expiry, premints, content, commitment,
+            quote_id,
+            amount,
+            address,
+            expiry,
+            premints,
+            content,
+            commitment,
+            ephemeral_secret,
         );
         spawn_blocking(move || Self::store_mint_sync(db_clone, table, entry)).await?
     }
@@ -390,7 +520,7 @@ impl MintMeltRepository for MintMeltDB {
         let table = self.mint_table;
         let res = spawn_blocking(move || Self::load_mint_sync(db_clone, table, qid)).await??;
         let entry = res.ok_or(Error::MintNotFound(qid.clone().to_string()))?;
-        Ok(convert_mint_entry_to(entry))
+        convert_mint_entry_to(entry)
     }
 
     async fn list_mints(&self) -> Result<Vec<Uuid>> {
@@ -404,6 +534,32 @@ impl MintMeltRepository for MintMeltDB {
         let table = self.mint_table;
         spawn_blocking(move || Self::delete_mint_sync(db_clone, table, qid)).await??;
         Ok(())
+    }
+    // melt commitment
+    async fn store_melt_commitment(&self, record: crate::MeltCommitmentRecord) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.melt_commitment_table;
+        spawn_blocking(move || Self::store_melt_commitment_sync(db_clone, table, record)).await?
+    }
+
+    async fn load_melt_commitment(&self, quote_id: Uuid) -> Result<crate::MeltCommitmentRecord> {
+        let db_clone = self.db.clone();
+        let table = self.melt_commitment_table;
+        spawn_blocking(move || Self::load_melt_commitment_sync(db_clone, table, quote_id)).await?
+    }
+
+    async fn delete_melt_commitment(&self, quote_id: Uuid) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.melt_commitment_table;
+        spawn_blocking(move || Self::delete_melt_commitment_sync(db_clone, table, quote_id))
+            .await??;
+        Ok(())
+    }
+
+    async fn list_melt_commitments(&self) -> Result<Vec<crate::MeltCommitmentRecord>> {
+        let db_clone = self.db.clone();
+        let table = self.melt_commitment_table;
+        spawn_blocking(move || Self::list_melt_commitments_sync(db_clone, table)).await?
     }
 }
 
@@ -425,6 +581,10 @@ mod tests {
         let sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64])
             .expect("valid signature bytes");
         (content, sig)
+    }
+
+    fn dummy_ephemeral_secret() -> bitcoin::secp256k1::SecretKey {
+        bitcoin::secp256k1::SecretKey::from_slice(&[1u8; 32]).expect("valid secret")
     }
 
     fn get_db(wallet_id: &str, unit: CurrencyUnit) -> MintMeltDB {
@@ -559,6 +719,7 @@ mod tests {
                 premint.clone(),
                 content.clone(),
                 commitment,
+                dummy_ephemeral_secret(),
             )
             .await
             .expect("store_mint works");
@@ -599,6 +760,7 @@ mod tests {
             premint1,
             content.clone(),
             commitment,
+            dummy_ephemeral_secret(),
         )
         .await
         .expect("store_mint q1");
@@ -610,6 +772,7 @@ mod tests {
             premint2,
             content.clone(),
             commitment,
+            dummy_ephemeral_secret(),
         )
         .await
         .expect("store_mint q2");
@@ -643,6 +806,7 @@ mod tests {
             premint,
             content,
             commitment,
+            dummy_ephemeral_secret(),
         )
         .await
         .expect("store_mint works");

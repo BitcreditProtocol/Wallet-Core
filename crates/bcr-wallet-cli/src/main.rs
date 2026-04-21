@@ -76,6 +76,8 @@ enum Commands {
     ProtestMint { id: usize, quote_id: String },
     #[command(name = "protest_swap")]
     ProtestSwap { id: usize, commitment_sig: String },
+    #[command(name = "protest_melt")]
+    ProtestMelt { id: usize, quote_id: String },
     #[command(name = "migrate_rabid")]
     MigrateRabid,
     #[command(name = "run_jobs")]
@@ -249,6 +251,13 @@ async fn main() -> Result<()> {
                 "Protest Swap for {}: {}",
                 cli.wallet,
                 command::cmd_protest_swap(&app_state, &cli.wallet, id, &commitment_sig).await?
+            );
+        }
+        Commands::ProtestMelt { id, quote_id } => {
+            info!(
+                "Protest Melt for {}: {}",
+                cli.wallet,
+                command::cmd_protest_melt(&app_state, &cli.wallet, id, &quote_id).await?
             );
         }
         Commands::MigrateRabid => {

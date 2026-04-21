@@ -1,7 +1,7 @@
 use crate::{
     ClowderMintConnector,
     error::{Error, Result},
-    pocket::debit::ProtestResult,
+    pocket::debit::{MeltProtestResult, ProtestResult},
     types::{
         MintSummary, PAYMENT_TYPE_METADATA_KEY, PaymentSummary, TRANSACTION_STATUS_METADATA_KEY,
         WalletConfig,
@@ -16,16 +16,12 @@ use bcr_common::{
         wallet::types::{Transaction, TransactionDirection, TransactionId},
     },
     wallet::Token,
-    wire::{
-        clowder::{self as wire_clowder},
-        melt as wire_melt,
-    },
+    wire::clowder::{self as wire_clowder},
 };
 use bcr_wallet_core::{
     SendSync,
     types::{
-        BTC_ALPHA_TX_ID_TYPE_METADATA_KEY, BTC_BETA_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback,
-        PaymentType, TransactionStatus,
+        BTC_ALPHA_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback, PaymentType, TransactionStatus,
     },
 };
 use bitcoin::secp256k1;
@@ -86,6 +82,8 @@ pub trait WalletApi: SendSync {
         &self,
         commitment_sig: bitcoin::secp256k1::schnorr::Signature,
     ) -> Result<WalletProtestResult>;
+    async fn protest_melt(&self, quote_id: Uuid) -> Result<WalletProtestResult>;
+    async fn check_pending_melt_commitments(&self) -> Result<()>;
     async fn migrate_pockets_substitute(
         &mut self,
         substitute: Arc<dyn ClowderMintConnector>,
@@ -152,11 +150,15 @@ impl WalletApi for super::Wallet {
     ) -> Result<PaymentSummary> {
         let infos = self.get_wallet_mint_keyset_infos().await?;
 
-        let invoice = wire_melt::OnchainInvoice { address, amount };
-
         let m_summary = self
             .debit
-            .prepare_onchain_melt(invoice.clone(), &infos, self.client.clone())
+            .prepare_onchain_melt(
+                address.assume_checked().to_string(),
+                amount.to_sat(),
+                &infos,
+                self.client.clone(),
+                self.swap_config(),
+            )
             .await?;
         let summary = PaymentSummary::from(m_summary);
         let pref = PayReference {
@@ -417,7 +419,7 @@ impl WalletApi for super::Wallet {
             WalletPaymentType::OnChain => {
                 let (btc_tx_id, proofs) = self
                     .debit
-                    .pay_onchain_melt(request_id, &infos, self.client.clone(), self.swap_config())
+                    .pay_onchain_melt(request_id, self.client.clone())
                     .await?;
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
@@ -431,17 +433,15 @@ impl WalletApi for super::Wallet {
                     TRANSACTION_STATUS_METADATA_KEY.to_owned(),
                     TransactionStatus::Settled.to_string(),
                 );
-
                 if let Some(alpha_tx_id) = btc_tx_id.alpha_txid {
                     metadata.insert(
                         BTC_ALPHA_TX_ID_TYPE_METADATA_KEY.to_owned(),
                         alpha_tx_id.to_string(),
                     );
                 }
-
                 if let Some(beta_tx_id) = btc_tx_id.beta_txid {
                     metadata.insert(
-                        BTC_BETA_TX_ID_TYPE_METADATA_KEY.to_owned(),
+                        bcr_wallet_core::types::BTC_BETA_TX_ID_TYPE_METADATA_KEY.to_owned(),
                         beta_tx_id.to_string(),
                     );
                 }
@@ -620,6 +620,71 @@ impl WalletApi for super::Wallet {
         }
 
         Ok(WalletProtestResult { status, result })
+    }
+
+    async fn protest_melt(&self, quote_id: Uuid) -> Result<WalletProtestResult> {
+        let beta_url = self.betas().into_iter().next().ok_or(Error::NoBetas)?;
+        let beta_client = self
+            .beta_clients
+            .get(&beta_url)
+            .ok_or(Error::BetaNotFound(beta_url))?
+            .clone();
+
+        let MeltProtestResult {
+            base: ProtestResult { status, result },
+            txid,
+        } = self
+            .debit
+            .protest_melt(quote_id, beta_client, self.clowder_id)
+            .await?;
+
+        if let Some((amount, ref ys)) = result {
+            let now = chrono::Utc::now();
+            let mut metadata = HashMap::default();
+            metadata.insert(
+                PAYMENT_TYPE_METADATA_KEY.to_owned(),
+                PaymentType::OnChain.to_string(),
+            );
+            metadata.insert(
+                TRANSACTION_STATUS_METADATA_KEY.to_owned(),
+                TransactionStatus::Settled.to_string(),
+            );
+            if let Some(ref melt_tx) = txid {
+                if let Some(alpha_tx_id) = melt_tx.alpha_txid {
+                    metadata.insert(
+                        BTC_ALPHA_TX_ID_TYPE_METADATA_KEY.to_owned(),
+                        alpha_tx_id.to_string(),
+                    );
+                }
+                if let Some(beta_tx_id) = melt_tx.beta_txid {
+                    metadata.insert(
+                        bcr_wallet_core::types::BTC_BETA_TX_ID_TYPE_METADATA_KEY.to_owned(),
+                        beta_tx_id.to_string(),
+                    );
+                }
+            }
+
+            let tx = Transaction {
+                mint_url: self.client.mint_url(),
+                fee: cashu::Amount::ZERO,
+                direction: TransactionDirection::Outgoing,
+                memo: Some("Melt protest resolved".to_string()),
+                timestamp: now.timestamp() as u64,
+                unit: self.debit_unit(),
+                ys: ys.clone(),
+                amount,
+                metadata,
+                quote_id: Some(quote_id.to_string()),
+            };
+            self.tx_repo.store_tx(tx).await?;
+        }
+
+        Ok(WalletProtestResult { status, result })
+    }
+
+    async fn check_pending_melt_commitments(&self) -> Result<()> {
+        let now_ts = chrono::Utc::now().timestamp() as u64;
+        self.debit.check_pending_melt_commitments(now_ts).await
     }
 
     async fn receive_proofs(

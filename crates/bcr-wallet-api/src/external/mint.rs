@@ -27,7 +27,15 @@ pub struct SwapCommitmentResult {
     pub wallet_key: cashu::PublicKey,
 }
 
-async fn do_post_swap_commitment(
+pub struct MeltQuoteResult {
+    pub quote_id: uuid::Uuid,
+    pub expiry: u64,
+    pub commitment: secp256k1::schnorr::Signature,
+    pub ephemeral_secret: secp256k1::SecretKey,
+    pub body_content: String,
+}
+
+async fn post_swap_commitment_inner(
     http_client: &reqwest::Client,
     url: reqwest::Url,
     inputs: Vec<cashu::Proof>,
@@ -38,26 +46,20 @@ async fn do_post_swap_commitment(
     let ephemeral_keypair =
         secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng());
     let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
+    let wallet_pk = secp256k1::PublicKey::from_keypair(&ephemeral_keypair);
+    let wallet_key = cashu::PublicKey::from(wallet_pk);
 
     let fingerprints: Vec<_> = inputs
         .into_iter()
         .map(wire_keys::ProofFingerprint::try_from)
         .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
     let expiry = (chrono::Utc::now() + expiry_seconds).timestamp() as u64;
-    let body = wire_swap::SwapCommitmentRequestBody {
+
+    let request = wire_swap::SwapCommitmentRequest {
         inputs: fingerprints,
         outputs,
         expiry,
-    };
-
-    let (content, wallet_signature) =
-        bcr_common::core::signature::serialize_n_schnorr_sign_borsh_msg(&body, &ephemeral_keypair)?;
-    let wallet_key = cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
-
-    let request = wire_swap::SwapCommitmentRequest {
-        content: content.clone(),
-        wallet_key,
-        wallet_signature,
+        wallet_key: wallet_pk,
     };
 
     let response = http_client
@@ -77,15 +79,69 @@ async fn do_post_swap_commitment(
         &alpha_pk.x_only_public_key().0,
     )?;
 
-    let inputs_ys: Vec<cashu::PublicKey> = body.inputs.into_iter().map(|fp| fp.y).collect();
+    let inputs_ys: Vec<cashu::PublicKey> = request.inputs.iter().map(|fp| fp.y).collect();
     Ok(SwapCommitmentResult {
         inputs_ys,
-        outputs: body.outputs,
+        outputs: request.outputs,
         expiry,
         commitment,
         ephemeral_secret,
         body_content: committed_content,
         wallet_key,
+    })
+}
+
+async fn post_melt_quote_onchain_inner(
+    http_client: &reqwest::Client,
+    url: reqwest::Url,
+    inputs: Vec<cashu::Proof>,
+    address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+    amount: bitcoin::Amount,
+    alpha_pk: secp256k1::PublicKey,
+) -> Result<MeltQuoteResult> {
+    let ephemeral_keypair =
+        secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng());
+    let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
+    let wallet_key = cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
+
+    let fingerprints: Vec<_> = inputs
+        .into_iter()
+        .map(wire_keys::ProofFingerprint::try_from)
+        .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
+
+    let request = wire_melt::MeltQuoteOnchainRequest {
+        inputs: fingerprints,
+        address,
+        amount,
+        wallet_key,
+    };
+
+    let response = http_client
+        .post(url)
+        .json(&request)
+        .send()
+        .await?
+        .error_for_status()?;
+    let wire_melt::MeltQuoteOnchainResponse {
+        content: response_content,
+        commitment,
+    } = response.json().await?;
+
+    bcr_common::core::signature::schnorr_verify_b64(
+        &response_content,
+        &commitment,
+        &alpha_pk.x_only_public_key().0,
+    )?;
+
+    let response_body: wire_melt::MeltQuoteOnchainResponseBody =
+        bcr_common::core::signature::deserialize_borsh_msg(&response_content)?;
+
+    Ok(MeltQuoteResult {
+        quote_id: response_body.quote,
+        expiry: response_body.expiry,
+        commitment,
+        ephemeral_secret,
+        body_content: response_content,
     })
 }
 
@@ -153,12 +209,19 @@ pub trait ClowderMintConnector: cdk::wallet::MintConnector + SendSync {
     ) -> Result<wire_swap::SwapProtestResponse>;
     async fn post_melt_quote_onchain(
         &self,
-        req: wire_melt::MeltQuoteOnchainRequest,
-    ) -> Result<wire_melt::MeltQuoteOnchainResponse>;
+        inputs: Vec<cashu::Proof>,
+        address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        amount: bitcoin::Amount,
+        alpha_pk: secp256k1::PublicKey,
+    ) -> Result<MeltQuoteResult>;
     async fn post_melt_onchain(
         &self,
-        req: cashu::MeltRequest<String>,
+        req: wire_melt::MeltOnchainRequest,
     ) -> Result<wire_melt::MeltOnchainResponse>;
+    async fn post_protest_melt(
+        &self,
+        req: wire_melt::MeltProtestRequest,
+    ) -> Result<wire_melt::MeltProtestResponse>;
     async fn post_mint_quote_onchain(
         &self,
         req: wire_mint::OnchainMintQuoteRequest,
@@ -457,7 +520,7 @@ impl ClowderMintConnector for HttpClientExt {
             .join("v1/swap/commitment")
             .expect("post_swap_commitment url error");
         debug!("HTTP call to post_swap_commitment on {url}");
-        do_post_swap_commitment(
+        post_swap_commitment_inner(
             &self.secondary,
             url,
             inputs,
@@ -510,22 +573,22 @@ impl ClowderMintConnector for HttpClientExt {
 
     async fn post_melt_quote_onchain(
         &self,
-        req: wire_melt::MeltQuoteOnchainRequest,
-    ) -> Result<wire_melt::MeltQuoteOnchainResponse> {
+        inputs: Vec<cashu::Proof>,
+        address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        amount: bitcoin::Amount,
+        alpha_pk: secp256k1::PublicKey,
+    ) -> Result<MeltQuoteResult> {
         let url = self
             .url
             .join("v1/melt/quote/onchain")
             .expect("melt_quote_onchain url error");
         debug!("HTTP call to melt_quote_onchain on {url}");
-
-        let res = self.secondary.post(url).json(&req).send().await?;
-        let response: wire_melt::MeltQuoteOnchainResponse = res.json().await?;
-        Ok(response)
+        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, amount, alpha_pk).await
     }
 
     async fn post_melt_onchain(
         &self,
-        req: cashu::MeltRequest<String>,
+        req: wire_melt::MeltOnchainRequest,
     ) -> Result<wire_melt::MeltOnchainResponse> {
         let url = self
             .url
@@ -533,8 +596,34 @@ impl ClowderMintConnector for HttpClientExt {
             .expect("melt_onchain url error");
         debug!("HTTP call to melt_onchain on {url}");
 
-        let res = self.secondary.post(url).json(&req).send().await?;
+        let res = self
+            .secondary
+            .post(url)
+            .json(&req)
+            .send()
+            .await?
+            .error_for_status()?;
         let response: wire_melt::MeltOnchainResponse = res.json().await?;
+        Ok(response)
+    }
+
+    async fn post_protest_melt(
+        &self,
+        req: wire_melt::MeltProtestRequest,
+    ) -> Result<wire_melt::MeltProtestResponse> {
+        let url = self
+            .url
+            .join("v1/protest/melt")
+            .expect("protest_melt url error");
+        debug!("HTTP call to protest_melt on {url}");
+        let res = self
+            .secondary
+            .post(url)
+            .json(&req)
+            .send()
+            .await?
+            .error_for_status()?;
+        let response: wire_melt::MeltProtestResponse = res.json().await?;
         Ok(response)
     }
 
@@ -949,7 +1038,7 @@ impl ClowderMintConnector for SentinelClient {
             .join("v1/swap/commitment")
             .expect("post_swap_commitment url error");
         debug!("HTTP call to post_swap_commitment on sentinel {url}");
-        do_post_swap_commitment(
+        post_swap_commitment_inner(
             &self.secondary,
             url,
             inputs,
@@ -1014,22 +1103,22 @@ impl ClowderMintConnector for SentinelClient {
 
     async fn post_melt_quote_onchain(
         &self,
-        req: wire_melt::MeltQuoteOnchainRequest,
-    ) -> Result<wire_melt::MeltQuoteOnchainResponse> {
+        inputs: Vec<cashu::Proof>,
+        address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        amount: bitcoin::Amount,
+        alpha_pk: secp256k1::PublicKey,
+    ) -> Result<MeltQuoteResult> {
         let url = self
             .url
             .join("v1/melt/quote/onchain")
             .expect("melt_quote_onchain url error");
         debug!("HTTP call on sentinel to melt_quote_onchain on {url}");
-
-        let res = self.secondary.post(url).json(&req).send().await?;
-        let response: wire_melt::MeltQuoteOnchainResponse = res.json().await?;
-        Ok(response)
+        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, amount, alpha_pk).await
     }
 
     async fn post_melt_onchain(
         &self,
-        req: cashu::MeltRequest<String>,
+        req: wire_melt::MeltOnchainRequest,
     ) -> Result<wire_melt::MeltOnchainResponse> {
         let url = self
             .url
@@ -1037,8 +1126,34 @@ impl ClowderMintConnector for SentinelClient {
             .expect("melt_onchain url error");
         debug!("HTTP call on sentinel to melt_onchain on {url}");
 
-        let res = self.secondary.post(url).json(&req).send().await?;
+        let res = self
+            .secondary
+            .post(url)
+            .json(&req)
+            .send()
+            .await?
+            .error_for_status()?;
         let response: wire_melt::MeltOnchainResponse = res.json().await?;
+        Ok(response)
+    }
+
+    async fn post_protest_melt(
+        &self,
+        req: wire_melt::MeltProtestRequest,
+    ) -> Result<wire_melt::MeltProtestResponse> {
+        let url = self
+            .url
+            .join("v1/protest/melt")
+            .expect("protest_melt url error");
+        debug!("HTTP call on sentinel to protest_melt on {url}");
+        let res = self
+            .secondary
+            .post(url)
+            .json(&req)
+            .send()
+            .await?
+            .error_for_status()?;
+        let response: wire_melt::MeltProtestResponse = res.json().await?;
         Ok(response)
     }
 

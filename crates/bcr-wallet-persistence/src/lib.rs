@@ -26,6 +26,16 @@ pub struct SwapCommitmentRecord {
     pub premints: HashMap<cashu::Id, cdk00::PreMintSecrets>,
 }
 
+///////////////////////////////////////////// MeltCommitmentRecord
+#[derive(Debug, Clone)]
+pub struct MeltCommitmentRecord {
+    pub quote_id: Uuid,
+    pub expiry: u64,
+    pub commitment: secp256k1::schnorr::Signature,
+    pub ephemeral_secret: secp256k1::SecretKey,
+    pub body_content: String,
+}
+
 ///////////////////////////////////////////// PocketRepository
 #[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
 #[async_trait]
@@ -94,6 +104,7 @@ pub struct MintRecord {
     pub premint: cdk00::PreMintSecrets,
     pub content: String,
     pub commitment: bitcoin::secp256k1::schnorr::Signature,
+    pub ephemeral_secret: secp256k1::SecretKey,
 }
 
 #[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
@@ -118,8 +129,14 @@ pub trait MintMeltRepository: SendSync {
         premints: cdk00::PreMintSecrets,
         content: String,
         commitment: bitcoin::secp256k1::schnorr::Signature,
+        ephemeral_secret: secp256k1::SecretKey,
     ) -> Result<Uuid>;
     async fn load_mint(&self, qid: Uuid) -> Result<MintRecord>;
     async fn list_mints(&self) -> Result<Vec<Uuid>>;
     async fn delete_mint(&self, qid: Uuid) -> Result<()>;
+    // melt commitment
+    async fn store_melt_commitment(&self, record: MeltCommitmentRecord) -> Result<()>;
+    async fn load_melt_commitment(&self, quote_id: Uuid) -> Result<MeltCommitmentRecord>;
+    async fn delete_melt_commitment(&self, quote_id: Uuid) -> Result<()>;
+    async fn list_melt_commitments(&self) -> Result<Vec<MeltCommitmentRecord>>;
 }

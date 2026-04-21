@@ -107,6 +107,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_wallet_prepare_payment_request(dynamic raw);
 
   @protected
+  WalletProtestMeltRequest dco_decode_box_autoadd_wallet_protest_melt_request(
+    dynamic raw,
+  );
+
+  @protected
   WalletProtestMintRequest dco_decode_box_autoadd_wallet_protest_mint_request(
     dynamic raw,
   );
@@ -310,6 +315,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletProtestMeltRequest dco_decode_wallet_protest_melt_request(dynamic raw);
+
+  @protected
+  WalletProtestMeltResponse dco_decode_wallet_protest_melt_response(
+    dynamic raw,
+  );
+
+  @protected
   WalletProtestMintRequest dco_decode_wallet_protest_mint_request(dynamic raw);
 
   @protected
@@ -476,6 +489,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletPreparePaymentRequest
   sse_decode_box_autoadd_wallet_prepare_payment_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletProtestMeltRequest sse_decode_box_autoadd_wallet_protest_melt_request(
     SseDeserializer deserializer,
   );
 
@@ -717,6 +735,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletProtestMeltRequest sse_decode_wallet_protest_melt_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletProtestMeltResponse sse_decode_wallet_protest_melt_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   WalletProtestMintRequest sse_decode_wallet_protest_mint_request(
     SseDeserializer deserializer,
   );
@@ -917,6 +945,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_wallet_prepare_payment_request(
     WalletPreparePaymentRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_wallet_protest_melt_request(
+    WalletProtestMeltRequest self,
     SseSerializer serializer,
   );
 
@@ -1220,6 +1254,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_prepare_payment_response(
     WalletPreparePaymentResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_protest_melt_request(
+    WalletProtestMeltRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_protest_melt_response(
+    WalletProtestMeltResponse self,
     SseSerializer serializer,
   );
 
