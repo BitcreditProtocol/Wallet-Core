@@ -396,6 +396,39 @@ pub async fn cmd_protest_swap(
     Ok(res)
 }
 
+pub async fn cmd_protest_melt(
+    app_state: &AppState,
+    name: &str,
+    id: usize,
+    quote_id: &str,
+) -> Result<String> {
+    let mut res = String::new();
+
+    let (status, amount) = app_state
+        .wallet_protest_melt(id, quote_id.to_owned())
+        .await?;
+
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Protest Melt for {name}, Quote ID: {quote_id} - Wallet ID: {id}.\n"
+    ));
+    push_break(&mut res);
+    match status {
+        bcr_common::wire::common::ProtestStatus::Resolved => {
+            res.push_str("Protest Resolved");
+            if let Some(amount) = amount {
+                res.push_str(&format!(", amount: {amount}"));
+            }
+        }
+        bcr_common::wire::common::ProtestStatus::Rabid => {
+            res.push_str("Protest returned Rabid - mint declared rabid by betas");
+        }
+    }
+
+    Ok(res)
+}
+
 pub async fn cmd_migrate_rabid(app_state: &AppState, name: &str) -> Result<String> {
     let mut res = String::new();
 

@@ -454,6 +454,28 @@ impl AppState {
         Ok((status, result.map(|(amount, _)| amount)))
     }
 
+    pub async fn wallet_protest_melt(
+        &self,
+        idx: usize,
+        quote_id: String,
+    ) -> Result<(
+        bcr_common::wire::common::ProtestStatus,
+        Option<cashu::Amount>,
+    )> {
+        tracing::debug!("wallet_protest_melt({idx}, {quote_id})");
+        let qid = Uuid::from_str(&quote_id)?;
+        let wallet = self.get_wallet(idx).await?;
+        let WalletProtestResult { status, result } = wallet.read().await.protest_melt(qid).await?;
+        Ok((status, result.map(|(amount, _)| amount)))
+    }
+
+    pub async fn wallet_check_pending_melt_commitments(&self, idx: usize) -> Result<()> {
+        tracing::debug!("wallet_check_pending_melt_commitments({idx})");
+        let wallet = self.get_wallet(idx).await?;
+        wallet.read().await.check_pending_melt_commitments().await?;
+        Ok(())
+    }
+
     pub async fn wallet_prepare_payment(
         &self,
         idx: usize,
@@ -709,6 +731,20 @@ impl AppState {
                     job_failed = true;
                     tracing::error!(
                         "Error running wallet_recover_pending_stale_proofs job for wallet {wallet_id}: {e}"
+                    );
+                }
+            }
+            match self
+                .wallet_check_pending_melt_commitments(*wallet_id as usize)
+                .await
+            {
+                Ok(()) => {
+                    tracing::info!("Checked pending melt commitments for wallet {wallet_id}");
+                }
+                Err(e) => {
+                    job_failed = true;
+                    tracing::error!(
+                        "Error running wallet_check_pending_melt_commitments job for wallet {wallet_id}: {e}"
                     );
                 }
             }

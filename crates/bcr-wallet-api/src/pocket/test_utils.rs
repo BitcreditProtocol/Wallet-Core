@@ -3,7 +3,7 @@ pub mod tests {
     use crate::external::mint::ClowderMintConnector;
     use crate::pocket::{
         PocketApi,
-        debit::{DebitPocketApi, ProtestResult},
+        debit::{DebitPocketApi, MeltProtestResult, ProtestResult},
     };
     use crate::types::{MeltSummary, MintSummary, SendSummary};
     use crate::wallet::types::SwapConfig;
@@ -114,16 +114,16 @@ pub mod tests {
             ) -> Result<Amount>;
             async fn prepare_onchain_melt(
                 &self,
-                invoice: wire_melt::OnchainInvoice,
+                address: String,
+                amount: u64,
                 keysets_info: &[KeySetInfo],
                 client: Arc<dyn ClowderMintConnector>,
+                swap_config: SwapConfig,
             ) -> Result<MeltSummary>;
             async fn pay_onchain_melt(
                 &self,
                 rid: Uuid,
-                keysets_info: &[KeySetInfo],
                 client: Arc<dyn ClowderMintConnector>,
-                swap_config: SwapConfig,
             ) -> Result<(wire_melt::MeltTx, HashMap<cashu::PublicKey, cashu::Proof>)>;
             async fn mint_onchain(
                 &self,
@@ -158,6 +158,13 @@ pub mod tests {
                 alpha_id: bitcoin::secp256k1::PublicKey,
                 swap_config: SwapConfig,
             ) -> Result<ProtestResult>;
+            async fn protest_melt(
+                &self,
+                quote_id: Uuid,
+                beta_client: Arc<dyn ClowderMintConnector>,
+                alpha_id: bitcoin::secp256k1::PublicKey,
+            ) -> Result<MeltProtestResult>;
+            async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>>;
         }
     }
 }

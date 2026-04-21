@@ -124,12 +124,19 @@ pub mod tests {
             ) -> Result<wire_swap::SwapProtestResponse>;
             async fn post_melt_quote_onchain(
                 &self,
-                req: wire_melt::MeltQuoteOnchainRequest,
-            ) -> Result<wire_melt::MeltQuoteOnchainResponse>;
+                inputs: Vec<cashu::Proof>,
+                address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+                amount: bitcoin::Amount,
+                alpha_pk: secp256k1::PublicKey,
+            ) -> Result<crate::external::mint::MeltQuoteResult>;
             async fn post_melt_onchain(
                 &self,
-                req: cashu::MeltRequest<String>,
+                req: wire_melt::MeltOnchainRequest,
             ) -> Result<wire_melt::MeltOnchainResponse>;
+            async fn post_protest_melt(
+                &self,
+                req: wire_melt::MeltProtestRequest,
+            ) -> Result<wire_melt::MeltProtestResponse>;
             async fn post_mint_quote_onchain(
                 &self,
                 req: wire_mint::OnchainMintQuoteRequest,
