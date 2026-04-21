@@ -80,10 +80,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletFfiConfig dco_decode_box_autoadd_wallet_ffi_config(dynamic raw);
 
   @protected
-  WalletListRedemptionsRequest
-  dco_decode_box_autoadd_wallet_list_redemptions_request(dynamic raw);
-
-  @protected
   WalletMintRequest dco_decode_box_autoadd_wallet_mint_request(dynamic raw);
 
   @protected
@@ -163,9 +159,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint64List dco_decode_list_prim_usize_strict(dynamic raw);
 
   @protected
-  List<RedemptionSummary> dco_decode_list_redemption_summary(dynamic raw);
-
-  @protected
   List<Transaction> dco_decode_list_transaction(dynamic raw);
 
   @protected
@@ -203,9 +196,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ProtestStatus dco_decode_protest_status(dynamic raw);
-
-  @protected
-  RedemptionSummary dco_decode_redemption_summary(dynamic raw);
 
   @protected
   RestoreWalletResponse dco_decode_restore_wallet_response(dynamic raw);
@@ -261,16 +251,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletFfiConfig dco_decode_wallet_ffi_config(dynamic raw);
-
-  @protected
-  WalletListRedemptionsRequest dco_decode_wallet_list_redemptions_request(
-    dynamic raw,
-  );
-
-  @protected
-  WalletListRedemptionsResponse dco_decode_wallet_list_redemptions_response(
-    dynamic raw,
-  );
 
   @protected
   WalletMaybeTransactionIdResponse
@@ -356,11 +336,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletReclaimTransactionResponse
   dco_decode_wallet_reclaim_transaction_response(dynamic raw);
-
-  @protected
-  WalletRedeemCreditResponse dco_decode_wallet_redeem_credit_response(
-    dynamic raw,
-  );
 
   @protected
   WalletRefreshTransactionRequest dco_decode_wallet_refresh_transaction_request(
@@ -458,12 +433,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletFfiConfig sse_decode_box_autoadd_wallet_ffi_config(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletListRedemptionsRequest
-  sse_decode_box_autoadd_wallet_list_redemptions_request(
     SseDeserializer deserializer,
   );
 
@@ -569,11 +538,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint64List sse_decode_list_prim_usize_strict(SseDeserializer deserializer);
 
   @protected
-  List<RedemptionSummary> sse_decode_list_redemption_summary(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   List<Transaction> sse_decode_list_transaction(SseDeserializer deserializer);
 
   @protected
@@ -617,9 +581,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ProtestStatus sse_decode_protest_status(SseDeserializer deserializer);
-
-  @protected
-  RedemptionSummary sse_decode_redemption_summary(SseDeserializer deserializer);
 
   @protected
   RestoreWalletResponse sse_decode_restore_wallet_response(
@@ -683,16 +644,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletFfiConfig sse_decode_wallet_ffi_config(SseDeserializer deserializer);
-
-  @protected
-  WalletListRedemptionsRequest sse_decode_wallet_list_redemptions_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletListRedemptionsResponse sse_decode_wallet_list_redemptions_response(
-    SseDeserializer deserializer,
-  );
 
   @protected
   WalletMaybeTransactionIdResponse
@@ -794,11 +745,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletReclaimTransactionResponse
   sse_decode_wallet_reclaim_transaction_response(SseDeserializer deserializer);
-
-  @protected
-  WalletRedeemCreditResponse sse_decode_wallet_redeem_credit_response(
-    SseDeserializer deserializer,
-  );
 
   @protected
   WalletRefreshTransactionRequest sse_decode_wallet_refresh_transaction_request(
@@ -923,12 +869,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_wallet_list_redemptions_request(
-    WalletListRedemptionsRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_box_autoadd_wallet_mint_request(
     WalletMintRequest self,
     SseSerializer serializer,
@@ -1046,12 +986,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_list_redemption_summary(
-    List<RedemptionSummary> self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_list_transaction(
     List<Transaction> self,
     SseSerializer serializer,
@@ -1113,12 +1047,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_protest_status(ProtestStatus self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_redemption_summary(
-    RedemptionSummary self,
-    SseSerializer serializer,
-  );
 
   @protected
   void sse_encode_restore_wallet_response(
@@ -1198,18 +1126,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_ffi_config(
     WalletFfiConfig self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_list_redemptions_request(
-    WalletListRedemptionsRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_list_redemptions_response(
-    WalletListRedemptionsResponse self,
     SseSerializer serializer,
   );
 
@@ -1336,12 +1252,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_reclaim_transaction_response(
     WalletReclaimTransactionResponse self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_redeem_credit_response(
-    WalletRedeemCreditResponse self,
     SseSerializer serializer,
   );
 

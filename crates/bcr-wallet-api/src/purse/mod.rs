@@ -130,7 +130,6 @@ mod tests {
             mint_keyset_infos: vec![],
             clowder_id: test_pub_key(),
             debit: CurrencyUnit::Sat,
-            credit: CurrencyUnit::Custom("crsat".to_owned()),
             pub_key: test_pub_key(),
             betas: vec![],
         }

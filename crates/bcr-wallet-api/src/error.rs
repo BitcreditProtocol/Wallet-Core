@@ -72,8 +72,6 @@ pub enum Error {
     InactiveKeyset(cashu::Id),
     #[error("invalid currency unit: {0}")]
     InvalidCurrencyUnit(String),
-    #[error("currency unit mismatch: mine {0}, his {1}")]
-    CurrencyUnitMismatch(cashu::CurrencyUnit, cashu::CurrencyUnit),
     #[error("no reference to prepare request_id: {0}")]
     NoPrepareRef(uuid::Uuid),
     #[error("transaction can't be reclaimed - not outgoing or pending {0}")]

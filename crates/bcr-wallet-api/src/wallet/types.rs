@@ -31,7 +31,6 @@ pub struct PayReference {
 #[derive(Debug, Clone, Default)]
 pub struct WalletBalance {
     pub debit: cashu::Amount,
-    pub credit: cashu::Amount,
 }
 
 #[derive(Debug, Clone)]

@@ -13,7 +13,6 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::task::spawn_blocking;
 
 ///////////////////////////////////////////// Commitment
-
 type PremintStorage = Vec<(
     cashu::Id,
     Vec<(

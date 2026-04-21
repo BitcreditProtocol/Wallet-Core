@@ -124,7 +124,6 @@ impl WalletApi for super::Wallet {
             name: self.name.clone(),
             network: self.network,
             debit: self.debit.unit(),
-            credit: self.credit.unit(),
             mint: self.client.mint_url(),
             mint_keyset_infos: self.mint_keyset_infos.clone(),
             clowder_id: self.clowder_id,
@@ -176,13 +175,10 @@ impl WalletApi for super::Wallet {
 
         if let Ok(request) = cashu::PaymentRequest::from_str(&input) {
             let (amount, unit, transport) = self.check_nut18_request(&request).await?;
-            let s_summary = if self.credit.unit() == unit {
-                self.credit.prepare_send(amount, &infos).await?
-            } else if self.debit.unit() == unit {
-                self.debit.prepare_send(amount, &infos).await?
-            } else {
-                return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
-            };
+            if unit != self.debit.unit() {
+                return Err(Error::InvalidCurrencyUnit(unit.to_string()));
+            }
+            let s_summary = self.debit.prepare_send(amount, &infos).await?;
             let mut summary = PaymentSummary::from(s_summary);
             summary.ptype = PaymentType::Cdk18;
             let pref = PayReference {
@@ -236,6 +232,7 @@ impl WalletApi for super::Wallet {
         let Some(req) = current_request else {
             return Err(Error::NoPrepareRef(p_id));
         };
+
         if req.payment_id != Some(p_id.to_string()) {
             return Err(Error::NoPrepareRef(p_id));
         }
@@ -317,19 +314,15 @@ impl WalletApi for super::Wallet {
             ptype,
             memo,
         } = p_ref;
+        if unit != self.debit.unit() {
+            return Err(Error::InvalidCurrencyUnit(unit.to_string()));
+        }
         match ptype {
             WalletPaymentType::Cdk18 { transport, id } => {
-                let proofs = if unit == self.credit.unit() {
-                    self.credit
-                        .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
-                        .await?
-                } else if unit == self.debit.unit() {
-                    self.debit
-                        .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
-                        .await?
-                } else {
-                    return Err(Error::InvalidCurrencyUnit(unit.to_string()));
-                };
+                let proofs = self
+                    .debit
+                    .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
+                    .await?;
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
                 let amount = proofs.total_amount()?;
@@ -378,21 +371,7 @@ impl WalletApi for super::Wallet {
                     }
                 };
 
-                let (proofs, token) = if unit == self.credit.unit() {
-                    let p = self
-                        .credit
-                        .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
-                        .await?;
-                    (
-                        p.clone(),
-                        Token::new_bitcr(
-                            self.client.mint_url(),
-                            p.into_values().collect(),
-                            memo.clone(),
-                            self.credit.unit(),
-                        ),
-                    )
-                } else if unit == self.debit.unit() {
+                let (proofs, token) = {
                     let p = self
                         .debit
                         .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
@@ -406,8 +385,6 @@ impl WalletApi for super::Wallet {
                             self.debit.unit(),
                         ),
                     )
-                } else {
-                    return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
                 };
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
@@ -782,11 +759,9 @@ impl WalletApi for super::Wallet {
         substitute: Arc<dyn ClowderMintConnector>,
     ) -> Result<MintUrl> {
         let debit_proofs = self.debit.delete_proofs().await?;
-        let credit_proofs = self.credit.delete_proofs().await?;
 
         // Exchange debit
         let mut exchanged_debit = Vec::new();
-        let mut exchanged_credit = Vec::new();
 
         tracing::info!("Exchanging debit offline");
         for (_, proofs) in debit_proofs.iter() {
@@ -794,14 +769,6 @@ impl WalletApi for super::Wallet {
                 .offline_exchange(substitute.as_ref(), proofs.clone())
                 .await?;
             exchanged_debit.extend(exchanged);
-        }
-
-        tracing::info!("Exchanging credit offline");
-        for (_, proofs) in credit_proofs.iter() {
-            let exchanged = self
-                .offline_exchange(substitute.as_ref(), proofs.clone())
-                .await?;
-            exchanged_credit.extend(exchanged);
         }
 
         self.client = substitute;
@@ -825,21 +792,9 @@ impl WalletApi for super::Wallet {
                 self.swap_config(),
             )
             .await?;
-        self.credit
-            .receive_proofs(
-                self.client.clone(),
-                &keysets_info,
-                exchanged_credit,
-                self.swap_config(),
-            )
-            .await?;
-
         let debit_balance = self.debit.balance().await?;
-        let credit_balance = self.credit.balance().await?;
 
-        tracing::info!(
-            "Migration successful balance credit {credit_balance} debit {debit_balance}"
-        );
+        tracing::info!("Migration successful balance debit {debit_balance}");
 
         Ok(self.client.mint_url())
     }
@@ -851,14 +806,11 @@ impl WalletApi for super::Wallet {
         description: Option<String>,
     ) -> Result<PaymentSummary> {
         let infos = self.get_wallet_mint_keyset_infos().await?;
+        if unit != self.debit.unit() {
+            return Err(Error::InvalidCurrencyUnit(unit.to_string()));
+        }
 
-        let s_summary = if self.credit.unit() == unit {
-            self.credit.prepare_send(amount, &infos).await?
-        } else if self.debit.unit() == unit {
-            self.debit.prepare_send(amount, &infos).await?
-        } else {
-            return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
-        };
+        let s_summary = self.debit.prepare_send(amount, &infos).await?;
         let summary = PaymentSummary::from(s_summary);
         let pref = PayReference {
             request_id: summary.request_id,
@@ -892,6 +844,9 @@ impl WalletApi for super::Wallet {
         tracing::warn!(
             "Pay by Token: Wallet mint is offline - find substitute and attempt offline exchange for tokens"
         );
+        if unit != self.debit.unit() {
+            return Err(Error::InvalidCurrencyUnit(unit.to_string()));
+        }
         if let Some(substitute) = self.mint_substitute().await? {
             tracing::info!("Substitute found: {}", substitute.to_string());
             // Create substitute client
@@ -902,17 +857,10 @@ impl WalletApi for super::Wallet {
             // Get keyset infos from substitute
             // Get local proofs
             tracing::debug!("Offline Pay by Token: Get Local Proofs");
-            let (send_amount, local_proofs) = if unit == self.credit.unit() {
-                self.credit
-                    .return_proofs_to_send_for_offline_payment(request_id)
-                    .await?
-            } else if unit == self.debit.unit() {
-                self.debit
-                    .return_proofs_to_send_for_offline_payment(request_id)
-                    .await?
-            } else {
-                return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
-            };
+            let (send_amount, local_proofs) = self
+                .debit
+                .return_proofs_to_send_for_offline_payment(request_id)
+                .await?;
             tracing::debug!("Offline Pay by Token: Offline Exchange");
             // Do offline exchange
             let substitute_proofs = self
@@ -926,29 +874,16 @@ impl WalletApi for super::Wallet {
             let keysets_info = substitute_client.get_mint_keysets().await?.keysets;
             tracing::debug!("Offline Pay by Token: Swap to unlocked substitute proofs to target.");
             // Swap to unlocked substitute proofs to target
-            let unlocked_sending_proofs = if unit == self.credit.unit() {
-                self.credit
-                    .swap_to_unlocked_substitute_proofs(
-                        substitute_proofs,
-                        &keysets_info,
-                        substitute_client.clone(),
-                        send_amount,
-                        self.swap_config(),
-                    )
-                    .await?
-            } else if unit == self.debit.unit() {
-                self.debit
-                    .swap_to_unlocked_substitute_proofs(
-                        substitute_proofs,
-                        &keysets_info,
-                        substitute_client.clone(),
-                        send_amount,
-                        self.swap_config(),
-                    )
-                    .await?
-            } else {
-                return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
-            };
+            let unlocked_sending_proofs = self
+                .debit
+                .swap_to_unlocked_substitute_proofs(
+                    substitute_proofs,
+                    &keysets_info,
+                    substitute_client.clone(),
+                    send_amount,
+                    self.swap_config(),
+                )
+                .await?;
 
             // Create Token
             let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) = unlocked_sending_proofs
@@ -956,23 +891,12 @@ impl WalletApi for super::Wallet {
                 .map(|proof| (proof.y().expect("Hash to curve should not fail"), proof))
                 .unzip();
             tracing::debug!("Offline Pay by Token: Create Token");
-            let token = if unit == self.credit.unit() {
-                Token::new_bitcr(
-                    substitute.clone(),
-                    proofs.clone(),
-                    memo.clone(),
-                    self.credit.unit(),
-                )
-            } else if unit == self.debit.unit() {
-                Token::new_cashu(
-                    substitute.clone(),
-                    proofs.clone(),
-                    memo.clone(),
-                    self.debit.unit(),
-                )
-            } else {
-                return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
-            };
+            let token = Token::new_cashu(
+                substitute.clone(),
+                proofs.clone(),
+                memo.clone(),
+                self.debit.unit(),
+            );
 
             let amount = proofs.total_amount()?;
             let mut metadata = HashMap::default();
@@ -1006,9 +930,6 @@ impl WalletApi for super::Wallet {
     }
 
     async fn cleanup_local_proofs(&self) -> Result<()> {
-        self.credit
-            .cleanup_local_proofs(self.client.clone())
-            .await?;
         self.debit.cleanup_local_proofs(self.client.clone()).await?;
         Ok(())
     }

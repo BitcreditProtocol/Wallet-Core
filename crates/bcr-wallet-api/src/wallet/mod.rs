@@ -5,8 +5,8 @@ pub mod util;
 use crate::{
     ClowderMintConnector,
     error::{Error, Result},
-    pocket::{credit::CreditPocketApi, debit::DebitPocketApi},
-    types::{PAYMENT_TYPE_METADATA_KEY, RedemptionSummary, TRANSACTION_STATUS_METADATA_KEY},
+    pocket::debit::DebitPocketApi,
+    types::{PAYMENT_TYPE_METADATA_KEY, TRANSACTION_STATUS_METADATA_KEY},
     wallet::types::{PayReference, SwapConfig, WalletBalance},
 };
 use bcr_common::{
@@ -37,7 +37,6 @@ pub struct Wallet {
     beta_clients: HashMap<cashu::MintUrl, Arc<dyn ClowderMintConnector>>,
     tx_repo: Box<dyn TransactionRepository>,
     debit: Box<dyn DebitPocketApi>,
-    credit: Box<dyn CreditPocketApi>,
     name: String,
     id: String,
     pub_key: secp256k1::PublicKey,
@@ -54,7 +53,7 @@ impl Wallet {
         client: Arc<dyn ClowderMintConnector>,
         mint_keyset_infos: Vec<cashu::KeySetInfo>,
         tx_repo: Box<dyn TransactionRepository>,
-        (debit, credit): (Box<dyn DebitPocketApi>, Box<dyn CreditPocketApi>),
+        debit: Box<dyn DebitPocketApi>,
         name: String,
         id: String,
         pub_key: secp256k1::PublicKey,
@@ -69,7 +68,6 @@ impl Wallet {
             mint_keyset_infos,
             tx_repo,
             debit,
-            credit,
             name,
             id,
             pub_key,
@@ -85,24 +83,12 @@ impl Wallet {
     pub fn name(&self) -> String {
         self.name.clone()
     }
-    pub fn credit_unit(&self) -> CurrencyUnit {
-        self.credit.unit()
-    }
+
     fn swap_config(&self) -> SwapConfig {
         SwapConfig {
             expiry: self.swap_expiry,
             alpha_pk: self.clowder_id,
         }
-    }
-
-    pub async fn list_redemptions(
-        &self,
-        payment_window: std::time::Duration,
-    ) -> Result<Vec<RedemptionSummary>> {
-        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
-        self.credit
-            .list_redemptions(&keysets_info, payment_window)
-            .await
     }
 
     pub async fn list_tx_ids(&self) -> Result<Vec<TransactionId>> {
@@ -195,8 +181,7 @@ impl Wallet {
 
     pub async fn balance(&self) -> Result<WalletBalance> {
         let debit = self.debit.balance().await?;
-        let credit = self.credit.balance().await?;
-        Ok(WalletBalance { debit, credit })
+        Ok(WalletBalance { debit })
     }
 
     async fn check_nut18_request(
@@ -215,12 +200,10 @@ impl Wallet {
             return Err(Error::MissingAmount);
         };
         let unit = if let Some(unit) = &req.unit {
-            if *unit != self.debit.unit() && *unit != self.credit.unit() {
-                return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit.clone()));
+            if *unit != self.debit.unit() {
+                return Err(Error::InvalidCurrencyUnit(unit.to_string()));
             }
             unit.clone()
-        } else if amount <= self.credit.balance().await? {
-            self.credit.unit()
         } else {
             self.debit.unit()
         };
@@ -237,47 +220,11 @@ impl Wallet {
         }
     }
 
-    pub async fn redeem_credit(&self) -> Result<Amount> {
-        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
-        let credit_proofs: Vec<cashu::Proof> =
-            self.credit.get_redeemable_proofs(&keysets_info).await?;
-        let amount = self
-            .redeem_credit_proofs(credit_proofs, &keysets_info)
-            .await?;
-        Ok(amount)
-    }
-
-    async fn redeem_credit_proofs(
-        &self,
-        credit_proofs: Vec<cashu::Proof>,
-        keysets_info: &[KeySetInfo],
-    ) -> Result<Amount> {
-        if credit_proofs.is_empty() {
-            Ok(Amount::ZERO)
-        } else {
-            let (amount, _) = self
-                .debit
-                .receive_proofs(
-                    self.client.clone(),
-                    keysets_info,
-                    credit_proofs,
-                    self.swap_config(),
-                )
-                .await?;
-            Ok(amount)
-        }
-    }
-
     pub async fn restore_local_proofs(&self) -> Result<()> {
         let keysets_info = self.get_wallet_mint_keyset_infos().await?;
-        let (debit, credit) = futures::join!(
-            self.debit
-                .restore_local_proofs(&keysets_info, self.client.clone()),
-            self.credit
-                .restore_local_proofs(&keysets_info, self.client.clone())
-        );
-        debit?;
-        credit?;
+        self.debit
+            .restore_local_proofs(&keysets_info, self.client.clone())
+            .await?;
         Ok(())
     }
 
@@ -323,28 +270,16 @@ impl Wallet {
         if !util::tx_can_be_refreshed(&tx) {
             return Err(Error::TransactionCantBeReclaimed(tx_id));
         }
+        if tx.unit != self.debit.unit() {
+            return Err(Error::InvalidCurrencyUnit(tx.unit.to_string()));
+        }
 
         // Reclaim proofs
-        let amount = if tx.unit == self.debit.unit() {
-            tracing::debug!("Reclaim Debit Transaction {tx_id}");
-            self.debit
-                .reclaim_proofs(&tx.ys, &infos, self.client.clone(), self.swap_config())
-                .await?
-        } else if tx.unit == self.credit.unit() {
-            tracing::debug!("Reclaim Credit Transaction {tx_id}");
-            let (reclaimed_amount, redeemable_proofs) = self
-                .credit
-                .reclaim_proofs(&tx.ys, &infos, self.client.clone(), self.swap_config())
-                .await?;
-
-            let redeemed_amount = self.redeem_credit_proofs(redeemable_proofs, &infos).await?;
-            tracing::debug!(
-                "Reclaimed/Redeemed Credit Transaction {tx_id} - Reclaimed: {reclaimed_amount}, Redeemed: {redeemed_amount}"
-            );
-            reclaimed_amount + redeemed_amount
-        } else {
-            return Err(Error::CurrencyUnitMismatch(self.debit.unit(), tx.unit));
-        };
+        tracing::debug!("Reclaim Debit Transaction {tx_id}");
+        let amount = self
+            .debit
+            .reclaim_proofs(&tx.ys, &infos, self.client.clone(), self.swap_config())
+            .await?;
 
         // If amount is zero - this means the transaction was already claimed - we set the transaction to Settled
         if amount == Amount::ZERO {
@@ -387,6 +322,9 @@ impl Wallet {
         memo: Option<String>,
         metadata: HashMap<String, String>,
     ) -> Result<TransactionId> {
+        if unit != self.debit.unit() {
+            return Err(Error::InvalidCurrencyUnit(unit.to_string()));
+        }
         let mut proofs = proofs;
         if mint != self.client.mint_url() {
             if let Some((clowder_path, _)) = intermint_infos {
@@ -457,27 +395,15 @@ impl Wallet {
         }
 
         let received_amount = proofs.total_amount()?;
-        let (stored_amount, ys) = if unit == self.debit.unit() {
-            self.debit
-                .receive_proofs(
-                    self.client.clone(),
-                    local_alpha_keysets_info,
-                    proofs,
-                    self.swap_config(),
-                )
-                .await?
-        } else if unit == self.credit.unit() {
-            self.credit
-                .receive_proofs(
-                    self.client.clone(),
-                    local_alpha_keysets_info,
-                    proofs,
-                    self.swap_config(),
-                )
-                .await?
-        } else {
-            return Err(Error::CurrencyUnitMismatch(self.debit.unit(), unit));
-        };
+        let (stored_amount, ys) = self
+            .debit
+            .receive_proofs(
+                self.client.clone(),
+                local_alpha_keysets_info,
+                proofs,
+                self.swap_config(),
+            )
+            .await?;
         let tx = Transaction {
             mint_url: self.client.mint_url(),
             direction: TransactionDirection::Incoming,
@@ -564,13 +490,10 @@ impl Wallet {
         let preimage = format!("CLWDR {}", cashu::SecretKey::generate().to_secret_hex());
         let hash_lock = Sha256::hash(preimage.as_bytes());
 
-        let is_credit = unit == self.credit.unit();
-
         let locked_alpha_proofs = util::htlc_lock(
             unit,
             tstamp,
             alpha_client,
-            is_credit,
             alpha_proofs,
             hash_lock,
             key_locks,
@@ -673,20 +596,6 @@ impl Wallet {
                 &keysets_info,
                 proofs,
                 self.debit.unit(),
-                token.mint_url(),
-                intermint_infos,
-                tstamp,
-                token.memo().clone(),
-                metadata,
-            )
-            .await?
-        } else if token.unit().is_some() && token.unit() == Some(self.credit.unit()) {
-            tracing::debug!("import credit token");
-
-            self._receive_proofs(
-                &keysets_info,
-                proofs,
-                self.credit.unit(),
                 token.mint_url(),
                 intermint_infos,
                 tstamp,
@@ -836,7 +745,7 @@ mod tests {
     use super::*;
     use crate::{
         external::{mint::HttpClientExt, test_utils::tests::MockMintConnector},
-        pocket::test_utils::tests::{MockCreditPocket, MockDebitPocket},
+        pocket::test_utils::tests::MockDebitPocket,
         wallet::{api::WalletApi, types::WalletPaymentType},
     };
 
@@ -844,7 +753,6 @@ mod tests {
         pub client: MockMintConnector,
         pub tx_repo: MockTransactionRepository,
         pub debit: MockDebitPocket,
-        pub credit: MockCreditPocket,
     }
 
     fn wallet_ctx() -> MockWalletCtx {
@@ -854,7 +762,6 @@ mod tests {
             client,
             tx_repo: MockTransactionRepository::new(),
             debit: MockDebitPocket::new(),
-            credit: MockCreditPocket::new(),
         }
     }
 
@@ -867,7 +774,6 @@ mod tests {
             beta_clients: HashMap::new(),
             tx_repo: Box::new(ctx.tx_repo),
             debit: Box::new(ctx.debit),
-            credit: Box::new(ctx.credit),
             name: "wallet-1".to_owned(),
             id: "w-1".to_owned(),
             pub_key: test_pub_key(),
@@ -899,10 +805,6 @@ mod tests {
             .expect_unit()
             .times(1)
             .returning(|| CurrencyUnit::Sat);
-        ctx.credit
-            .expect_unit()
-            .times(1)
-            .returning(|| CurrencyUnit::Custom("crsat".to_string()));
 
         ctx.client
             .expect_mint_url()
@@ -916,7 +818,6 @@ mod tests {
         assert_eq!(cfg.name, "wallet-1");
         assert_eq!(cfg.network, bitcoin::Network::Testnet);
         assert_eq!(cfg.debit, CurrencyUnit::Sat);
-        assert_eq!(cfg.credit, CurrencyUnit::Custom("crsat".to_string()));
         assert_eq!(cfg.mint.to_string(), "https://mint.example");
         assert_eq!(cfg.pub_key, test_pub_key());
         assert_eq!(cfg.clowder_id, test_pub_key());
@@ -986,20 +887,6 @@ mod tests {
         let ctx = wallet_ctx();
         let wlt = wallet(ctx);
         assert_eq!(wlt.clowder_id(), test_pub_key());
-    }
-
-    #[tokio::test]
-    async fn test_credit_unit() {
-        let mut ctx = wallet_ctx();
-        let crsat = CurrencyUnit::Custom("crsat".to_string());
-        ctx.credit.expect_unit().times(1).returning({
-            let crsat = crsat.clone();
-            move || crsat.clone()
-        });
-        let wlt = wallet(ctx);
-
-        let res = wlt.credit_unit();
-        assert_eq!(res, crsat);
     }
 
     #[tokio::test]
@@ -1107,14 +994,9 @@ mod tests {
             .expect_balance()
             .times(1)
             .returning(|| Ok(Amount::ZERO));
-        ctx.credit
-            .expect_balance()
-            .times(1)
-            .returning(|| Ok(Amount::ZERO));
         let wlt = wallet(ctx);
 
         let res = wlt.balance().await.expect("balance works");
-        assert_eq!(res.credit, Amount::ZERO);
         assert_eq!(res.debit, Amount::ZERO);
     }
 
@@ -1145,33 +1027,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_redemptions() {
-        let mut ctx = wallet_ctx();
-        ctx.credit
-            .expect_list_redemptions()
-            .times(1)
-            .returning(|_, _| Ok(vec![]));
-        ctx.client
-            .expect_get_mint_keysets()
-            .times(1)
-            .returning(|| Ok(cashu::KeysetResponse { keysets: vec![] }));
-        let wlt = wallet(ctx);
-
-        let res = wlt
-            .list_redemptions(std::time::Duration::from_secs(15))
-            .await
-            .unwrap();
-        assert!(res.is_empty());
-    }
-
-    #[tokio::test]
     async fn test_cleanup_local_proofs_calls_both_pockets() {
         let mut ctx = wallet_ctx();
-
-        ctx.credit
-            .expect_cleanup_local_proofs()
-            .times(1)
-            .returning(|_client| Ok(vec![]));
 
         ctx.debit
             .expect_cleanup_local_proofs()
@@ -1307,7 +1164,11 @@ mod tests {
     #[tokio::test]
     async fn test_offline_pay_by_token_errors_if_no_substitute() {
         // no betas = no substitute
-        let ctx = wallet_ctx();
+        let mut ctx = wallet_ctx();
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
         let wlt = wallet(ctx);
 
         let err = wlt
@@ -1346,10 +1207,6 @@ mod tests {
             .expect_unit()
             .times(2)
             .returning(|| CurrencyUnit::Sat);
-        ctx.credit
-            .expect_unit()
-            .times(1)
-            .returning(|| CurrencyUnit::Custom("crsat".to_string()));
 
         ctx.debit
             .expect_send_proofs()

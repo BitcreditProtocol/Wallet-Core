@@ -11,17 +11,6 @@ pub type Seed = [u8; 64];
 
 pub type PaymentResultCallback = Arc<dyn Fn(Option<TransactionId>) + Send + Sync + 'static>;
 
-#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct JobState {
-    pub last_run: TStamp,
-}
-
-#[derive(Default, Debug, Clone)]
-pub struct RedemptionSummary {
-    pub tstamp: u64,
-    pub amount: Amount,
-}
-
 #[derive(Default, Debug, Clone)]
 pub struct SendSummary {
     pub request_id: Uuid,
@@ -48,7 +37,6 @@ pub struct WalletConfig {
     pub mint_keyset_infos: Vec<KeySetInfo>,
     pub clowder_id: secp256k1::PublicKey,
     pub debit: CurrencyUnit,
-    pub credit: CurrencyUnit,
     pub pub_key: secp256k1::PublicKey,
     pub betas: Vec<MintUrl>,
 }
