@@ -325,6 +325,23 @@ fn group_ys_by_keyset_id<'a>(
     ys
 }
 
+///////////////////////////////////////////// sign_content_b64
+/// Sign the preimage of a base64-encoded content string with a keypair.
+/// Used for protest request wallet_signatures.
+fn sign_content_b64(
+    content_b64: &str,
+    keypair: &bitcoin::secp256k1::Keypair,
+) -> Result<bitcoin::secp256k1::schnorr::Signature> {
+    use bitcoin::base64::{Engine, engine::general_purpose::STANDARD};
+    use bitcoin::hashes::{Hash, sha256};
+    let content_bytes = STANDARD
+        .decode(content_b64)
+        .map_err(|e| Error::MintingError(format!("invalid base64 content: {e}")))?;
+    let digest = sha256::Hash::hash(&content_bytes);
+    let msg = bitcoin::secp256k1::Message::from_digest(digest.to_byte_array());
+    Ok(bitcoin::secp256k1::SECP256K1.sign_schnorr(&msg, keypair))
+}
+
 ///////////////////////////////////////////// send_proofs
 async fn send_proofs(
     send_proofs: Vec<cdk01::PublicKey>,

@@ -21,22 +21,6 @@ use std::{
 };
 use uuid::Uuid;
 
-/// Sign the preimage of a base64-encoded content string with the ephemeral keypair.
-/// Used for protest request wallet_signatures.
-fn sign_content_b64(
-    content_b64: &str,
-    ephemeral_keypair: &secp256k1::Keypair,
-) -> Result<secp256k1::schnorr::Signature> {
-    use bitcoin::base64::{Engine, engine::general_purpose::STANDARD};
-    use bitcoin::hashes::{Hash, sha256};
-    let content_bytes = STANDARD
-        .decode(content_b64)
-        .map_err(|e| Error::MintingError(format!("invalid base64 content: {e}")))?;
-    let digest = sha256::Hash::hash(&content_bytes);
-    let msg = secp256k1::Message::from_digest(digest.to_byte_array());
-    Ok(secp256k1::SECP256K1.sign_schnorr(&msg, ephemeral_keypair))
-}
-
 #[async_trait]
 pub trait DebitPocketApi: super::PocketApi {
     /// Reclaim the proofs for the given ys
@@ -109,7 +93,7 @@ pub trait DebitPocketApi: super::PocketApi {
         beta_client: Arc<dyn ClowderMintConnector>,
         alpha_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<MeltProtestResult>;
-    async fn check_pending_melt_commitments(&self, now_ts: u64) -> Result<()>;
+    async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>>;
 }
 
 #[derive(Debug, Clone)]
@@ -669,6 +653,11 @@ impl DebitPocketApi for Pocket {
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
     ) -> Result<MeltSummary> {
+        let parsed_address: bitcoin::Address<bitcoin::address::NetworkUnchecked> = address
+            .parse()
+            .map_err(|e| Error::MintingError(format!("invalid address: {e}")))?;
+        let btc_amount = bitcoin::Amount::from_sat(amount);
+
         let (_, send_ref) = self
             .compute_send_costs(Amount::from(amount), keysets_info)
             .await?;
@@ -684,33 +673,47 @@ impl DebitPocketApi for Pocket {
             swap_config.clone(),
         )
         .await?;
+        let sent_ys: Vec<cdk01::PublicKey> = sending_proofs.keys().cloned().collect();
 
-        let proofs: Vec<cashu::Proof> = sending_proofs.values().cloned().collect();
+        let quote_and_record = async {
+            let proofs: Vec<cashu::Proof> = sending_proofs.values().cloned().collect();
+            let quote_result = client
+                .post_melt_quote_onchain(proofs, parsed_address, btc_amount, swap_config.alpha_pk)
+                .await?;
+            let quote_id = quote_result.quote_id;
+            let expiry = quote_result.expiry;
+            let record = MeltCommitmentRecord {
+                quote_id,
+                expiry,
+                commitment: quote_result.commitment,
+                ephemeral_secret: quote_result.ephemeral_secret,
+                body_content: quote_result.body_content,
+            };
+            self.mdb.store_melt_commitment(record).await?;
+            Ok::<_, Error>((quote_id, expiry))
+        }
+        .await;
 
-        let parsed_address: bitcoin::Address<bitcoin::address::NetworkUnchecked> = address
-            .parse()
-            .map_err(|e| Error::MintingError(format!("invalid address: {e}")))?;
-        let btc_amount = bitcoin::Amount::from_sat(amount);
-
-        let quote_result = client
-            .post_melt_quote_onchain(proofs, parsed_address, btc_amount, swap_config.alpha_pk)
-            .await?;
-
-        let record = MeltCommitmentRecord {
-            quote_id: quote_result.quote_id,
-            expiry: quote_result.expiry,
-            commitment: quote_result.commitment,
-            ephemeral_secret: quote_result.ephemeral_secret,
-            body_content: quote_result.body_content,
+        let (quote_id, expiry) = match quote_and_record {
+            Ok(r) => r,
+            Err(e) => {
+                for y in &sent_ys {
+                    if let Err(revert_err) = self.pdb.revert_pendingspent_to_unspent(*y).await {
+                        tracing::error!(
+                            "failed to revert proof {y} to unspent after melt prepare failure: {revert_err}"
+                        );
+                    }
+                }
+                return Err(e);
+            }
         };
-        self.mdb.store_melt_commitment(record).await?;
 
         let mut summary = MeltSummary::new();
         summary.amount = Amount::from(amount);
-        summary.expiry = quote_result.expiry;
+        summary.expiry = expiry;
         let melt_ref = MeltReference {
             rid: summary.request_id,
-            quote_id: quote_result.quote_id,
+            quote_id,
         };
         self.current_melt.lock().unwrap().replace(melt_ref);
         Ok(summary)
@@ -889,7 +892,7 @@ impl DebitPocketApi for Pocket {
 
         let ephemeral_keypair =
             secp256k1::Keypair::from_secret_key(secp256k1::SECP256K1, &record.ephemeral_secret);
-        let wallet_signature = sign_content_b64(&record.content, &ephemeral_keypair)?;
+        let wallet_signature = super::sign_content_b64(&record.content, &ephemeral_keypair)?;
 
         let request = wire_mint::MintProtestRequest {
             alpha_id: clowder_id,
@@ -948,7 +951,7 @@ impl DebitPocketApi for Pocket {
         let loaded_proofs = self.pdb.load_proofs(&record.inputs).await?;
         let ephemeral_keypair =
             secp256k1::Keypair::from_secret_key(secp256k1::SECP256K1, &record.ephemeral_secret);
-        let wallet_signature = sign_content_b64(&record.body_content, &ephemeral_keypair)?;
+        let wallet_signature = super::sign_content_b64(&record.body_content, &ephemeral_keypair)?;
 
         let request = wire_swap::SwapProtestRequest {
             alpha_id,
@@ -1029,7 +1032,7 @@ impl DebitPocketApi for Pocket {
         let record = self.mdb.load_melt_commitment(quote_id).await?;
         let ephemeral_keypair =
             secp256k1::Keypair::from_secret_key(secp256k1::SECP256K1, &record.ephemeral_secret);
-        let wallet_signature = sign_content_b64(&record.body_content, &ephemeral_keypair)?;
+        let wallet_signature = super::sign_content_b64(&record.body_content, &ephemeral_keypair)?;
 
         let request = wire_melt::MeltProtestRequest {
             alpha_id,
@@ -1069,23 +1072,12 @@ impl DebitPocketApi for Pocket {
         }
     }
 
-    async fn check_pending_melt_commitments(&self, now_ts: u64) -> Result<()> {
+    async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>> {
         let commitments = self.mdb.list_melt_commitments().await?;
-        tracing::debug!(
-            "check pending melt commitments for {} entries",
-            commitments.len()
-        );
-        for record in commitments {
-            if record.expiry < now_ts {
-                tracing::warn!(
-                    "Melt commitment {} expired at {} (now: {now_ts}) - deleting.",
-                    record.quote_id,
-                    record.expiry,
-                );
-                self.mdb.delete_melt_commitment(record.quote_id).await?;
-            }
-        }
-        Ok(())
+        Ok(commitments
+            .into_iter()
+            .map(|r| (r.quote_id, r.expiry))
+            .collect())
     }
 }
 
@@ -1372,6 +1364,135 @@ mod tests {
             .await
             .expect("pay melt works");
         assert_eq!(res.0.alpha_txid, Some(tx_id));
+    }
+
+    fn mock_melt_commitment_body(quote_id: Uuid, amount: u64) -> String {
+        let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let wallet_key = cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral));
+        let body = wire_melt::MeltQuoteOnchainResponseBody {
+            quote: quote_id,
+            inputs: vec![],
+            address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
+                .expect("valid address"),
+            amount: bitcoin::Amount::from_sat(amount),
+            total: cashu::Amount::from(amount),
+            expiry: 999999,
+            wallet_key,
+        };
+        use bitcoin::base64::{Engine, engine::general_purpose::STANDARD};
+        STANDARD.encode(borsh::to_vec(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn protest_melt_resolved() {
+        let quote_id = Uuid::new_v4();
+        let tx_id = bitcoin::Txid::from_str(
+            "c66bdb3be47c2252cf60bf98da828c595592b91637e4bab88471a7eb76e81562",
+        )
+        .unwrap();
+        let melt_tx = wire_melt::MeltTx {
+            alpha_txid: Some(tx_id),
+            beta_txid: None,
+        };
+
+        let mut mdb = MockMintMeltRepository::new();
+        let pdb = MockPocketRepository::new();
+        let mut connector = MockMintConnector::new();
+
+        let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let commitment_sig = cashu::SecretKey::generate().sign(&[0u8; 32]).unwrap();
+        let body_content = mock_melt_commitment_body(quote_id, 100);
+        mdb.expect_load_melt_commitment()
+            .times(1)
+            .returning(move |_| {
+                Ok(bcr_wallet_persistence::MeltCommitmentRecord {
+                    quote_id,
+                    expiry: 999999,
+                    commitment: commitment_sig,
+                    ephemeral_secret: secp256k1::SecretKey::from_keypair(&ephemeral),
+                    body_content: body_content.clone(),
+                })
+            });
+
+        connector
+            .expect_post_protest_melt()
+            .times(1)
+            .returning(move |_| {
+                Ok(wire_melt::MeltProtestResponse {
+                    status: wire_common::ProtestStatus::Resolved,
+                    txid: Some(melt_tx.clone()),
+                })
+            });
+
+        mdb.expect_delete_melt_commitment()
+            .times(1)
+            .returning(|_| Ok(()));
+
+        let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
+            &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+        );
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let result = pocket
+            .protest_melt(quote_id, Arc::new(connector), alpha_id)
+            .await
+            .expect("protest_melt resolved works");
+
+        assert!(matches!(
+            result.base.status,
+            wire_common::ProtestStatus::Resolved
+        ));
+        assert_eq!(result.txid.and_then(|t| t.alpha_txid), Some(tx_id));
+        assert!(result.base.result.is_some());
+    }
+
+    #[tokio::test]
+    async fn protest_melt_rabid() {
+        let quote_id = Uuid::new_v4();
+
+        let mut mdb = MockMintMeltRepository::new();
+        let pdb = MockPocketRepository::new();
+        let mut connector = MockMintConnector::new();
+
+        let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let commitment_sig = cashu::SecretKey::generate().sign(&[0u8; 32]).unwrap();
+        let body_content = mock_melt_commitment_body(quote_id, 100);
+        mdb.expect_load_melt_commitment()
+            .times(1)
+            .returning(move |_| {
+                Ok(bcr_wallet_persistence::MeltCommitmentRecord {
+                    quote_id,
+                    expiry: 999999,
+                    commitment: commitment_sig,
+                    ephemeral_secret: secp256k1::SecretKey::from_keypair(&ephemeral),
+                    body_content: body_content.clone(),
+                })
+            });
+
+        connector
+            .expect_post_protest_melt()
+            .times(1)
+            .returning(|_| {
+                Ok(wire_melt::MeltProtestResponse {
+                    status: wire_common::ProtestStatus::Rabid,
+                    txid: None,
+                })
+            });
+
+        let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
+            &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+        );
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let result = pocket
+            .protest_melt(quote_id, Arc::new(connector), alpha_id)
+            .await
+            .expect("protest_melt rabid works");
+
+        assert!(matches!(
+            result.base.status,
+            wire_common::ProtestStatus::Rabid
+        ));
+        assert!(result.txid.is_none());
+        assert!(result.base.result.is_none());
     }
 
     #[tokio::test]

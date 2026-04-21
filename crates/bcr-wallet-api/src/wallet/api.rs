@@ -21,7 +21,8 @@ use bcr_common::{
 use bcr_wallet_core::{
     SendSync,
     types::{
-        BTC_ALPHA_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback, PaymentType, TransactionStatus,
+        BTC_ALPHA_TX_ID_TYPE_METADATA_KEY, BTC_BETA_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback,
+        PaymentType, TransactionStatus,
     },
 };
 use bitcoin::secp256k1;
@@ -441,7 +442,7 @@ impl WalletApi for super::Wallet {
                 }
                 if let Some(beta_tx_id) = btc_tx_id.beta_txid {
                     metadata.insert(
-                        bcr_wallet_core::types::BTC_BETA_TX_ID_TYPE_METADATA_KEY.to_owned(),
+                        BTC_BETA_TX_ID_TYPE_METADATA_KEY.to_owned(),
                         beta_tx_id.to_string(),
                     );
                 }
@@ -658,7 +659,7 @@ impl WalletApi for super::Wallet {
                 }
                 if let Some(beta_tx_id) = melt_tx.beta_txid {
                     metadata.insert(
-                        bcr_wallet_core::types::BTC_BETA_TX_ID_TYPE_METADATA_KEY.to_owned(),
+                        BTC_BETA_TX_ID_TYPE_METADATA_KEY.to_owned(),
                         beta_tx_id.to_string(),
                     );
                 }
@@ -683,8 +684,23 @@ impl WalletApi for super::Wallet {
     }
 
     async fn check_pending_melt_commitments(&self) -> Result<()> {
+        const PROTEST_WINDOW_SECS: u64 = 3600;
         let now_ts = chrono::Utc::now().timestamp() as u64;
-        self.debit.check_pending_melt_commitments(now_ts).await
+        let commitments = self.debit.list_melt_commitments().await?;
+        tracing::debug!(
+            "check pending melt commitments for {} entries",
+            commitments.len()
+        );
+        for (quote_id, expiry) in commitments {
+            if expiry.saturating_sub(now_ts) > PROTEST_WINDOW_SECS {
+                continue;
+            }
+            match self.protest_melt(quote_id).await {
+                Ok(_) => {}
+                Err(e) => tracing::warn!("melt protest for {quote_id} failed: {e}"),
+            }
+        }
+        Ok(())
     }
 
     async fn receive_proofs(

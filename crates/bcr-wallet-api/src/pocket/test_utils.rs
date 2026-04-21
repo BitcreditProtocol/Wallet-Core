@@ -164,7 +164,7 @@ pub mod tests {
                 beta_client: Arc<dyn ClowderMintConnector>,
                 alpha_id: bitcoin::secp256k1::PublicKey,
             ) -> Result<MeltProtestResult>;
-            async fn check_pending_melt_commitments(&self, now_ts: u64) -> Result<()>;
+            async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>>;
         }
     }
 }

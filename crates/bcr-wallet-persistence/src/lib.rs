@@ -55,6 +55,7 @@ pub trait PocketRepository: SendSync {
     async fn list_all(&self) -> Result<Vec<cdk01::PublicKey>>;
     async fn mark_as_pendingspent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
     async fn mark_pending_as_spent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
+    async fn revert_pendingspent_to_unspent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
 
     async fn counter(&self, kid: cashu::Id) -> Result<u32>;
     async fn increment_counter(&self, kid: cashu::Id, old: u32, increment: u32) -> Result<()>;

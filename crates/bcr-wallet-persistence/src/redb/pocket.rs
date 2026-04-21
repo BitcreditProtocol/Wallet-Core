@@ -696,6 +696,22 @@ impl PocketRepository for PocketDB {
         Ok(proof.into())
     }
 
+    async fn revert_pendingspent_to_unspent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof> {
+        let db_clone = self.db.clone();
+        let table = self.proof_table;
+        let proof = spawn_blocking(move || {
+            Self::update_entry_state_sync(
+                db_clone,
+                table,
+                y,
+                &[cdk07::State::PendingSpent],
+                cdk07::State::Unspent,
+            )
+        })
+        .await??;
+        Ok(proof.into())
+    }
+
     async fn counter(&self, kid: bcr_common::cashu::Id) -> Result<u32> {
         let db_clone = self.db.clone();
         let table = self.counter_table;

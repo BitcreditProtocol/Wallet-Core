@@ -88,7 +88,6 @@ struct MintEntry {
     ephemeral_secret: Vec<u8>,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn convert_mint_entry_from(
     quote_id: Uuid,
     amount: bitcoin::Amount,
@@ -818,5 +817,85 @@ mod tests {
             Error::MintNotFound(id) => assert_eq!(id, qid.to_string()),
             other => panic!("expected Error::MintNotFound, got: {other:?}"),
         }
+    }
+
+    // melt commitment
+
+    fn sample_melt_commitment_record(quote_id: Uuid, expiry: u64) -> crate::MeltCommitmentRecord {
+        let (content, sig) = dummy_commitment();
+        crate::MeltCommitmentRecord {
+            quote_id,
+            expiry,
+            commitment: sig,
+            ephemeral_secret: dummy_ephemeral_secret(),
+            body_content: content,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_melt_commitments_empty() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let items = repo
+            .list_melt_commitments()
+            .await
+            .expect("list_melt_commitments works");
+        assert!(items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_load_melt_commitment_missing_returns_error() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let qid = Uuid::new_v4();
+        let err = repo.load_melt_commitment(qid).await.unwrap_err();
+        match err {
+            Error::MeltCommitmentNotFound(id) => assert_eq!(id, qid.to_string()),
+            other => panic!("expected Error::MeltCommitmentNotFound, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_store_load_list_delete_melt_commitment() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let qid = Uuid::new_v4();
+        let record = sample_melt_commitment_record(qid, 1_234_567);
+
+        repo.store_melt_commitment(record.clone())
+            .await
+            .expect("store_melt_commitment works");
+
+        let loaded = repo
+            .load_melt_commitment(qid)
+            .await
+            .expect("load_melt_commitment works");
+        assert_eq!(loaded.quote_id, qid);
+        assert_eq!(loaded.expiry, 1_234_567);
+        assert_eq!(loaded.commitment, record.commitment);
+        assert_eq!(
+            loaded.ephemeral_secret.secret_bytes(),
+            record.ephemeral_secret.secret_bytes()
+        );
+        assert_eq!(loaded.body_content, record.body_content);
+
+        let items = repo
+            .list_melt_commitments()
+            .await
+            .expect("list_melt_commitments works");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].quote_id, qid);
+
+        repo.delete_melt_commitment(qid)
+            .await
+            .expect("delete_melt_commitment works");
+
+        let err = repo.load_melt_commitment(qid).await.unwrap_err();
+        match err {
+            Error::MeltCommitmentNotFound(id) => assert_eq!(id, qid.to_string()),
+            other => panic!("expected Error::MeltCommitmentNotFound, got: {other:?}"),
+        }
+        let items = repo
+            .list_melt_commitments()
+            .await
+            .expect("list_melt_commitments works");
+        assert!(items.is_empty());
     }
 }
