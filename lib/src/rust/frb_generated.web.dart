@@ -340,6 +340,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_wallet_reclaim_transaction_response(dynamic raw);
 
   @protected
+  WalletRecoverStaleTransactionResponse
+  dco_decode_wallet_recover_stale_transaction_response(dynamic raw);
+
+  @protected
   WalletRefreshTransactionRequest dco_decode_wallet_refresh_transaction_request(
     dynamic raw,
   );
@@ -747,6 +751,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletReclaimTransactionResponse
   sse_decode_wallet_reclaim_transaction_response(SseDeserializer deserializer);
+
+  @protected
+  WalletRecoverStaleTransactionResponse
+  sse_decode_wallet_recover_stale_transaction_response(
+    SseDeserializer deserializer,
+  );
 
   @protected
   WalletRefreshTransactionRequest sse_decode_wallet_refresh_transaction_request(
@@ -1254,6 +1264,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_reclaim_transaction_response(
     WalletReclaimTransactionResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_recover_stale_transaction_response(
+    WalletRecoverStaleTransactionResponse self,
     SseSerializer serializer,
   );
 

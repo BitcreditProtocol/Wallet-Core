@@ -573,6 +573,26 @@ impl AppState {
         Ok(amount)
     }
 
+    // Recover pending stale proofs
+    pub async fn wallet_recover_pending_stale_proofs(&self, idx: usize) -> Result<cashu::Amount> {
+        tracing::debug!("wallet_recover_pending_stale_proofs({idx})");
+        let wallet = self.get_wallet(idx).await?;
+        let wlt = wallet.read().await;
+        // collect ys for pending transactions, so we don't recover proofs from open transactions
+
+        let pending_txs_ys: Vec<cashu::PublicKey> = wlt
+            .list_txs()
+            .await?
+            .into_iter()
+            .filter(wallet::util::tx_can_be_refreshed)
+            .flat_map(|tx| tx.ys)
+            .collect();
+
+        let recovered = wlt.recover_pending_stale_proofs(&pending_txs_ys).await?;
+
+        Ok(recovered)
+    }
+
     // Refreshes the state of all pending transactions of the given wallet
     pub async fn wallet_refresh_txs(&self, idx: usize) -> Result<usize> {
         tracing::debug!("wallet_refresh_txs({idx})");
@@ -673,6 +693,22 @@ impl AppState {
                     job_failed = true;
                     tracing::error!(
                         "Error running wallet_check_pending_commitments job for wallet {wallet_id}: {e}"
+                    );
+                }
+            }
+            match self
+                .wallet_recover_pending_stale_proofs(*wallet_id as usize)
+                .await
+            {
+                Ok(recovered) => {
+                    tracing::info!(
+                        "Recovered pending stale proofs for wallet {wallet_id}, recovered: {recovered}"
+                    );
+                }
+                Err(e) => {
+                    job_failed = true;
+                    tracing::error!(
+                        "Error running wallet_recover_pending_stale_proofs job for wallet {wallet_id}: {e}"
                     );
                 }
             }

@@ -341,6 +341,19 @@ pub async fn wallet_reclaim_transaction(
 }
 
 #[frb]
+pub async fn wallet_recover_pending_stale_proofs(
+    req: WalletRequest,
+) -> Result<WalletRecoverStaleTransactionResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let recovered = app_state
+        .wallet_recover_pending_stale_proofs(req.wallet_id)
+        .await?;
+    Ok(WalletRecoverStaleTransactionResponse {
+        amount: u64::from(recovered),
+    })
+}
+
+#[frb]
 pub async fn wallet_prepare_melt(
     req: WalletPrepareMeltRequest,
 ) -> Result<WalletPreparePaymentResponse, WalletError> {
@@ -865,6 +878,11 @@ pub struct WalletReclaimTransactionRequest {
 
 #[derive(Debug, Clone)]
 pub struct WalletReclaimTransactionResponse {
+    pub amount: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletRecoverStaleTransactionResponse {
     pub amount: u64,
 }
 

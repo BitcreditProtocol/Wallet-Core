@@ -261,6 +261,23 @@ impl Wallet {
         Ok(updated)
     }
 
+    pub async fn recover_pending_stale_proofs(
+        &self,
+        pending_txs_ys: &[cashu::PublicKey],
+    ) -> Result<Amount> {
+        let infos = self.get_wallet_mint_keyset_infos().await?;
+        let recovered = self
+            .debit
+            .recover_pending_stale_proofs(
+                pending_txs_ys,
+                &infos,
+                self.client.clone(),
+                self.swap_config(),
+            )
+            .await?;
+        Ok(recovered)
+    }
+
     pub async fn reclaim_tx(&self, tx_id: TransactionId) -> Result<Amount> {
         let infos = self.get_wallet_mint_keyset_infos().await?;
         self.refresh_tx(tx_id).await?;
@@ -1257,5 +1274,24 @@ mod tests {
 
         let wlt = wallet(ctx);
         let _ = wlt.mint(bitcoin::Amount::from_sat(1000)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_recover_pending_stale_proofs() {
+        let mut ctx = wallet_ctx();
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(cashu::KeysetResponse { keysets: vec![] }));
+
+        ctx.debit
+            .expect_recover_pending_stale_proofs()
+            .times(1)
+            .returning(|_, _, _, _| Ok(Amount::from(10u64)));
+
+        let wlt = wallet(ctx);
+        let recovered = wlt.recover_pending_stale_proofs(&[]).await.unwrap();
+        assert_eq!(recovered, Amount::from(10u64));
     }
 }

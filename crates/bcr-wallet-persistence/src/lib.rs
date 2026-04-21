@@ -41,21 +41,20 @@ pub trait PocketRepository: SendSync {
     async fn list_unspent(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn list_pending(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn list_reserved(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
+    async fn list_spent(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn list_all(&self) -> Result<Vec<cdk01::PublicKey>>;
     async fn mark_as_pendingspent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
+    async fn mark_pending_as_spent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
 
     async fn counter(&self, kid: cashu::Id) -> Result<u32>;
     async fn increment_counter(&self, kid: cashu::Id, old: u32, increment: u32) -> Result<()>;
 
     async fn store_commitment(&self, record: SwapCommitmentRecord) -> Result<()>;
-
     async fn load_commitment(
         &self,
         commitment: secp256k1::schnorr::Signature,
     ) -> Result<SwapCommitmentRecord>;
-
     async fn delete_commitment(&self, commitment: secp256k1::schnorr::Signature) -> Result<()>;
-
     async fn list_commitments(&self) -> Result<Vec<SwapCommitmentRecord>>;
 }
 

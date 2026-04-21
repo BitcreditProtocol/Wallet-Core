@@ -14,6 +14,7 @@
     * Remove credit pocket
     * Remove unit from API
     * Remove the concept of redemption
+* Add job and endpoint for `wallet_recover_pending_stale_proofs`, which recovers proofs which are stale after a failed operation
 
 # 0.8.1
 
