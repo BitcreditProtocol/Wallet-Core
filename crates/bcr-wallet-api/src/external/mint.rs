@@ -295,14 +295,14 @@ impl ClowderMintConnector for HttpClientExt {
         &self,
         alpha_id: secp256k1::PublicKey,
     ) -> MintResult<Vec<cashu::KeySet>> {
-        debug!("Clowder client call to get_alpha_keysets");
+        debug!("Clowder client call to get_alpha_keysets for {alpha_id}");
         let response = self.main.get_active_keysets(alpha_id).await?;
         Ok(response.keysets)
     }
 
     /// Is Alpha Offline
     async fn get_alpha_offline(&self, alpha_id: secp256k1::PublicKey) -> MintResult<bool> {
-        debug!("Clowder client call to get_alpha_offline");
+        debug!("Clowder client call to get_alpha_offline for {alpha_id}");
         let response = self.main.get_offline(alpha_id).await?;
         Ok(response.offline)
     }
@@ -384,7 +384,7 @@ impl ClowderMintConnector for HttpClientExt {
         &self,
         origin_mint_url: cashu::MintUrl,
     ) -> MintResult<ConnectedMintsResponse> {
-        debug!("Clowder client call to post_clowder_path");
+        debug!("Clowder client call to post_clowder_path for mint url {origin_mint_url}");
         self.main
             .post_path(convert_mint_url(origin_mint_url)?)
             .await
@@ -399,7 +399,7 @@ impl ClowderMintConnector for HttpClientExt {
     ) -> Result<SwapCommitmentResult> {
         let url = self
             .url
-            .join("v1/core/swap/commit")
+            .join(MintClient::SWAPCOMMIT_EP_V1)
             .expect("post_swap_commitment url error");
         debug!("HTTP call to post_swap_commitment on {url}");
         post_swap_commitment_inner(
@@ -419,7 +419,7 @@ impl ClowderMintConnector for HttpClientExt {
     ) -> Result<wire_swap::SwapResponse> {
         let url = self
             .url
-            .join("v1/core/swap")
+            .join(MintClient::SWAP_EP_V1)
             .expect("post_swap_committed url error");
         debug!("HTTP call to post_swap_committed on {url}");
         let res = self
@@ -644,14 +644,14 @@ impl ClowderMintConnector for SentinelClient {
         &self,
         alpha_id: secp256k1::PublicKey,
     ) -> MintResult<Vec<cashu::KeySet>> {
-        debug!("Clowder client call to get_alpha_keysets on sentinel");
+        debug!("Clowder client call to get_alpha_keysets on sentinel for {alpha_id}");
         let response = self.main.get_active_keysets(alpha_id).await?;
         Ok(response.keysets)
     }
 
     /// Is Alpha Offline
     async fn get_alpha_offline(&self, alpha_id: secp256k1::PublicKey) -> MintResult<bool> {
-        debug!("Clowder client call to get_alpha_offline on sentinel");
+        debug!("Clowder client call to get_alpha_offline on sentinel for {alpha_id}");
         let response = self.main.get_offline(alpha_id).await?;
         Ok(response.offline)
     }
@@ -727,7 +727,9 @@ impl ClowderMintConnector for SentinelClient {
         &self,
         origin_mint_url: cashu::MintUrl,
     ) -> MintResult<ConnectedMintsResponse> {
-        debug!("Clowder client call to post_clowder_path on sentinel");
+        debug!(
+            "Clowder client call to post_clowder_path on sentinel for mint url {origin_mint_url}"
+        );
         self.main
             .post_path(convert_mint_url(origin_mint_url)?)
             .await
@@ -742,7 +744,7 @@ impl ClowderMintConnector for SentinelClient {
     ) -> Result<SwapCommitmentResult> {
         let url = self
             .url
-            .join("v1/core/swap/commit")
+            .join(MintClient::SWAPCOMMIT_EP_V1)
             .expect("post_swap_commitment url error");
         debug!("HTTP call to post_swap_commitment on sentinel {url}");
         post_swap_commitment_inner(
@@ -762,7 +764,7 @@ impl ClowderMintConnector for SentinelClient {
     ) -> Result<wire_swap::SwapResponse> {
         let url = self
             .url
-            .join("v1/core/swap")
+            .join(MintClient::SWAP_EP_V1)
             .expect("post_swap_committed url error");
         debug!("HTTP call to post_swap_committed on sentinel {url}");
         let response = self
@@ -817,7 +819,7 @@ impl ClowderMintConnector for SentinelClient {
     ) -> Result<MeltQuoteResult> {
         let url = self
             .url
-            .join("v1/melt/quote/onchain")
+            .join(MintClient::MELTQUOTE_ONCHAIN_EP_V1)
             .expect("melt_quote_onchain url error");
         debug!("HTTP call on sentinel to melt_quote_onchain on {url}");
         post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, amount, alpha_pk).await
@@ -829,7 +831,7 @@ impl ClowderMintConnector for SentinelClient {
     ) -> Result<wire_melt::MeltOnchainResponse> {
         let url = self
             .url
-            .join("v1/melt/onchain")
+            .join(MintClient::MELT_ONCHAIN_EP_V1)
             .expect("melt_onchain url error");
         debug!("HTTP call on sentinel to melt_onchain on {url}");
 

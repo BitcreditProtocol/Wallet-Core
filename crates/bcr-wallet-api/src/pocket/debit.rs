@@ -325,10 +325,40 @@ impl super::PocketApi for Pocket {
         self.unit.clone()
     }
 
-    async fn balance(&self) -> Result<cashu::Amount> {
+    async fn balance(&self, keysets_info: &[KeySetInfo]) -> Result<PocketBalance> {
         let proofs: Vec<Proof> = self.pdb.list_unspent().await?.into_values().collect();
-        let total = proofs.total_amount()?;
-        Ok(total)
+        let mut debit = Amount::ZERO;
+        let mut credit = Amount::ZERO;
+
+        let infos = collect_keyset_infos_from_proofs(proofs.iter(), keysets_info)?;
+        let start_of_today = chrono::Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .expect("valid date")
+            .and_utc()
+            .timestamp() as u64;
+
+        for proof in proofs {
+            let info = infos
+                .get(&proof.keyset_id)
+                .ok_or(Error::UnknownKeysetId(proof.keyset_id))?;
+
+            // no final expiry -> debit
+            // final expiry before today -> debit
+            // final expiry today, or after -> credit
+            let is_credit = match info.final_expiry {
+                Some(expiry) => expiry >= start_of_today,
+                None => false,
+            };
+
+            if is_credit {
+                credit += proof.amount;
+            } else {
+                debit += proof.amount;
+            }
+        }
+
+        Ok(PocketBalance { debit, credit })
     }
 
     async fn receive_proofs(
@@ -537,6 +567,29 @@ impl super::PocketApi for Pocket {
         }
 
         Ok(swapped_proofs)
+    }
+
+    async fn dev_mode_detailed_balance(
+        &self,
+        keysets_info: &[KeySetInfo],
+    ) -> Result<HashMap<cashu::Id, (Option<u64>, Amount)>> {
+        let proofs: Vec<Proof> = self.pdb.list_unspent().await?.into_values().collect();
+        let infos = collect_keyset_infos_from_proofs(proofs.iter(), keysets_info)?;
+
+        let mut balances: HashMap<cashu::Id, (Option<u64>, Amount)> = HashMap::new();
+
+        for proof in proofs {
+            let kid = proof.keyset_id;
+            let info = infos.get(&kid).ok_or(Error::UnknownKeysetId(kid))?;
+
+            let entry = balances
+                .entry(kid)
+                .or_insert((info.final_expiry, Amount::ZERO));
+
+            entry.1 += proof.amount;
+        }
+
+        Ok(balances)
     }
 }
 
@@ -1092,6 +1145,136 @@ mod tests {
         let mnemonic = bip39::Mnemonic::generate(12).unwrap();
         let seed = mnemonic.to_seed("");
         super::Pocket::new(unit, pdb, mdb, seed)
+    }
+
+    #[tokio::test]
+    async fn debit_balance() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = vec![KeySetInfo::from(info)];
+        let amounts = [Amount::from(8u64), Amount::from(16u64)];
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
+        let mut pdb = MockPocketRepository::new();
+        let mdb = MockMintMeltRepository::new();
+
+        let proofs_clone = proofs.clone();
+        pdb.expect_list_unspent().times(1).returning(move || {
+            let mut map = HashMap::new();
+            map.insert(proofs_clone[0].y().unwrap(), proofs_clone[0].clone());
+            map.insert(proofs_clone[1].y().unwrap(), proofs_clone[1].clone());
+            Ok(map)
+        });
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let balance = pocket.balance(&k_infos).await.expect("balance works");
+        assert_eq!(balance.credit, Amount::ZERO);
+        assert_eq!(balance.debit, Amount::from(24u64))
+    }
+
+    #[tokio::test]
+    async fn credit_balance_keyset_expiring_in_future() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let mut k_info = KeySetInfo::from(info);
+        k_info.final_expiry =
+            Some((chrono::Utc::now() + chrono::TimeDelta::days(1)).timestamp() as u64);
+
+        let k_infos = vec![k_info];
+        let amounts = [Amount::from(8u64), Amount::from(16u64)];
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
+        let mut pdb = MockPocketRepository::new();
+        let mdb = MockMintMeltRepository::new();
+
+        let proofs_clone = proofs.clone();
+        pdb.expect_list_unspent().times(1).returning(move || {
+            let mut map = HashMap::new();
+            map.insert(proofs_clone[0].y().unwrap(), proofs_clone[0].clone());
+            map.insert(proofs_clone[1].y().unwrap(), proofs_clone[1].clone());
+            Ok(map)
+        });
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let balance = pocket.balance(&k_infos).await.expect("balance works");
+
+        assert_eq!(balance.debit, Amount::ZERO);
+        assert_eq!(balance.credit, Amount::from(24u64));
+    }
+
+    #[tokio::test]
+    async fn credit_balance_keyset_expiring_earlier_today() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let mut k_info = KeySetInfo::from(info);
+
+        let earlier_today = chrono::Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 1)
+            .unwrap()
+            .and_utc()
+            .timestamp() as u64;
+
+        k_info.final_expiry = Some(earlier_today);
+
+        let k_infos = vec![k_info];
+        let amounts = [Amount::from(8u64), Amount::from(16u64)];
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
+        let mut pdb = MockPocketRepository::new();
+        let mdb = MockMintMeltRepository::new();
+
+        let proofs_clone = proofs.clone();
+        pdb.expect_list_unspent().times(1).returning(move || {
+            let mut map = HashMap::new();
+            map.insert(proofs_clone[0].y().unwrap(), proofs_clone[0].clone());
+            map.insert(proofs_clone[1].y().unwrap(), proofs_clone[1].clone());
+            Ok(map)
+        });
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let balance = pocket.balance(&k_infos).await.expect("balance works");
+
+        assert_eq!(balance.debit, Amount::ZERO);
+        assert_eq!(balance.credit, Amount::from(24u64));
+    }
+
+    #[tokio::test]
+    async fn mixed_credit_and_debit_balance() {
+        let (info_debit, keyset_debit) = core_tests::generate_random_ecash_keyset();
+        let (info_credit, keyset_credit) = core_tests::generate_random_ecash_keyset();
+
+        let mut ks_debit = KeySetInfo::from(info_debit);
+        // yesterday → debit
+        ks_debit.final_expiry =
+            Some((chrono::Utc::now() - chrono::TimeDelta::days(1)).timestamp() as u64);
+
+        let mut ks_credit = KeySetInfo::from(info_credit);
+        // tomorrow → credit
+        ks_credit.final_expiry =
+            Some((chrono::Utc::now() + chrono::TimeDelta::days(1)).timestamp() as u64);
+
+        let k_infos = vec![ks_debit, ks_credit];
+
+        let debit_amount = Amount::from(8u64);
+        let credit_amount = Amount::from(16u64);
+
+        let proofs_debit = core_tests::generate_random_ecash_proofs(&keyset_debit, &[debit_amount]);
+        let proofs_credit =
+            core_tests::generate_random_ecash_proofs(&keyset_credit, &[credit_amount]);
+
+        let mut pdb = MockPocketRepository::new();
+        let mdb = MockMintMeltRepository::new();
+
+        let p_debit = proofs_debit[0].clone();
+        let p_credit = proofs_credit[0].clone();
+
+        pdb.expect_list_unspent().times(1).returning(move || {
+            let mut map = HashMap::new();
+            map.insert(p_debit.y().unwrap(), p_debit.clone());
+            map.insert(p_credit.y().unwrap(), p_credit.clone());
+            Ok(map)
+        });
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let balance = pocket.balance(&k_infos).await.expect("balance works");
+
+        assert_eq!(balance.debit, debit_amount);
+        assert_eq!(balance.credit, credit_amount);
     }
 
     #[tokio::test]

@@ -24,15 +24,36 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
     for id in wallet_ids.iter() {
         let name = app_state.wallet_name(*id).await?;
         let mint_url = app_state.wallet_mint_url(*id).await?;
-        let unit = app_state.wallet_currency_unit(*id).await?;
+        let unit = app_state.wallet_currency_unit(*id).await?.unit;
         let balance = app_state.wallet_balance(*id).await?;
+        let dev_mode_detailed_balance = app_state.wallet_dev_mode_detailed_balance(*id).await?;
 
         let transactions = app_state.wallet_list_txs(*id).await?;
 
         res.push_str(&format!("Name: {name}\n"));
         res.push_str(&format!("Wallet ID: {id}\n"));
         res.push_str(&format!("Mint URL: {mint_url}\n"));
-        res.push_str(&format!("Debit Balance: {} {}\n", balance.debit, unit.unit));
+        res.push_str(&format!("Debit Balance: {} {}\n", balance.debit, unit));
+        res.push_str(&format!("Credit Balance: {} {}\n", balance.credit, unit));
+        res.push_str(&format!("Total Balance: {} {}\n", balance.total, unit));
+
+        if !dev_mode_detailed_balance.is_empty() {
+            res.push_str("Dev Mode Detailed Balance:");
+            for entry in dev_mode_detailed_balance.iter() {
+                res.push_str(&format!(
+                    "\t\tId: {} \t Expiry: {} \t Amount: {}",
+                    entry.kid,
+                    if let Some(exp) = entry.final_expiry {
+                        format_timestamp(exp)
+                    } else {
+                        "None".to_owned()
+                    },
+                    entry.amount
+                ));
+                push_break(&mut res);
+            }
+        }
+
         if !transactions.is_empty() {
             res.push_str("Transactions:");
             push_break(&mut res);

@@ -16,6 +16,9 @@
     * Remove the concept of redemption
 * Add job and endpoint for `wallet_recover_pending_stale_proofs`, which recovers proofs which are stale after a failed operation
 * Remove cdk MintConnector
+* Add `dev_mode` field in config
+* Add Endpoint `wallet_dev_mode_get_detailed_balance` that returns a listing of funds for each keyset with the expiry of the keyset
+* Return `debit`, `credit` and `total` from balance
 
 # 0.8.1
 

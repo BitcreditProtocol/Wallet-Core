@@ -873,9 +873,9 @@ impl WalletApi for super::Wallet {
                 self.swap_config(),
             )
             .await?;
-        let debit_balance = self.debit.balance().await?;
+        let balance = self.debit.balance(&keysets_info).await?;
 
-        tracing::info!("Migration successful balance debit {debit_balance}");
+        tracing::info!("Migration successful balance: {:?}", balance);
 
         Ok(self.client.mint_url())
     }

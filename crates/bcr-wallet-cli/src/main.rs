@@ -126,6 +126,7 @@ async fn main() -> Result<()> {
         mnemonic: settings.mnemonic.clone(),
         default_mint_url: settings.mint_url.clone(),
         swap_expiry: chrono::TimeDelta::minutes(15),
+        dev_mode: true,
     };
     let app_state = AppState::initialize(app_state_cfg).await?;
 

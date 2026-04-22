@@ -1,6 +1,6 @@
 use crate::config::AppStateConfig;
 use crate::external::mint::{ClowderMintConnector, HttpClientExt};
-use crate::wallet::types::{WalletBalance, WalletProtestResult};
+use crate::wallet::types::{WalletBalance, WalletDetailedBalanceEntry, WalletProtestResult};
 use crate::{config::NostrConfig, wallet::api::WalletApi};
 use bcr_common::cdk_common::wallet::Transaction;
 use bcr_common::{
@@ -652,6 +652,20 @@ impl AppState {
         let wallet = self.get_wallet(idx).await?;
         let updated = wallet.read().await.refresh_tx(tx_id).await?;
         Ok(updated)
+    }
+
+    //////////////////////////////////////////////////// Wallet Dev Mode Calls
+    pub async fn wallet_dev_mode_detailed_balance(
+        &self,
+        idx: usize,
+    ) -> Result<Vec<WalletDetailedBalanceEntry>> {
+        tracing::debug!("dev_mode_detailed_wallet_balance({idx})");
+        if !self.cfg.dev_mode {
+            return Err(Error::NoDevMode);
+        }
+
+        let wallet = self.get_wallet(idx).await?;
+        wallet.read().await.dev_mode_detailed_balance().await
     }
 
     //////////////////////////////////////////////////// General App-Level calls

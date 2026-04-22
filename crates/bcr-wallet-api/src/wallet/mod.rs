@@ -7,7 +7,7 @@ use crate::{
     error::{Error, Result},
     pocket::debit::DebitPocketApi,
     types::{PAYMENT_TYPE_METADATA_KEY, TRANSACTION_STATUS_METADATA_KEY},
-    wallet::types::{PayReference, SwapConfig, WalletBalance},
+    wallet::types::{PayReference, SwapConfig, WalletBalance, WalletDetailedBalanceEntry},
 };
 use bcr_common::{
     cashu::{
@@ -180,8 +180,13 @@ impl Wallet {
     }
 
     pub async fn balance(&self) -> Result<WalletBalance> {
-        let debit = self.debit.balance().await?;
-        Ok(WalletBalance { debit })
+        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
+        let balance = self.debit.balance(&keysets_info).await?;
+        Ok(WalletBalance {
+            debit: balance.debit,
+            credit: balance.credit,
+            total: balance.debit + balance.credit,
+        })
     }
 
     async fn check_nut18_request(
@@ -745,6 +750,30 @@ impl Wallet {
             Err(e) => Err(e),
         }
     }
+
+    pub async fn dev_mode_detailed_balance(&self) -> Result<Vec<WalletDetailedBalanceEntry>> {
+        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
+
+        let detailed_balance = self.debit.dev_mode_detailed_balance(&keysets_info).await?;
+        let mut res = Vec::with_capacity(detailed_balance.len());
+        for (kid, (final_expiry, amount)) in detailed_balance.into_iter() {
+            res.push(WalletDetailedBalanceEntry {
+                kid,
+                final_expiry,
+                amount,
+            })
+        }
+
+        // sort by final expiry descending, with no final expiry at the end
+        res.sort_by_key(|e| {
+            (
+                e.final_expiry.is_none(),
+                std::cmp::Reverse(e.final_expiry.unwrap_or(0)),
+            )
+        });
+
+        Ok(res)
+    }
 }
 
 #[cfg(test)]
@@ -761,7 +790,7 @@ mod tests {
     use super::*;
     use crate::{
         external::{mint::HttpClientExt, test_utils::tests::MockMintConnector},
-        pocket::test_utils::tests::MockDebitPocket,
+        pocket::{PocketBalance, test_utils::tests::MockDebitPocket},
         wallet::{api::WalletApi, types::WalletPaymentType},
     };
 
@@ -1006,14 +1035,20 @@ mod tests {
     #[tokio::test]
     async fn test_balance() {
         let mut ctx = wallet_ctx();
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
         ctx.debit
             .expect_balance()
             .times(1)
-            .returning(|| Ok(Amount::ZERO));
+            .returning(|_| Ok(PocketBalance::default()));
         let wlt = wallet(ctx);
 
         let res = wlt.balance().await.expect("balance works");
         assert_eq!(res.debit, Amount::ZERO);
+        assert_eq!(res.credit, Amount::ZERO);
+        assert_eq!(res.total, Amount::ZERO);
     }
 
     #[tokio::test]
