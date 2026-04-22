@@ -75,7 +75,7 @@ pub async fn htlc_lock(
         tstamp + (key_locks.len() as u64 + 2) * crate::config::LOCK_REDUCTION_SECONDS_PER_HOP;
 
     // fetch keysets infos for the given client
-    let infos = client.get_mint_keysets().await?.keysets;
+    let infos = client.get_mint_keysets().await?;
 
     let active_keyset_id = infos
         .iter()

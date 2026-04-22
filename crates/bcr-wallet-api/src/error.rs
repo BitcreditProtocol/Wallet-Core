@@ -16,6 +16,8 @@ pub enum Error {
     Borsh(#[from] borsh::io::Error),
     #[error("cashu::mint_url::Error: {0}")]
     CashuMintUrl(#[from] cashu::mint_url::Error),
+    #[error("MintError: {0}")]
+    Mint(#[from] bcr_common::client::mint::Error),
     #[error("cdk::Error: {0}")]
     Cdk(#[from] cdk::Error),
     #[error("bip39::Error: {0}")]

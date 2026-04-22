@@ -86,8 +86,8 @@ async fn cleanup_local_proofs(
     let ys = db.list_all().await?;
     let request = cdk07::CheckStateRequest { ys };
     let response = client.post_check_state(request).await?;
-    let mut cleaned_ys: Vec<cdk01::PublicKey> = Vec::with_capacity(response.states.len());
-    for proofstate in response.states {
+    let mut cleaned_ys: Vec<cdk01::PublicKey> = Vec::with_capacity(response.len());
+    for proofstate in response {
         if proofstate.state == cdk07::State::Spent {
             db.delete_proof(proofstate.y).await?;
             cleaned_ys.push(proofstate.y);

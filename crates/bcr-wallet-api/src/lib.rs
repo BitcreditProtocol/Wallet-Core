@@ -5,7 +5,7 @@ use crate::{config::NostrConfig, wallet::api::WalletApi};
 use bcr_common::cdk_common::wallet::Transaction;
 use bcr_common::{
     cashu::{self, CurrencyUnit, MintUrl, nut18 as cdk18},
-    cdk::wallet::{MintConnector as MintCon, types::TransactionId},
+    cdk::wallet::types::TransactionId,
     wallet::Token,
 };
 use bcr_wallet_core::types::{
@@ -131,7 +131,7 @@ impl AppState {
             };
             match client.get_mint_keysets().await {
                 Ok(ks) => {
-                    w_cfg.mint_keyset_infos = ks.keysets;
+                    w_cfg.mint_keyset_infos = ks;
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -813,7 +813,7 @@ async fn create_new_wallet(
 
     let wallet_id = build_wallet_id(&seed);
     let clowder_id = client.get_clowder_id().await?;
-    let keyset_infos = client.get_mint_keysets().await?.keysets;
+    let keyset_infos = client.get_mint_keysets().await?;
     let betas = client.get_clowder_betas().await?;
     // Attempt to find debit unit in the given keysets
     let currencies = keyset_infos
