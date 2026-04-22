@@ -952,7 +952,7 @@ impl WalletApi for super::Wallet {
                 .await?;
 
             // Fetch keyset infos
-            let keysets_info = substitute_client.get_mint_keysets().await?.keysets;
+            let keysets_info = substitute_client.get_mint_keysets().await?;
             tracing::debug!("Offline Pay by Token: Swap to unlocked substitute proofs to target.");
             // Swap to unlocked substitute proofs to target
             let unlocked_sending_proofs = self

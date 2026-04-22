@@ -164,7 +164,7 @@ impl Wallet {
 
     async fn get_wallet_mint_keyset_infos(&self) -> Result<Vec<KeySetInfo>> {
         Ok(match self.client.get_mint_keysets().await {
-            Ok(infos) => infos.keysets,
+            Ok(infos) => infos,
             Err(e) => {
                 tracing::warn!(
                     "Couldn't fetch mint keysets for wallet mint - falling back to config: {:?}, {e}",
@@ -245,7 +245,6 @@ impl Wallet {
         let request = cashu::CheckStateRequest { ys: tx.ys.clone() };
         let response = self.client.post_check_state(request).await?;
         let is_any_spent = response
-            .states
             .iter()
             .any(|s| matches!(s.state, cashu::State::Spent));
         if is_any_spent {
@@ -912,7 +911,7 @@ mod tests {
         ctx.client
             .expect_get_mint_keysets()
             .times(1)
-            .returning(|| Ok(cashu::KeysetResponse { keysets: vec![] }));
+            .returning(|| Ok(vec![]));
         let wlt = wallet(ctx);
 
         let err = wlt
@@ -1214,7 +1213,7 @@ mod tests {
         ctx.client
             .expect_get_mint_keysets()
             .times(1)
-            .returning(|| Ok(cashu::KeysetResponse { keysets: vec![] }));
+            .returning(|| Ok(vec![]));
         ctx.client
             .expect_mint_url()
             .times(2) // token creation + tx mint_url
@@ -1259,7 +1258,7 @@ mod tests {
         ctx.client
             .expect_get_mint_keysets()
             .times(1)
-            .returning(|| Ok(cashu::KeysetResponse { keysets: vec![] }));
+            .returning(|| Ok(vec![]));
 
         ctx.debit.expect_mint_onchain().times(1).returning(
             |_amount, _keysets_info, _client, _clowder_id| {
@@ -1283,7 +1282,7 @@ mod tests {
         ctx.client
             .expect_get_mint_keysets()
             .times(1)
-            .returning(|| Ok(cashu::KeysetResponse { keysets: vec![] }));
+            .returning(|| Ok(vec![]));
 
         ctx.debit
             .expect_recover_pending_stale_proofs()

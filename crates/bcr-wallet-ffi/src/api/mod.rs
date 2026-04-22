@@ -1151,6 +1151,7 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::BorshSignature(_) => WalletError::network(value.to_string()),
             BcrWalletError::Borsh(_error) => WalletError::internal(),
             BcrWalletError::CashuMintUrl(_) => WalletError::bad_request(value.to_string()),
+            BcrWalletError::Mint(_error) => WalletError::internal(),
             BcrWalletError::Cdk(_error) => WalletError::internal(),
             BcrWalletError::Bip39(_error) => WalletError::internal(),
             BcrWalletError::Cdk00(_error) => WalletError::internal(),

@@ -282,21 +282,12 @@ impl Pocket {
         qid: Uuid,
         keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
-        tstamp: u64,
+        _tstamp: u64,
         swap_config: SwapConfig,
         clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<Option<(cashu::Amount, Vec<cashu::PublicKey>)>> {
         let record = self.mdb.load_mint(qid).await?;
         let (mint_summary, premint) = (record.summary, record.premint);
-        let mint_state = client.get_mint_quote_onchain(qid.to_string()).await?;
-        let body: wire_mint::OnchainMintQuoteResponseBody =
-            bcr_common::core::signature::deserialize_borsh_msg(&mint_state.content)?;
-
-        if body.expiry < tstamp {
-            tracing::info!("Mint request with id {qid} expired - deleting.");
-            self.mdb.delete_mint(qid).await?;
-            return Ok(None);
-        }
 
         tracing::info!("Mint {qid} - attempting to mint..");
         let mint_req = wire_mint::OnchainMintRequest {
@@ -585,7 +576,7 @@ impl DebitPocketApi for Pocket {
         let req = cdk07::CheckStateRequest {
             ys: pendings.keys().cloned().collect(),
         };
-        let cdk07::CheckStateResponse { states } = client.post_check_state(req).await?;
+        let states = client.post_check_state(req).await?;
         let mut to_digest = HashMap::new();
         for state in states.iter() {
             match state.state {
@@ -1090,7 +1081,7 @@ mod tests {
         external::test_utils::tests::MockMintConnector,
         pocket::{PocketApi, debit::DebitPocketApi},
     };
-    use bcr_common::core_tests;
+    use bcr_common::{core_tests, wire::mint::MintResponse};
     use bcr_wallet_persistence::{MockMintMeltRepository, MockPocketRepository};
     use mockall::predicate::*;
 
@@ -1244,8 +1235,7 @@ mod tests {
                         witness: None,
                     })
                     .collect();
-                let response = cdk07::CheckStateResponse { states };
-                Ok(response)
+                Ok(states)
             });
         let proofs_clone = proofs.clone();
         pdb.expect_list_pending().times(1).returning(move || {
@@ -1578,10 +1568,6 @@ mod tests {
 
         let keyset_clone = keyset.clone();
         let dummy_secret = secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap();
-        let dummy_wallet_key = cashu::PublicKey::from(secp256k1::PublicKey::from_secret_key(
-            secp256k1::SECP256K1,
-            &dummy_secret,
-        ));
         mdb.expect_load_mint().times(1).returning(move |_| {
             let premint = cdk00::PreMintSecrets::random(
                 cashu::KeySet::from(keyset_clone.clone()).id,
@@ -1608,6 +1594,17 @@ mod tests {
             })
         });
 
+        let keyset_clone = keyset.clone();
+        connector
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(KeySet::from(keyset_clone.clone())));
+
+        connector
+            .expect_post_mint_onchain()
+            .times(1)
+            .returning(move |_| Ok(MintResponse { signatures: vec![] }));
+
         let clowder_keypair = {
             let secret_bytes: [u8; 32] = rand::random();
             bitcoin::secp256k1::Keypair::from_seckey_slice(
@@ -1616,32 +1613,6 @@ mod tests {
             )
             .unwrap()
         };
-
-        mdb.expect_delete_mint().times(1).returning(move |_| Ok(()));
-
-        connector
-            .expect_get_mint_quote_onchain()
-            .times(1)
-            .returning(move |_| {
-                let body = wire_mint::OnchainMintQuoteResponseBody {
-                    quote: uuid,
-                    address: "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0".to_string(),
-                    payment_amount: amount,
-                    expiry: 0, // expired
-                    blinded_messages: vec![],
-                    wallet_key: dummy_wallet_key,
-                };
-                let (content, commitment) =
-                    bcr_common::core::signature::serialize_n_schnorr_sign_borsh_msg(
-                        &body,
-                        &clowder_keypair,
-                    )
-                    .unwrap();
-                Ok(wire_mint::OnchainMintQuoteResponse {
-                    content,
-                    commitment,
-                })
-            });
 
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
 

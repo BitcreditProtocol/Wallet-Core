@@ -47,18 +47,14 @@ async fn restore_batch(
     let request = cdk09::RestoreRequest {
         outputs: premints.blinded_messages(),
     };
-    let cdk09::RestoreResponse {
-        outputs,
-        signatures,
-        ..
-    } = client.post_restore(request).await?;
-    if signatures.is_empty() {
+    let resp = client.post_restore(request).await?;
+    if resp.is_empty() {
         return Ok(0);
     }
     let keyset = client.get_mint_keyset(kid).await?;
     let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
     let mut premints_cursor = premints.iter();
-    for (output, signature) in outputs.into_iter().zip(signatures) {
+    for (output, signature) in resp.into_iter() {
         let premint = loop {
             let premint = premints_cursor
                 .next()
@@ -103,7 +99,7 @@ async fn restore_batch(
     let request = cdk07::CheckStateRequest {
         ys: proofs.keys().cloned().collect(),
     };
-    let cdk07::CheckStateResponse { states } = client.post_check_state(request).await?;
+    let states = client.post_check_state(request).await?;
     for state in states.into_iter() {
         match state.state {
             cdk07::State::Unspent => {
@@ -130,7 +126,7 @@ mod tests {
     use crate::external::test_utils::tests::MockMintConnector;
     use bcr_common::{core::signature, core_tests};
     use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
-    use cashu::{Amount, KeySet, RestoreResponse, nut07 as cdk07};
+    use cashu::{Amount, KeySet, nut07 as cdk07};
     use mockall::predicate::eq;
     use rand::Rng;
 
@@ -141,13 +137,10 @@ mod tests {
         let keyset = KeySet::from(keyset);
         let mut client = MockMintConnector::new();
         let db = MockPocketRepository::new();
-        client.expect_post_restore().times(1).returning(|_| {
-            Ok(RestoreResponse {
-                outputs: Default::default(),
-                signatures: Default::default(),
-                promises: Default::default(),
-            })
-        });
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(|_| Ok(vec![]));
 
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
         super::restore_batch(&seed, keyset.id, &arc_client, &db, 0, BATCH_SIZE)
@@ -178,12 +171,12 @@ mod tests {
                         signature::sign_ecash(&cloned, &bblind)
                             .expect("signatures should be generated")
                     })
-                    .collect();
-                Ok(RestoreResponse {
-                    outputs: request.outputs,
-                    signatures,
-                    promises: Default::default(),
-                })
+                    .collect::<Vec<_>>();
+                Ok(request
+                    .outputs
+                    .into_iter()
+                    .zip(signatures)
+                    .collect::<Vec<_>>())
             });
         client
             .expect_get_mint_keyset()
@@ -202,8 +195,7 @@ mod tests {
                         witness: None,
                     })
                     .collect();
-                let response = cdk07::CheckStateResponse { states };
-                Ok(response)
+                Ok(states)
             });
 
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
@@ -235,12 +227,12 @@ mod tests {
                         signature::sign_ecash(&cloned_mintkeyset, &bblind)
                             .expect("signatures should be generated")
                     })
-                    .collect();
-                Ok(RestoreResponse {
-                    outputs: request.outputs,
-                    signatures,
-                    promises: Default::default(),
-                })
+                    .collect::<Vec<_>>();
+                Ok(request
+                    .outputs
+                    .into_iter()
+                    .zip(signatures)
+                    .collect::<Vec<_>>())
             });
         client
             .expect_get_mint_keyset()
@@ -259,8 +251,7 @@ mod tests {
                         witness: None,
                     })
                     .collect();
-                let response = cdk07::CheckStateResponse { states };
-                Ok(response)
+                Ok(states)
             });
         db.expect_store_new()
             .times(BATCH_SIZE as usize)
@@ -297,12 +288,12 @@ mod tests {
                         signature::sign_ecash(&cloned_mintkeyset, &bblind)
                             .expect("signatures should be generated")
                     })
-                    .collect();
-                Ok(RestoreResponse {
-                    outputs: request.outputs,
-                    signatures,
-                    promises: Default::default(),
-                })
+                    .collect::<Vec<_>>();
+                Ok(request
+                    .outputs
+                    .into_iter()
+                    .zip(signatures)
+                    .collect::<Vec<_>>())
             });
         client
             .expect_get_mint_keyset()
@@ -321,8 +312,7 @@ mod tests {
                         witness: None,
                     })
                     .collect();
-                let response = cdk07::CheckStateResponse { states };
-                Ok(response)
+                Ok(states)
             });
         db.expect_store_pendingspent()
             .times(BATCH_SIZE as usize)
@@ -365,13 +355,8 @@ mod tests {
                         signature::sign_ecash(&cloned_mintkeyset, &bblind)
                             .expect("signatures should be generated")
                     })
-                    .collect();
-                let response = cdk09::RestoreResponse {
-                    outputs,
-                    signatures,
-                    promises: Option::default(),
-                };
-                Ok(response)
+                    .collect::<Vec<_>>();
+                Ok(outputs.into_iter().zip(signatures).collect::<Vec<_>>())
             });
         client
             .expect_post_check_state()
@@ -386,8 +371,7 @@ mod tests {
                         witness: None,
                     })
                     .collect();
-                let response = cdk07::CheckStateResponse { states };
-                Ok(response)
+                Ok(states)
             });
         db.expect_store_new()
             .times(BATCH_SIZE as usize)
@@ -399,14 +383,7 @@ mod tests {
         client
             .expect_post_restore()
             .times(EMPTY_RESPONSES_BEFORE_ABORT)
-            .returning(move |_| {
-                let response = cdk09::RestoreResponse {
-                    outputs: Vec::default(),
-                    signatures: Vec::default(),
-                    promises: Option::default(),
-                };
-                Ok(response)
-            });
+            .returning(move |_| Ok(vec![]));
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
         let total_restored = restore_keysetid(&seed, mintkeyset.id, &arc_client, &db)
             .await
@@ -429,14 +406,10 @@ mod tests {
             .times(1)
             .with(eq(mintkeyset.id))
             .returning(move |_| Ok(0));
-        client.expect_post_restore().times(1).returning(move |_| {
-            let response = cdk09::RestoreResponse {
-                outputs: Vec::default(),
-                signatures: Vec::default(),
-                promises: Option::default(),
-            };
-            Ok(response)
-        });
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |_| Ok(vec![]));
         let cloned_mintkeyset = mintkeyset.clone();
         client
             .expect_post_restore()
@@ -451,13 +424,8 @@ mod tests {
                         signature::sign_ecash(&cloned_mintkeyset, &bblind)
                             .expect("signatures should be generated")
                     })
-                    .collect();
-                let response = cdk09::RestoreResponse {
-                    outputs,
-                    signatures,
-                    promises: Option::default(),
-                };
-                Ok(response)
+                    .collect::<Vec<_>>();
+                Ok(outputs.into_iter().zip(signatures).collect::<Vec<_>>())
             });
         client
             .expect_post_check_state()
@@ -472,8 +440,7 @@ mod tests {
                         witness: None,
                     })
                     .collect();
-                let response = cdk07::CheckStateResponse { states };
-                Ok(response)
+                Ok(states)
             });
         db.expect_store_new()
             .times(BATCH_SIZE as usize)
@@ -485,14 +452,7 @@ mod tests {
         client
             .expect_post_restore()
             .times(EMPTY_RESPONSES_BEFORE_ABORT)
-            .returning(move |_| {
-                let response = cdk09::RestoreResponse {
-                    outputs: Vec::default(),
-                    signatures: Vec::default(),
-                    promises: Option::default(),
-                };
-                Ok(response)
-            });
+            .returning(move |_| Ok(vec![]));
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
         let total_restored = restore_keysetid(&seed, mintkeyset.id, &arc_client, &db)
             .await
@@ -515,14 +475,10 @@ mod tests {
             .times(1)
             .with(eq(mintkeyset.id))
             .returning(move |_| Ok(0));
-        client.expect_post_restore().times(1).returning(move |_| {
-            let response = cdk09::RestoreResponse {
-                outputs: Vec::default(),
-                signatures: Vec::default(),
-                promises: Option::default(),
-            };
-            Ok(response)
-        });
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |_| Ok(vec![]));
         let cloned_mintkeyset = mintkeyset.clone();
         client
             .expect_post_restore()
@@ -538,13 +494,8 @@ mod tests {
                         signature::sign_ecash(&cloned_mintkeyset, &bblind)
                             .expect("signatures should be generated")
                     })
-                    .collect();
-                let response = cdk09::RestoreResponse {
-                    outputs,
-                    signatures,
-                    promises: Option::default(),
-                };
-                Ok(response)
+                    .collect::<Vec<_>>();
+                Ok(outputs.into_iter().zip(signatures).collect::<Vec<_>>())
             });
         client
             .expect_post_check_state()
@@ -559,8 +510,7 @@ mod tests {
                         witness: None,
                     })
                     .collect();
-                let response = cdk07::CheckStateResponse { states };
-                Ok(response)
+                Ok(states)
             });
         db.expect_store_new()
             .times((BATCH_SIZE / 3) as usize)
@@ -572,14 +522,7 @@ mod tests {
         client
             .expect_post_restore()
             .times(EMPTY_RESPONSES_BEFORE_ABORT)
-            .returning(move |_| {
-                let response = cdk09::RestoreResponse {
-                    outputs: Vec::default(),
-                    signatures: Vec::default(),
-                    promises: Option::default(),
-                };
-                Ok(response)
-            });
+            .returning(move |_| Ok(vec![]));
         //
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
         let total_restored = restore_keysetid(&seed, mintkeyset.id, &arc_client, &db)
