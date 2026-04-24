@@ -16,7 +16,7 @@ strip = "symbols"
 
 [workspace.dependencies]
 async-trait = {version = "0.1"}
-bcr-common = {git = "https://github.com/BitcreditProtocol/bcr-common.git", rev = "0597f3b4b0c1f6c6a5c2f5d3caa434c571742379"}
+bcr-common = {git = "https://github.com/BitcreditProtocol/bcr-common.git", rev = "dc0e7d73b5bfbe7df88baf8cb2887fd6512c08f0"}
 bcr-wallet-core = {path = "./crates/bcr-wallet-core"}
 bcr-wallet-api = {path = "./crates/bcr-wallet-api"}
 bcr-wallet-persistence = {path = "./crates/bcr-wallet-persistence"}
