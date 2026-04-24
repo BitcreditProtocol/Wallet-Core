@@ -154,7 +154,7 @@ impl Wallet {
                     id: keyset.id,
                     unit: keyset.unit.clone(),
                     active: true,
-                    input_fee_ppk: 0, // TODO: get fees from the clowder keyset
+                    input_fee_ppk: 1, // TODO: get fees from the clowder keyset
                     final_expiry: keyset.final_expiry,
                 })
                 .collect();

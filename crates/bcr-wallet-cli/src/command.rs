@@ -199,8 +199,8 @@ pub async fn cmd_pay_by_token(
         .await?;
 
     info!(
-        "Payment Summary: Amount: {}, Unit: {}",
-        &payment_summary.amount, &payment_summary.unit,
+        "Payment Summary: Amount: {}, Unit: {}, Fees: {}",
+        &payment_summary.amount, &payment_summary.unit, &payment_summary.fees,
     );
     let result = app_state
         .wallet_pay_by_token(id, payment_summary.request_id.to_string())

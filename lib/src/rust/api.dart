@@ -632,8 +632,8 @@ class WalletError implements FrbException {
   static Future<WalletError> badRequest({required String msg}) =>
       RustLib.instance.api.crateApiWalletErrorBadRequest(msg: msg);
 
-  static Future<WalletError> internal() =>
-      RustLib.instance.api.crateApiWalletErrorInternal();
+  static Future<WalletError> internal({required String msg}) =>
+      RustLib.instance.api.crateApiWalletErrorInternal(msg: msg);
 
   static Future<WalletError> network({required String msg}) =>
       RustLib.instance.api.crateApiWalletErrorNetwork(msg: msg);
