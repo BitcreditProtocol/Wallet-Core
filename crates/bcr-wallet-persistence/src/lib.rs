@@ -95,6 +95,7 @@ pub trait TransactionRepository: SendSync {
         key: String,
         value: String,
     ) -> Result<Option<String>>;
+    async fn update_fee(&self, tx_id: TransactionId, fee_to_add: cashu::Amount) -> Result<()>;
 }
 
 ///////////////////////////////////////////// Mint Melt Repository

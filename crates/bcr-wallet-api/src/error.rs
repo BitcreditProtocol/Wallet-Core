@@ -36,6 +36,12 @@ pub enum Error {
     CdkAmount(#[from] cashu::amount::Error),
     #[error("cashu::dhke: {0}")]
     CdkDhke(#[from] cashu::dhke::Error),
+    #[error("Invalid Split Target - only Value supported")]
+    InvalidSplitTarget,
+    #[error("Error during Swap: {0}")]
+    Swap(String),
+    #[error("More than one Split was necessary for a payment {0}")]
+    ExcessiveSplitting(cashu::Amount),
     #[error("bitcoin::bip32 {0}")]
     BtcBip32(#[from] bitcoin::bip32::Error),
     #[error("uuid:: {0}")]
@@ -52,8 +58,8 @@ pub enum Error {
     Url(#[from] url::ParseError),
     #[error("reqwest::Client {0}")]
     ReqwestClient(#[from] reqwest::Error),
-    #[error("insufficient funds")]
-    InsufficientFunds,
+    #[error("total balance {0} is less than target {1}")]
+    InsufficientBalance(cashu::Amount, cashu::Amount),
     #[error("There already exists a wallet - delete it to create a new one")]
     WalletAlreadyExists,
     #[error("wallet at idx {0} not found")]
@@ -130,4 +136,15 @@ pub enum Error {
     External(#[from] crate::external::Error),
     #[error("Dev Mode is disabled")]
     NoDevMode,
+}
+
+impl From<bcr_common::core::swap::wallet::Error> for Error {
+    fn from(value: bcr_common::core::swap::wallet::Error) -> Self {
+        match value {
+            bcr_common::core::swap::wallet::Error::UnknownKeyset(id) => Error::UnknownKeysetId(id),
+            bcr_common::core::swap::wallet::Error::InsufficientBalance(amount, other_amount) => {
+                Error::InsufficientBalance(amount, other_amount)
+            }
+        }
+    }
 }

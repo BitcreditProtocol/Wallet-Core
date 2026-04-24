@@ -120,7 +120,7 @@ abstract class RustLibApi extends BaseApi {
 
   Future<WalletError> crateApiWalletErrorBadRequest({required String msg});
 
-  Future<WalletError> crateApiWalletErrorInternal();
+  Future<WalletError> crateApiWalletErrorInternal({required String msg});
 
   Future<WalletError> crateApiWalletErrorNetwork({required String msg});
 
@@ -715,11 +715,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<WalletError> crateApiWalletErrorInternal() {
+  Future<WalletError> crateApiWalletErrorInternal({required String msg}) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(msg, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -732,14 +733,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: null,
         ),
         constMeta: kCrateApiWalletErrorInternalConstMeta,
-        argValues: [],
+        argValues: [msg],
         apiImpl: this,
       ),
     );
   }
 
   TaskConstMeta get kCrateApiWalletErrorInternalConstMeta =>
-      const TaskConstMeta(debugName: "wallet_error_internal", argNames: []);
+      const TaskConstMeta(
+        debugName: "wallet_error_internal",
+        argNames: ["msg"],
+      );
 
   @override
   Future<WalletError> crateApiWalletErrorNetwork({required String msg}) {

@@ -206,6 +206,32 @@ impl TransactionDB {
         write_txn.commit()?;
         Ok(old_v)
     }
+
+    fn update_fee_sync(
+        db: Arc<Database>,
+        tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        tx_id: TransactionId,
+        fee_to_add: bcr_common::cashu::Amount,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(tx_table)?;
+            let old_value = table.get(tx_id.as_bytes().as_slice())?.map(|v| v.value());
+
+            if let Some(old_value) = old_value {
+                let mut tx: TransactionEntry = ciborium::from_reader(old_value.as_slice())?;
+                tx.fee += fee_to_add;
+
+                let mut serialized = Vec::new();
+                ciborium::into_writer(&tx, &mut serialized)?;
+                table.insert(tx_id.as_bytes().as_slice(), serialized)?;
+            }
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -253,6 +279,16 @@ impl TransactionRepository for TransactionDB {
         let db_clone = self.db.clone();
         let table = self.transaction_table;
         spawn_blocking(move || Self::update_meta_sync(db_clone, table, tx_id, k, v)).await?
+    }
+
+    async fn update_fee(
+        &self,
+        tx_id: TransactionId,
+        fee_to_add: bcr_common::cashu::Amount,
+    ) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.transaction_table;
+        spawn_blocking(move || Self::update_fee_sync(db_clone, table, tx_id, fee_to_add)).await?
     }
 }
 
@@ -401,6 +437,21 @@ mod tests {
             loaded.metadata.get("tag").cloned(),
             Some("second".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn test_update_fee() {
+        let repo = get_db(&wallet_id());
+
+        let tx = test_tx();
+        let tx_id = repo.store_tx(tx).await.unwrap();
+
+        repo.update_fee(tx_id, bcr_common::cashu::Amount::ONE)
+            .await
+            .unwrap();
+
+        let loaded = repo.load_tx(tx_id).await.unwrap();
+        assert_eq!(loaded.fee, bcr_common::cashu::Amount::ONE,);
     }
 
     #[tokio::test]

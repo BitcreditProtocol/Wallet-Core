@@ -39,16 +39,17 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
 
         if !dev_mode_detailed_balance.is_empty() {
             res.push_str("Dev Mode Detailed Balance:");
+            push_break(&mut res);
             for entry in dev_mode_detailed_balance.iter() {
                 res.push_str(&format!(
-                    "\t\tId: {} \t Expiry: {} \t Amount: {}",
+                    "\t\tId: {} \t Amount: {} \t Expiry: {}",
                     entry.kid,
+                    entry.amount,
                     if let Some(exp) = entry.final_expiry {
                         format_timestamp(exp)
                     } else {
                         "None".to_owned()
                     },
-                    entry.amount
                 ));
                 push_break(&mut res);
             }
@@ -199,8 +200,8 @@ pub async fn cmd_pay_by_token(
         .await?;
 
     info!(
-        "Payment Summary: Amount: {}, Unit: {}",
-        &payment_summary.amount, &payment_summary.unit,
+        "Payment Summary: Amount: {}, Unit: {}, Fees: {}",
+        &payment_summary.amount, &payment_summary.unit, &payment_summary.fees,
     );
     let result = app_state
         .wallet_pay_by_token(id, payment_summary.request_id.to_string())
@@ -212,8 +213,8 @@ pub async fn cmd_pay_by_token(
     push_break(&mut res);
     res.push_str(&format!("Payment Summary: {}", &payment_summary.request_id));
     res.push_str(&format!(
-        "Unit: {}, Amount: {}",
-        &payment_summary.unit, &payment_summary.amount
+        "Unit: {}, Amount: {}, Fees: {}",
+        &payment_summary.unit, &payment_summary.amount, &payment_summary.fees
     ));
     push_break(&mut res);
     res.push_str(&format!("Transaction ID: {}", result.tx_id));
@@ -236,8 +237,8 @@ pub async fn cmd_send_payment(
         .await?;
 
     info!(
-        "Payment Summary: Amount: {}, Unit: {}",
-        &payment_summary.amount, &payment_summary.unit,
+        "Payment Summary: Amount: {}, Unit: {}, Fees: {}",
+        &payment_summary.amount, &payment_summary.unit, &payment_summary.fees,
     );
 
     let tx_id = app_state
@@ -309,8 +310,8 @@ pub async fn cmd_melt(
         .await?;
 
     info!(
-        "Melt Summary: Amount: {}, Unit: {}",
-        &melt_summary.amount, &melt_summary.unit
+        "Melt Summary: Amount: {}, Unit: {}, Fees: {}",
+        &melt_summary.amount, &melt_summary.unit, &melt_summary.fees
     );
 
     let tx_id = app_state
