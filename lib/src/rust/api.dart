@@ -8,7 +8,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `get_app_state`, `init_logging`, `init_panic_hook`, `new`, `reset_runtime`, `start_jobs`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `WalletCleanLocalDbResponse`, `WalletRuntime`, `WalletsNamesResponse`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
 
 Future<void> initWalletFfi({required WalletFfiConfig conf}) =>
     RustLib.instance.api.crateApiInitWalletFfi(conf: conf);
@@ -126,6 +126,10 @@ Future<WalletTransactionsResponse> walletGetTransactions({
 
 Future<WalletsIdsResponse> walletGetIds() =>
     RustLib.instance.api.crateApiWalletGetIds();
+
+Future<WalletDevModeDetailedBalanceResponse> walletDevModeGetDetailedBalance({
+  required WalletRequest req,
+}) => RustLib.instance.api.crateApiWalletDevModeGetDetailedBalance(req: req);
 
 Future<MnemonicResponse> generateRandomMnemonic({
   required MnemonicRequest req,
@@ -501,18 +505,26 @@ enum TransactionStatus {
 
 class WalletBalanceResponse {
   final BigInt debit;
+  final BigInt credit;
+  final BigInt total;
 
-  const WalletBalanceResponse({required this.debit});
+  const WalletBalanceResponse({
+    required this.debit,
+    required this.credit,
+    required this.total,
+  });
 
   @override
-  int get hashCode => debit.hashCode;
+  int get hashCode => debit.hashCode ^ credit.hashCode ^ total.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is WalletBalanceResponse &&
           runtimeType == other.runtimeType &&
-          debit == other.debit;
+          debit == other.debit &&
+          credit == other.credit &&
+          total == other.total;
 }
 
 class WalletCheckPendingMintsResponse {
@@ -571,6 +583,46 @@ class WalletCurrencyUnitResponse {
           unit == other.unit;
 }
 
+class WalletDevModeDetailedBalanceEntry {
+  final String kid;
+  final BigInt? finalExpiry;
+  final BigInt amount;
+
+  const WalletDevModeDetailedBalanceEntry({
+    required this.kid,
+    this.finalExpiry,
+    required this.amount,
+  });
+
+  @override
+  int get hashCode => kid.hashCode ^ finalExpiry.hashCode ^ amount.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletDevModeDetailedBalanceEntry &&
+          runtimeType == other.runtimeType &&
+          kid == other.kid &&
+          finalExpiry == other.finalExpiry &&
+          amount == other.amount;
+}
+
+class WalletDevModeDetailedBalanceResponse {
+  final List<WalletDevModeDetailedBalanceEntry> entries;
+
+  const WalletDevModeDetailedBalanceResponse({required this.entries});
+
+  @override
+  int get hashCode => entries.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletDevModeDetailedBalanceResponse &&
+          runtimeType == other.runtimeType &&
+          entries == other.entries;
+}
+
 class WalletError implements FrbException {
   final WalletErrorKind kind;
   final String msg;
@@ -620,6 +672,7 @@ class WalletFfiConfig {
   final String mnemonic;
   final List<String> nostrRelays;
   final int swapExpiryMinutes;
+  final bool devMode;
 
   const WalletFfiConfig({
     required this.dbFolderPath,
@@ -631,6 +684,7 @@ class WalletFfiConfig {
     required this.mnemonic,
     required this.nostrRelays,
     required this.swapExpiryMinutes,
+    required this.devMode,
   });
 
   @override
@@ -643,7 +697,8 @@ class WalletFfiConfig {
       bitcoinNetwork.hashCode ^
       mnemonic.hashCode ^
       nostrRelays.hashCode ^
-      swapExpiryMinutes.hashCode;
+      swapExpiryMinutes.hashCode ^
+      devMode.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -658,7 +713,8 @@ class WalletFfiConfig {
           bitcoinNetwork == other.bitcoinNetwork &&
           mnemonic == other.mnemonic &&
           nostrRelays == other.nostrRelays &&
-          swapExpiryMinutes == other.swapExpiryMinutes;
+          swapExpiryMinutes == other.swapExpiryMinutes &&
+          devMode == other.devMode;
 }
 
 class WalletMaybeTransactionIdResponse {

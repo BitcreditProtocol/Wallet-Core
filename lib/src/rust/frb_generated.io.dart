@@ -167,6 +167,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<Transaction> dco_decode_list_transaction(dynamic raw);
 
   @protected
+  List<WalletDevModeDetailedBalanceEntry>
+  dco_decode_list_wallet_dev_mode_detailed_balance_entry(dynamic raw);
+
+  @protected
   MeltTx dco_decode_melt_tx(dynamic raw);
 
   @protected
@@ -247,6 +251,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletCurrencyUnitResponse dco_decode_wallet_currency_unit_response(
     dynamic raw,
   );
+
+  @protected
+  WalletDevModeDetailedBalanceEntry
+  dco_decode_wallet_dev_mode_detailed_balance_entry(dynamic raw);
+
+  @protected
+  WalletDevModeDetailedBalanceResponse
+  dco_decode_wallet_dev_mode_detailed_balance_response(dynamic raw);
 
   @protected
   WalletError dco_decode_wallet_error(dynamic raw);
@@ -563,6 +575,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<Transaction> sse_decode_list_transaction(SseDeserializer deserializer);
 
   @protected
+  List<WalletDevModeDetailedBalanceEntry>
+  sse_decode_list_wallet_dev_mode_detailed_balance_entry(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   MeltTx sse_decode_melt_tx(SseDeserializer deserializer);
 
   @protected
@@ -655,6 +673,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletCurrencyUnitResponse sse_decode_wallet_currency_unit_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletDevModeDetailedBalanceEntry
+  sse_decode_wallet_dev_mode_detailed_balance_entry(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletDevModeDetailedBalanceResponse
+  sse_decode_wallet_dev_mode_detailed_balance_response(
     SseDeserializer deserializer,
   );
 
@@ -1036,6 +1066,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_wallet_dev_mode_detailed_balance_entry(
+    List<WalletDevModeDetailedBalanceEntry> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_melt_tx(MeltTx self, SseSerializer serializer);
 
   @protected
@@ -1155,6 +1191,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_currency_unit_response(
     WalletCurrencyUnitResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_dev_mode_detailed_balance_entry(
+    WalletDevModeDetailedBalanceEntry self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_dev_mode_detailed_balance_response(
+    WalletDevModeDetailedBalanceResponse self,
     SseSerializer serializer,
   );
 

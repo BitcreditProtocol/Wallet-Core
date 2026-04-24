@@ -56,7 +56,7 @@ pub mod tests {
         #[async_trait]
         impl PocketApi for DebitPocket {
             fn unit(&self) -> CurrencyUnit;
-            async fn balance(&self) -> Result<Amount>;
+            async fn balance(&self, keysets_info: &[KeySetInfo]) -> Result<crate::pocket::PocketBalance>;
             async fn receive_proofs(
                 &self,
                 client: Arc<dyn ClowderMintConnector>,
@@ -94,6 +94,10 @@ pub mod tests {
                 send_amount: Amount,
                 swap_config: SwapConfig,
             ) -> Result<Vec<cashu::Proof>>;
+            async fn dev_mode_detailed_balance(
+                &self,
+                keysets_info: &[KeySetInfo],
+            ) -> Result<HashMap<cashu::Id, (Option<u64>, Amount)>>;
         }
 
         #[async_trait]

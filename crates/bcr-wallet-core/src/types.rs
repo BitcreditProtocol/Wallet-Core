@@ -6,7 +6,6 @@ use bitcoin::{address::NetworkUnchecked, secp256k1};
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use uuid::Uuid;
 
-pub type TStamp = chrono::DateTime<chrono::Utc>;
 pub type Seed = [u8; 64];
 
 pub type PaymentResultCallback = Arc<dyn Fn(Option<TransactionId>) + Send + Sync + 'static>;

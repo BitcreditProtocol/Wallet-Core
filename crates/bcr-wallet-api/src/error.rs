@@ -128,4 +128,6 @@ pub enum Error {
     Database(#[from] bcr_wallet_persistence::error::Error),
     #[error("External Error: {0}")]
     External(#[from] crate::external::Error),
+    #[error("Dev Mode is disabled")]
+    NoDevMode,
 }

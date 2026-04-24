@@ -28,7 +28,7 @@ pub mod test_utils;
 #[async_trait]
 pub trait PocketApi: SendSync {
     fn unit(&self) -> CurrencyUnit;
-    async fn balance(&self) -> Result<Amount>;
+    async fn balance(&self, keysets_info: &[KeySetInfo]) -> Result<PocketBalance>;
     async fn receive_proofs(
         &self,
         client: Arc<dyn ClowderMintConnector>,
@@ -67,6 +67,16 @@ pub trait PocketApi: SendSync {
         send_amount: Amount,
         swap_config: SwapConfig,
     ) -> Result<Vec<cashu::Proof>>;
+    async fn dev_mode_detailed_balance(
+        &self,
+        keysets_info: &[KeySetInfo],
+    ) -> Result<HashMap<cashu::Id, (Option<u64>, Amount)>>;
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct PocketBalance {
+    pub debit: Amount,
+    pub credit: Amount,
 }
 
 ///////////////////////////////////////////// SendReference

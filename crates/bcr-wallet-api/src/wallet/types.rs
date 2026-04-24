@@ -31,6 +31,15 @@ pub struct PayReference {
 #[derive(Debug, Clone, Default)]
 pub struct WalletBalance {
     pub debit: cashu::Amount,
+    pub credit: cashu::Amount,
+    pub total: cashu::Amount,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletDetailedBalanceEntry {
+    pub kid: cashu::Id,
+    pub final_expiry: Option<u64>,
+    pub amount: cashu::Amount,
 }
 
 #[derive(Debug, Clone)]

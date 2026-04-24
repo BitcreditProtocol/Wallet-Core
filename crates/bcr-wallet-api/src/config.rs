@@ -15,6 +15,7 @@ pub struct AppStateConfig {
     pub mnemonic: bip39::Mnemonic,
     pub swap_expiry: chrono::TimeDelta,
     pub default_mint_url: MintUrl,
+    pub dev_mode: bool,
 }
 
 #[derive(Debug, Clone)]

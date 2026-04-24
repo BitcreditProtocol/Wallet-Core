@@ -85,6 +85,8 @@ pub struct WalletFfiConfig {
     pub nostr_relays: Vec<String>,
     // Swap commitment expiry in minutes
     pub swap_expiry_minutes: u32,
+    // Dev Mode Enabled
+    pub dev_mode: bool,
 }
 
 #[frb]
@@ -132,6 +134,7 @@ pub async fn init_wallet_ffi(conf: WalletFfiConfig) {
         mnemonic: parsed_mnemonic,
         swap_expiry,
         default_mint_url: parsed_url,
+        dev_mode: conf.dev_mode,
     };
 
     let app_state = AppState::initialize(app_state_cfg)
@@ -280,6 +283,8 @@ pub async fn wallet_get_balance(req: WalletRequest) -> Result<WalletBalanceRespo
     let balance = app_state.wallet_balance(req.wallet_id).await?;
     Ok(WalletBalanceResponse {
         debit: u64::from(balance.debit),
+        credit: u64::from(balance.credit),
+        total: u64::from(balance.total),
     })
 }
 
@@ -610,6 +615,26 @@ pub async fn wallet_get_ids() -> Result<WalletsIdsResponse, WalletError> {
 }
 
 #[frb]
+pub async fn wallet_dev_mode_get_detailed_balance(
+    req: WalletRequest,
+) -> Result<WalletDevModeDetailedBalanceResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let detailed_balance = app_state
+        .wallet_dev_mode_detailed_balance(req.wallet_id)
+        .await?;
+    Ok(WalletDevModeDetailedBalanceResponse {
+        entries: detailed_balance
+            .into_iter()
+            .map(|entry| WalletDevModeDetailedBalanceEntry {
+                kid: entry.kid.to_string(),
+                final_expiry: entry.final_expiry,
+                amount: u64::from(entry.amount),
+            })
+            .collect(),
+    })
+}
+
+#[frb]
 pub async fn generate_random_mnemonic(
     req: MnemonicRequest,
 ) -> Result<MnemonicResponse, WalletError> {
@@ -705,6 +730,20 @@ pub struct WalletCurrencyUnitResponse {
 #[derive(Debug, Clone)]
 pub struct WalletBalanceResponse {
     pub debit: u64,
+    pub credit: u64,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletDevModeDetailedBalanceResponse {
+    pub entries: Vec<WalletDevModeDetailedBalanceEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletDevModeDetailedBalanceEntry {
+    pub kid: String,
+    pub final_expiry: Option<u64>,
+    pub amount: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1217,6 +1256,7 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::SchnorrSignature(_) => WalletError::internal(),
             BcrWalletError::Database(_) => WalletError::internal(),
             BcrWalletError::NoBetas => WalletError::internal(),
+            BcrWalletError::NoDevMode => WalletError::bad_request(value.to_string()),
         }
     }
 }
