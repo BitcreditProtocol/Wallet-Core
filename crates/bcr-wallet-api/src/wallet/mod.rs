@@ -147,14 +147,14 @@ impl Wallet {
             // This can be revised based on some criteria ?
             let alpha_keysets = substitute_client.get_alpha_keysets(alpha_id).await?;
 
-            // The endpoint only returns active keysets and Clowder/Wildcat don't have fees
+            // The endpoint only returns active keysets
             let intermint_alpha_infos: Vec<cashu::KeySetInfo> = alpha_keysets
                 .iter()
                 .map(|keyset| cashu::KeySetInfo {
                     id: keyset.id,
                     unit: keyset.unit.clone(),
                     active: true,
-                    input_fee_ppk: 0,
+                    input_fee_ppk: 0, // TODO: get fees from the clowder keyset
                     final_expiry: keyset.final_expiry,
                 })
                 .collect();

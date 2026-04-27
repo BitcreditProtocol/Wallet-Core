@@ -144,7 +144,7 @@ impl Pocket {
     fn find_active_keysetid(&self, keysets_info: &[KeySetInfo]) -> Result<cashu::KeySetInfo> {
         let active_info = keysets_info
             .iter()
-            .find(|info| info.unit == self.unit && info.active && info.input_fee_ppk == 0);
+            .find(|info| info.unit == self.unit && info.active);
         let Some(active_info) = active_info else {
             return Err(Error::NoActiveKeyset);
         };
@@ -210,7 +210,7 @@ impl Pocket {
         let ys = group_ys_by_keyset_id(proofs.iter());
         let mut kids: Vec<cashu::Id> = Vec::with_capacity(infos.len());
         for (kid, info) in infos.iter() {
-            if info.unit == self.unit && info.input_fee_ppk == 0 {
+            if info.unit == self.unit {
                 kids.push(*kid);
             }
         }
