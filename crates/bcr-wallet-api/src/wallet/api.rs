@@ -596,7 +596,11 @@ impl WalletApi for super::Wallet {
 
             futures.push(async move {
                 let status = beta_client.get_alpha_status(self.clowder_id).await?.state;
-                Ok::<bool, Error>(matches!(status, wire_clowder::SimpleAlphaState::Rabid(..)))
+                Ok::<bool, Error>(matches!(
+                    status,
+                    wire_clowder::SimpleAlphaState::Rabid(..)
+                        | wire_clowder::SimpleAlphaState::ConfiscatedRabid(..)
+                ))
             });
         }
 

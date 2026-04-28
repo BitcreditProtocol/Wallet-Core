@@ -1,3 +1,7 @@
+# 0.8.2
+
+* Check Rabid and Migrate Rabid now also work with `ConfiscatedRabid` state
+
 # 0.8.1
 
 * Persist alpha_tx_id and beta_tx_id for melts as per https://github.com/BitcreditProtocol/Clowder/pull/207 (breaking DB change)
