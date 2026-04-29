@@ -9,11 +9,14 @@ import 'package:collection/collection.dart';
 import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as path;
+import 'package:toml/toml.dart';
 
 class CrateHash {
-  /// Computes a hash uniquely identifying crate content. This takes into account
-  /// content all all .rs files inside the src directory, as well as Cargo.toml,
-  /// Cargo.lock, build.rs and cargokit.yaml.
+  /// Computes a hash uniquely identifying crate content.
+  ///
+  /// For workspace crates this also includes workspace package sources and the
+  /// root Cargo manifest/lockfile. The FFI crate depends on sibling crates, so
+  /// hashing only the FFI crate directory can otherwise reuse stale binaries.
   ///
   /// If [tempStorage] is provided, computed hash is stored in a file in that directory
   /// and reused on subsequent calls if the crate content hasn't changed.
@@ -24,10 +27,7 @@ class CrateHash {
     )._compute();
   }
 
-  CrateHash._({
-    required this.manifestDir,
-    required this.tempStorage,
-  });
+  CrateHash._({required this.manifestDir, required this.tempStorage});
 
   String _compute() {
     final files = getFiles();
@@ -99,24 +99,115 @@ class CrateHash {
   }
 
   List<File> getFiles() {
-    final src = Directory(path.join(manifestDir, 'src'));
-    final files = src
-        .listSync(recursive: true, followLinks: false)
-        .whereType<File>()
-        .toList();
-    files.sortBy((element) => element.path);
-    void addFile(String relative) {
-      final file = File(path.join(manifestDir, relative));
-      if (file.existsSync()) {
-        files.add(file);
-      }
+    final files = <File>[];
+    final packageDirs = <String>{path.normalize(path.absolute(manifestDir))};
+
+    final workspaceRoot = _findWorkspaceRoot();
+    if (workspaceRoot != null) {
+      packageDirs.addAll(_workspaceMemberDirs(workspaceRoot));
+      _addFile(files, path.join(workspaceRoot, 'Cargo.toml'));
+      _addFile(files, path.join(workspaceRoot, 'Cargo.lock'));
     }
 
-    addFile('Cargo.toml');
-    addFile('Cargo.lock');
-    addFile('build.rs');
-    addFile('cargokit.yaml');
-    return files;
+    for (final packageDir in packageDirs) {
+      _addSourceFiles(files, packageDir);
+      _addFile(files, path.join(packageDir, 'Cargo.toml'));
+      _addFile(files, path.join(packageDir, 'Cargo.lock'));
+      _addFile(files, path.join(packageDir, 'build.rs'));
+      _addFile(files, path.join(packageDir, 'cargokit.yaml'));
+    }
+
+    final uniqueFiles = files
+        .groupListsBy((file) => path.normalize(path.absolute(file.path)))
+        .values
+        .map((files) => files.first)
+        .toList();
+    uniqueFiles.sortBy((element) => element.path);
+    return uniqueFiles;
+  }
+
+  void _addSourceFiles(List<File> files, String packageDir) {
+    final src = Directory(path.join(packageDir, 'src'));
+    if (src.existsSync()) {
+      files.addAll(
+        src.listSync(recursive: true, followLinks: false).whereType<File>(),
+      );
+    }
+  }
+
+  void _addFile(List<File> files, String filePath) {
+    final file = File(filePath);
+    if (file.existsSync()) {
+      files.add(file);
+    }
+  }
+
+  String? _findWorkspaceRoot() {
+    var current = Directory(path.normalize(path.absolute(manifestDir)));
+
+    while (true) {
+      final manifestFile = File(path.join(current.path, 'Cargo.toml'));
+      if (manifestFile.existsSync()) {
+        final manifest = TomlDocument.parse(manifestFile.readAsStringSync());
+        if (manifest.toMap()['workspace'] is Map) {
+          return current.path;
+        }
+      }
+
+      final parent = current.parent;
+      if (parent.path == current.path) {
+        return null;
+      }
+      current = parent;
+    }
+  }
+
+  List<String> _workspaceMemberDirs(String workspaceRoot) {
+    final manifestFile = File(path.join(workspaceRoot, 'Cargo.toml'));
+    final manifest = TomlDocument.parse(manifestFile.readAsStringSync());
+    final workspace = manifest.toMap()['workspace'];
+    if (workspace is! Map) {
+      return [];
+    }
+
+    final members = workspace['members'];
+    if (members is! List) {
+      return [];
+    }
+
+    return members
+        .whereType<String>()
+        .expand((member) => _expandWorkspaceMember(workspaceRoot, member))
+        .toList(growable: false);
+  }
+
+  Iterable<String> _expandWorkspaceMember(String workspaceRoot, String member) {
+    if (!member.contains('*')) {
+      final memberDir = path.normalize(path.join(workspaceRoot, member));
+      if (File(path.join(memberDir, 'Cargo.toml')).existsSync()) {
+        return [memberDir];
+      }
+      return const [];
+    }
+
+    if (!member.endsWith('/*')) {
+      return const [];
+    }
+
+    final baseDir = Directory(
+      path.normalize(
+        path.join(workspaceRoot, member.substring(0, member.length - 2)),
+      ),
+    );
+    if (!baseDir.existsSync()) {
+      return const [];
+    }
+
+    return baseDir
+        .listSync(followLinks: false)
+        .whereType<Directory>()
+        .where((dir) => File(path.join(dir.path, 'Cargo.toml')).existsSync())
+        .map((dir) => path.normalize(dir.path));
   }
 
   final String manifestDir;

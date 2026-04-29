@@ -63,6 +63,20 @@ In `pubspec.yaml`:
 
 The `ref` can either be a commit hash, a branch or a tag.
 
+### Precompiled binaries
+
+This package publishes signed precompiled iOS and Android Rust binaries from
+`.github/workflows/cd_precompiled.yml`. App CI can opt in by adding
+`cargokit_options.yaml` at the Flutter app root:
+
+```yaml
+use_precompiled_binaries: true
+```
+
+Alternatively set `CARGOKIT_USE_PRECOMPILED_BINARIES=true` in the app build
+environment. Cargokit falls back to a local Rust build if a signed binary for
+the current crate hash and target is not available.
+
 Then, in `main.dart`:
 
 ```dart
@@ -77,4 +91,3 @@ void main() async {
   runApp(const MyApp());
 }
 ```
-

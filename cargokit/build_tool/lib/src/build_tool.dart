@@ -130,6 +130,10 @@ class PrecompileBinariesCommand extends Command {
         'temp-dir',
         help: 'Directory to store temporary build artifacts',
       )
+      ..addOption(
+        'target-commitish',
+        help: 'Commit-ish used when creating a GitHub release tag',
+      )
       ..addFlag(
         "verbose",
         abbr: "v",
@@ -194,6 +198,7 @@ class PrecompileBinariesCommand extends Command {
       manifestDir: manifestDir,
       repositorySlug: RepositorySlug.full(argResults!['repository'] as String),
       targets: targets,
+      targetCommitish: argResults!['target-commitish'] as String?,
       androidSdkLocation: argResults!['android-sdk-location'] as String?,
       androidNdkVersion: argResults!['android-ndk-version'] as String?,
       androidMinSdkVersion: androidMinSdkVersion,

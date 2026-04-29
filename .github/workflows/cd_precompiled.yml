@@ -1,0 +1,105 @@
+name: Release precompiled binaries
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "cargokit/**"
+      - ".github/workflows/cd_precompiled.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: precompiled-binaries-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  precompile:
+    name: Precompile ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - platform: ios
+            os: macos-latest
+          - platform: android
+            os: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Set up Dart
+        uses: dart-lang/setup-dart@v1
+
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
+        with:
+          app-id: ${{ vars.PRIVATE_REPO_ACCESS_APP_ID }}
+          private-key: ${{ secrets.PRIVATE_REPO_ACCESS_APP_PRIVATE_KEY }}
+          owner: BitcreditProtocol
+
+      - name: Git auth with app token
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Activate cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          prefix-key: wallet-ffi-precompiled-${{ matrix.platform }}
+
+      - name: Precompile iOS
+        if: matrix.platform == 'ios'
+        working-directory: cargokit/build_tool
+        run: |
+          dart run build_tool precompile-binaries -v \
+            --manifest-dir=../../crates/bcr-wallet-ffi \
+            --repository=$GITHUB_REPOSITORY \
+            --target-commitish=$GITHUB_SHA \
+            --target=aarch64-apple-ios \
+            --target=aarch64-apple-ios-sim \
+            --target=x86_64-apple-ios
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PRIVATE_KEY: ${{ secrets.PRECOMPILED_BINARIES_SIG_PRIVATE_KEY }}
+
+      - name: Precompile Android
+        if: matrix.platform == 'android'
+        working-directory: cargokit/build_tool
+        run: |
+          android_sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          ndk_path="${ANDROID_NDK_HOME:-}"
+          if [ -z "$ndk_path" ]; then
+            ndk_path="$(find "$android_sdk/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          fi
+          ndk_version="$(basename "$ndk_path")"
+          echo "NDK Version: $ndk_version"
+
+          dart run build_tool precompile-binaries -v \
+            --manifest-dir=../../crates/bcr-wallet-ffi \
+            --repository=$GITHUB_REPOSITORY \
+            --target-commitish=$GITHUB_SHA \
+            --android-sdk-location="$android_sdk" \
+            --android-ndk-version="$ndk_version" \
+            --android-min-sdk-version=27 \
+            --target=armv7-linux-androideabi \
+            --target=aarch64-linux-android \
+            --target=i686-linux-android \
+            --target=x86_64-linux-android
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PRIVATE_KEY: ${{ secrets.PRECOMPILED_BINARIES_SIG_PRIVATE_KEY }}

@@ -25,6 +25,7 @@ class PrecompileBinaries {
     required this.repositorySlug,
     required this.manifestDir,
     required this.targets,
+    this.targetCommitish,
     this.androidSdkLocation,
     this.androidNdkVersion,
     this.androidMinSdkVersion,
@@ -36,6 +37,7 @@ class PrecompileBinaries {
   final RepositorySlug repositorySlug;
   final String manifestDir;
   final List<Target> targets;
+  final String? targetCommitish;
   final String? androidSdkLocation;
   final String? androidNdkVersion;
   final int? androidMinSdkVersion;
@@ -190,7 +192,7 @@ class PrecompileBinaries {
           CreateRelease.from(
             tagName: tagName,
             name: 'Precompiled binaries ${hash.substring(0, 8)}',
-            targetCommitish: null,
+            targetCommitish: targetCommitish,
             isDraft: false,
             isPrerelease: false,
             body: 'Precompiled binaries for crate $packageName, '
