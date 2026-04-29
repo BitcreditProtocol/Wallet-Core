@@ -74,7 +74,7 @@ class PrecompileBinaries {
 
     final github = GitHub(auth: Authentication.withToken(githubToken));
     final repo = github.repositories;
-    final release = await _getOrCreateRelease(
+    var release = await _getOrCreateRelease(
       repo: repo,
       tagName: tagName,
       packageName: crateInfo.packageName,
@@ -174,6 +174,8 @@ class PrecompileBinaries {
         }
       }
     }
+
+    release = await _updateReleaseMetadata(github, release);
 
     _log.info('Cleaning up');
     tempDir.deleteSync(recursive: true);
