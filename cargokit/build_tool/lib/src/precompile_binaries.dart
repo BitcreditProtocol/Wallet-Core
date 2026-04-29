@@ -208,6 +208,26 @@ class PrecompileBinaries {
         }),
       );
     }
-    return release;
+    return _updateReleaseMetadata(github, release);
+  }
+
+  Future<Release> _updateReleaseMetadata(
+    GitHub github,
+    Release release,
+  ) async {
+    final releaseId = release.id;
+    if (releaseId == null) {
+      return release;
+    }
+    return github.patchJSON<Map<String, dynamic>, Release>(
+      '/repos/${repositorySlug.fullName}/releases/$releaseId',
+      statusCode: 200,
+      convert: Release.fromJson,
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'prerelease': prerelease,
+        'make_latest': 'false',
+      }),
+    );
   }
 }
