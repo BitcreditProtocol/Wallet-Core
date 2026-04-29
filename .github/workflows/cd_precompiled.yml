@@ -2,7 +2,8 @@ name: Release precompiled binaries
 
 on:
   push:
-    branches: ["**"]
+    branches: ["**"] # replace with master
+    tags: ["v*"]
     paths:
       - "Cargo.lock"
       - "Cargo.toml"
@@ -10,6 +11,12 @@ on:
       - "cargokit/**"
       - ".github/workflows/cd_precompiled.yml"
   workflow_dispatch:
+    inputs:
+      prerelease:
+        description: "Create GitHub release as a prerelease"
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -70,6 +77,7 @@ jobs:
             --manifest-dir=../../crates/bcr-wallet-ffi \
             --repository=$GITHUB_REPOSITORY \
             --target-commitish=$GITHUB_SHA \
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.prerelease) && '--prerelease' || '' }} \
             --target=aarch64-apple-ios \
             --target=aarch64-apple-ios-sim \
             --target=x86_64-apple-ios
@@ -93,6 +101,7 @@ jobs:
             --manifest-dir=../../crates/bcr-wallet-ffi \
             --repository=$GITHUB_REPOSITORY \
             --target-commitish=$GITHUB_SHA \
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.prerelease) && '--prerelease' || '' }} \
             --android-sdk-location="$android_sdk" \
             --android-ndk-version="$ndk_version" \
             --android-min-sdk-version=27 \

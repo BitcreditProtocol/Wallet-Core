@@ -1,6 +1,7 @@
 /// This is copied from Cargokit (which is the official way to use it currently)
 /// Details: https://fzyzcjy.github.io/flutter_rust_bridge/manual/integrate/builtin
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:ed25519_edwards/ed25519_edwards.dart';
@@ -26,6 +27,7 @@ class PrecompileBinaries {
     required this.manifestDir,
     required this.targets,
     this.targetCommitish,
+    required this.prerelease,
     this.androidSdkLocation,
     this.androidNdkVersion,
     this.androidMinSdkVersion,
@@ -38,6 +40,7 @@ class PrecompileBinaries {
   final String manifestDir;
   final List<Target> targets;
   final String? targetCommitish;
+  final bool prerelease;
   final String? androidSdkLocation;
   final String? androidNdkVersion;
   final int? androidMinSdkVersion;
@@ -76,6 +79,7 @@ class PrecompileBinaries {
       tagName: tagName,
       packageName: crateInfo.packageName,
       hash: hash,
+      github: github,
     );
 
     final tempDir = this.tempDir != null
@@ -180,6 +184,7 @@ class PrecompileBinaries {
     required String tagName,
     required String packageName,
     required String hash,
+    required GitHub github,
   }) async {
     Release release;
     try {
@@ -187,17 +192,21 @@ class PrecompileBinaries {
       release = await repo.getReleaseByTagName(repositorySlug, tagName);
     } on ReleaseNotFound {
       _log.info('Release not found - creating release $tagName');
-      release = await repo.createRelease(
-          repositorySlug,
-          CreateRelease.from(
-            tagName: tagName,
-            name: 'Precompiled binaries ${hash.substring(0, 8)}',
-            targetCommitish: targetCommitish,
-            isDraft: false,
-            isPrerelease: false,
-            body: 'Precompiled binaries for crate $packageName, '
-                'crate hash $hash.',
-          ));
+      release = await github.postJSON<Map<String, dynamic>, Release>(
+        '/repos/${repositorySlug.fullName}/releases',
+        statusCode: 201,
+        convert: Release.fromJson,
+        body: jsonEncode({
+          'tag_name': tagName,
+          'name': 'Precompiled binaries ${hash.substring(0, 8)}',
+          'target_commitish': targetCommitish,
+          'draft': false,
+          'prerelease': prerelease,
+          'make_latest': 'false',
+          'body': 'Precompiled binaries for crate $packageName, '
+              'crate hash $hash.',
+        }),
+      );
     }
     return release;
   }

@@ -135,6 +135,11 @@ class PrecompileBinariesCommand extends Command {
         help: 'Commit-ish used when creating a GitHub release tag',
       )
       ..addFlag(
+        'prerelease',
+        defaultsTo: false,
+        help: 'Create the GitHub release as a prerelease',
+      )
+      ..addFlag(
         "verbose",
         abbr: "v",
         defaultsTo: false,
@@ -199,6 +204,7 @@ class PrecompileBinariesCommand extends Command {
       repositorySlug: RepositorySlug.full(argResults!['repository'] as String),
       targets: targets,
       targetCommitish: argResults!['target-commitish'] as String?,
+      prerelease: argResults!['prerelease'] as bool,
       androidSdkLocation: argResults!['android-sdk-location'] as String?,
       androidNdkVersion: argResults!['android-ndk-version'] as String?,
       androidMinSdkVersion: androidMinSdkVersion,
