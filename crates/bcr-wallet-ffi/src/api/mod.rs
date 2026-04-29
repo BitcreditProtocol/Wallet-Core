@@ -1151,10 +1151,10 @@ impl WalletError {
         }
     }
 
-    pub fn internal() -> Self {
+    pub fn internal(msg: String) -> Self {
         WalletError {
             kind: WalletErrorKind::Internal,
-            msg: String::default(),
+            msg: format!("Internal: {msg}"),
         }
     }
 
@@ -1188,27 +1188,31 @@ impl From<BcrWalletError> for WalletError {
         error!("Error: {value}");
         match value {
             BcrWalletError::BorshSignature(_) => WalletError::network(value.to_string()),
-            BcrWalletError::Borsh(_error) => WalletError::internal(),
+            BcrWalletError::Borsh(_) => WalletError::internal(value.to_string()),
             BcrWalletError::CashuMintUrl(_) => WalletError::bad_request(value.to_string()),
-            BcrWalletError::Mint(_error) => WalletError::internal(),
-            BcrWalletError::Cdk(_error) => WalletError::internal(),
-            BcrWalletError::Bip39(_error) => WalletError::internal(),
-            BcrWalletError::Cdk00(_error) => WalletError::internal(),
-            BcrWalletError::Cdk01(_error) => WalletError::internal(),
-            BcrWalletError::Cdk13(_error) => WalletError::internal(),
-            BcrWalletError::Cdk11(_error) => WalletError::internal(),
-            BcrWalletError::Cdk10(_error) => WalletError::internal(),
-            BcrWalletError::CdkAmount(_error) => WalletError::internal(),
-            BcrWalletError::CdkDhke(_error) => WalletError::internal(),
-            BcrWalletError::BtcBip32(_error) => WalletError::internal(),
-            BcrWalletError::Uuid(_error) => WalletError::internal(),
-            BcrWalletError::Nip19(_error) => WalletError::internal(),
-            BcrWalletError::Nip06(_error) => WalletError::internal(),
+            BcrWalletError::Mint(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Cdk(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Bip39(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Cdk00(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Cdk01(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Cdk13(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Cdk11(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Cdk10(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::CdkAmount(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::CdkDhke(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::BtcBip32(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Uuid(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Nip19(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Nip06(_) => WalletError::internal(value.to_string()),
             BcrWalletError::NostrClient(_) => WalletError::network(value.to_string()),
-            BcrWalletError::SerdeJson(_error) => WalletError::internal(),
+            BcrWalletError::SerdeJson(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Url(_) => WalletError::bad_request(value.to_string()),
             BcrWalletError::ReqwestClient(_) => WalletError::network(value.to_string()),
-            BcrWalletError::InsufficientFunds => WalletError::bad_request(value.to_string()),
+            BcrWalletError::InsufficientBalance(_, _) => {
+                WalletError::bad_request(value.to_string())
+            }
+            BcrWalletError::InvalidSplitTarget => WalletError::internal(value.to_string()),
+            BcrWalletError::ExcessiveSplitting(_) => WalletError::internal(value.to_string()),
             BcrWalletError::WalletNotFound(id) => WalletError::not_found(id.to_string()),
             BcrWalletError::EmptyToken(_) => WalletError::bad_request(value.to_string()),
             BcrWalletError::InvalidToken(_) => WalletError::bad_request(value.to_string()),
@@ -1225,18 +1229,18 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::UnknownPaymentRequest(_) => WalletError::bad_request(value.to_string()),
             BcrWalletError::PaymentExpired => WalletError::bad_request(value.to_string()),
             BcrWalletError::MeltUnpaid(_) => WalletError::bad_request(value.to_string()),
-            BcrWalletError::InterMint => WalletError::internal(),
-            BcrWalletError::SpendingConditions => WalletError::internal(),
+            BcrWalletError::InterMint => WalletError::internal(value.to_string()),
+            BcrWalletError::SpendingConditions => WalletError::internal(value.to_string()),
             BcrWalletError::NoTransport => WalletError::network(value.to_string()),
-            BcrWalletError::MaxExchangeAttempts => WalletError::internal(),
-            BcrWalletError::InvalidClowderPath => WalletError::internal(),
-            BcrWalletError::BetaNotFound(_mint_url) => WalletError::internal(),
-            BcrWalletError::NoSubstitute => WalletError::internal(),
+            BcrWalletError::MaxExchangeAttempts => WalletError::internal(value.to_string()),
+            BcrWalletError::InvalidClowderPath => WalletError::internal(value.to_string()),
+            BcrWalletError::BetaNotFound(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::NoSubstitute => WalletError::internal(value.to_string()),
             BcrWalletError::Unsupported(_) => WalletError {
                 kind: WalletErrorKind::Unsupported,
                 msg: String::default(),
             },
-            BcrWalletError::External(_) => WalletError::internal(),
+            BcrWalletError::External(_) => WalletError::internal(value.to_string()),
             BcrWalletError::WalletAlreadyExists => WalletError::bad_request(value.to_string()),
             BcrWalletError::InvalidMnemonic => WalletError::bad_request(value.to_string()),
             BcrWalletError::InvalidMintUrl(_, _) => WalletError::bad_request(value.to_string()),
@@ -1244,18 +1248,19 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::TransactionCantBeReclaimed(_) => {
                 WalletError::bad_request(value.to_string())
             }
-            BcrWalletError::MintingError(_) => WalletError::internal(),
+            BcrWalletError::MintingError(_) => WalletError::internal(value.to_string()),
             BcrWalletError::InsufficientOnChainMeltAmount(_) => {
                 WalletError::bad_request(value.to_string())
             }
             BcrWalletError::InsufficientOnChainMintAmount(_) => {
                 WalletError::bad_request(value.to_string())
             }
-            BcrWalletError::MissingDleq => WalletError::internal(),
-            BcrWalletError::InterMintButNoClowderPath => WalletError::internal(),
-            BcrWalletError::SchnorrSignature(_) => WalletError::internal(),
-            BcrWalletError::Database(_) => WalletError::internal(),
-            BcrWalletError::NoBetas => WalletError::internal(),
+            BcrWalletError::MissingDleq => WalletError::internal(value.to_string()),
+            BcrWalletError::InterMintButNoClowderPath => WalletError::internal(value.to_string()),
+            BcrWalletError::SchnorrSignature(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Database(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Swap(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::NoBetas => WalletError::internal(value.to_string()),
             BcrWalletError::NoDevMode => WalletError::bad_request(value.to_string()),
         }
     }
