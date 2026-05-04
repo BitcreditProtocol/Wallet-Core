@@ -236,7 +236,8 @@ class CargokitUserOptions {
     if (value == null) {
       return null;
     }
-    switch (value.toLowerCase()) {
+    final normalizedValue = value.trim().toLowerCase();
+    switch (normalizedValue) {
       case '1':
       case 'true':
       case 'yes':

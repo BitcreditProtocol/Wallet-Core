@@ -175,8 +175,6 @@ class PrecompileBinaries {
       }
     }
 
-    release = await _updateReleaseMetadata(github, release);
-
     _log.info('Cleaning up');
     tempDir.deleteSync(recursive: true);
   }
