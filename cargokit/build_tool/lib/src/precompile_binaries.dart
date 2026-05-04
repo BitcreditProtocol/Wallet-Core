@@ -120,15 +120,18 @@ class PrecompileBinaries {
               ])
           .toList(growable: false);
 
-      final existingRequiredAssetNames = requiredAssetNames
-          .where((name) => releaseAssets.containsKey(name))
+      final uploadedRequiredAssetNames = requiredAssetNames
+          .where((name) => _assetIsUploaded(releaseAssets[name]))
           .toList(growable: false);
 
-      if (existingRequiredAssetNames.length == requiredAssetNames.length) {
+      if (uploadedRequiredAssetNames.length == requiredAssetNames.length) {
         _log.info("All artifacts for $target already exist - skipping");
         continue;
       }
 
+      final existingRequiredAssetNames = requiredAssetNames
+          .where((name) => releaseAssets.containsKey(name))
+          .toList(growable: false);
       if (existingRequiredAssetNames.isNotEmpty) {
         _log.warning(
             'Found partial artifacts for $target - deleting and rebuilding: '
@@ -199,7 +202,7 @@ class PrecompileBinaries {
       }
 
       final missingAssetNames = requiredAssetNames
-          .where((name) => !releaseAssets.containsKey(name))
+          .where((name) => !_assetIsUploaded(releaseAssets[name]))
           .toList(growable: false);
       if (missingAssetNames.isNotEmpty) {
         throw Exception('Missing uploaded assets for $target: '
@@ -224,6 +227,10 @@ class PrecompileBinaries {
       for (final asset in assets)
         if (asset.name != null) asset.name!: asset,
     };
+  }
+
+  bool _assetIsUploaded(ReleaseAsset? asset) {
+    return asset?.state == 'uploaded';
   }
 
   Future<Release> _getOrCreateRelease({
