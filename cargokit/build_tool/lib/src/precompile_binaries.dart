@@ -125,7 +125,7 @@ class PrecompileBinaries {
           .toList(growable: false);
 
       if (uploadedRequiredAssetNames.length == requiredAssetNames.length) {
-        _log.info("All artifacts for $target already exist - skipping");
+        _log.info('All artifacts for $target already exist - skipping');
         continue;
       }
 
