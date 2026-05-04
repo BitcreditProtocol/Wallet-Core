@@ -1,6 +1,7 @@
 /// This is copied from Cargokit (which is the official way to use it currently)
 /// Details: https://fzyzcjy.github.io/flutter_rust_bridge/manual/integrate/builtin
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:ed25519_edwards/ed25519_edwards.dart';
@@ -25,6 +26,8 @@ class PrecompileBinaries {
     required this.repositorySlug,
     required this.manifestDir,
     required this.targets,
+    this.targetCommitish,
+    required this.prerelease,
     this.androidSdkLocation,
     this.androidNdkVersion,
     this.androidMinSdkVersion,
@@ -36,6 +39,8 @@ class PrecompileBinaries {
   final RepositorySlug repositorySlug;
   final String manifestDir;
   final List<Target> targets;
+  final String? targetCommitish;
+  final bool prerelease;
   final String? androidSdkLocation;
   final String? androidNdkVersion;
   final int? androidMinSdkVersion;
@@ -69,11 +74,12 @@ class PrecompileBinaries {
 
     final github = GitHub(auth: Authentication.withToken(githubToken));
     final repo = github.repositories;
-    final release = await _getOrCreateRelease(
+    var release = await _getOrCreateRelease(
       repo: repo,
       tagName: tagName,
       packageName: crateInfo.packageName,
       hash: hash,
+      github: github,
     );
 
     final tempDir = this.tempDir != null
@@ -178,6 +184,7 @@ class PrecompileBinaries {
     required String tagName,
     required String packageName,
     required String hash,
+    required GitHub github,
   }) async {
     Release release;
     try {
@@ -185,18 +192,42 @@ class PrecompileBinaries {
       release = await repo.getReleaseByTagName(repositorySlug, tagName);
     } on ReleaseNotFound {
       _log.info('Release not found - creating release $tagName');
-      release = await repo.createRelease(
-          repositorySlug,
-          CreateRelease.from(
-            tagName: tagName,
-            name: 'Precompiled binaries ${hash.substring(0, 8)}',
-            targetCommitish: null,
-            isDraft: false,
-            isPrerelease: false,
-            body: 'Precompiled binaries for crate $packageName, '
-                'crate hash $hash.',
-          ));
+      release = await github.postJSON<Map<String, dynamic>, Release>(
+        '/repos/${repositorySlug.fullName}/releases',
+        statusCode: 201,
+        convert: Release.fromJson,
+        body: jsonEncode({
+          'tag_name': tagName,
+          'name': 'Precompiled binaries ${hash.substring(0, 8)}',
+          if (targetCommitish != null) 'target_commitish': targetCommitish,
+          'draft': false,
+          'prerelease': prerelease,
+          'make_latest': 'false',
+          'body': 'Precompiled binaries for crate $packageName, '
+              'crate hash $hash.',
+        }),
+      );
     }
-    return release;
+    return _updateReleaseMetadata(github, release);
+  }
+
+  Future<Release> _updateReleaseMetadata(
+    GitHub github,
+    Release release,
+  ) async {
+    final releaseId = release.id;
+    if (releaseId == null) {
+      return release;
+    }
+    return github.patchJSON<Map<String, dynamic>, Release>(
+      '/repos/${repositorySlug.fullName}/releases/$releaseId',
+      statusCode: 200,
+      convert: Release.fromJson,
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'prerelease': prerelease,
+        'make_latest': 'false',
+      }),
+    );
   }
 }
