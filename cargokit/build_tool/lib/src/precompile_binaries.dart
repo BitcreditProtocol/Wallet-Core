@@ -199,7 +199,7 @@ class PrecompileBinaries {
         body: jsonEncode({
           'tag_name': tagName,
           'name': 'Precompiled binaries ${hash.substring(0, 8)}',
-          'target_commitish': targetCommitish,
+          if (targetCommitish != null) 'target_commitish': targetCommitish,
           'draft': false,
           'prerelease': prerelease,
           'make_latest': 'false',

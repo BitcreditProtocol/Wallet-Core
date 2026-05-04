@@ -62,8 +62,8 @@ jobs:
         run: |
           dart run build_tool precompile-binaries -v \
             --manifest-dir=../../crates/bcr-wallet-ffi \
-            --repository=$GITHUB_REPOSITORY \
-            --target-commitish=$GITHUB_SHA \
+            --repository="$GITHUB_REPOSITORY" \
+            --target-commitish="$GITHUB_SHA" \
             --prerelease \
             --target=aarch64-apple-ios \
             --target=aarch64-apple-ios-sim \
@@ -86,8 +86,8 @@ jobs:
 
           dart run build_tool precompile-binaries -v \
             --manifest-dir=../../crates/bcr-wallet-ffi \
-            --repository=$GITHUB_REPOSITORY \
-            --target-commitish=$GITHUB_SHA \
+            --repository="$GITHUB_REPOSITORY" \
+            --target-commitish="$GITHUB_SHA" \
             --prerelease \
             --android-sdk-location="$android_sdk" \
             --android-ndk-version="$ndk_version" \
