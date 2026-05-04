@@ -18,6 +18,7 @@ pub struct SendSummary {
     pub swap_fees: Amount,
     pub send_fees: Amount,
 }
+
 impl SendSummary {
     pub fn new() -> Self {
         Self {

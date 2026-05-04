@@ -739,7 +739,11 @@ impl WalletApi for super::Wallet {
 
             futures.push(async move {
                 let status = beta_client.get_alpha_status(self.clowder_id).await?.state;
-                Ok::<bool, Error>(matches!(status, wire_clowder::SimpleAlphaState::Rabid(..)))
+                Ok::<bool, Error>(matches!(
+                    status,
+                    wire_clowder::SimpleAlphaState::Rabid(..)
+                        | wire_clowder::SimpleAlphaState::ConfiscatedRabid(..)
+                ))
             });
         }
 
@@ -846,10 +850,20 @@ impl WalletApi for super::Wallet {
 
         tracing::info!("Exchanging debit offline");
         for (_, proofs) in debit_proofs.iter() {
-            let exchanged = self
+            match self
                 .offline_exchange(substitute.as_ref(), proofs.clone())
-                .await?;
-            exchanged_debit.extend(exchanged);
+                .await
+            {
+                Ok(exchanged) => {
+                    exchanged_debit.extend(exchanged);
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Could not exchange {} proofs during pocket migration: {e}",
+                        proofs.len()
+                    );
+                }
+            }
         }
 
         self.client = substitute;

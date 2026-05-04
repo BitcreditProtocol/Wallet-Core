@@ -19,6 +19,11 @@
 * Add `dev_mode` field in config
 * Add Endpoint `wallet_dev_mode_get_detailed_balance` that returns a listing of funds for each keyset with the expiry of the keyset
 * Return `debit`, `credit` and `total` from balance
+* Implement basic Fees and Coin Selection
+
+# 0.8.2
+
+* Check Rabid and Migrate Rabid now also work with ConfiscatedRabid state
 
 # 0.8.1
 

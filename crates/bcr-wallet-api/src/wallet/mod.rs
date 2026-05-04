@@ -154,7 +154,7 @@ impl Wallet {
                     id: keyset.id,
                     unit: keyset.unit.clone(),
                     active: true,
-                    input_fee_ppk: 0, // TODO: get fees from the clowder keyset
+                    input_fee_ppk: 1, // TODO: get fees from the clowder keyset
                     final_expiry: keyset.final_expiry,
                 })
                 .collect();
@@ -312,12 +312,11 @@ impl Wallet {
                 )
                 .await?;
         } else {
-            if amount != tx.amount {
-                tracing::warn!(
-                    "Reclaimed amount does not match the transaction amount for {tx_id}: {amount} vs. {}",
-                    tx.amount
-                );
-            }
+            let fee = if tx.amount > amount {
+                tx.amount - amount
+            } else {
+                Amount::ZERO
+            };
 
             // Set reclaimed transaction to canceled
             self.tx_repo
@@ -327,6 +326,10 @@ impl Wallet {
                     TransactionStatus::Canceled.to_string(),
                 )
                 .await?;
+            if fee > Amount::ZERO {
+                // Set fee in reclaimed transaction
+                self.tx_repo.update_fee(tx_id, fee).await?;
+            }
         }
 
         Ok(amount)
@@ -842,6 +845,24 @@ mod tests {
         w
     }
 
+    fn reclaimable_tx(amount: Amount) -> Transaction {
+        Transaction {
+            mint_url: cashu::MintUrl::from_str("https://mint.example").unwrap(),
+            direction: TransactionDirection::Outgoing,
+            fee: Amount::ZERO,
+            amount,
+            memo: None,
+            metadata: HashMap::from([(
+                String::from(TRANSACTION_STATUS_METADATA_KEY),
+                TransactionStatus::Pending.to_string(),
+            )]),
+            timestamp: 123,
+            unit: CurrencyUnit::Sat,
+            ys: vec![],
+            quote_id: None,
+        }
+    }
+
     #[tokio::test]
     async fn test_config_builds_expected_config() {
         let mut ctx = wallet_ctx();
@@ -1327,5 +1348,183 @@ mod tests {
         let wlt = wallet(ctx);
         let recovered = wlt.recover_pending_stale_proofs(&[]).await.unwrap();
         assert_eq!(recovered, Amount::from(10u64));
+    }
+
+    #[tokio::test]
+    async fn test_reclaim_tx_errors_if_transaction_cant_be_reclaimed() {
+        let mut ctx = wallet_ctx();
+        let tx_id = TransactionId::new(vec![]);
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        let tx = Transaction {
+            metadata: HashMap::from([(
+                String::from(TRANSACTION_STATUS_METADATA_KEY),
+                TransactionStatus::Settled.to_string(),
+            )]),
+            ..reclaimable_tx(Amount::from(10u64))
+        };
+
+        ctx.tx_repo
+            .expect_load_tx()
+            .times(2)
+            .returning(move |_| Ok(tx.clone()));
+
+        let wlt = wallet(ctx);
+        let err = wlt.reclaim_tx(tx_id).await.unwrap_err();
+
+        match err {
+            Error::TransactionCantBeReclaimed(id) => assert_eq!(id, tx_id),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reclaim_tx_sets_settled_if_nothing_reclaimed() {
+        let mut ctx = wallet_ctx();
+        let tx_id = TransactionId::new(vec![]);
+        let tx = reclaimable_tx(Amount::from(10u64));
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        ctx.client
+            .expect_post_check_state()
+            .times(1)
+            .returning(|_| Ok(vec![]));
+
+        ctx.tx_repo
+            .expect_load_tx()
+            .times(2)
+            .returning(move |_| Ok(tx.clone()));
+
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+
+        ctx.debit
+            .expect_reclaim_proofs()
+            .times(1)
+            .returning(|_, _, _, _| Ok(Amount::ZERO));
+
+        ctx.tx_repo
+            .expect_update_metadata()
+            .times(1)
+            .withf(|_, key, value| {
+                key == TRANSACTION_STATUS_METADATA_KEY
+                    && value == &TransactionStatus::Settled.to_string()
+            })
+            .returning(|_, _, _| Ok(None));
+
+        let wlt = wallet(ctx);
+        let amount = wlt.reclaim_tx(tx_id).await.unwrap();
+
+        assert_eq!(amount, Amount::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_reclaim_tx_sets_canceled_without_fee_if_fully_reclaimed() {
+        let mut ctx = wallet_ctx();
+        let tx_id = TransactionId::new(vec![]);
+        let tx = reclaimable_tx(Amount::from(10u64));
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        ctx.client
+            .expect_post_check_state()
+            .times(1)
+            .returning(|_| Ok(vec![]));
+
+        ctx.tx_repo
+            .expect_load_tx()
+            .times(2)
+            .returning(move |_| Ok(tx.clone()));
+
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+
+        ctx.debit
+            .expect_reclaim_proofs()
+            .times(1)
+            .returning(|_, _, _, _| Ok(Amount::from(10u64)));
+
+        ctx.tx_repo
+            .expect_update_metadata()
+            .times(1)
+            .withf(|_, key, value| {
+                key == TRANSACTION_STATUS_METADATA_KEY
+                    && value == &TransactionStatus::Canceled.to_string()
+            })
+            .returning(|_, _, _| Ok(None));
+
+        ctx.tx_repo.expect_update_fee().times(0);
+
+        let wlt = wallet(ctx);
+        let amount = wlt.reclaim_tx(tx_id).await.unwrap();
+
+        assert_eq!(amount, Amount::from(10u64));
+    }
+
+    #[tokio::test]
+    async fn test_reclaim_tx_sets_canceled_and_fee_if_partially_reclaimed() {
+        let mut ctx = wallet_ctx();
+        let tx_id = TransactionId::new(vec![]);
+        let tx = reclaimable_tx(Amount::from(10u64));
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        ctx.client
+            .expect_post_check_state()
+            .times(1)
+            .returning(|_| Ok(vec![]));
+
+        ctx.tx_repo
+            .expect_load_tx()
+            .times(2)
+            .returning(move |_| Ok(tx.clone()));
+
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+
+        ctx.debit
+            .expect_reclaim_proofs()
+            .times(1)
+            .returning(|_, _, _, _| Ok(Amount::from(7u64)));
+
+        ctx.tx_repo
+            .expect_update_metadata()
+            .times(1)
+            .withf(|_, key, value| {
+                key == TRANSACTION_STATUS_METADATA_KEY
+                    && value == &TransactionStatus::Canceled.to_string()
+            })
+            .returning(|_, _, _| Ok(None));
+
+        ctx.tx_repo
+            .expect_update_fee()
+            .times(1)
+            .withf(|_, fee| *fee == Amount::from(3u64))
+            .returning(|_, _| Ok(()));
+
+        let wlt = wallet(ctx);
+        let amount = wlt.reclaim_tx(tx_id).await.unwrap();
+
+        assert_eq!(amount, Amount::from(7u64));
     }
 }
