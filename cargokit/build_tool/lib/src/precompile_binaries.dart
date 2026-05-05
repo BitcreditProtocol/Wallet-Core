@@ -105,6 +105,7 @@ class PrecompileBinaries {
     );
 
     final rustup = Rustup();
+    final releaseAssets = await _releaseAssetsByName(repo, release);
 
     for (final target in targets) {
       final artifactNames = getArtifactNames(
@@ -112,13 +113,33 @@ class PrecompileBinaries {
         libraryName: crateInfo.packageName,
         remote: true,
       );
+      final requiredAssetNames = artifactNames
+          .expand((name) => [
+                PrecompileBinaries.fileName(target, name),
+                signatureFileName(target, name),
+              ])
+          .toList(growable: false);
 
-      if (artifactNames.every((name) {
-        final fileName = PrecompileBinaries.fileName(target, name);
-        return (release.assets ?? []).any((e) => e.name == fileName);
-      })) {
-        _log.info("All artifacts for $target already exist - skipping");
+      final uploadedRequiredAssetNames = requiredAssetNames
+          .where((name) => _assetIsUploaded(releaseAssets[name]))
+          .toList(growable: false);
+
+      if (uploadedRequiredAssetNames.length == requiredAssetNames.length) {
+        _log.info('All artifacts for $target already exist - skipping');
         continue;
+      }
+
+      final existingRequiredAssetNames = requiredAssetNames
+          .where((name) => releaseAssets.containsKey(name))
+          .toList(growable: false);
+      if (existingRequiredAssetNames.isNotEmpty) {
+        _log.warning(
+            'Found partial artifacts for $target - deleting and rebuilding: '
+            '$existingRequiredAssetNames');
+        for (final name in existingRequiredAssetNames) {
+          final asset = releaseAssets.remove(name)!;
+          await repo.deleteReleaseAsset(repositorySlug, asset);
+        }
       }
 
       _log.info('Building for $target');
@@ -160,7 +181,13 @@ class PrecompileBinaries {
         int retryCount = 0;
         while (true) {
           try {
-            await repo.uploadReleaseAssets(release, [asset]);
+            final uploaded = await repo.uploadReleaseAssets(release, [asset]);
+            for (final uploadedAsset in uploaded) {
+              final name = uploadedAsset.name;
+              if (name != null) {
+                releaseAssets[name] = uploadedAsset;
+              }
+            }
             break;
           } on Exception catch (e) {
             if (retryCount == 10) {
@@ -173,10 +200,37 @@ class PrecompileBinaries {
           }
         }
       }
+
+      final missingAssetNames = requiredAssetNames
+          .where((name) => !_assetIsUploaded(releaseAssets[name]))
+          .toList(growable: false);
+      if (missingAssetNames.isNotEmpty) {
+        throw Exception('Missing uploaded assets for $target: '
+            '${missingAssetNames.join(', ')}');
+      }
     }
 
     _log.info('Cleaning up');
     tempDir.deleteSync(recursive: true);
+  }
+
+  Future<Map<String, ReleaseAsset>> _releaseAssetsByName(
+    RepositoriesService repo,
+    Release release,
+  ) async {
+    if (release.id == null) {
+      return {};
+    }
+    final assets =
+        await repo.listReleaseAssets(repositorySlug, release).toList();
+    return {
+      for (final asset in assets)
+        if (asset.name != null) asset.name!: asset,
+    };
+  }
+
+  bool _assetIsUploaded(ReleaseAsset? asset) {
+    return asset?.state == 'uploaded';
   }
 
   Future<Release> _getOrCreateRelease({
