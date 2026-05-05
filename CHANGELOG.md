@@ -1,6 +1,7 @@
 # 0.9.1
 
 * Add `code` to `WalletError` for ffi
+* Fix fee for minting
 
 # 0.9.0
 
