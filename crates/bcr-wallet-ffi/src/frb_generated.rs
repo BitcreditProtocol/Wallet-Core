@@ -553,11 +553,13 @@ fn wire__crate__api__wallet_error_bad_request_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_msg = <String>::sse_decode(&mut deserializer);
+            let api_code = <crate::api::WalletErrorCode>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, ()>((move || {
-                    let output_ok =
-                        Result::<_, ()>::Ok(crate::api::WalletError::bad_request(api_msg))?;
+                    let output_ok = Result::<_, ()>::Ok(crate::api::WalletError::bad_request(
+                        api_msg, api_code,
+                    ))?;
                     Ok(output_ok)
                 })())
             }
@@ -654,11 +656,12 @@ fn wire__crate__api__wallet_error_not_found_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_msg = <String>::sse_decode(&mut deserializer);
+            let api_code = <crate::api::WalletErrorCode>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, ()>((move || {
                     let output_ok =
-                        Result::<_, ()>::Ok(crate::api::WalletError::not_found(api_msg))?;
+                        Result::<_, ()>::Ok(crate::api::WalletError::not_found(api_msg, api_code))?;
                     Ok(output_ok)
                 })())
             }
@@ -2241,10 +2244,48 @@ impl SseDecode for crate::api::WalletError {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_kind = <crate::api::WalletErrorKind>::sse_decode(deserializer);
+        let mut var_code = <crate::api::WalletErrorCode>::sse_decode(deserializer);
         let mut var_msg = <String>::sse_decode(deserializer);
         return crate::api::WalletError {
             kind: var_kind,
+            code: var_code,
             msg: var_msg,
+        };
+    }
+}
+
+impl SseDecode for crate::api::WalletErrorCode {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::WalletErrorCode::Internal,
+            1 => crate::api::WalletErrorCode::Network,
+            2 => crate::api::WalletErrorCode::WalletNotFound,
+            3 => crate::api::WalletErrorCode::EmptyToken,
+            4 => crate::api::WalletErrorCode::InvalidToken,
+            5 => crate::api::WalletErrorCode::CashuMintUrl,
+            6 => crate::api::WalletErrorCode::Url,
+            7 => crate::api::WalletErrorCode::InsufficientBalance,
+            8 => crate::api::WalletErrorCode::NoActiveKeyset,
+            9 => crate::api::WalletErrorCode::UnknownKeysetId,
+            10 => crate::api::WalletErrorCode::InvalidCurrencyUnit,
+            11 => crate::api::WalletErrorCode::NoPrepareRef,
+            12 => crate::api::WalletErrorCode::InactiveKeyset,
+            13 => crate::api::WalletErrorCode::NoDebitCurrencyInMint,
+            14 => crate::api::WalletErrorCode::InvalidNetwork,
+            15 => crate::api::WalletErrorCode::MissingAmount,
+            16 => crate::api::WalletErrorCode::UnknownPaymentRequest,
+            17 => crate::api::WalletErrorCode::Unsupported,
+            18 => crate::api::WalletErrorCode::TransactionCantBeReclaimed,
+            19 => crate::api::WalletErrorCode::InsufficientOnChainMeltAmount,
+            20 => crate::api::WalletErrorCode::InsufficientOnChainMintAmount,
+            21 => crate::api::WalletErrorCode::NoDevMode,
+            22 => crate::api::WalletErrorCode::InvalidBitcoinAddress,
+            23 => crate::api::WalletErrorCode::InvalidMintUrl,
+            24 => crate::api::WalletErrorCode::InvalidMnemonic,
+            25 => crate::api::WalletErrorCode::WalletAlreadyExists,
+            _ => unreachable!("Invalid variant for WalletErrorCode: {}", inner),
         };
     }
 }
@@ -3222,6 +3263,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::WalletError {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.kind.into_into_dart().into_dart(),
+            self.code.into_into_dart().into_dart(),
             self.msg.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -3230,6 +3272,48 @@ impl flutter_rust_bridge::IntoDart for crate::api::WalletError {
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::WalletError {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletError> for crate::api::WalletError {
     fn into_into_dart(self) -> crate::api::WalletError {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::WalletErrorCode {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Internal => 0.into_dart(),
+            Self::Network => 1.into_dart(),
+            Self::WalletNotFound => 2.into_dart(),
+            Self::EmptyToken => 3.into_dart(),
+            Self::InvalidToken => 4.into_dart(),
+            Self::CashuMintUrl => 5.into_dart(),
+            Self::Url => 6.into_dart(),
+            Self::InsufficientBalance => 7.into_dart(),
+            Self::NoActiveKeyset => 8.into_dart(),
+            Self::UnknownKeysetId => 9.into_dart(),
+            Self::InvalidCurrencyUnit => 10.into_dart(),
+            Self::NoPrepareRef => 11.into_dart(),
+            Self::InactiveKeyset => 12.into_dart(),
+            Self::NoDebitCurrencyInMint => 13.into_dart(),
+            Self::InvalidNetwork => 14.into_dart(),
+            Self::MissingAmount => 15.into_dart(),
+            Self::UnknownPaymentRequest => 16.into_dart(),
+            Self::Unsupported => 17.into_dart(),
+            Self::TransactionCantBeReclaimed => 18.into_dart(),
+            Self::InsufficientOnChainMeltAmount => 19.into_dart(),
+            Self::InsufficientOnChainMintAmount => 20.into_dart(),
+            Self::NoDevMode => 21.into_dart(),
+            Self::InvalidBitcoinAddress => 22.into_dart(),
+            Self::InvalidMintUrl => 23.into_dart(),
+            Self::InvalidMnemonic => 24.into_dart(),
+            Self::WalletAlreadyExists => 25.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::WalletErrorCode {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletErrorCode>
+    for crate::api::WalletErrorCode
+{
+    fn into_into_dart(self) -> crate::api::WalletErrorCode {
         self
     }
 }
@@ -4348,7 +4432,48 @@ impl SseEncode for crate::api::WalletError {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <crate::api::WalletErrorKind>::sse_encode(self.kind, serializer);
+        <crate::api::WalletErrorCode>::sse_encode(self.code, serializer);
         <String>::sse_encode(self.msg, serializer);
+    }
+}
+
+impl SseEncode for crate::api::WalletErrorCode {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::WalletErrorCode::Internal => 0,
+                crate::api::WalletErrorCode::Network => 1,
+                crate::api::WalletErrorCode::WalletNotFound => 2,
+                crate::api::WalletErrorCode::EmptyToken => 3,
+                crate::api::WalletErrorCode::InvalidToken => 4,
+                crate::api::WalletErrorCode::CashuMintUrl => 5,
+                crate::api::WalletErrorCode::Url => 6,
+                crate::api::WalletErrorCode::InsufficientBalance => 7,
+                crate::api::WalletErrorCode::NoActiveKeyset => 8,
+                crate::api::WalletErrorCode::UnknownKeysetId => 9,
+                crate::api::WalletErrorCode::InvalidCurrencyUnit => 10,
+                crate::api::WalletErrorCode::NoPrepareRef => 11,
+                crate::api::WalletErrorCode::InactiveKeyset => 12,
+                crate::api::WalletErrorCode::NoDebitCurrencyInMint => 13,
+                crate::api::WalletErrorCode::InvalidNetwork => 14,
+                crate::api::WalletErrorCode::MissingAmount => 15,
+                crate::api::WalletErrorCode::UnknownPaymentRequest => 16,
+                crate::api::WalletErrorCode::Unsupported => 17,
+                crate::api::WalletErrorCode::TransactionCantBeReclaimed => 18,
+                crate::api::WalletErrorCode::InsufficientOnChainMeltAmount => 19,
+                crate::api::WalletErrorCode::InsufficientOnChainMintAmount => 20,
+                crate::api::WalletErrorCode::NoDevMode => 21,
+                crate::api::WalletErrorCode::InvalidBitcoinAddress => 22,
+                crate::api::WalletErrorCode::InvalidMintUrl => 23,
+                crate::api::WalletErrorCode::InvalidMnemonic => 24,
+                crate::api::WalletErrorCode::WalletAlreadyExists => 25,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 

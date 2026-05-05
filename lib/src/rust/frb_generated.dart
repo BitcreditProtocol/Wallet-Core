@@ -118,13 +118,19 @@ abstract class RustLibApi extends BaseApi {
   Future<WalletDevModeDetailedBalanceResponse>
   crateApiWalletDevModeGetDetailedBalance({required WalletRequest req});
 
-  Future<WalletError> crateApiWalletErrorBadRequest({required String msg});
+  Future<WalletError> crateApiWalletErrorBadRequest({
+    required String msg,
+    required WalletErrorCode code,
+  });
 
   Future<WalletError> crateApiWalletErrorInternal({required String msg});
 
   Future<WalletError> crateApiWalletErrorNetwork({required String msg});
 
-  Future<WalletError> crateApiWalletErrorNotFound({required String msg});
+  Future<WalletError> crateApiWalletErrorNotFound({
+    required String msg,
+    required WalletErrorCode code,
+  });
 
   Future<WalletBalanceResponse> crateApiWalletGetBalance({
     required WalletRequest req,
@@ -684,12 +690,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<WalletError> crateApiWalletErrorBadRequest({required String msg}) {
+  Future<WalletError> crateApiWalletErrorBadRequest({
+    required String msg,
+    required WalletErrorCode code,
+  }) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(msg, serializer);
+          sse_encode_wallet_error_code(code, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -702,7 +712,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: null,
         ),
         constMeta: kCrateApiWalletErrorBadRequestConstMeta,
-        argValues: [msg],
+        argValues: [msg, code],
         apiImpl: this,
       ),
     );
@@ -711,7 +721,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiWalletErrorBadRequestConstMeta =>
       const TaskConstMeta(
         debugName: "wallet_error_bad_request",
-        argNames: ["msg"],
+        argNames: ["msg", "code"],
       );
 
   @override
@@ -774,12 +784,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "wallet_error_network", argNames: ["msg"]);
 
   @override
-  Future<WalletError> crateApiWalletErrorNotFound({required String msg}) {
+  Future<WalletError> crateApiWalletErrorNotFound({
+    required String msg,
+    required WalletErrorCode code,
+  }) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(msg, serializer);
+          sse_encode_wallet_error_code(code, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -792,7 +806,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: null,
         ),
         constMeta: kCrateApiWalletErrorNotFoundConstMeta,
-        argValues: [msg],
+        argValues: [msg, code],
         apiImpl: this,
       ),
     );
@@ -801,7 +815,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiWalletErrorNotFoundConstMeta =>
       const TaskConstMeta(
         debugName: "wallet_error_not_found",
-        argNames: ["msg"],
+        argNames: ["msg", "code"],
       );
 
   @override
@@ -2314,12 +2328,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   WalletError dco_decode_wallet_error(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
     return WalletError(
       kind: dco_decode_wallet_error_kind(arr[0]),
-      msg: dco_decode_String(arr[1]),
+      code: dco_decode_wallet_error_code(arr[1]),
+      msg: dco_decode_String(arr[2]),
     );
+  }
+
+  @protected
+  WalletErrorCode dco_decode_wallet_error_code(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return WalletErrorCode.values[raw as int];
   }
 
   @protected
@@ -3379,8 +3400,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   WalletError sse_decode_wallet_error(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_kind = sse_decode_wallet_error_kind(deserializer);
+    var var_code = sse_decode_wallet_error_code(deserializer);
     var var_msg = sse_decode_String(deserializer);
-    return WalletError(kind: var_kind, msg: var_msg);
+    return WalletError(kind: var_kind, code: var_code, msg: var_msg);
+  }
+
+  @protected
+  WalletErrorCode sse_decode_wallet_error_code(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return WalletErrorCode.values[inner];
   }
 
   @protected
@@ -4402,7 +4431,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_wallet_error(WalletError self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_wallet_error_kind(self.kind, serializer);
+    sse_encode_wallet_error_code(self.code, serializer);
     sse_encode_String(self.msg, serializer);
+  }
+
+  @protected
+  void sse_encode_wallet_error_code(
+    WalletErrorCode self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected

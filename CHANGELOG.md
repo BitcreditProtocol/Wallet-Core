@@ -1,3 +1,7 @@
+# 0.9.1
+
+* Add `code` to `WalletError` for ffi
+
 # 0.9.0
 
 * Updated to newest bcr-common

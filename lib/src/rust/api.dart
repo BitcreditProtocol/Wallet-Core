@@ -8,7 +8,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `get_app_state`, `init_logging`, `init_panic_hook`, `new`, `reset_runtime`, `start_jobs`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `WalletCleanLocalDbResponse`, `WalletRuntime`, `WalletsNamesResponse`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
 
 Future<void> initWalletFfi({required WalletFfiConfig conf}) =>
     RustLib.instance.api.crateApiInitWalletFfi(conf: conf);
@@ -625,12 +625,20 @@ class WalletDevModeDetailedBalanceResponse {
 
 class WalletError implements FrbException {
   final WalletErrorKind kind;
+  final WalletErrorCode code;
   final String msg;
 
-  const WalletError({required this.kind, required this.msg});
+  const WalletError({
+    required this.kind,
+    required this.code,
+    required this.msg,
+  });
 
-  static Future<WalletError> badRequest({required String msg}) =>
-      RustLib.instance.api.crateApiWalletErrorBadRequest(msg: msg);
+  static Future<WalletError> badRequest({
+    required String msg,
+    required WalletErrorCode code,
+  }) =>
+      RustLib.instance.api.crateApiWalletErrorBadRequest(msg: msg, code: code);
 
   static Future<WalletError> internal({required String msg}) =>
       RustLib.instance.api.crateApiWalletErrorInternal(msg: msg);
@@ -638,11 +646,13 @@ class WalletError implements FrbException {
   static Future<WalletError> network({required String msg}) =>
       RustLib.instance.api.crateApiWalletErrorNetwork(msg: msg);
 
-  static Future<WalletError> notFound({required String msg}) =>
-      RustLib.instance.api.crateApiWalletErrorNotFound(msg: msg);
+  static Future<WalletError> notFound({
+    required String msg,
+    required WalletErrorCode code,
+  }) => RustLib.instance.api.crateApiWalletErrorNotFound(msg: msg, code: code);
 
   @override
-  int get hashCode => kind.hashCode ^ msg.hashCode;
+  int get hashCode => kind.hashCode ^ code.hashCode ^ msg.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -650,7 +660,37 @@ class WalletError implements FrbException {
       other is WalletError &&
           runtimeType == other.runtimeType &&
           kind == other.kind &&
+          code == other.code &&
           msg == other.msg;
+}
+
+enum WalletErrorCode {
+  internal,
+  network,
+  walletNotFound,
+  emptyToken,
+  invalidToken,
+  cashuMintUrl,
+  url,
+  insufficientBalance,
+  noActiveKeyset,
+  unknownKeysetId,
+  invalidCurrencyUnit,
+  noPrepareRef,
+  inactiveKeyset,
+  noDebitCurrencyInMint,
+  invalidNetwork,
+  missingAmount,
+  unknownPaymentRequest,
+  unsupported,
+  transactionCantBeReclaimed,
+  insufficientOnChainMeltAmount,
+  insufficientOnChainMintAmount,
+  noDevMode,
+  invalidBitcoinAddress,
+  invalidMintUrl,
+  invalidMnemonic,
+  walletAlreadyExists,
 }
 
 enum WalletErrorKind {

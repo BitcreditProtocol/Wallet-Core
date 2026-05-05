@@ -2,7 +2,6 @@ use bcr_common::{
     cashu::{self, MintUrl},
     cdk,
 };
-use bitcoin::hashes::sha256::Hash as Sha256;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -70,8 +69,6 @@ pub enum Error {
     InvalidToken(String),
     #[error("invalid bitcoin address: {0}")]
     InvalidBitcoinAddress(String),
-    #[error("Invalid Hash Lock on Beta Proofs, expected {0} got {1}")]
-    InvalidHashLock(Sha256, String),
     #[error("no active keyset")]
     NoActiveKeyset,
     #[error("unknown keyset ID")]
@@ -92,16 +89,10 @@ pub enum Error {
     InvalidMnemonic,
     #[error("mint url mismatch, ours: {0}, theirs: {1}")]
     InvalidMintUrl(MintUrl, MintUrl),
-    #[error("unknown mint: {0}")]
-    UnknownMint(cashu::MintUrl),
     #[error("payment request, missing amount")]
     MissingAmount,
     #[error("payment request unknown {0}")]
     UnknownPaymentRequest(String),
-    #[error("payment expired")]
-    PaymentExpired,
-    #[error("melt op unpaid")]
-    MeltUnpaid(String),
     #[error("mint op failed: {0}")]
     MintingError(String),
     #[error("inter-mint payment not supported yet")]
