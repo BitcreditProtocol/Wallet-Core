@@ -1,7 +1,9 @@
-use std::{path::PathBuf, str::FromStr};
+use std::{collections::HashMap, path::PathBuf, str::FromStr};
 
 use anyhow::Result;
-use bcr_wallet_api::{AppState, config::AppStateConfig, generate_random_mnemonic, is_valid_token};
+use bcr_wallet_api::{
+    AppState, config::AppStateConfig, generate_random_mnemonic, get_wallet_id, is_valid_token,
+};
 use clap::{Parser, Subcommand};
 use nostr_sdk::RelayUrl;
 use serde::{Deserialize, Serialize};
@@ -14,11 +16,16 @@ use tracing_subscriber::{
 mod command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliSettings {
+    pub log_level: String,
+    pub db_path: PathBuf,
+    pub wallets: HashMap<String, WalletSettings>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletSettings {
     pub mint_url: bcr_common::cashu::MintUrl,
     pub mnemonic: bip39::Mnemonic,
-    pub log_level: String,
-    pub db_path: PathBuf,
     pub network: bitcoin::Network,
     pub nostr_relays: Vec<RelayUrl>,
 }
@@ -38,56 +45,62 @@ enum Commands {
     #[command(name = "info")]
     Info,
     #[command(name = "add_wallet")]
-    AddWallet,
+    AddWallet { id: String },
     #[command(name = "delete_wallet")]
-    DeleteWallet { id: usize },
+    DeleteWallet { id: String },
     #[command(name = "restore_wallet")]
-    RestoreWallet,
+    RestoreWallet { id: String },
     #[command(name = "receive")]
-    Receive { id: usize, token: String },
+    Receive { id: String, token: String },
     #[command(name = "request_payment")]
     RequestPayment {
-        id: usize,
+        id: String,
         amount: u64,
         description: Option<String>,
     },
     #[command(name = "send_payment")]
-    SendPayment { id: usize, input: String },
+    SendPayment { id: String, input: String },
     #[command(name = "pay_by_token")]
     PayByToken {
-        id: usize,
+        id: String,
         amount: u64,
         description: Option<String>,
     },
     #[command(name = "reclaim")]
-    Reclaim { id: usize, tx_id: String },
+    Reclaim { id: String, tx_id: String },
     #[command(name = "recover_stale")]
-    RecoverStale { id: usize },
+    RecoverStale { id: String },
     #[command(name = "melt")]
     Melt {
-        id: usize,
+        id: String,
         amount: u64,
         address: String,
         description: Option<String>,
     },
     #[command(name = "mint")]
-    Mint { id: usize, amount: u64 },
+    Mint { id: String, amount: u64 },
     #[command(name = "protest_mint")]
-    ProtestMint { id: usize, quote_id: String },
+    ProtestMint { id: String, quote_id: String },
     #[command(name = "protest_swap")]
-    ProtestSwap { id: usize, commitment_sig: String },
+    ProtestSwap { id: String, commitment_sig: String },
     #[command(name = "protest_melt")]
-    ProtestMelt { id: usize, quote_id: String },
+    ProtestMelt { id: String, quote_id: String },
     #[command(name = "migrate_rabid")]
     MigrateRabid,
     #[command(name = "run_jobs")]
     RunJobs,
     #[command(name = "gen_mnemonic")]
-    GenMnemonic,
+    GenMnemonic { network: bitcoin::Network },
+    #[command(name = "wallet_id")]
+    WalletId {
+        network: bitcoin::Network,
+        #[arg(num_args = 12..=24)]
+        mnemonic: Vec<String>,
+    },
     #[command(name = "check_token")]
     CheckToken { token: String },
     #[command(name = "check_rabid_offline")]
-    CheckRabidOffline { id: usize },
+    CheckRabidOffline { id: String },
 }
 
 #[tokio::main]
@@ -101,7 +114,7 @@ async fn main() -> Result<()> {
         .add_source(config::Environment::with_prefix("WLLT"))
         .build()?;
 
-    let settings: WalletSettings = settings.try_deserialize()?;
+    let settings: CliSettings = settings.try_deserialize()?;
 
     tracing_log::LogTracer::init().expect("LogTracer init");
     let level_filter = LevelFilter::from_str(&settings.log_level)?;
@@ -121,10 +134,11 @@ async fn main() -> Result<()> {
 
     let app_state_cfg = AppStateConfig {
         db_path: settings.db_path.clone(),
-        network: settings.network,
-        nostr_relays: settings.nostr_relays.clone(),
-        mnemonic: settings.mnemonic.clone(),
-        default_mint_url: settings.mint_url.clone(),
+        mnemonics: settings
+            .wallets
+            .iter()
+            .map(|(wid, w)| (wid.to_owned(), w.mnemonic.to_owned()))
+            .collect(),
         swap_expiry: chrono::TimeDelta::minutes(15),
         dev_mode: true,
     };
@@ -142,28 +156,29 @@ async fn main() -> Result<()> {
             info!(
                 "Receiving for {}: {}",
                 cli.wallet,
-                command::cmd_receive(&app_state, &cli.wallet, &token, id).await?
+                command::cmd_receive(&app_state, &cli.wallet, &token, &id).await?
             );
         }
-        Commands::AddWallet => {
+        Commands::AddWallet { id } => {
             info!(
                 "Adding wallet for {}: {}",
                 cli.wallet,
-                command::cmd_add_wallet(&app_state, &cli.wallet).await?
+                command::cmd_add_wallet(&app_state, &cli.wallet, &settings.wallets[&id]).await?
             );
         }
         Commands::DeleteWallet { id } => {
             info!(
                 "Deleting wallet for {}: {}",
                 cli.wallet,
-                command::cmd_delete_wallet(&app_state, &cli.wallet, id).await?
+                command::cmd_delete_wallet(&app_state, &cli.wallet, &id).await?
             );
         }
-        Commands::RestoreWallet => {
+        Commands::RestoreWallet { id } => {
             info!(
                 "Restoring wallet for {}: {}",
                 cli.wallet,
-                command::cmd_restore_wallet(&app_state, &cli.wallet).await?
+                command::cmd_restore_wallet(&app_state, &cli.wallet, &settings.wallets[&id])
+                    .await?
             );
         }
         Commands::RequestPayment {
@@ -178,7 +193,7 @@ async fn main() -> Result<()> {
                     &app_state,
                     &cli.wallet,
                     amount,
-                    id,
+                    &id,
                     description.clone()
                 )
                 .await?
@@ -188,7 +203,7 @@ async fn main() -> Result<()> {
             info!(
                 "Sending Payment for {}: {}, Input: {input}",
                 cli.wallet,
-                command::cmd_send_payment(&app_state, &cli.wallet, &input, id).await?
+                command::cmd_send_payment(&app_state, &cli.wallet, &input, &id).await?
             );
         }
         Commands::PayByToken {
@@ -199,25 +214,39 @@ async fn main() -> Result<()> {
             info!(
                 "Payment by Token for {}: {}, Amount: {amount}, Description: {description:?}",
                 cli.wallet,
-                command::cmd_pay_by_token(&app_state, &cli.wallet, id, amount, description.clone())
-                    .await?
+                command::cmd_pay_by_token(
+                    &app_state,
+                    &cli.wallet,
+                    &id,
+                    amount,
+                    description.clone()
+                )
+                .await?
             );
         }
-        Commands::GenMnemonic => {
-            info!("{}", generate_random_mnemonic(12));
+        Commands::GenMnemonic { network } => {
+            let (mnemonic, wallet_id) = generate_random_mnemonic(12, network);
+            info!("Wallet ID: {}", wallet_id);
+            info!("Mnemonic: {}", mnemonic);
+        }
+        Commands::WalletId { network, mnemonic } => {
+            let mnemonic = mnemonic.join(" ");
+            let mnemonic = bip39::Mnemonic::from_str(&mnemonic).expect("is a valid mnemonic");
+            let wallet_id = get_wallet_id(&mnemonic, network);
+            info!("Wallet ID: {}", wallet_id);
         }
         Commands::Reclaim { id, tx_id } => {
             info!(
                 "Reclaim for {}: {}",
                 cli.wallet,
-                command::cmd_reclaim(&app_state, &cli.wallet, id, &tx_id).await?
+                command::cmd_reclaim(&app_state, &cli.wallet, &id, &tx_id).await?
             );
         }
         Commands::RecoverStale { id } => {
             info!(
                 "Recover Stale proofs for {}: {}",
                 cli.wallet,
-                command::cmd_recover_stale(&app_state, &cli.wallet, id).await?
+                command::cmd_recover_stale(&app_state, &cli.wallet, &id).await?
             );
         }
         Commands::Melt {
@@ -229,7 +258,7 @@ async fn main() -> Result<()> {
             info!(
                 "Melt for {}: {}",
                 cli.wallet,
-                command::cmd_melt(&app_state, &cli.wallet, id, amount, &address, &description)
+                command::cmd_melt(&app_state, &cli.wallet, &id, amount, &address, &description)
                     .await?
             );
         }
@@ -237,28 +266,28 @@ async fn main() -> Result<()> {
             info!(
                 "Mint for {}: {}",
                 cli.wallet,
-                command::cmd_mint(&app_state, &cli.wallet, id, amount).await?
+                command::cmd_mint(&app_state, &cli.wallet, &id, amount).await?
             );
         }
         Commands::ProtestMint { id, quote_id } => {
             info!(
                 "Protest Mint for {}: {}",
                 cli.wallet,
-                command::cmd_protest_mint(&app_state, &cli.wallet, id, &quote_id).await?
+                command::cmd_protest_mint(&app_state, &cli.wallet, &id, &quote_id).await?
             );
         }
         Commands::ProtestSwap { id, commitment_sig } => {
             info!(
                 "Protest Swap for {}: {}",
                 cli.wallet,
-                command::cmd_protest_swap(&app_state, &cli.wallet, id, &commitment_sig).await?
+                command::cmd_protest_swap(&app_state, &cli.wallet, &id, &commitment_sig).await?
             );
         }
         Commands::ProtestMelt { id, quote_id } => {
             info!(
                 "Protest Melt for {}: {}",
                 cli.wallet,
-                command::cmd_protest_melt(&app_state, &cli.wallet, id, &quote_id).await?
+                command::cmd_protest_melt(&app_state, &cli.wallet, &id, &quote_id).await?
             );
         }
         Commands::MigrateRabid => {
@@ -281,8 +310,8 @@ async fn main() -> Result<()> {
                 "Check Rabid/Offline for {} and wallet {}: Rabid: {}, Offline: {}",
                 cli.wallet,
                 id,
-                app_state.wallet_mint_is_rabid(id).await?,
-                app_state.wallet_mint_is_offline(id).await?,
+                app_state.wallet_mint_is_rabid(id.clone()).await?,
+                app_state.wallet_mint_is_offline(id.clone()).await?,
             );
         }
     }

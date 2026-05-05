@@ -47,10 +47,6 @@ pub trait PocketApi: SendSync {
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
     ) -> Result<HashMap<cashu::PublicKey, cashu::Proof>>;
-    async fn cleanup_local_proofs(
-        &self,
-        client: Arc<dyn ClowderMintConnector>,
-    ) -> Result<Vec<cashu::PublicKey>>;
     async fn restore_local_proofs(
         &self,
         keysets_info: &[KeySetInfo],
@@ -74,6 +70,7 @@ pub trait PocketApi: SendSync {
         &self,
         keysets_info: &[KeySetInfo],
     ) -> Result<HashMap<cashu::Id, (Option<u64>, Amount)>>;
+    async fn delete(&self) -> Result<()>;
 }
 
 #[derive(Default, Debug, Clone)]
@@ -100,25 +97,6 @@ enum SendPlan {
         split_amount: Amount,
         estimated_fee: Amount,
     },
-}
-
-///////////////////////////////////////////// cleanup_local_proofs
-// Removes Spent proofs from local DB
-async fn cleanup_local_proofs(
-    db: &dyn PocketRepository,
-    client: Arc<dyn ClowderMintConnector>,
-) -> Result<Vec<cdk01::PublicKey>> {
-    let ys = db.list_all().await?;
-    let request = cdk07::CheckStateRequest { ys };
-    let response = client.post_check_state(request).await?;
-    let mut cleaned_ys: Vec<cdk01::PublicKey> = Vec::with_capacity(response.len());
-    for proofstate in response {
-        if proofstate.state == cdk07::State::Spent {
-            db.delete_proof(proofstate.y).await?;
-            cleaned_ys.push(proofstate.y);
-        }
-    }
-    Ok(cleaned_ys)
 }
 
 ///////////////////////////////////////////// unblind_proofs

@@ -67,6 +67,7 @@ pub trait PocketRepository: SendSync {
     ) -> Result<SwapCommitmentRecord>;
     async fn delete_commitment(&self, commitment: secp256k1::schnorr::Signature) -> Result<()>;
     async fn list_commitments(&self) -> Result<Vec<SwapCommitmentRecord>>;
+    async fn delete_repo(&self) -> Result<()>;
 }
 
 ///////////////////////////////////////////// PurseRepository
@@ -96,6 +97,7 @@ pub trait TransactionRepository: SendSync {
         value: String,
     ) -> Result<Option<String>>;
     async fn update_fee(&self, tx_id: TransactionId, fee_to_add: cashu::Amount) -> Result<()>;
+    async fn delete_repo(&self) -> Result<()>;
 }
 
 ///////////////////////////////////////////// Mint Melt Repository
@@ -141,4 +143,5 @@ pub trait MintMeltRepository: SendSync {
     async fn load_melt_commitment(&self, quote_id: Uuid) -> Result<MeltCommitmentRecord>;
     async fn delete_melt_commitment(&self, quote_id: Uuid) -> Result<()>;
     async fn list_melt_commitments(&self) -> Result<Vec<MeltCommitmentRecord>>;
+    async fn delete_repo(&self) -> Result<()>;
 }

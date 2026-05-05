@@ -66,33 +66,44 @@ async fn post_swap_commitment_inner(
         wallet_key: wallet_pk,
     };
 
-    let response = http_client
-        .post(url)
-        .json(&request)
-        .send()
-        .await?
-        .error_for_status()?;
-    let wire_swap::SwapCommitmentResponse {
-        content: committed_content,
-        commitment,
-    } = response.json().await?;
+    let response = http_client.post(url).json(&request).send().await?;
+    match response.error_for_status_ref() {
+        Ok(_) => {
+            let wire_swap::SwapCommitmentResponse {
+                content: committed_content,
+                commitment,
+            } = response.json().await?;
 
-    bcr_common::core::signature::schnorr_verify_b64(
-        &committed_content,
-        &commitment,
-        &alpha_pk.x_only_public_key().0,
-    )?;
+            bcr_common::core::signature::schnorr_verify_b64(
+                &committed_content,
+                &commitment,
+                &alpha_pk.x_only_public_key().0,
+            )?;
 
-    let inputs_ys: Vec<cashu::PublicKey> = request.inputs.iter().map(|fp| fp.y).collect();
-    Ok(SwapCommitmentResult {
-        inputs_ys,
-        outputs: request.outputs,
-        expiry,
-        commitment,
-        ephemeral_secret,
-        body_content: committed_content,
-        wallet_key,
-    })
+            let inputs_ys: Vec<cashu::PublicKey> = request.inputs.iter().map(|fp| fp.y).collect();
+            Ok(SwapCommitmentResult {
+                inputs_ys,
+                outputs: request.outputs,
+                expiry,
+                commitment,
+                ephemeral_secret,
+                body_content: committed_content,
+                wallet_key,
+            })
+        }
+        Err(err) => {
+            let status = err.status();
+            let body = response.text().await.unwrap_or_default();
+
+            tracing::error!(
+                "post_swap_commitment failed: status={:?}, body={}",
+                status,
+                body
+            );
+
+            Err(err.into())
+        }
+    }
 }
 
 async fn post_melt_quote_onchain_inner(
@@ -120,33 +131,44 @@ async fn post_melt_quote_onchain_inner(
         wallet_key,
     };
 
-    let response = http_client
-        .post(url)
-        .json(&request)
-        .send()
-        .await?
-        .error_for_status()?;
-    let wire_melt::MeltQuoteOnchainResponse {
-        content: response_content,
-        commitment,
-    } = response.json().await?;
+    let response = http_client.post(url).json(&request).send().await?;
+    match response.error_for_status_ref() {
+        Ok(_) => {
+            let wire_melt::MeltQuoteOnchainResponse {
+                content: response_content,
+                commitment,
+            } = response.json().await?;
 
-    bcr_common::core::signature::schnorr_verify_b64(
-        &response_content,
-        &commitment,
-        &alpha_pk.x_only_public_key().0,
-    )?;
+            bcr_common::core::signature::schnorr_verify_b64(
+                &response_content,
+                &commitment,
+                &alpha_pk.x_only_public_key().0,
+            )?;
 
-    let response_body: wire_melt::MeltQuoteOnchainResponseBody =
-        bcr_common::core::signature::deserialize_borsh_msg(&response_content)?;
+            let response_body: wire_melt::MeltQuoteOnchainResponseBody =
+                bcr_common::core::signature::deserialize_borsh_msg(&response_content)?;
 
-    Ok(MeltQuoteResult {
-        quote_id: response_body.quote,
-        expiry: response_body.expiry,
-        commitment,
-        ephemeral_secret,
-        body_content: response_content,
-    })
+            Ok(MeltQuoteResult {
+                quote_id: response_body.quote,
+                expiry: response_body.expiry,
+                commitment,
+                ephemeral_secret,
+                body_content: response_content,
+            })
+        }
+        Err(err) => {
+            let status = err.status();
+            let body = response.text().await.unwrap_or_default();
+
+            tracing::error!(
+                "post_melt_quote_onchain failed: status={:?}, body={}",
+                status,
+                body
+            );
+
+            Err(err.into())
+        }
+    }
 }
 
 fn convert_mint_url(mint_url: cashu::MintUrl) -> MintResult<reqwest::Url> {
@@ -426,15 +448,25 @@ impl ClowderMintConnector for HttpClientExt {
             .join(CoreEp::SWAP_V1_EXT)
             .expect("post_swap_committed url error");
         debug!("HTTP call to post_swap_committed on {url}");
-        let res = self
-            .secondary
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_swap::SwapResponse = res.json().await?;
-        Ok(response)
+        let res = self.secondary.post(url).json(&request).send().await?;
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                let response: wire_swap::SwapResponse = res.json().await?;
+                Ok(response)
+            }
+            Err(err) => {
+                let status = err.status();
+                let body = res.text().await.unwrap_or_default();
+
+                tracing::error!(
+                    "post_swap_committed failed: status={:?}, body={}",
+                    status,
+                    body
+                );
+
+                Err(err.into())
+            }
+        }
     }
 
     async fn post_protest_swap(
@@ -446,15 +478,25 @@ impl ClowderMintConnector for HttpClientExt {
             .join("v1/protest/swap")
             .expect("protest_swap url error");
         debug!("HTTP call to protest_swap on {url}");
-        let res = self
-            .secondary
-            .post(url)
-            .json(&req)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_swap::SwapProtestResponse = res.json().await?;
-        Ok(response)
+        let res = self.secondary.post(url).json(&req).send().await?;
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                let response: wire_swap::SwapProtestResponse = res.json().await?;
+                Ok(response)
+            }
+            Err(err) => {
+                let status = err.status();
+                let body = res.text().await.unwrap_or_default();
+
+                tracing::error!(
+                    "post_protest_swap failed: status={:?}, body={}",
+                    status,
+                    body
+                );
+
+                Err(err.into())
+            }
+        }
     }
 
     async fn post_melt_quote_onchain(
@@ -482,15 +524,25 @@ impl ClowderMintConnector for HttpClientExt {
             .expect("melt_onchain url error");
         debug!("HTTP call to melt_onchain on {url}");
 
-        let res = self
-            .secondary
-            .post(url)
-            .json(&req)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_melt::MeltOnchainResponse = res.json().await?;
-        Ok(response)
+        let res = self.secondary.post(url).json(&req).send().await?;
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                let response: wire_melt::MeltOnchainResponse = res.json().await?;
+                Ok(response)
+            }
+            Err(err) => {
+                let status = err.status();
+                let body = res.text().await.unwrap_or_default();
+
+                tracing::error!(
+                    "post_melt_onchain failed: status={:?}, body={}",
+                    status,
+                    body
+                );
+
+                Err(err.into())
+            }
+        }
     }
 
     async fn post_protest_melt(
@@ -502,15 +554,25 @@ impl ClowderMintConnector for HttpClientExt {
             .join("v1/protest/melt")
             .expect("protest_melt url error");
         debug!("HTTP call to protest_melt on {url}");
-        let res = self
-            .secondary
-            .post(url)
-            .json(&req)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_melt::MeltProtestResponse = res.json().await?;
-        Ok(response)
+        let res = self.secondary.post(url).json(&req).send().await?;
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                let response: wire_melt::MeltProtestResponse = res.json().await?;
+                Ok(response)
+            }
+            Err(err) => {
+                let status = err.status();
+                let body = res.text().await.unwrap_or_default();
+
+                tracing::error!(
+                    "post_protest_melt failed: status={:?}, body={}",
+                    status,
+                    body
+                );
+
+                Err(err.into())
+            }
+        }
     }
 
     async fn post_mint_quote_onchain(
@@ -523,15 +585,25 @@ impl ClowderMintConnector for HttpClientExt {
             .expect("mint_quote_onchain url error");
         debug!("HTTP call to mint_quote_onchain on {url}");
 
-        let res = self
-            .secondary
-            .post(url)
-            .json(&req)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_mint::OnchainMintQuoteResponse = res.json().await?;
-        Ok(response)
+        let res = self.secondary.post(url).json(&req).send().await?;
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                let response: wire_mint::OnchainMintQuoteResponse = res.json().await?;
+                Ok(response)
+            }
+            Err(err) => {
+                let status = err.status();
+                let body = res.text().await.unwrap_or_default();
+
+                tracing::error!(
+                    "post_mint_quote_onchain failed: status={:?}, body={}",
+                    status,
+                    body
+                );
+
+                Err(err.into())
+            }
+        }
     }
 
     async fn post_mint_onchain(
@@ -544,15 +616,26 @@ impl ClowderMintConnector for HttpClientExt {
             .expect("mint_onchain url error");
         debug!("HTTP call to mint_onchain on {url}");
 
-        let res = self
-            .secondary
-            .post(url)
-            .json(&req)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_mint::MintResponse = res.json().await?;
-        Ok(response)
+        let res = self.secondary.post(url).json(&req).send().await?;
+
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                let response: wire_mint::MintResponse = res.json().await?;
+                Ok(response)
+            }
+            Err(err) => {
+                let status = err.status();
+                let body = res.text().await.unwrap_or_default();
+
+                tracing::error!(
+                    "post_mint_onchain failed: status={:?}, body={}",
+                    status,
+                    body
+                );
+
+                Err(err.into())
+            }
+        }
     }
 
     async fn post_protest_mint(
@@ -565,15 +648,25 @@ impl ClowderMintConnector for HttpClientExt {
             .expect("protest_mint url error");
         debug!("HTTP call to protest_mint on {url}");
 
-        let res = self
-            .secondary
-            .post(url)
-            .json(&req)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_mint::MintProtestResponse = res.json().await?;
-        Ok(response)
+        let res = self.secondary.post(url).json(&req).send().await?;
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                let response: wire_mint::MintProtestResponse = res.json().await?;
+                Ok(response)
+            }
+            Err(err) => {
+                let status = err.status();
+                let body = res.text().await.unwrap_or_default();
+
+                tracing::error!(
+                    "post_protest_mint failed: status={:?}, body={}",
+                    status,
+                    body
+                );
+
+                Err(err.into())
+            }
+        }
     }
 }
 
@@ -783,27 +876,39 @@ impl ClowderMintConnector for SentinelClient {
             .join(CoreEp::SWAP_V1_EXT)
             .expect("post_swap_committed url error");
         debug!("HTTP call to post_swap_committed on sentinel {url}");
-        let response = self
-            .secondary
-            .post(url)
-            .json(&request)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_swap::SwapResponse = response.json().await?;
+        let response = self.secondary.post(url).json(&request).send().await?;
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                let response: wire_swap::SwapResponse = response.json().await?;
 
-        // Send sentinel event
-        if let Some(sentinel_url) = self.random_sentinel() {
-            let event_url = Self::sentinel_ep(sentinel_url);
-            let event = wire_clowder::WalletEvent::Swap {
-                minted: response.signatures.clone(),
-            };
-            let resp = self.secondary.post(event_url).json(&event).send().await;
-            if let Err(e) = resp {
-                tracing::error!("Failed to send swap event to sentinel {sentinel_url}: {e}");
+                // Send sentinel event
+                if let Some(sentinel_url) = self.random_sentinel() {
+                    let event_url = Self::sentinel_ep(sentinel_url);
+                    let event = wire_clowder::WalletEvent::Swap {
+                        minted: response.signatures.clone(),
+                    };
+                    let resp = self.secondary.post(event_url).json(&event).send().await;
+                    if let Err(e) = resp {
+                        tracing::error!(
+                            "Failed to send swap event to sentinel {sentinel_url}: {e}"
+                        );
+                    }
+                }
+                Ok(response)
+            }
+            Err(err) => {
+                let status = err.status();
+                let body = response.text().await.unwrap_or_default();
+
+                tracing::error!(
+                    "post_swap_committed failed: status={:?}, body={}",
+                    status,
+                    body
+                );
+
+                Err(err.into())
             }
         }
-        Ok(response)
     }
 
     async fn post_protest_swap(
@@ -815,15 +920,26 @@ impl ClowderMintConnector for SentinelClient {
             .join("v1/protest/swap")
             .expect("protest_swap url error");
         debug!("HTTP call on sentinel to protest_swap on {url}");
-        let res = self
-            .secondary
-            .post(url)
-            .json(&req)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_swap::SwapProtestResponse = res.json().await?;
-        Ok(response)
+        let res = self.secondary.post(url).json(&req).send().await?;
+
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                let response: wire_swap::SwapProtestResponse = res.json().await?;
+                Ok(response)
+            }
+            Err(err) => {
+                let status = err.status();
+                let body = res.text().await.unwrap_or_default();
+
+                tracing::error!(
+                    "post_protest_swap failed: status={:?}, body={}",
+                    status,
+                    body
+                );
+
+                Err(err.into())
+            }
+        }
     }
 
     async fn post_melt_quote_onchain(
@@ -851,15 +967,25 @@ impl ClowderMintConnector for SentinelClient {
             .expect("melt_onchain url error");
         debug!("HTTP call on sentinel to melt_onchain on {url}");
 
-        let res = self
-            .secondary
-            .post(url)
-            .json(&req)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_melt::MeltOnchainResponse = res.json().await?;
-        Ok(response)
+        let res = self.secondary.post(url).json(&req).send().await?;
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                let response: wire_melt::MeltOnchainResponse = res.json().await?;
+                Ok(response)
+            }
+            Err(err) => {
+                let status = err.status();
+                let body = res.text().await.unwrap_or_default();
+
+                tracing::error!(
+                    "post_melt_onchain failed: status={:?}, body={}",
+                    status,
+                    body
+                );
+
+                Err(err.into())
+            }
+        }
     }
 
     async fn post_protest_melt(
@@ -871,15 +997,25 @@ impl ClowderMintConnector for SentinelClient {
             .join("v1/protest/melt")
             .expect("protest_melt url error");
         debug!("HTTP call on sentinel to protest_melt on {url}");
-        let res = self
-            .secondary
-            .post(url)
-            .json(&req)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_melt::MeltProtestResponse = res.json().await?;
-        Ok(response)
+        let res = self.secondary.post(url).json(&req).send().await?;
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                let response: wire_melt::MeltProtestResponse = res.json().await?;
+                Ok(response)
+            }
+            Err(err) => {
+                let status = err.status();
+                let body = res.text().await.unwrap_or_default();
+
+                tracing::error!(
+                    "post_protest_melt failed: status={:?}, body={}",
+                    status,
+                    body
+                );
+
+                Err(err.into())
+            }
+        }
     }
 
     async fn post_mint_quote_onchain(
@@ -892,15 +1028,25 @@ impl ClowderMintConnector for SentinelClient {
             .expect("mint_quote_onchain url error");
         debug!("HTTP call on sentinel to mint_quote_onchain on {url}");
 
-        let res = self
-            .secondary
-            .post(url)
-            .json(&req)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_mint::OnchainMintQuoteResponse = res.json().await?;
-        Ok(response)
+        let res = self.secondary.post(url).json(&req).send().await?;
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                let response: wire_mint::OnchainMintQuoteResponse = res.json().await?;
+                Ok(response)
+            }
+            Err(err) => {
+                let status = err.status();
+                let body = res.text().await.unwrap_or_default();
+
+                tracing::error!(
+                    "post_mint_quote_onchain failed: status={:?}, body={}",
+                    status,
+                    body
+                );
+
+                Err(err.into())
+            }
+        }
     }
 
     async fn post_mint_onchain(
@@ -913,15 +1059,25 @@ impl ClowderMintConnector for SentinelClient {
             .expect("mint_onchain url error");
         debug!("HTTP call on sentinel to mint_onchain on {url}");
 
-        let res = self
-            .secondary
-            .post(url)
-            .json(&req)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_mint::MintResponse = res.json().await?;
-        Ok(response)
+        let res = self.secondary.post(url).json(&req).send().await?;
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                let response: wire_mint::MintResponse = res.json().await?;
+                Ok(response)
+            }
+            Err(err) => {
+                let status = err.status();
+                let body = res.text().await.unwrap_or_default();
+
+                tracing::error!(
+                    "post_mint_onchain failed: status={:?}, body={}",
+                    status,
+                    body
+                );
+
+                Err(err.into())
+            }
+        }
     }
 
     async fn post_protest_mint(
@@ -934,14 +1090,24 @@ impl ClowderMintConnector for SentinelClient {
             .expect("protest_mint url error");
         debug!("HTTP call on sentinel to protest_mint on {url}");
 
-        let res = self
-            .secondary
-            .post(url)
-            .json(&req)
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: wire_mint::MintProtestResponse = res.json().await?;
-        Ok(response)
+        let res = self.secondary.post(url).json(&req).send().await?;
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                let response: wire_mint::MintProtestResponse = res.json().await?;
+                Ok(response)
+            }
+            Err(err) => {
+                let status = err.status();
+                let body = res.text().await.unwrap_or_default();
+
+                tracing::error!(
+                    "post_protest_mint failed: status={:?}, body={}",
+                    status,
+                    body
+                );
+
+                Err(err.into())
+            }
+        }
     }
 }

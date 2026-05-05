@@ -232,6 +232,22 @@ impl TransactionDB {
         write_txn.commit()?;
         Ok(())
     }
+
+    fn delete_repo(
+        db: Arc<Database>,
+        tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+
+        {
+            if write_txn.open_table(tx_table).is_ok() {
+                write_txn.delete_table(tx_table)?;
+            }
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -289,6 +305,12 @@ impl TransactionRepository for TransactionDB {
         let db_clone = self.db.clone();
         let table = self.transaction_table;
         spawn_blocking(move || Self::update_fee_sync(db_clone, table, tx_id, fee_to_add)).await?
+    }
+
+    async fn delete_repo(&self) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.transaction_table;
+        spawn_blocking(move || Self::delete_repo(db_clone, table)).await?
     }
 }
 
