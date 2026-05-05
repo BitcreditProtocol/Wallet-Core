@@ -69,7 +69,7 @@ pub trait DebitPocketApi: super::PocketApi {
         tstamp: u64,
         swap_config: SwapConfig,
         clowder_id: bitcoin::secp256k1::PublicKey,
-    ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>>;
+    ) -> Result<HashMap<Uuid, CheckPendingMintResult>>;
     async fn protest_mint(
         &self,
         qid: Uuid,
@@ -107,6 +107,13 @@ pub struct ProtestResult {
 pub struct MeltProtestResult {
     pub base: ProtestResult,
     pub txid: Option<wire_melt::MeltTx>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckPendingMintResult {
+    pub amount: cashu::Amount,
+    pub fee: cashu::Amount,
+    pub ys: Vec<cashu::PublicKey>,
 }
 
 struct MeltReference {
@@ -326,8 +333,9 @@ impl Pocket {
         _tstamp: u64,
         swap_config: SwapConfig,
         clowder_id: bitcoin::secp256k1::PublicKey,
-    ) -> Result<Option<(cashu::Amount, Vec<cashu::PublicKey>)>> {
+    ) -> Result<Option<CheckPendingMintResult>> {
         let record = self.mdb.load_mint(qid).await?;
+        let mint_amount = Amount::from(record.summary.amount.to_sat());
         let (mint_summary, premint) = (record.summary, record.premint);
 
         tracing::info!("Mint {qid} - attempting to mint..");
@@ -348,9 +356,17 @@ impl Pocket {
                     .await?;
 
                 self.mdb.delete_mint(qid).await?;
-
-                tracing::info!("Minted {qid} successfully for {amount}");
-                Ok(Some((amount, ys)))
+                let fee = if mint_amount > amount {
+                    mint_amount - amount
+                } else {
+                    Amount::ZERO
+                };
+                tracing::info!("Minted {qid} successfully for {mint_amount} with fee {fee}");
+                Ok(Some(CheckPendingMintResult {
+                    amount: mint_amount,
+                    fee,
+                    ys,
+                }))
             }
             Err(e) => {
                 tracing::error!("Couldn't mint quote {qid}: {e}");
@@ -914,7 +930,7 @@ impl DebitPocketApi for Pocket {
         tstamp: u64,
         swap_config: SwapConfig,
         clowder_id: bitcoin::secp256k1::PublicKey,
-    ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>> {
+    ) -> Result<HashMap<Uuid, CheckPendingMintResult>> {
         let mint_ids = self.mdb.list_mints().await?;
         let mut res = HashMap::with_capacity(mint_ids.len());
 
@@ -1173,7 +1189,10 @@ mod tests {
         pocket::{PocketApi, debit::DebitPocketApi},
     };
     use bcr_common::{core_tests, wire::mint::MintResponse};
-    use bcr_wallet_persistence::{MockMintMeltRepository, MockPocketRepository};
+    use bcr_wallet_persistence::{
+        MockMintMeltRepository, MockPocketRepository,
+        test_utils::tests::valid_payment_address_testnet,
+    };
     use mockall::predicate::*;
 
     use crate::pocket::test_utils::tests::{setup_commitment_mocks, test_swap_config};
@@ -2421,5 +2440,181 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn check_pending_mint_success() {
+        let qid = Uuid::new_v4();
+        let amount = bitcoin::Amount::from_sat(24);
+
+        let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = vec![KeySetInfo::from(info)];
+
+        let premint =
+            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None)
+                .unwrap();
+
+        let blind_sigs: Vec<cdk00::BlindSignature> = premint
+            .blinded_messages()
+            .iter()
+            .map(|bm| bcr_common::core::signature::sign_ecash(&mintkeyset, bm).unwrap())
+            .collect();
+
+        let mut mdb = MockMintMeltRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        let mut connector = MockMintConnector::new();
+
+        let premint_clone = premint.clone();
+        let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64]).unwrap();
+        let dummy_secret = secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap();
+
+        mdb.expect_load_mint().times(1).returning(move |_| {
+            Ok(bcr_wallet_persistence::MintRecord {
+                summary: MintSummary {
+                    quote_id: qid,
+                    amount,
+                    address: valid_payment_address_testnet(),
+                    expiry: chrono::Utc::now().timestamp() as u64,
+                },
+                premint: premint_clone.clone(),
+                content: "dGVzdA==".to_string(),
+                commitment: dummy_sig,
+                ephemeral_secret: dummy_secret,
+            })
+        });
+
+        connector
+            .expect_post_mint_onchain()
+            .times(1)
+            .returning(move |_| {
+                Ok(MintResponse {
+                    signatures: blind_sigs.clone(),
+                })
+            });
+
+        let keyset_clone = mintkeyset.clone();
+        connector
+            .expect_get_mint_keyset()
+            .times(2)
+            .with(eq(kid))
+            .returning(move |_| Ok(KeySet::from(keyset_clone.clone())));
+
+        pdb.expect_counter()
+            .times(1)
+            .with(eq(kid))
+            .returning(|_| Ok(0));
+
+        pdb.expect_increment_counter()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+
+        setup_commitment_mocks(&mut connector, &mut pdb);
+
+        let swap_keyset = mintkeyset.clone();
+        connector
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(move |request| {
+                let amounts: Vec<_> = request.outputs.iter().map(|b| b.amount).collect();
+                let signatures = core_tests::generate_ecash_signatures(&swap_keyset, &amounts);
+                Ok(bcr_common::wire::swap::SwapResponse { signatures })
+            });
+
+        pdb.expect_store_new().returning(|p| {
+            let y = p.y().unwrap();
+            Ok(y)
+        });
+
+        mdb.expect_delete_mint().times(1).returning(|_| Ok(()));
+
+        let clowder_keypair = {
+            let secret_bytes: [u8; 32] = rand::random();
+            secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &secret_bytes).unwrap()
+        };
+        let clowder_id = secp256k1::PublicKey::from_keypair(&clowder_keypair);
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+
+        let result = pocket
+            .check_pending_mint(
+                qid,
+                &k_infos,
+                Arc::new(connector),
+                chrono::Utc::now().timestamp() as u64,
+                test_swap_config(),
+                clowder_id,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.amount, Amount::from(amount.to_sat()));
+        assert_eq!(result.fee, Amount::ZERO);
+        assert!(!result.ys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn check_pending_mint_returns_error_when_minting_fails() {
+        let qid = Uuid::new_v4();
+        let amount = bitcoin::Amount::from_sat(24);
+
+        let (info, _keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = vec![KeySetInfo::from(info)];
+
+        let premint =
+            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None)
+                .unwrap();
+
+        let mut mdb = MockMintMeltRepository::new();
+        let pdb = MockPocketRepository::new();
+        let mut connector = MockMintConnector::new();
+
+        let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64]).unwrap();
+        let dummy_secret = secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap();
+
+        mdb.expect_load_mint().times(1).returning(move |_| {
+            Ok(bcr_wallet_persistence::MintRecord {
+                summary: MintSummary {
+                    quote_id: qid,
+                    amount,
+                    address: valid_payment_address_testnet(),
+                    expiry: chrono::Utc::now().timestamp() as u64,
+                },
+                premint: premint.clone(),
+                content: "dGVzdA==".to_string(),
+                commitment: dummy_sig,
+                ephemeral_secret: dummy_secret,
+            })
+        });
+
+        connector
+            .expect_post_mint_onchain()
+            .times(1)
+            .returning(|_| Err(Error::MintingError("not paid yet".to_string())));
+
+        mdb.expect_delete_mint().times(0);
+
+        let clowder_keypair = {
+            let secret_bytes: [u8; 32] = rand::random();
+            secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &secret_bytes).unwrap()
+        };
+        let clowder_id = secp256k1::PublicKey::from_keypair(&clowder_keypair);
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+
+        let result = pocket
+            .check_pending_mint(
+                qid,
+                &k_infos,
+                Arc::new(connector),
+                chrono::Utc::now().timestamp() as u64,
+                test_swap_config(),
+                clowder_id,
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::MintingError(_))));
     }
 }

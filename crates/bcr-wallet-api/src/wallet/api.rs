@@ -489,7 +489,7 @@ impl WalletApi for super::Wallet {
             )
             .await?;
 
-        for (qid, (amount, ys)) in pending_mints_result {
+        for (qid, mint_result) in pending_mints_result {
             let mut metadata = HashMap::default();
             metadata.insert(
                 PAYMENT_TYPE_METADATA_KEY.to_owned(),
@@ -502,13 +502,13 @@ impl WalletApi for super::Wallet {
 
             let tx = Transaction {
                 mint_url: self.client.mint_url(),
-                fee: cashu::Amount::ZERO,
+                fee: mint_result.fee,
                 direction: TransactionDirection::Incoming,
                 memo: None,
                 timestamp: now.timestamp() as u64,
                 unit: self.debit_unit(),
-                ys,
-                amount,
+                ys: mint_result.ys,
+                amount: mint_result.amount,
                 metadata,
                 quote_id: Some(qid.to_string()),
             };

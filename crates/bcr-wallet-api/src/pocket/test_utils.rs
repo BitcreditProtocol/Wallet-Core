@@ -143,7 +143,7 @@ pub mod tests {
                 tstamp: u64,
                 swap_config: SwapConfig,
                 clowder_id: bitcoin::secp256k1::PublicKey,
-            ) -> Result<HashMap<Uuid, (cashu::Amount, Vec<cashu::PublicKey>)>>;
+            ) -> Result<HashMap<Uuid, crate::pocket::debit::CheckPendingMintResult>>;
             async fn check_pending_commitments(&self, tstamp: u64) -> Result<()>;
             async fn protest_mint(
                 &self,
