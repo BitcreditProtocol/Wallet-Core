@@ -14,7 +14,7 @@ use bcr_common::{
         self, Amount, CurrencyUnit, KeySetInfo, MintUrl, PaymentRequest, Proof, ProofsMethods,
         nut18 as cdk18,
     },
-    cdk::wallet::types::{Transaction, TransactionDirection, TransactionId},
+    cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
     wallet::Token,
     wire::clowder::{ConnectedMintResponse, ConnectedMintsResponse},
 };

@@ -2,7 +2,7 @@ use crate::error::Error;
 use crate::{TransactionRepository, error::Result};
 use async_trait::async_trait;
 use bcr_common::cashu::{CurrencyUnit, MintUrl, nut01 as cdk01};
-use bcr_common::cdk::wallet::types::{Transaction, TransactionDirection, TransactionId};
+use bcr_common::cdk_common::wallet::{Transaction, TransactionDirection, TransactionId};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use tokio::task::spawn_blocking;

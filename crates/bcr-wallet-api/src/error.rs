@@ -1,6 +1,6 @@
 use bcr_common::{
     cashu::{self, MintUrl},
-    cdk,
+    cdk_common,
 };
 use thiserror::Error;
 
@@ -17,8 +17,8 @@ pub enum Error {
     CashuMintUrl(#[from] cashu::mint_url::Error),
     #[error("MintError: {0}")]
     Mint(#[from] bcr_common::client::mint::Error),
-    #[error("cdk::Error: {0}")]
-    Cdk(#[from] cdk::Error),
+    #[error("cdk_common::Error: {0}")]
+    Cdk(#[from] cdk_common::Error),
     #[error("bip39::Error: {0}")]
     Bip39(#[from] bip39::Error),
     #[error("cashu::nut00: {0}")]
@@ -80,7 +80,7 @@ pub enum Error {
     #[error("no reference to prepare request_id: {0}")]
     NoPrepareRef(uuid::Uuid),
     #[error("transaction can't be reclaimed - not outgoing or pending {0}")]
-    TransactionCantBeReclaimed(cdk::wallet::types::TransactionId),
+    TransactionCantBeReclaimed(cdk_common::wallet::TransactionId),
     #[error("Mint not supporting debit currency")]
     NoDebitCurrencyInMint(Vec<cashu::CurrencyUnit>),
     #[error("network mismatch, ours: {0}, theirs: {1}")]

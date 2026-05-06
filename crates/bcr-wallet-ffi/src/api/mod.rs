@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use android_logger::FilterBuilder;
 use bcr_common::{
     cashu::{self, MintUrl},
-    cdk,
+    cdk_common,
 };
 use bcr_wallet_api::{AppState, config::AppStateConfig, error::Error as BcrWalletError};
 use flutter_rust_bridge::{DartFnFuture, JoinHandle, frb};
@@ -797,11 +797,11 @@ pub enum TransactionDirection {
     Incoming,
     Outgoing,
 }
-impl std::convert::From<cdk::wallet::types::TransactionDirection> for TransactionDirection {
-    fn from(dir: cdk::wallet::types::TransactionDirection) -> Self {
+impl std::convert::From<cdk_common::wallet::TransactionDirection> for TransactionDirection {
+    fn from(dir: cdk_common::wallet::TransactionDirection) -> Self {
         match dir {
-            cdk::wallet::types::TransactionDirection::Incoming => TransactionDirection::Incoming,
-            cdk::wallet::types::TransactionDirection::Outgoing => TransactionDirection::Outgoing,
+            cdk_common::wallet::TransactionDirection::Incoming => TransactionDirection::Incoming,
+            cdk_common::wallet::TransactionDirection::Outgoing => TransactionDirection::Outgoing,
         }
     }
 }
@@ -887,8 +887,8 @@ pub struct MeltTx {
     pub beta_tx_id: Option<String>,
 }
 
-impl std::convert::From<cdk::wallet::types::Transaction> for Transaction {
-    fn from(tx: cdk::wallet::types::Transaction) -> Self {
+impl std::convert::From<cdk_common::wallet::Transaction> for Transaction {
+    fn from(tx: cdk_common::wallet::Transaction) -> Self {
         let status = get_transaction_status(&tx.metadata);
         let ptype = get_payment_type(&tx.metadata);
         let alpha_btc_tx_id = get_btc_alpha_tx_id(&tx.metadata);

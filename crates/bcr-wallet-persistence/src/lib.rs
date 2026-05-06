@@ -7,7 +7,7 @@ pub mod test_utils;
 use crate::error::Result;
 use async_trait::async_trait;
 use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07};
-use bcr_common::cdk::wallet::types::{Transaction, TransactionId};
+use bcr_common::cdk_common::wallet::{Transaction, TransactionId};
 use bcr_wallet_core::{SendSync, types::WalletConfig};
 use bitcoin::secp256k1;
 use std::collections::HashMap;

@@ -11,10 +11,7 @@ use crate::{
 use async_trait::async_trait;
 use bcr_common::{
     cashu::{self, Amount, CurrencyUnit, MintUrl, ProofsMethods, nut00 as cdk00, nut18 as cdk18},
-    cdk::{
-        StreamExt,
-        wallet::types::{Transaction, TransactionDirection, TransactionId},
-    },
+    cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
     wallet::Token,
     wire::clowder::{self as wire_clowder},
 };
@@ -26,6 +23,7 @@ use bcr_wallet_core::{
     },
 };
 use bitcoin::secp256k1;
+use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use nostr_sdk::RelayPoolNotification;
 use std::{collections::HashMap, str::FromStr, sync::Arc};
