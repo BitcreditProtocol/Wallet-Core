@@ -4,7 +4,7 @@ use bcr_wallet_core::types::{
 };
 use nostr_sdk::RelayUrl;
 use once_cell::sync::Lazy;
-use std::{panic, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashMap, panic, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 #[cfg(target_os = "android")]
@@ -13,7 +13,11 @@ use bcr_common::{
     cashu::{self, MintUrl},
     cdk_common,
 };
-use bcr_wallet_api::{AppState, config::AppStateConfig, error::Error as BcrWalletError};
+use bcr_wallet_api::{
+    AppState,
+    config::{AppStateConfig, CreateWalletConfig},
+    error::Error as BcrWalletError,
+};
 use flutter_rust_bridge::{DartFnFuture, JoinHandle, frb};
 use log::{error, info};
 use tokio::sync::Mutex;
@@ -75,15 +79,9 @@ pub struct WalletFfiConfig {
     pub job_interval_secs: u64,
     // The amount of seconds to initially wait before running jobs
     pub job_initial_delay_secs: u64,
-    // The default mint URL for the wallet and restoration
-    pub default_mint_url: String,
-    // The bitcoin_network to use. Options are: bitcoin, testnet, testnet4, signet, regtest
-    pub bitcoin_network: String,
-    // The mnemonic to use
-    pub mnemonic: String,
+    // The mnemonics for the existing wallets, WalletId -> Mnemonic
+    pub mnemonics: HashMap<String, String>,
     // The nostr relays to use
-    pub nostr_relays: Vec<String>,
-    // Swap commitment expiry in minutes
     pub swap_expiry_minutes: u32,
     // Dev Mode Enabled
     pub dev_mode: bool,
@@ -97,17 +95,14 @@ pub async fn init_wallet_ffi(conf: WalletFfiConfig) {
     let log_level = conf.log_level.clone();
     let job_interval_secs = conf.job_interval_secs;
     let job_initial_delay_secs = conf.job_initial_delay_secs;
-    let parsed_url = MintUrl::from_str(&conf.default_mint_url).expect("Not a valid mint URL");
-    let parsed_mnemonic =
-        bip39::Mnemonic::from_str(&conf.mnemonic).expect("Not a valid bip39 mnemonic");
-    let parsed_nostr_relays: Vec<RelayUrl> = conf
-        .nostr_relays
-        .into_iter()
-        .map(|u| RelayUrl::from_str(&u).expect("Not a valid nostr relay url"))
+    let parsed_mnemonics: HashMap<String, bip39::Mnemonic> = conf
+        .mnemonics
+        .iter()
+        .map(|(k, v)| {
+            let mnemonic = bip39::Mnemonic::from_str(v).expect("Not a valid bip39 mnemonic");
+            (k.to_owned(), mnemonic)
+        })
         .collect();
-    let parsed_network = bitcoin::Network::from_str(&conf.bitcoin_network).expect(
-        "Not a valid bitcoin network - use one of bitcoin, testnet, testnet4, signet, regtest",
-    );
     let swap_expiry = chrono::TimeDelta::minutes(conf.swap_expiry_minutes as i64);
 
     let mut rt = WALLET_RUNTIME.lock().await;
@@ -129,11 +124,8 @@ pub async fn init_wallet_ffi(conf: WalletFfiConfig) {
 
     let app_state_cfg = AppStateConfig {
         db_path: parsed_path,
-        network: parsed_network,
-        nostr_relays: parsed_nostr_relays,
-        mnemonic: parsed_mnemonic,
+        mnemonics: parsed_mnemonics,
         swap_expiry,
-        default_mint_url: parsed_url,
         dev_mode: conf.dev_mode,
     };
 
@@ -224,10 +216,28 @@ fn init_panic_hook() {
 
 // ------------------------------------------------------------- API
 #[frb]
-pub async fn wallet_add() -> Result<AddWalletResponse, WalletError> {
+pub async fn wallet_add(req: CreateWalletRequest) -> Result<AddWalletResponse, WalletError> {
     let name = Uuid::new_v4().to_string();
+    let parsed_url = MintUrl::from_str(&req.default_mint_url).expect("Not a valid mint URL");
+    let parsed_mnemonic =
+        bip39::Mnemonic::from_str(&req.mnemonic).expect("Not a valid bip39 mnemonic");
+    let parsed_nostr_relays: Vec<RelayUrl> = req
+        .nostr_relays
+        .into_iter()
+        .map(|u| RelayUrl::from_str(&u).expect("Not a valid nostr relay url"))
+        .collect();
+    let parsed_network = bitcoin::Network::from_str(&req.bitcoin_network).expect(
+        "Not a valid bitcoin network - use one of bitcoin, testnet, testnet4, signet, regtest",
+    );
+    let cfg = CreateWalletConfig {
+        name,
+        network: parsed_network,
+        nostr_relays: parsed_nostr_relays,
+        mnemonic: parsed_mnemonic,
+        default_mint_url: parsed_url,
+    };
     let app_state = get_app_state().await;
-    let wallet_id = match app_state.purse_add_wallet(name).await {
+    let wallet_id = match app_state.purse_add_wallet(cfg).await {
         Ok(id) => id,
         Err(e) => {
             error!("ERROR ADD WALLET: {e}");
@@ -238,10 +248,30 @@ pub async fn wallet_add() -> Result<AddWalletResponse, WalletError> {
 }
 
 #[frb]
-pub async fn wallet_restore() -> Result<RestoreWalletResponse, WalletError> {
+pub async fn wallet_restore(
+    req: CreateWalletRequest,
+) -> Result<RestoreWalletResponse, WalletError> {
     let name = Uuid::new_v4().to_string();
+    let parsed_url = MintUrl::from_str(&req.default_mint_url).expect("Not a valid mint URL");
+    let parsed_mnemonic =
+        bip39::Mnemonic::from_str(&req.mnemonic).expect("Not a valid bip39 mnemonic");
+    let parsed_nostr_relays: Vec<RelayUrl> = req
+        .nostr_relays
+        .into_iter()
+        .map(|u| RelayUrl::from_str(&u).expect("Not a valid nostr relay url"))
+        .collect();
+    let parsed_network = bitcoin::Network::from_str(&req.bitcoin_network).expect(
+        "Not a valid bitcoin network - use one of bitcoin, testnet, testnet4, signet, regtest",
+    );
+    let cfg = CreateWalletConfig {
+        name,
+        network: parsed_network,
+        nostr_relays: parsed_nostr_relays,
+        mnemonic: parsed_mnemonic,
+        default_mint_url: parsed_url,
+    };
     let app_state = get_app_state().await;
-    let wallet_id = app_state.purse_restore_wallet(name).await?;
+    let wallet_id = app_state.purse_restore_wallet(cfg).await?;
     Ok(RestoreWalletResponse { wallet_id })
 }
 
@@ -638,8 +668,28 @@ pub async fn wallet_dev_mode_get_detailed_balance(
 pub async fn generate_random_mnemonic(
     req: MnemonicRequest,
 ) -> Result<MnemonicResponse, WalletError> {
-    let mnemonic = bcr_wallet_api::generate_random_mnemonic(req.length);
-    Ok(MnemonicResponse { mnemonic })
+    let parsed_network = bitcoin::Network::from_str(&req.bitcoin_network).expect(
+        "Not a valid bitcoin network - use one of bitcoin, testnet, testnet4, signet, regtest",
+    );
+    let (mnemonic, wallet_id) =
+        bcr_wallet_api::generate_random_mnemonic(req.length, parsed_network);
+    Ok(MnemonicResponse {
+        wallet_id,
+        mnemonic,
+    })
+}
+
+#[frb]
+pub async fn wallet_id_for_mnemonic_and_network(
+    req: WalletIdForMnemonicAndNetworkRequest,
+) -> Result<WalletIdForMnemonicAndNetworkResponse, WalletError> {
+    let parsed_network = bitcoin::Network::from_str(&req.bitcoin_network).expect(
+        "Not a valid bitcoin network - use one of bitcoin, testnet, testnet4, signet, regtest",
+    );
+    let parsed_mnemonic =
+        bip39::Mnemonic::from_str(&req.mnemonic).expect("Not a valid bip39 mnemonic");
+    let wallet_id = bcr_wallet_api::get_wallet_id(&parsed_mnemonic, parsed_network);
+    Ok(WalletIdForMnemonicAndNetworkResponse { wallet_id })
 }
 
 #[frb]
@@ -692,23 +742,35 @@ pub async fn wallet_mint_is_rabid(req: WalletRequest) -> Result<MintIsRabidRespo
 
 // -------------------------------------------------------------- Data types
 #[derive(Debug, Clone)]
+pub struct CreateWalletRequest {
+    // The default mint URL for the wallet and restoration
+    pub default_mint_url: String,
+    // The bitcoin_network to use. Options are: bitcoin, testnet, testnet4, signet, regtest
+    pub bitcoin_network: String,
+    // The mnemonic to use
+    pub mnemonic: String,
+    // The nostr relays to use
+    pub nostr_relays: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct AddWalletResponse {
-    pub wallet_id: usize,
+    pub wallet_id: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct RestoreWalletResponse {
-    pub wallet_id: usize,
+    pub wallet_id: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct WalletRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct WalletTransactionRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub tx_id: String,
 }
 
@@ -748,7 +810,7 @@ pub struct WalletDevModeDetailedBalanceEntry {
 
 #[derive(Debug, Clone)]
 pub struct WalletReceiveRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub token: String,
 }
 
@@ -769,7 +831,7 @@ pub struct WalletTransactionsResponse {
 
 #[derive(Debug, Clone)]
 pub struct WalletCheckReceivedPaymentRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub max_wait_sec: u64,
     pub p_id: String,
 }
@@ -919,13 +981,13 @@ pub struct WalletTransactionResponse {
 
 #[derive(Debug, Clone)]
 pub struct WalletRefreshTransactionRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub tx_id: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct WalletReclaimTransactionRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub tx_id: String,
 }
 
@@ -951,7 +1013,7 @@ pub struct WalletRefreshTransactionsResponse {
 
 #[derive(Debug, Clone)]
 pub struct WalletPrepareMeltRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub amount: u64,
     pub address: String,
     pub description: Option<String>,
@@ -959,7 +1021,7 @@ pub struct WalletPrepareMeltRequest {
 
 #[derive(Debug, Clone)]
 pub struct WalletMintRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub amount: u64,
 }
 
@@ -973,7 +1035,7 @@ pub struct WalletMintSummaryResponse {
 
 #[derive(Debug, Clone)]
 pub struct WalletPreparePaymentRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub input: String,
 }
 
@@ -984,7 +1046,7 @@ pub struct WalletPreparePaymentResponse {
 
 #[derive(Debug, Clone)]
 pub struct WalletPreparePaymentReqRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub amount: u64,
     pub unit: String,
     pub description: Option<String>,
@@ -1002,7 +1064,7 @@ pub struct WalletCheckPendingMintsResponse {
 
 #[derive(Debug, Clone)]
 pub struct WalletProtestMintRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub quote_id: String,
 }
 
@@ -1014,7 +1076,7 @@ pub struct WalletProtestMintResponse {
 
 #[derive(Debug, Clone)]
 pub struct WalletProtestSwapRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub commitment_sig: String,
 }
 
@@ -1026,7 +1088,7 @@ pub struct WalletProtestSwapResponse {
 
 #[derive(Debug, Clone)]
 pub struct WalletProtestMeltRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub quote_id: String,
 }
 
@@ -1059,12 +1121,24 @@ pub struct WalletsNamesResponse {
 
 #[derive(Debug, Clone)]
 pub struct WalletsIdsResponse {
-    pub ids: Vec<usize>,
+    pub ids: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct MnemonicRequest {
     pub length: u32,
+    pub bitcoin_network: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletIdForMnemonicAndNetworkRequest {
+    pub bitcoin_network: String,
+    pub mnemonic: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletIdForMnemonicAndNetworkResponse {
+    pub wallet_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1082,6 +1156,7 @@ pub struct IsValidTokenResponse {
 
 #[derive(Debug, Clone)]
 pub struct MnemonicResponse {
+    pub wallet_id: String,
     pub mnemonic: String,
 }
 
@@ -1113,20 +1188,20 @@ pub struct PaymentRequest {
 
 #[derive(Debug, Clone)]
 pub struct WalletPayRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub rid: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct WalletPreparePaymentByTokenRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub amount: u64,
     pub description: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct WalletPaymentByTokenRequest {
-    pub wallet_id: usize,
+    pub wallet_id: String,
     pub rid: String,
 }
 
@@ -1215,7 +1290,9 @@ pub enum WalletErrorCode {
     InvalidBitcoinAddress,
     InvalidMintUrl,
     InvalidMnemonic,
-    WalletAlreadyExists,
+    MnemonicNotFound,
+    WalletUniqueName,
+    WalletUniqueId,
 }
 
 impl From<BcrWalletError> for WalletError {
@@ -1254,6 +1331,12 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::ExcessiveSplitting(_) => WalletError::internal(value.to_string()),
             BcrWalletError::WalletNotFound(id) => {
                 WalletError::not_found(id.to_string(), WalletErrorCode::WalletNotFound)
+            }
+            BcrWalletError::WalletUniqueId(_) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::WalletUniqueId)
+            }
+            BcrWalletError::WalletUniqueName(_) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::WalletUniqueName)
             }
             BcrWalletError::EmptyToken(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::EmptyToken)
@@ -1301,8 +1384,8 @@ impl From<BcrWalletError> for WalletError {
                 msg: String::default(),
             },
             BcrWalletError::External(_) => WalletError::internal(value.to_string()),
-            BcrWalletError::WalletAlreadyExists => {
-                WalletError::bad_request(value.to_string(), WalletErrorCode::WalletAlreadyExists)
+            BcrWalletError::MnemonicNotFound(_) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::MnemonicNotFound)
             }
             BcrWalletError::InvalidMnemonic => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidMnemonic)

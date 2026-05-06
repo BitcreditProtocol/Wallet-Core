@@ -13,7 +13,7 @@ pub mod tests {
 
     pub fn wallet_id() -> String {
         let seed = zero_seed();
-        util::build_wallet_id(&seed)
+        util::build_wallet_id(&seed, bitcoin::Network::Testnet)
     }
 
     pub fn test_pub_key() -> secp256k1::PublicKey {

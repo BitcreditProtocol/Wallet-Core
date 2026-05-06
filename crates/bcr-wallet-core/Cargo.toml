@@ -9,6 +9,7 @@ bcr-common = {workspace = true}
 bip39.workspace = true
 bitcoin.workspace = true
 chrono = {workspace = true}
+nostr-sdk = {workspace = true, features = ["nip06"]}
 serde.workspace = true
 strum = {workspace = true, features = ["derive"]}
 thiserror = {workspace = true }

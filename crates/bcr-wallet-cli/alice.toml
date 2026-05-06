@@ -1,8 +1,15 @@
-# mint_url = "http://localhost:4343"
-# mint_url = "https://mint.wildcat0.clowder1.minibill.tech"
-mint_url = "https://mint.wildcat0.clowder-dev.minibill.tech"
-mnemonic = "royal scheme canoe flame sell jewel valve citizen deal patch stereo walk"
 log_level = "DEBUG"
 db_path = "./alice.db"
+
+[wallets.ddfb860cf982e17b6a45ce073823bf722d903c8a176de99e786c7f8b582dd6d6]
 network = "testnet"
-nostr_relays = ["wss://relay.wildcat0.clowder-dev.minibill.tech"]
+nostr_relays = ["wss://relay.wildcat0.clowder-dev.minibill.tech", "wss://relay.wildcat1.clowder-dev.minibill.tech"]
+mint_url = "https://mint.wildcat0.clowder-dev.minibill.tech"
+mnemonic = "where column disagree gesture define tooth column inner divide logic pottery memory"
+
+[wallets.881b6ec7624036ebe1cdf2bf899a4b2ef7fd865fb8756fcab8da24f38667e68f]
+network = "testnet"
+nostr_relays = ["wss://relay.wildcat0.clowder-dev.minibill.tech", "wss://relay.wildcat1.clowder-dev.minibill.tech"]
+mint_url = "https://mint.wildcat0.clowder-dev.minibill.tech"
+mnemonic = "thrive twin planet arrange upper amateur hamster glue flush broom juice tattoo"
+
