@@ -5,7 +5,7 @@ use crate::{config::NostrConfig, wallet::api::WalletApi};
 use bcr_common::cdk_common::wallet::Transaction;
 use bcr_common::{
     cashu::{self, CurrencyUnit, MintUrl, nut18 as cdk18},
-    cdk::wallet::types::TransactionId,
+    cdk_common::wallet::TransactionId,
     wallet::Token,
 };
 use bcr_wallet_core::types::{

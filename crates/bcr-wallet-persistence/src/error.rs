@@ -1,6 +1,6 @@
 use bcr_common::{
     cashu::{self, nut02 as cdk02},
-    cdk,
+    cdk_common,
 };
 use thiserror::Error;
 
@@ -26,12 +26,12 @@ pub enum Error {
     RedbStorage(#[from] redb::StorageError),
     #[error("Database Join error: {0}")]
     RedbTokioSpawn(#[from] tokio::task::JoinError),
-    #[error("cdk::Error: {0}")]
-    Cdk(#[from] cdk::Error),
+    #[error("cdk_common::Error: {0}")]
+    Cdk(#[from] cdk_common::Error),
     #[error("wallet id {0} not found")]
     WalletIdNotFound(String),
     #[error("transaction not found {0}")]
-    TransactionNotFound(cdk::wallet::types::TransactionId),
+    TransactionNotFound(cdk_common::wallet::TransactionId),
     #[error("proof not in desired state: {0}")]
     InvalidProofState(cashu::PublicKey),
     #[error("proof in local DB not found: {0}")]

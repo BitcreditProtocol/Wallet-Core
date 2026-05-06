@@ -3,9 +3,9 @@ use crate::{
     error::{Error, Result},
     wallet::types::SwapConfig,
 };
-use bcr_common::cdk::{self};
 use bcr_common::{
     cashu::{self, HTLCWitness, Proof, ProofsMethods},
+    cdk_common,
     wire::keys::ProofFingerprint,
 };
 use bitcoin::{hashes::sha256::Hash as Sha256, secp256k1};
@@ -113,11 +113,11 @@ pub async fn htlc_lock(
     Ok(proofs)
 }
 
-pub fn tx_can_be_refreshed(tx: &cdk::wallet::types::Transaction) -> bool {
+pub fn tx_can_be_refreshed(tx: &cdk_common::wallet::Transaction) -> bool {
     // Only refresh outgoing transactions
     if matches!(
         tx.direction,
-        cdk::wallet::types::TransactionDirection::Incoming
+        cdk_common::wallet::TransactionDirection::Incoming
     ) {
         return false;
     }
