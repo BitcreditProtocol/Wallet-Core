@@ -759,7 +759,6 @@ impl DebitPocketApi for Pocket {
         let parsed_address: bitcoin::Address<bitcoin::address::NetworkUnchecked> = address
             .parse()
             .map_err(|e| Error::MintingError(format!("invalid address: {e}")))?;
-        let btc_amount = bitcoin::Amount::from_sat(amount);
 
         let (_, send_ref) = self
             .compute_send_costs(Amount::from(amount), keysets_info)
@@ -777,10 +776,10 @@ impl DebitPocketApi for Pocket {
         .await?;
         let sent_ys: Vec<cdk01::PublicKey> = sending_proofs.keys().cloned().collect();
 
-        let quote_and_record = async {
+        let quote_record_amount = async {
             let proofs: Vec<cashu::Proof> = sending_proofs.values().cloned().collect();
             let quote_result = client
-                .post_melt_quote_onchain(proofs, parsed_address, btc_amount, swap_config.alpha_pk)
+                .post_melt_quote_onchain(proofs, parsed_address, swap_config.alpha_pk)
                 .await?;
             let quote_id = quote_result.quote_id;
             let expiry = quote_result.expiry;
@@ -792,11 +791,11 @@ impl DebitPocketApi for Pocket {
                 body_content: quote_result.body_content,
             };
             self.mdb.store_melt_commitment(record).await?;
-            Ok::<_, Error>((quote_id, expiry))
+            Ok::<_, Error>((quote_id, expiry, quote_result.amount))
         }
         .await;
 
-        let (quote_id, expiry) = match quote_and_record {
+        let (quote_id, expiry, offered_amount) = match quote_record_amount {
             Ok(r) => r,
             Err(e) => {
                 for y in &sent_ys {
@@ -810,9 +809,16 @@ impl DebitPocketApi for Pocket {
             }
         };
 
+        let fee = if offered_amount.to_sat() > amount {
+            Amount::from(offered_amount.to_sat() - amount)
+        } else {
+            Amount::ZERO
+        };
+
         let mut summary = MeltSummary::new();
         summary.amount = Amount::from(amount);
         summary.expiry = expiry;
+        summary.fees = fee;
         let melt_ref = MeltReference {
             rid: summary.request_id,
             quote_id,
@@ -1156,7 +1162,7 @@ impl DebitPocketApi for Pocket {
                 Ok(MeltProtestResult {
                     base: ProtestResult {
                         status: wire_common::ProtestStatus::Resolved,
-                        result: Some((body.total, ys)),
+                        result: Some((cashu::Amount::from(body.amount.to_sat()), ys)),
                     },
                     txid: response.txid,
                 })
@@ -1189,7 +1195,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        external::test_utils::tests::MockMintConnector,
+        external::{mint::MeltQuoteResult, test_utils::tests::MockMintConnector},
         pocket::{PocketApi, debit::DebitPocketApi},
     };
     use bcr_common::{core_tests, wire::mint::MintResponse};
@@ -1554,7 +1560,6 @@ mod tests {
             address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
                 .expect("valid address"),
             amount: bitcoin::Amount::from_sat(100),
-            total: cashu::Amount::from(100u64),
             expiry: 999999,
             wallet_key,
         };
@@ -1609,7 +1614,6 @@ mod tests {
             address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
                 .expect("valid address"),
             amount: bitcoin::Amount::from_sat(amount),
-            total: cashu::Amount::from(amount),
             expiry: 999999,
             wallet_key,
         };
@@ -2616,6 +2620,106 @@ mod tests {
                 chrono::Utc::now().timestamp() as u64,
                 test_swap_config(),
                 clowder_id,
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::MintingError(_))));
+    }
+
+    #[tokio::test]
+    async fn prepare_onchain_melt_ready_success() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = vec![KeySetInfo::from(info)];
+
+        let amount = 24;
+        let quote_id = Uuid::new_v4();
+        let expiry = 999999;
+        let offered_amount = bitcoin::Amount::from_sat(25);
+
+        let proofs =
+            core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8), Amount::from(16)]);
+
+        let proofs_by_y: HashMap<_, _> = proofs
+            .iter()
+            .cloned()
+            .map(|p| (p.y().unwrap(), p))
+            .collect();
+
+        let mut pdb = MockPocketRepository::new();
+        let mut mdb = MockMintMeltRepository::new();
+        let mut connector = MockMintConnector::new();
+
+        let unspent = proofs_by_y.clone();
+        pdb.expect_list_unspent()
+            .times(1)
+            .returning(move || Ok(unspent.clone()));
+
+        let pending = proofs_by_y.clone();
+        pdb.expect_mark_as_pendingspent()
+            .times(2)
+            .returning(move |y| Ok(pending.get(&y).unwrap().clone()));
+
+        connector
+            .expect_post_melt_quote_onchain()
+            .times(1)
+            .returning(move |_, _, _| {
+                Ok(MeltQuoteResult {
+                    quote_id,
+                    expiry,
+                    amount: offered_amount,
+                    commitment: cashu::SecretKey::generate().sign(&[0; 32]).unwrap(),
+                    ephemeral_secret: secp256k1::SecretKey::from_keypair(
+                        &secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+                    ),
+                    body_content: mock_melt_commitment_body(quote_id, offered_amount.to_sat()),
+                })
+            });
+
+        mdb.expect_store_melt_commitment()
+            .times(1)
+            .returning(|_| Ok(()));
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+
+        let summary = pocket
+            .prepare_onchain_melt(
+                valid_payment_address_testnet().assume_checked().to_string(),
+                amount,
+                &k_infos,
+                Arc::new(connector),
+                test_swap_config(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(summary.amount, Amount::from(amount));
+        assert_eq!(summary.expiry, expiry);
+        assert_eq!(summary.fees, Amount::from(1));
+
+        let current_melt = pocket.current_melt.lock().unwrap();
+        let melt_ref = current_melt.as_ref().unwrap();
+        assert_eq!(melt_ref.rid, summary.request_id);
+        assert_eq!(melt_ref.quote_id, quote_id);
+    }
+
+    #[tokio::test]
+    async fn prepare_onchain_melt_rejects_invalid_address() {
+        let (_info, _keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = vec![KeySetInfo::from(_info)];
+
+        let pdb = MockPocketRepository::new();
+        let mdb = MockMintMeltRepository::new();
+        let connector = MockMintConnector::new();
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+
+        let result = pocket
+            .prepare_onchain_melt(
+                "invalid-bitcoin-address".to_string(),
+                24,
+                &k_infos,
+                Arc::new(connector),
+                test_swap_config(),
             )
             .await;
 

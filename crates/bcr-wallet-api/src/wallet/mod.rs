@@ -11,14 +11,17 @@ use crate::{
 };
 use bcr_common::{
     cashu::{
-        self, Amount, CurrencyUnit, KeySetInfo, MintUrl, PaymentRequest, Proof, ProofsMethods,
+        self, Amount, CurrencyUnit, KeySetInfo, PaymentRequest, Proof, ProofsMethods,
         nut18 as cdk18,
     },
     cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
     wallet::Token,
     wire::clowder::{ConnectedMintResponse, ConnectedMintsResponse},
 };
-use bcr_wallet_core::types::{PaymentType, TransactionStatus};
+use bcr_wallet_core::{
+    types::{PaymentType, TransactionStatus},
+    util::{from_mint_url, to_mint_url},
+};
 use bcr_wallet_persistence::TransactionRepository;
 use bitcoin::{
     hashes::{Hash, sha256::Hash as Sha256},
@@ -34,7 +37,7 @@ pub struct Wallet {
     network: bitcoin::Network,
     client: Arc<dyn ClowderMintConnector>,
     mint_keyset_infos: Vec<cashu::KeySetInfo>,
-    beta_clients: HashMap<cashu::MintUrl, Arc<dyn ClowderMintConnector>>,
+    beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>>,
     tx_repo: Box<dyn TransactionRepository>,
     debit: Box<dyn DebitPocketApi>,
     name: String,
@@ -43,7 +46,7 @@ pub struct Wallet {
     current_payment: Mutex<Option<PayReference>>,
     current_payment_request: Mutex<Option<PaymentRequest>>,
     clowder_id: secp256k1::PublicKey,
-    client_factory: Box<dyn Fn(cashu::MintUrl) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
+    client_factory: Box<dyn Fn(url::Url) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
     swap_expiry: chrono::TimeDelta,
     nostr_relays: Vec<RelayUrl>,
     nostr_cl: Arc<nostr_sdk::Client>,
@@ -61,8 +64,8 @@ impl Wallet {
         id: String,
         pub_key: secp256k1::PublicKey,
         clowder_id: secp256k1::PublicKey,
-        beta_clients: HashMap<cashu::MintUrl, Arc<dyn ClowderMintConnector>>,
-        client_factory: Box<dyn Fn(cashu::MintUrl) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
+        beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>>,
+        client_factory: Box<dyn Fn(url::Url) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
         swap_expiry: chrono::TimeDelta,
         nostr_relays: Vec<RelayUrl>,
         nostr_cl: Arc<nostr_sdk::Client>,
@@ -117,7 +120,7 @@ impl Wallet {
     // Returns (Option<(clowder_path, intermint_alpha_keyset)>, local_alpha_keyset)
     async fn get_clowder_path_and_keysets_info(
         &self,
-        mint_url: MintUrl,
+        mint_url: url::Url,
     ) -> Result<(
         Option<(ConnectedMintsResponse, Vec<KeySetInfo>)>,
         Vec<KeySetInfo>,
@@ -207,7 +210,7 @@ impl Wallet {
         req: &cashu::PaymentRequest,
     ) -> Result<(Amount, CurrencyUnit, cashu::Transport)> {
         if let Some(mints) = &req.mints
-            && !mints.contains(&self.client.mint_url())
+            && !mints.contains(&to_mint_url(&self.client.mint_url()))
         {
             return Err(Error::InterMint);
         }
@@ -353,7 +356,7 @@ impl Wallet {
         local_alpha_keysets_info: &[KeySetInfo],
         proofs: Vec<cashu::Proof>,
         unit: CurrencyUnit,
-        mint: MintUrl,
+        mint: url::Url,
         intermint_infos: Option<(ConnectedMintsResponse, Vec<KeySetInfo>)>,
         tstamp: u64,
         memo: Option<String>,
@@ -403,7 +406,7 @@ impl Wallet {
                     tracing::debug!(
                         "Offline Exchanged token: {}",
                         cashu::Token::new(
-                            substitute_beta_mint.clone(),
+                            to_mint_url(&substitute_beta_mint),
                             substitute_proofs.clone(),
                             None,
                             cashu::CurrencyUnit::Sat,
@@ -442,7 +445,7 @@ impl Wallet {
             )
             .await?;
         let tx = Transaction {
-            mint_url: self.client.mint_url(),
+            mint_url: to_mint_url(&self.client.mint_url()),
             direction: TransactionDirection::Incoming,
             fee: received_amount
                 .checked_sub(stored_amount)
@@ -489,7 +492,7 @@ impl Wallet {
     pub async fn online_exchange(
         &self,
         alpha_proofs: Vec<cashu::Proof>,
-        alpha_url: MintUrl,
+        alpha_url: url::Url,
         alpha_client: &dyn ClowderMintConnector,
         path: Vec<ConnectedMintResponse>,
         unit: CurrencyUnit,
@@ -543,7 +546,7 @@ impl Wallet {
         tracing::debug!(
             "Locked alpha token: {}",
             cashu::Token::new(
-                alpha_url.clone(),
+                to_mint_url(&alpha_url.clone()),
                 locked_alpha_proofs.clone(),
                 None,
                 cashu::CurrencyUnit::Sat,
@@ -587,7 +590,7 @@ impl Wallet {
         tracing::debug!(
             "Unlocked beta token: {}",
             cashu::Token::new(
-                self.client.mint_url(),
+                to_mint_url(&self.client.mint_url()),
                 beta_proofs.clone(),
                 None,
                 cashu::CurrencyUnit::Sat,
@@ -599,11 +602,12 @@ impl Wallet {
 
     pub async fn receive_token(&self, token: Token, tstamp: u64) -> Result<TransactionId> {
         let token_teaser = token.to_string().chars().take(20).collect::<String>();
+        let token_mint_url = from_mint_url(&token.mint_url());
         let (intermint_infos, keysets_info) = self
-            .get_clowder_path_and_keysets_info(token.mint_url())
+            .get_clowder_path_and_keysets_info(from_mint_url(&token.mint_url()))
             .await?;
 
-        let proofs = if token.mint_url() == self.client.mint_url() {
+        let proofs = if token_mint_url == self.client.mint_url() {
             token.proofs(&keysets_info)?
         } else if let Some((_, ref intermint_alpha_infos)) = intermint_infos {
             token.proofs(intermint_alpha_infos)?
@@ -633,7 +637,7 @@ impl Wallet {
                 &keysets_info,
                 proofs,
                 self.debit.unit(),
-                token.mint_url(),
+                token_mint_url,
                 intermint_infos,
                 tstamp,
                 token.memo().clone(),
@@ -659,7 +663,7 @@ impl Wallet {
             id: p_id,
             memo: partial_tx.memo.clone(),
             unit: partial_tx.unit.clone(),
-            mint: self.client.mint_url(),
+            mint: to_mint_url(&self.client.mint_url()),
             proofs,
         };
         match transport._type {
@@ -755,7 +759,7 @@ impl Wallet {
             self,
             payload.proofs,
             payload.unit,
-            payload.mint,
+            from_mint_url(&payload.mint),
             chrono::Utc::now().timestamp() as u64,
             payload.memo,
             meta,
@@ -851,7 +855,7 @@ mod tests {
 
     fn wallet_with_betas(
         mut w: Wallet,
-        betas: Vec<(cashu::MintUrl, Arc<dyn ClowderMintConnector>)>,
+        betas: Vec<(url::Url, Arc<dyn ClowderMintConnector>)>,
     ) -> Wallet {
         let mut map = HashMap::new();
         for (url, cl) in betas {
@@ -891,7 +895,7 @@ mod tests {
         ctx.client
             .expect_mint_url()
             .times(1)
-            .returning(|| cashu::MintUrl::from_str("https://mint.example").unwrap());
+            .returning(|| url::Url::from_str("https://mint.example").unwrap());
 
         let wlt = wallet(ctx);
         let cfg = wlt.config().expect("config works");
@@ -900,7 +904,7 @@ mod tests {
         assert_eq!(cfg.name, "wallet-1");
         assert_eq!(cfg.network, bitcoin::Network::Testnet);
         assert_eq!(cfg.debit, CurrencyUnit::Sat);
-        assert_eq!(cfg.mint.to_string(), "https://mint.example");
+        assert_eq!(cfg.mint.to_string(), "https://mint.example/");
         assert_eq!(cfg.pub_key, test_pub_key());
         assert_eq!(cfg.clowder_id, test_pub_key());
         assert!(cfg.betas.is_empty());
@@ -928,11 +932,11 @@ mod tests {
         ctx.client
             .expect_mint_url()
             .times(1)
-            .returning(|| cashu::MintUrl::from_str("https://mint.example").unwrap());
+            .returning(|| url::Url::from_str("https://mint.example").unwrap());
 
         let wlt = wallet(ctx);
         let url = wlt.mint_url().unwrap();
-        assert_eq!(url.to_string(), "https://mint.example");
+        assert_eq!(url.to_string(), "https://mint.example/");
     }
 
     #[tokio::test]
@@ -941,11 +945,11 @@ mod tests {
         ctx.client
             .expect_mint_url()
             .times(1)
-            .returning(|| cashu::MintUrl::from_str("https://mint.example").unwrap());
+            .returning(|| url::Url::from_str("https://mint.example").unwrap());
         let mut wlt = wallet(ctx);
 
-        let b1 = cashu::MintUrl::from_str("https://beta1.example").unwrap();
-        let b2 = cashu::MintUrl::from_str("https://beta2.example").unwrap();
+        let b1 = url::Url::from_str("https://beta1.example").unwrap();
+        let b2 = url::Url::from_str("https://beta2.example").unwrap();
 
         let beta1: Arc<dyn ClowderMintConnector> = Arc::new(MockMintConnector::new());
         let beta2: Arc<dyn ClowderMintConnector> = Arc::new(MockMintConnector::new());
@@ -957,10 +961,10 @@ mod tests {
         assert!(betas.contains(&b1));
         assert!(betas.contains(&b2));
 
-        let urls = wlt.mint_urls().unwrap();
+        let urls = wlt.mint_urls();
         assert!(urls.contains(&b1));
         assert!(urls.contains(&b2));
-        assert!(urls.contains(&cashu::MintUrl::from_str("https://mint.example").unwrap()));
+        assert!(urls.contains(&url::Url::from_str("https://mint.example").unwrap()));
         assert_eq!(urls.len(), 3);
     }
 
@@ -998,7 +1002,7 @@ mod tests {
         ctx.client
             .expect_mint_url()
             .times(1)
-            .returning(|| cashu::MintUrl::from_str("https://mint.example").unwrap());
+            .returning(|| url::Url::from_str("https://mint.example").unwrap());
 
         let wlt = wallet(ctx);
         let req = wlt
@@ -1107,9 +1111,9 @@ mod tests {
         let ctx = wallet_ctx();
         let mut wlt = wallet(ctx);
 
-        let b1 = cashu::MintUrl::from_str("https://b1.example").unwrap();
-        let b2 = cashu::MintUrl::from_str("https://b2.example").unwrap();
-        let b3 = cashu::MintUrl::from_str("https://b3.example").unwrap();
+        let b1 = url::Url::from_str("https://b1.example").unwrap();
+        let b2 = url::Url::from_str("https://b2.example").unwrap();
+        let b3 = url::Url::from_str("https://b3.example").unwrap();
 
         let mut m1 = MockMintConnector::new();
         let mut m2 = MockMintConnector::new();
@@ -1145,8 +1149,8 @@ mod tests {
         let ctx = wallet_ctx();
         let mut wlt = wallet(ctx);
 
-        let b1 = cashu::MintUrl::from_str("https://b1.example").unwrap();
-        let b2 = cashu::MintUrl::from_str("https://b2.example").unwrap();
+        let b1 = url::Url::from_str("https://b1.example").unwrap();
+        let b2 = url::Url::from_str("https://b2.example").unwrap();
 
         let mut m1 = MockMintConnector::new();
         let mut m2 = MockMintConnector::new();
@@ -1173,12 +1177,12 @@ mod tests {
         let ctx = wallet_ctx();
         let mut wlt = wallet(ctx);
 
-        let b1 = cashu::MintUrl::from_str("https://b1.example").unwrap();
-        let b2 = cashu::MintUrl::from_str("https://b2.example").unwrap();
-        let b3 = cashu::MintUrl::from_str("https://b3.example").unwrap();
+        let b1 = url::Url::from_str("https://b1.example").unwrap();
+        let b2 = url::Url::from_str("https://b2.example").unwrap();
+        let b3 = url::Url::from_str("https://b3.example").unwrap();
 
-        let substitute = cashu::MintUrl::from_str("https://sub.example").unwrap();
-        let other = cashu::MintUrl::from_str("https://other.example").unwrap();
+        let substitute = url::Url::from_str("https://sub.example").unwrap();
+        let other = url::Url::from_str("https://other.example").unwrap();
 
         let mut m1 = MockMintConnector::new();
         let mut m2 = MockMintConnector::new();
@@ -1264,7 +1268,7 @@ mod tests {
         ctx.client
             .expect_mint_url()
             .times(2) // token creation + tx mint_url
-            .returning(|| cashu::MintUrl::from_str("https://mint.example").unwrap());
+            .returning(|| url::Url::from_str("https://mint.example").unwrap());
 
         ctx.debit
             .expect_unit()
@@ -1333,11 +1337,11 @@ mod tests {
         ctx.debit
             .expect_recover_pending_stale_proofs()
             .times(1)
-            .returning(|_, _, _, _| Ok(Amount::from(10u64)));
+            .returning(|_, _, _, _| Ok(Amount::from(10)));
 
         let wlt = wallet(ctx);
         let recovered = wlt.recover_pending_stale_proofs(&[]).await.unwrap();
-        assert_eq!(recovered, Amount::from(10u64));
+        assert_eq!(recovered, Amount::from(10));
     }
 
     #[tokio::test]
@@ -1355,7 +1359,7 @@ mod tests {
                 String::from(TRANSACTION_STATUS_METADATA_KEY),
                 TransactionStatus::Settled.to_string(),
             )]),
-            ..reclaimable_tx(Amount::from(10u64))
+            ..reclaimable_tx(Amount::from(10))
         };
 
         ctx.tx_repo
@@ -1376,7 +1380,7 @@ mod tests {
     async fn test_reclaim_tx_sets_settled_if_nothing_reclaimed() {
         let mut ctx = wallet_ctx();
         let tx_id = TransactionId::new(vec![]);
-        let tx = reclaimable_tx(Amount::from(10u64));
+        let tx = reclaimable_tx(Amount::from(10));
 
         ctx.client
             .expect_get_mint_keysets()
@@ -1422,7 +1426,7 @@ mod tests {
     async fn test_reclaim_tx_sets_canceled_without_fee_if_fully_reclaimed() {
         let mut ctx = wallet_ctx();
         let tx_id = TransactionId::new(vec![]);
-        let tx = reclaimable_tx(Amount::from(10u64));
+        let tx = reclaimable_tx(Amount::from(10));
 
         ctx.client
             .expect_get_mint_keysets()
@@ -1447,7 +1451,7 @@ mod tests {
         ctx.debit
             .expect_reclaim_proofs()
             .times(1)
-            .returning(|_, _, _, _| Ok(Amount::from(10u64)));
+            .returning(|_, _, _, _| Ok(Amount::from(10)));
 
         ctx.tx_repo
             .expect_update_metadata()
@@ -1463,14 +1467,14 @@ mod tests {
         let wlt = wallet(ctx);
         let amount = wlt.reclaim_tx(tx_id).await.unwrap();
 
-        assert_eq!(amount, Amount::from(10u64));
+        assert_eq!(amount, Amount::from(10));
     }
 
     #[tokio::test]
     async fn test_reclaim_tx_sets_canceled_and_fee_if_partially_reclaimed() {
         let mut ctx = wallet_ctx();
         let tx_id = TransactionId::new(vec![]);
-        let tx = reclaimable_tx(Amount::from(10u64));
+        let tx = reclaimable_tx(Amount::from(10));
 
         ctx.client
             .expect_get_mint_keysets()
@@ -1495,7 +1499,7 @@ mod tests {
         ctx.debit
             .expect_reclaim_proofs()
             .times(1)
-            .returning(|_, _, _, _| Ok(Amount::from(7u64)));
+            .returning(|_, _, _, _| Ok(Amount::from(7)));
 
         ctx.tx_repo
             .expect_update_metadata()
@@ -1509,12 +1513,12 @@ mod tests {
         ctx.tx_repo
             .expect_update_fee()
             .times(1)
-            .withf(|_, fee| *fee == Amount::from(3u64))
+            .withf(|_, fee| *fee == Amount::from(3))
             .returning(|_, _| Ok(()));
 
         let wlt = wallet(ctx);
         let amount = wlt.reclaim_tx(tx_id).await.unwrap();
 
-        assert_eq!(amount, Amount::from(7u64));
+        assert_eq!(amount, Amount::from(7));
     }
 }

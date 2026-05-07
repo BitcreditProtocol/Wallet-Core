@@ -17,7 +17,7 @@ pub mod tests {
         }
         #[async_trait]
         impl crate::ClowderMintConnector for MintConnector {
-            fn mint_url(&self) -> cashu::MintUrl;
+            fn mint_url(&self) -> url::Url;
             async fn post_restore(
                 &self,
                 request: cashu::RestoreRequest,
@@ -28,7 +28,7 @@ pub mod tests {
             ) -> MintResult<Vec<cashu::ProofState>>;
             async fn get_mint_keyset(&self, keyset_id: cashu::Id) -> MintResult<cashu::KeySet>;
             async fn get_mint_keysets(&self) -> MintResult<Vec<cashu::KeySetInfo>>;
-            async fn get_clowder_betas(&self) -> MintResult<Vec<cashu::MintUrl>>;
+            async fn get_clowder_betas(&self) -> MintResult<Vec<url::Url>>;
             async fn post_online_exchange(
                 &self,
                 alpha_proofs: Vec<cashu::Proof>,
@@ -37,7 +37,7 @@ pub mod tests {
             async fn get_clowder_id(&self) -> MintResult<secp256k1::PublicKey>;
             async fn post_clowder_path(
                 &self,
-                origin_mint_url: cashu::MintUrl,
+                origin_mint_url: url::Url,
             ) -> MintResult<bcr_common::wire::clowder::ConnectedMintsResponse>;
             async fn get_alpha_keysets(
                 &self,
@@ -71,7 +71,6 @@ pub mod tests {
                 &self,
                 inputs: Vec<cashu::Proof>,
                 address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-                amount: bitcoin::Amount,
                 alpha_pk: secp256k1::PublicKey,
             ) -> Result<crate::external::mint::MeltQuoteResult>;
             async fn post_melt_onchain(

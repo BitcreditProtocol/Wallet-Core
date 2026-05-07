@@ -1,5 +1,5 @@
 use bcr_common::{
-    cashu::{self, MintUrl},
+    cashu::{self},
     cdk_common,
 };
 use thiserror::Error;
@@ -91,8 +91,6 @@ pub enum Error {
     InvalidNetwork(bitcoin::Network, bitcoin::Network),
     #[error("mnemonic mismatch")]
     InvalidMnemonic,
-    #[error("mint url mismatch, ours: {0}, theirs: {1}")]
-    InvalidMintUrl(MintUrl, MintUrl),
     #[error("payment request, missing amount")]
     MissingAmount,
     #[error("payment request unknown {0}")]
@@ -114,7 +112,7 @@ pub enum Error {
     #[error("Invalid Clowder Path for foreign eCash")]
     InvalidClowderPath,
     #[error("Beta not found")]
-    BetaNotFound(cashu::MintUrl),
+    BetaNotFound(url::Url),
     #[error("No Substitute could be determined")]
     NoSubstitute,
     #[error("No beta mints available")]

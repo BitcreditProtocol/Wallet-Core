@@ -728,7 +728,6 @@ enum WalletErrorCode {
   insufficientOnChainMintAmount,
   noDevMode,
   invalidBitcoinAddress,
-  invalidMintUrl,
   invalidMnemonic,
   mnemonicNotFound,
   walletUniqueName,

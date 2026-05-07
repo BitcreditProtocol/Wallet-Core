@@ -3,7 +3,7 @@ use crate::{
     error::{Error, Result},
 };
 use async_trait::async_trait;
-use bcr_common::cashu::{CurrencyUnit, MintUrl};
+use bcr_common::cashu::CurrencyUnit;
 use bcr_wallet_core::types::WalletConfig;
 use bitcoin::secp256k1;
 use nostr_sdk::RelayUrl;
@@ -17,12 +17,12 @@ struct WalletEntry {
     wallet_id: String,
     name: String,
     network: bitcoin::Network,
-    mint: bcr_common::cashu::MintUrl,
+    mint: url::Url,
     mint_keyset_infos: Vec<bcr_common::cashu::KeySetInfo>,
     clowder_id: secp256k1::PublicKey,
     pub_key: secp256k1::PublicKey,
     debit: CurrencyUnit,
-    betas: Vec<MintUrl>,
+    betas: Vec<url::Url>,
     nostr_relays: Vec<RelayUrl>,
 }
 impl std::convert::From<WalletConfig> for WalletEntry {
@@ -193,7 +193,7 @@ mod tests {
             name: name.to_owned(),
 
             network: bitcoin::Network::Bitcoin,
-            mint: MintUrl::from_str("https://example.com").expect("valid mint url"),
+            mint: url::Url::from_str("https://example.com").expect("valid mint url"),
             mint_keyset_infos: vec![],
             clowder_id: test_clowder_id,
             pub_key: test_pub_key(),

@@ -1,7 +1,6 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use crate::error::Result;
-use bcr_common::cashu::MintUrl;
 use nostr_sdk::{Keys, RelayUrl, nips::nip06::FromMnemonic, nips::nip19::Nip19Profile};
 
 pub const LOCK_REDUCTION_SECONDS_PER_HOP: u64 = 600;
@@ -21,7 +20,7 @@ pub struct CreateWalletConfig {
     pub network: bitcoin::Network,
     pub nostr_relays: Vec<RelayUrl>,
     pub mnemonic: bip39::Mnemonic,
-    pub default_mint_url: MintUrl,
+    pub default_mint_url: url::Url,
 }
 
 #[derive(Debug, Clone)]

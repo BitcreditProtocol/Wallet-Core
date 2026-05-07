@@ -1,5 +1,5 @@
 use bcr_common::{
-    cashu::{Amount, CurrencyUnit, KeySetInfo, MintUrl},
+    cashu::{Amount, CurrencyUnit, KeySetInfo},
     cdk_common::wallet::TransactionId,
 };
 use bitcoin::{address::NetworkUnchecked, secp256k1};
@@ -34,12 +34,12 @@ pub struct WalletConfig {
     pub wallet_id: String,
     pub name: String,
     pub network: bitcoin::Network,
-    pub mint: MintUrl,
+    pub mint: url::Url,
     pub mint_keyset_infos: Vec<KeySetInfo>,
     pub clowder_id: secp256k1::PublicKey,
     pub debit: CurrencyUnit,
     pub pub_key: secp256k1::PublicKey,
-    pub betas: Vec<MintUrl>,
+    pub betas: Vec<url::Url>,
     pub nostr_relays: Vec<RelayUrl>,
 }
 
