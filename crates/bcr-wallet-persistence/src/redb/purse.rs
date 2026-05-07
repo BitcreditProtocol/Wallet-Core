@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use bcr_common::cashu::{CurrencyUnit, MintUrl};
 use bcr_wallet_core::types::WalletConfig;
 use bitcoin::secp256k1;
+use nostr_sdk::RelayUrl;
 use redb::{Database, ReadableDatabase, TableDefinition, TableError};
 use std::sync::Arc;
 use tokio::task::spawn_blocking;
@@ -22,6 +23,7 @@ struct WalletEntry {
     pub_key: secp256k1::PublicKey,
     debit: CurrencyUnit,
     betas: Vec<MintUrl>,
+    nostr_relays: Vec<RelayUrl>,
 }
 impl std::convert::From<WalletConfig> for WalletEntry {
     fn from(wallet: WalletConfig) -> Self {
@@ -35,6 +37,7 @@ impl std::convert::From<WalletConfig> for WalletEntry {
             pub_key: wallet.pub_key,
             debit: wallet.debit,
             betas: wallet.betas,
+            nostr_relays: wallet.nostr_relays,
         }
     }
 }
@@ -50,6 +53,7 @@ impl std::convert::From<WalletEntry> for WalletConfig {
             pub_key: wallet.pub_key,
             debit: wallet.debit,
             betas: wallet.betas,
+            nostr_relays: wallet.nostr_relays,
         }
     }
 }
@@ -195,6 +199,7 @@ mod tests {
             pub_key: test_pub_key(),
             debit: CurrencyUnit::Sat,
             betas: vec![],
+            nostr_relays: vec![],
         }
     }
 

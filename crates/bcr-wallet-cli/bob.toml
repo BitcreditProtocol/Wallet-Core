@@ -1,8 +1,14 @@
-# mint_url = "https://mint.wildcat1.clowder-dev.minibill.tech"
-mint_url = "https://mint.wildcat0.clowder-dev.minibill.tech"
-# mint_url = "https://mint.wildcat0.clowder1.minibill.tech"
-mnemonic = "spoil frost juice sketch spirit fine trophy puzzle crater roast holiday payment"
 log_level = "DEBUG"
 db_path = "./bob.db"
+
+[wallets.49b81beaed5cdd051ff5070906be2d8c17508ddb01436f5d6e56216d6f634c0c]
 network = "testnet"
-nostr_relays = ["wss://relay.wildcat0.clowder-dev.minibill.tech"]
+nostr_relays = ["wss://relay.wildcat0.clowder-dev.minibill.tech", "wss://relay.wildcat1.clowder-dev.minibill.tech"]
+mint_url = "https://mint.wildcat0.clowder-dev.minibill.tech"
+mnemonic = "struggle toilet attitude trim obey grab alter apology across bamboo palm naive"
+
+[wallets.9b0ade58c90766fc6c4313dde1769b1146a60e0f6407919fbd41053e93c78030]
+network = "testnet"
+nostr_relays = ["wss://relay.wildcat0.clowder-dev.minibill.tech", "wss://relay.wildcat1.clowder-dev.minibill.tech"]
+mint_url = "https://mint.wildcat0.clowder-dev.minibill.tech"
+mnemonic = "mechanic save web pigeon cricket unable abuse winner gallery slide blush polar"

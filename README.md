@@ -13,23 +13,24 @@ Set configs in crates/bcr-wallet-cli/alice.toml
 To reset just rm crates/bcr-wallet-cli/alice.db
 
 ```
-just cli -w alice restore_wallet
+// with $id = ddfb860cf982e17b6a45ce073823bf722d903c8a176de99e786c7f8b582dd6d6
+just cli -w alice restore_wallet $id
 
 just cli -w alice info
 
-just cli -w alice receive 0 $token
+just cli -w alice receive $id $token
 
-just cli -w alice send_payment 0 $token
+just cli -w alice send_payment $id $token
 
-just cli -w alice request_payment 0 150 sat
+just cli -w alice request_payment $id 150
 
-just cli -w alice melt 0 1000 $btcaddress
+just cli -w alice melt $id 1000 $btcaddress
 
-just cli -w alice pay_by_token 0 100 sat
+just cli -w alice mint $id 1200
 
-just cli -w alice mint 0 1200
+just cli -w alice pay_by_token $id 100
 
-just cli -w alice reclaim 0 $txid
+just cli -w alice reclaim $id $txid
 ```
 
 ## wallet_ffi

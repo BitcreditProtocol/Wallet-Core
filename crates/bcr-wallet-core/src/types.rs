@@ -3,6 +3,7 @@ use bcr_common::{
     cdk_common::wallet::TransactionId,
 };
 use bitcoin::{address::NetworkUnchecked, secp256k1};
+use nostr_sdk::RelayUrl;
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use uuid::Uuid;
 
@@ -39,6 +40,7 @@ pub struct WalletConfig {
     pub debit: CurrencyUnit,
     pub pub_key: secp256k1::PublicKey,
     pub betas: Vec<MintUrl>,
+    pub nostr_relays: Vec<RelayUrl>,
 }
 
 #[derive(Default, Debug, Clone)]

@@ -449,6 +449,32 @@ impl MintMeltDB {
             Err(e) => Err(e.into()),
         }
     }
+
+    fn delete_repo(
+        db: Arc<Database>,
+        mint_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        melt_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        melt_commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+
+        {
+            if write_txn.open_table(mint_table).is_ok() {
+                write_txn.delete_table(mint_table)?;
+            }
+
+            if write_txn.open_table(melt_table).is_ok() {
+                write_txn.delete_table(melt_table)?;
+            }
+
+            if write_txn.open_table(melt_commitment_table).is_ok() {
+                write_txn.delete_table(melt_commitment_table)?;
+            }
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -559,6 +585,17 @@ impl MintMeltRepository for MintMeltDB {
         let db_clone = self.db.clone();
         let table = self.melt_commitment_table;
         spawn_blocking(move || Self::list_melt_commitments_sync(db_clone, table)).await?
+    }
+
+    async fn delete_repo(&self) -> Result<()> {
+        let db_clone = self.db.clone();
+        let mint_table = self.mint_table;
+        let melt_table = self.melt_table;
+        let melt_commitment_table = self.melt_commitment_table;
+        spawn_blocking(move || {
+            Self::delete_repo(db_clone, mint_table, melt_table, melt_commitment_table)
+        })
+        .await?
     }
 }
 

@@ -6,9 +6,12 @@ use bitcoin::{
 
 use crate::types::Seed;
 
-pub fn build_wallet_id(seed: &Seed) -> String {
+// Builds the wallet id, which is the hashed seed and bitcoin network, to ensure
+// uniqueness of a keypair per bitcoin network
+pub fn build_wallet_id(seed: &Seed, network: bitcoin::Network) -> String {
     let mut hasher = sha256::HashEngine::default();
     hasher.input(seed);
+    hasher.input(network.magic().to_bytes().as_slice());
     sha256::Hash::from_engine(hasher)
         .as_byte_array()
         .as_hex()

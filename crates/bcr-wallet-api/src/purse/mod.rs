@@ -10,14 +10,14 @@ use tokio::sync::RwLock;
 
 pub struct Purse<Wlt> {
     pub repo: Box<dyn PurseRepository>,
-    pub wallets: Arc<RwLock<Vec<Arc<RwLock<Wlt>>>>>,
+    pub wallets: Arc<RwLock<HashMap<String, Arc<RwLock<Wlt>>>>>,
 }
 
 impl<Wlt> Purse<Wlt> {
     pub async fn new(repo: PurseDB) -> Result<Self> {
         Ok(Self {
             repo: Box::new(repo),
-            wallets: Arc::new(RwLock::new(Vec::default())),
+            wallets: Arc::new(RwLock::new(HashMap::default())),
         })
     }
 
@@ -27,21 +27,19 @@ impl<Wlt> Purse<Wlt> {
     }
 
     pub async fn list_wallets(&self) -> Result<Vec<String>> {
-        let res = self.repo.list_ids().await?;
+        let mut res = self.repo.list_ids().await?;
+        res.sort();
         Ok(res)
     }
 
-    pub async fn get_wallet(&self, idx: usize) -> Option<Arc<RwLock<Wlt>>> {
-        self.wallets.read().await.get(idx).cloned()
+    pub async fn get_wallet(&self, id: &str) -> Option<Arc<RwLock<Wlt>>> {
+        self.wallets.read().await.get(id).cloned()
     }
 
-    pub async fn ids(&self) -> Vec<u32> {
-        (0..self.wallets.read().await.len() as u32).collect()
-    }
-
-    // Current limitation to 1 wallet
-    pub async fn can_add_wallet(&self) -> bool {
-        self.wallets.read().await.is_empty()
+    pub async fn ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.wallets.read().await.keys().cloned().collect();
+        ids.sort();
+        ids
     }
 }
 
@@ -49,29 +47,40 @@ impl<Wlt> Purse<Wlt>
 where
     Wlt: WalletApi,
 {
-    pub async fn add_wallet(&self, wallet: Wlt) -> Result<usize> {
-        self.repo.store(wallet.config()?).await?;
-        let mut wallets = self.wallets.write().await;
-        wallets.push(Arc::new(RwLock::new(wallet)));
-        Ok(wallets.len() - 1)
+    pub async fn names(&self) -> Vec<String> {
+        let wallets: Vec<_> = {
+            let wlts = self.wallets.read().await;
+            wlts.values().cloned().collect()
+        };
+        let mut res = Vec::with_capacity(wallets.len());
+        for wlt in wallets.iter() {
+            res.push(wlt.read().await.name());
+        }
+        res
     }
 
-    pub async fn delete_wallet(&self, idx: usize) -> Result<()> {
-        let Some(wlt) = self.get_wallet(idx).await else {
-            return Err(Error::WalletNotFound(idx));
+    pub async fn add_wallet(&self, wallet: Wlt) -> Result<String> {
+        let wallet_id = wallet.id();
+        self.repo.store(wallet.config()?).await?;
+        let mut wallets = self.wallets.write().await;
+        wallets.insert(wallet_id.clone(), Arc::new(RwLock::new(wallet)));
+        Ok(wallet_id)
+    }
+
+    pub async fn delete_wallet(&self, id: &str) -> Result<()> {
+        let Some(wlt) = self.get_wallet(id).await else {
+            return Err(Error::WalletNotFound(id.to_owned()));
         };
-        let id = wlt.read().await.id();
-        wlt.read().await.cleanup_local_proofs().await?;
-        self.repo.delete(&id).await?;
-        self.wallets.write().await.remove(idx);
+        wlt.read().await.delete().await?;
+        self.repo.delete(id).await?;
+        self.wallets.write().await.remove(id);
         Ok(())
     }
 
     pub async fn migrate_rabid_wallets(&self) -> Result<HashMap<String, MintUrl>> {
         let mut res = HashMap::new();
         let wlts = self.wallets.read().await;
-        for wlt in wlts.iter() {
-            let wallet_id = wlt.read().await.id();
+        for (wallet_id, wlt) in wlts.iter() {
             tracing::info!("Checking if alpha is rabid..");
             let is_rabid = wlt.read().await.is_wallet_mint_rabid().await?;
             if is_rabid {
@@ -92,7 +101,7 @@ where
                         .await
                         .migrate_pockets_substitute(Arc::new(substitute_client))
                         .await?;
-                    res.insert(wallet_id, new_mint_url);
+                    res.insert(wallet_id.clone(), new_mint_url);
                     self.repo.store(wlt.read().await.config()?).await?;
                 }
             } else {
@@ -117,7 +126,7 @@ mod tests {
     fn purse(db: Box<dyn PurseRepository>) -> super::Purse<MockWalletApi> {
         Purse {
             repo: db,
-            wallets: Arc::new(RwLock::new(Vec::default())),
+            wallets: Arc::new(RwLock::new(HashMap::default())),
         }
     }
 
@@ -132,6 +141,7 @@ mod tests {
             debit: CurrencyUnit::Sat,
             pub_key: test_pub_key(),
             betas: vec![],
+            nostr_relays: vec![],
         }
     }
 
@@ -149,27 +159,24 @@ mod tests {
         let mut wlt = MockWalletApi::new();
         wlt.expect_id().returning(|| "wlt-1".to_owned());
         wlt.expect_config().times(1).returning(|| Ok(wlt_cfg()));
-        wlt.expect_cleanup_local_proofs().returning(|| Ok(()));
+        wlt.expect_delete().times(1).returning(|| Ok(()));
 
         let new_wlt_id = wlt.id();
-        assert!(purse.can_add_wallet().await);
         let wlt_id = purse.add_wallet(wlt).await.expect("can create wallet");
-        assert_eq!(wlt_id, 0);
+        assert_eq!(wlt_id, "wlt-1".to_owned());
         let wallets = purse.list_wallets().await.expect("list wallets works");
         assert_eq!(wallets.len(), 1);
-        assert!(!purse.can_add_wallet().await);
         let cfg = purse
             .load_wallet_config(&wlt_id.to_string())
             .await
             .expect("load cfg works");
         assert_eq!(cfg.name, wlt_cfg().name);
         let ids = purse.ids().await;
-        assert_eq!(ids[0], wlt_id as u32);
-        let gotten = purse.get_wallet(wlt_id).await.expect("get wallet works");
+        assert_eq!(ids[0], wlt_id);
+        let gotten = purse.get_wallet(&wlt_id).await.expect("get wallet works");
         assert_eq!(gotten.read().await.id(), new_wlt_id);
 
-        purse.delete_wallet(wlt_id).await.expect("delete works");
-        assert!(purse.can_add_wallet().await);
+        purse.delete_wallet(&wlt_id).await.expect("delete works");
     }
 
     #[tokio::test]

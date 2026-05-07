@@ -72,10 +72,6 @@ pub mod tests {
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
             ) -> Result<HashMap<cashu::PublicKey, cashu::Proof>>;
-            async fn cleanup_local_proofs(
-                &self,
-                client: Arc<dyn ClowderMintConnector>,
-            ) -> Result<Vec<cashu::PublicKey>>;
             async fn restore_local_proofs(
                 &self,
                 keysets_info: &[KeySetInfo],
@@ -98,6 +94,7 @@ pub mod tests {
                 &self,
                 keysets_info: &[KeySetInfo],
             ) -> Result<HashMap<cashu::Id, (Option<u64>, Amount)>>;
+            async fn delete(&self) -> Result<()>;
         }
 
         #[async_trait]

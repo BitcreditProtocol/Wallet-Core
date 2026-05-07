@@ -1,6 +1,0 @@
-mint_url = "https://mint.wildcat3.clowder-dev.minibill.tech"
-mnemonic = "ridge brain slice tomorrow what poet jacket soda audit reflect process labor"
-log_level = "DEBUG"
-db_path = "./carol.db"
-network = "testnet"
-nostr_relays = ["wss://relay.wildcat0.clowder-dev.minibill.tech"]

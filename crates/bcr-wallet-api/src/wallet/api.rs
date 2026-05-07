@@ -25,6 +25,7 @@ use bcr_wallet_core::{
 use bitcoin::secp256k1;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use nostr::nips::nip19::ToBech32;
 use nostr_sdk::RelayPoolNotification;
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use tokio_util::sync::CancellationToken;
@@ -53,13 +54,11 @@ pub trait WalletApi: SendSync {
         amount: Amount,
         unit: CurrencyUnit,
         description: Option<String>,
-        nostr_transport: cdk18::Transport,
     ) -> Result<cdk18::PaymentRequest>;
     async fn check_received_payment(
         &self,
         max_wait: core::time::Duration,
         p_id: Uuid,
-        nostr_cl: &nostr_sdk::Client,
         cancel_token: CancellationToken,
         result_callback: PaymentResultCallback,
     ) -> Result<()>;
@@ -69,7 +68,6 @@ pub trait WalletApi: SendSync {
     async fn pay(
         &self,
         p_id: Uuid,
-        nostr_cl: &nostr_sdk::Client,
         http_cl: &reqwest::Client,
         tstamp: u64,
     ) -> Result<(TransactionId, Option<Token>)>;
@@ -110,7 +108,7 @@ pub trait WalletApi: SendSync {
         memo: Option<String>,
         now: u64,
     ) -> Result<(TransactionId, Option<Token>)>;
-    async fn cleanup_local_proofs(&self) -> Result<()>;
+    async fn delete(&self) -> Result<()>;
 }
 
 #[async_trait]
@@ -126,6 +124,7 @@ impl WalletApi for super::Wallet {
             clowder_id: self.clowder_id,
             pub_key: self.pub_key,
             betas: self.betas(),
+            nostr_relays: self.nostr_relays.clone(),
         })
     }
 
@@ -204,8 +203,12 @@ impl WalletApi for super::Wallet {
         amount: Amount,
         unit: CurrencyUnit,
         description: Option<String>,
-        nostr_transport: cdk18::Transport,
     ) -> Result<cdk18::PaymentRequest> {
+        let nostr_transport = cdk18::Transport {
+            _type: cdk18::TransportType::Nostr,
+            target: self.nostr_profile.to_bech32()?,
+            tags: Some(vec![vec![String::from("n"), String::from("17")]]),
+        };
         let mints = self.mint_urls()?;
         let request = cdk18::PaymentRequest {
             payment_id: Some(Uuid::new_v4().to_string()),
@@ -225,7 +228,6 @@ impl WalletApi for super::Wallet {
         &self,
         max_wait: core::time::Duration,
         p_id: Uuid,
-        nostr_cl: &nostr_sdk::Client,
         cancel_token: CancellationToken,
         result_callback: PaymentResultCallback,
     ) -> Result<()> {
@@ -239,10 +241,10 @@ impl WalletApi for super::Wallet {
         }
 
         let start = tokio::time::Instant::now();
-        let signer = nostr_cl.signer().await?;
+        let signer = self.nostr_cl.signer().await?;
 
         tracing::debug!("Subscribing to events from Nostr...");
-        let mut events = nostr_cl.notifications();
+        let mut events = self.nostr_cl.notifications();
         let deadline = start + max_wait;
 
         loop {
@@ -290,7 +292,6 @@ impl WalletApi for super::Wallet {
     async fn pay(
         &self,
         p_id: Uuid,
-        nostr_cl: &nostr_sdk::Client,
         http_cl: &reqwest::Client,
         now: u64,
     ) -> Result<(TransactionId, Option<Token>)> {
@@ -351,7 +352,7 @@ impl WalletApi for super::Wallet {
                     quote_id: None,
                 };
                 let tx_id = self
-                    .pay_nut18(proofs, nostr_cl, http_cl, transport, id, partial_tx)
+                    .pay_nut18(proofs, &self.nostr_cl, http_cl, transport, id, partial_tx)
                     .await?;
                 Ok((tx_id, None))
             }
@@ -1022,8 +1023,22 @@ impl WalletApi for super::Wallet {
         }
     }
 
-    async fn cleanup_local_proofs(&self) -> Result<()> {
-        self.debit.cleanup_local_proofs(self.client.clone()).await?;
+    async fn delete(&self) -> Result<()> {
+        // shut down nostr client
+        self.nostr_cl.shutdown().await;
+        // delete debit pocket
+        if let Err(e) = self.debit.delete().await {
+            tracing::error!("Error deleting pocket for wallet {}: {e}", self.id())
+        }
+
+        // delete transaction tables
+        if let Err(e) = self.tx_repo.delete_repo().await {
+            tracing::error!(
+                "Error deleting transaction DB for wallet {}: {e}",
+                self.id()
+            )
+        }
+
         Ok(())
     }
 }

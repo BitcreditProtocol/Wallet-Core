@@ -1,3 +1,20 @@
+# 0.9.2
+
+* Add support for multiple wallets
+    * `default_mint_url`, `bitcoin_network`, `mnemonic`, `nostr_relays` are now wallet-specific, not application-specific
+    * `WalletFfiConfig` now takes a `HashMap<WalletId, Mnemonic>` where existing wallets need to be added with their ids and `mnemonics`
+    * Wallet functions are not called with a wallet index anymore, but with the `wallet_id`
+    * The `wallet_id` is the hashed seed (of the `mnemonic`) + `bitcoin_network`
+        * This means a combination of `mnemonic` + `bitcoin_network` is unique
+    * To get the `wallet_id` and a random `mnemonic` before creating a wallet on a given `bitcoin_network`, you can use the `generate_random_mnemonic` call, which now returns the `wallet_id` and the `mnemonic`
+    * To get the `wallet_id` for a given `mnemonic` and `bitcoin_network`, you can call `wallet_id_for_mnemonic_and_network`
+    * The Wallet ID must be unique per application
+    * The Wallet Name must be unique per application
+    * `wallet_delete` now properly deletes all tables of the given wallet
+    * Nostr clients are now running per-wallet, instead of one per application
+* Add proper error logging to external mint calls
+* Upgrade dependencies
+
 # 0.9.1
 
 * Add `code` to `WalletError` for ffi

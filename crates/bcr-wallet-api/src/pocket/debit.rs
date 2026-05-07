@@ -478,14 +478,6 @@ impl super::PocketApi for Pocket {
         Ok(sending_proofs)
     }
 
-    async fn cleanup_local_proofs(
-        &self,
-        client: Arc<dyn ClowderMintConnector>,
-    ) -> Result<Vec<cdk01::PublicKey>> {
-        let cleaned_ys = cleanup_local_proofs(self.pdb.as_ref(), client).await?;
-        Ok(cleaned_ys)
-    }
-
     async fn restore_local_proofs(
         &self,
         keysets_info: &[KeySetInfo],
@@ -647,6 +639,18 @@ impl super::PocketApi for Pocket {
         }
 
         Ok(balances)
+    }
+
+    async fn delete(&self) -> Result<()> {
+        if let Err(e) = self.mdb.delete_repo().await {
+            tracing::error!("Error deleting mint melt DB for pocket {e}")
+        }
+
+        if let Err(e) = self.pdb.delete_repo().await {
+            tracing::error!("Error deleting proof DB for wallet {e}")
+        }
+
+        Ok(())
     }
 }
 

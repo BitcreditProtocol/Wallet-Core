@@ -59,10 +59,14 @@ pub enum Error {
     ReqwestClient(#[from] reqwest::Error),
     #[error("total balance {0} is less than target {1}")]
     InsufficientBalance(cashu::Amount, cashu::Amount),
-    #[error("There already exists a wallet - delete it to create a new one")]
-    WalletAlreadyExists,
-    #[error("wallet at idx {0} not found")]
-    WalletNotFound(usize),
+    #[error("wallet with id {0} not found")]
+    WalletNotFound(String),
+    #[error("wallet with name {0} already exists")]
+    WalletUniqueName(String),
+    #[error("wallet with id {0} already exists")]
+    WalletUniqueId(String),
+    #[error("mnemonic for id {0} not found")]
+    MnemonicNotFound(String),
     #[error("empty token: {0}")]
     EmptyToken(String),
     #[error("invalid token: {0}")]

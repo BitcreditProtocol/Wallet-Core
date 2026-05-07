@@ -16,7 +16,8 @@ bitcoin.workspace = true
 chrono = {workspace = true}
 ciborium = {workspace = true}
 mockall = {workspace = true, optional = true}
-redb = {version = "3.1.0", optional = true}
+nostr-sdk = {workspace = true, features = ["nip06"]}
+redb = {version = "4.1.0", optional = true}
 serde.workspace = true
 thiserror.workspace = true
 tokio = {workspace = true}

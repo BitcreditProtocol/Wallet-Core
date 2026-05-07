@@ -1,10 +1,10 @@
-use crate::config::AppStateConfig;
+use crate::config::{AppStateConfig, CreateWalletConfig};
 use crate::external::mint::{ClowderMintConnector, HttpClientExt};
 use crate::wallet::types::{WalletBalance, WalletDetailedBalanceEntry, WalletProtestResult};
 use crate::{config::NostrConfig, wallet::api::WalletApi};
 use bcr_common::cdk_common::wallet::Transaction;
 use bcr_common::{
-    cashu::{self, CurrencyUnit, MintUrl, nut18 as cdk18},
+    cashu::{self, CurrencyUnit, MintUrl},
     cdk_common::wallet::TransactionId,
     wallet::Token,
 };
@@ -14,7 +14,8 @@ use bcr_wallet_core::types::{
 use bcr_wallet_core::util::{build_wallet_id, keypair_from_mnemonic, seed_from_mnemonic};
 use bcr_wallet_persistence::redb::{Database, build_pursedb, build_wallet_dbs, create_db};
 use error::{Error, Result};
-use nostr::nips::nip19::{Nip19Profile, ToBech32};
+use nostr::nips::nip19::Nip19Profile;
+use nostr::types::RelayUrl;
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -35,9 +36,7 @@ pub struct AppState {
     purse: Arc<purse::Purse<wallet::Wallet>>,
     db: Arc<Database>,
     cfg: AppStateConfig,
-    nostr_cl: Arc<nostr_sdk::Client>,
     http_cl: Arc<reqwest::Client>,
-    myself: Nip19Profile,
 }
 
 impl AppState {
@@ -49,21 +48,7 @@ impl AppState {
 
         // Open Database file - only allowed to do once!
         let db = Arc::new(create_db(&cfg.db_path)?);
-
         let pursedb = build_pursedb(AppState::DB_VERSION, db.clone()).await?;
-
-        let nostr_cfg = NostrConfig::new(cfg.mnemonic.clone(), cfg.nostr_relays.clone())?;
-        let nostr_filter = nostr_sdk::Filter::new()
-            .kind(nostr_sdk::Kind::GiftWrap)
-            .pubkey(nostr_cfg.nostr_signer.public_key());
-        let nostr_cl = Arc::new(nostr_sdk::Client::new(nostr_cfg.nostr_signer));
-        for nostr_relay in &nostr_cfg.relays {
-            nostr_cl.add_relay(nostr_relay).await?;
-        }
-        nostr_cl.connect().await;
-
-        // create long-running subscription
-        nostr_cl.subscribe(nostr_filter, None).await?;
 
         let http_cl = Arc::new(reqwest::Client::new());
         let purse = purse::Purse::new(pursedb).await?;
@@ -72,8 +57,6 @@ impl AppState {
             db,
             cfg,
             http_cl,
-            nostr_cl,
-            myself: nostr_cfg.nprofile,
         };
         appstate.load_wallets().await?;
         Ok(appstate)
@@ -85,37 +68,16 @@ impl AppState {
         let purse = self.get_purse();
         let db = self.get_db();
         let w_ids = purse.list_wallets().await?;
-        for wid in w_ids {
+        for wid in w_ids.iter() {
             tracing::debug!("Loading wallet with id: {wid}");
-            let mut w_cfg = purse.load_wallet_config(&wid).await?;
-
-            if w_cfg.network != self.cfg.network {
-                tracing::error!(
-                    "Network mismatch: wallet {wid} with network {:?}, expected {:?}",
-                    w_cfg.network,
-                    self.cfg.network,
-                );
-                return Err(Error::InvalidNetwork(w_cfg.network, self.cfg.network));
-            }
-
-            let seed = seed_from_mnemonic(&self.cfg.mnemonic);
-            let keypair = keypair_from_mnemonic(&self.cfg.mnemonic);
-            if w_cfg.pub_key != keypair.public_key() {
-                tracing::error!(
-                    "Key mismatch: wallet {wid} has a different pubkey than the one given via the config mnemonic"
-                );
-                return Err(Error::InvalidMnemonic);
-            }
-
-            if w_cfg.mint != self.cfg.default_mint_url {
-                tracing::warn!(
-                    "Mint URL mismatch: wallet {wid} with mint url {}, expected: {}",
-                    w_cfg.mint,
-                    self.cfg.default_mint_url
-                );
-            }
+            let mut w_cfg = purse.load_wallet_config(wid).await?;
+            let Some(mnemonic) = self.cfg.mnemonics.get(wid) else {
+                return Err(Error::MnemonicNotFound(wid.to_owned()));
+            };
+            let seed = seed_from_mnemonic(mnemonic);
 
             let client = HttpClientExt::new(w_cfg.mint.clone());
+            let (nostr_cl, nprofile) = setup_nostr_client(mnemonic, &w_cfg.nostr_relays).await?;
 
             // Attempt to fetch clowder id/betas/keyset infos and fall back to saved ones
             match client.get_clowder_id().await {
@@ -163,6 +125,8 @@ impl AppState {
                 self.cfg.swap_expiry,
                 db.clone(),
                 seed,
+                nostr_cl,
+                nprofile,
             )
             .await?;
             purse.add_wallet(wallet).await?;
@@ -170,12 +134,12 @@ impl AppState {
         Ok(())
     }
 
-    async fn get_wallet(&self, idx: usize) -> Result<Arc<RwLock<wallet::Wallet>>> {
+    async fn get_wallet(&self, id: &str) -> Result<Arc<RwLock<wallet::Wallet>>> {
         let purse = self.get_purse();
         purse
-            .get_wallet(idx)
+            .get_wallet(id)
             .await
-            .ok_or(Error::WalletNotFound(idx))
+            .ok_or(Error::WalletNotFound(id.to_owned()))
     }
 
     fn get_purse(&self) -> Arc<purse::Purse<wallet::Wallet>> {
@@ -187,49 +151,45 @@ impl AppState {
     }
 
     //////////////////////////////////////////////////// Purse-Level API methods
-    pub async fn purse_wallets_ids(&self) -> Result<Vec<usize>> {
+    pub async fn purse_wallets_ids(&self) -> Result<Vec<String>> {
         tracing::debug!("get_wallet_ids");
         let purse = self.get_purse();
-        Ok(purse.ids().await.iter().map(|id| *id as usize).collect())
+        Ok(purse.ids().await)
     }
 
-    pub async fn purse_add_wallet(&self, name: String) -> Result<usize> {
-        let mint_url = self.cfg.default_mint_url.clone();
-        tracing::debug!("Adding a new wallet for mint {name}, {mint_url}");
+    pub async fn purse_add_wallet(&self, cfg: CreateWalletConfig) -> Result<String> {
+        tracing::debug!(
+            "Adding a new wallet for mint {}, {}",
+            cfg.name,
+            cfg.default_mint_url
+        );
         let purse = self.get_purse();
-        if !purse.can_add_wallet().await {
-            return Err(Error::WalletAlreadyExists);
-        }
 
+        self.validate_add_wallet(&cfg).await?;
         let wallet = create_new_wallet(
-            name,
-            self.cfg.network,
-            mint_url,
-            self.cfg.mnemonic.clone(),
+            cfg,
             AppState::DB_VERSION,
             self.cfg.swap_expiry,
             self.get_db(),
         )
         .await?;
 
-        let idx = purse.add_wallet(wallet).await?;
+        let id = purse.add_wallet(wallet).await?;
 
-        Ok(idx)
+        Ok(id)
     }
 
-    pub async fn purse_restore_wallet(&self, name: String) -> Result<usize> {
-        let mint_url = self.cfg.default_mint_url.clone();
-        tracing::debug!("Restoring a new wallet for mint {name}, {mint_url}");
+    pub async fn purse_restore_wallet(&self, cfg: CreateWalletConfig) -> Result<String> {
+        tracing::debug!(
+            "Restoring a new wallet for mint {}, {}",
+            cfg.name,
+            cfg.default_mint_url
+        );
         let purse = self.get_purse();
-        if !purse.can_add_wallet().await {
-            return Err(Error::WalletAlreadyExists);
-        }
 
+        self.validate_add_wallet(&cfg).await?;
         let wallet = create_new_wallet(
-            name,
-            self.cfg.network,
-            mint_url,
-            self.cfg.mnemonic.clone(),
+            cfg,
             AppState::DB_VERSION,
             self.cfg.swap_expiry,
             self.get_db(),
@@ -237,15 +197,31 @@ impl AppState {
         .await?;
         wallet.restore_local_proofs().await?;
 
-        let idx = purse.add_wallet(wallet).await?;
+        let id = purse.add_wallet(wallet).await?;
         tracing::debug!("Wallet restored successfully");
-        Ok(idx)
+        Ok(id)
     }
 
-    pub async fn purse_delete_wallet(&self, idx: usize) -> Result<()> {
-        tracing::debug!("delete wallet {idx}");
+    async fn validate_add_wallet(&self, cfg: &CreateWalletConfig) -> Result<()> {
+        let existing_wallet_names = self.purse.names().await;
+        if existing_wallet_names.contains(&cfg.name) {
+            return Err(Error::WalletUniqueName(cfg.name.clone()));
+        }
+
+        let seed = seed_from_mnemonic(&cfg.mnemonic);
+        let wallet_id = build_wallet_id(&seed, cfg.network);
+        let existing_wallet_ids = self.purse.ids().await;
+        if existing_wallet_ids.contains(&wallet_id) {
+            return Err(Error::WalletUniqueId(wallet_id));
+        }
+
+        Ok(())
+    }
+
+    pub async fn purse_delete_wallet(&self, id: String) -> Result<()> {
+        tracing::debug!("delete wallet {id}");
         let purse = self.get_purse();
-        purse.delete_wallet(idx).await?;
+        purse.delete_wallet(&id).await?;
         Ok(())
     }
 
@@ -259,67 +235,67 @@ impl AppState {
     }
 
     ////////////////////////////////////////////////////  Wallet-Level API methods
-    pub async fn wallet_name(&self, idx: usize) -> Result<String> {
-        tracing::debug!("name for wallet {idx}");
+    pub async fn wallet_name(&self, id: String) -> Result<String> {
+        tracing::debug!("name for wallet {id}");
 
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         Ok(wallet.read().await.name())
     }
 
-    pub async fn wallet_mint_url(&self, idx: usize) -> Result<String> {
-        tracing::debug!("mint_url for wallet {idx}");
-        let wallet = self.get_wallet(idx).await?;
+    pub async fn wallet_mint_url(&self, id: String) -> Result<String> {
+        tracing::debug!("mint_url for wallet {id}");
+        let wallet = self.get_wallet(&id).await?;
         Ok(wallet.read().await.mint_url()?.to_string())
     }
 
-    pub async fn wallet_currency_unit(&self, idx: usize) -> Result<WalletCurrencyUnit> {
-        tracing::debug!("wallet_currency_unit({idx})");
-        let wallet = self.get_wallet(idx).await?;
+    pub async fn wallet_currency_unit(&self, id: String) -> Result<WalletCurrencyUnit> {
+        tracing::debug!("wallet_currency_unit({id})");
+        let wallet = self.get_wallet(&id).await?;
         Ok(WalletCurrencyUnit {
             unit: wallet.read().await.debit_unit().to_string(),
         })
     }
 
-    pub async fn wallet_balance(&self, idx: usize) -> Result<WalletBalance> {
-        tracing::debug!("wallet_balance({idx})");
+    pub async fn wallet_balance(&self, id: String) -> Result<WalletBalance> {
+        tracing::debug!("wallet_balance({id})");
 
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         wallet.read().await.balance().await
     }
 
-    pub async fn wallet_receive_token(&self, idx: usize, token: String) -> Result<TransactionId> {
+    pub async fn wallet_receive_token(&self, id: String, token: String) -> Result<TransactionId> {
         let tstamp = chrono::Utc::now().timestamp() as u64;
-        tracing::debug!("wallet_receive({idx}, {token}, {tstamp})");
+        tracing::debug!("wallet_receive({id}, {token}, {tstamp})");
 
         let token = Token::from_str(&token).map_err(|e| Error::InvalidToken(e.to_string()))?;
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let tx_id = wallet.read().await.receive_token(token, tstamp).await?;
         Ok(tx_id)
     }
 
-    pub async fn wallet_mint_is_rabid(&self, idx: usize) -> Result<bool> {
-        tracing::debug!("wallet_is_rabid({idx})");
-        let wallet = self.get_wallet(idx).await?;
+    pub async fn wallet_mint_is_rabid(&self, id: String) -> Result<bool> {
+        tracing::debug!("wallet_is_rabid({id})");
+        let wallet = self.get_wallet(&id).await?;
         let is_rabid = wallet.read().await.is_wallet_mint_rabid().await?;
         Ok(is_rabid)
     }
 
-    pub async fn wallet_mint_is_offline(&self, idx: usize) -> Result<bool> {
-        tracing::debug!("wallet_is_offline({idx})");
-        let wallet = self.get_wallet(idx).await?;
+    pub async fn wallet_mint_is_offline(&self, id: String) -> Result<bool> {
+        tracing::debug!("wallet_is_offline({id})");
+        let wallet = self.get_wallet(&id).await?;
         let is_offline = wallet.read().await.is_wallet_mint_offline().await?;
         Ok(is_offline)
     }
 
     pub async fn wallet_prepare_pay_by_token(
         &self,
-        idx: usize,
+        id: String,
         amount: u64,
         description: Option<String>,
     ) -> Result<PaymentSummary> {
-        tracing::debug!("wallet_prepare_pay_by_token({idx}, {amount}, {description:?})");
+        tracing::debug!("wallet_prepare_pay_by_token({id}, {amount}, {description:?})");
         let amount = cashu::Amount::from(amount);
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let unit = wallet.read().await.debit_unit();
 
         let summary = wallet
@@ -331,17 +307,13 @@ impl AppState {
         Ok(summary)
     }
 
-    pub async fn wallet_pay_by_token(&self, idx: usize, rid: String) -> Result<CreatedToken> {
+    pub async fn wallet_pay_by_token(&self, id: String, rid: String) -> Result<CreatedToken> {
         let tstamp = chrono::Utc::now().timestamp() as u64;
         tracing::debug!("wallet_pay_by_token({rid}, {tstamp})");
         let p_id = Uuid::from_str(&rid)?;
 
-        let wallet = self.get_wallet(idx).await?;
-        let (tx_id, token) = wallet
-            .read()
-            .await
-            .pay(p_id, &self.nostr_cl, &self.http_cl, tstamp)
-            .await?;
+        let wallet = self.get_wallet(&id).await?;
+        let (tx_id, token) = wallet.read().await.pay(p_id, &self.http_cl, tstamp).await?;
 
         Ok(CreatedToken {
             tx_id,
@@ -351,12 +323,12 @@ impl AppState {
 
     pub async fn wallet_prepare_melt(
         &self,
-        idx: usize,
+        id: String,
         amount: u64,
         address: String,
         description: Option<String>,
     ) -> Result<PaymentSummary> {
-        tracing::debug!("wallet_prepare_melt({idx}, {amount}, {address}, {description:?})");
+        tracing::debug!("wallet_prepare_melt({id}, {amount}, {address}, {description:?})");
 
         if amount < Self::MINT_MELT_THRESHOLD_SAT {
             return Err(Error::InsufficientOnChainMeltAmount(amount));
@@ -365,10 +337,10 @@ impl AppState {
         let parsed_address = bitcoin::Address::from_str(&address)
             .map_err(|_| Error::InvalidBitcoinAddress(address.clone()))?;
 
-        if !parsed_address.is_valid_for_network(self.cfg.network) {
+        let wallet = self.get_wallet(&id).await?;
+        if !parsed_address.is_valid_for_network(wallet.read().await.network()) {
             return Err(Error::InvalidBitcoinAddress(address.clone()));
         }
-        let wallet = self.get_wallet(idx).await?;
         let summary = wallet
             .read()
             .await
@@ -378,154 +350,140 @@ impl AppState {
         Ok(summary)
     }
 
-    pub async fn wallet_melt(&self, idx: usize, rid: String) -> Result<TransactionId> {
+    pub async fn wallet_melt(&self, id: String, rid: String) -> Result<TransactionId> {
         let tstamp = chrono::Utc::now().timestamp() as u64;
         tracing::debug!("wallet_melt({rid}, {tstamp})");
 
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let p_id = Uuid::from_str(&rid)?;
 
-        let (tx_id, _) = wallet
-            .read()
-            .await
-            .pay(p_id, &self.nostr_cl, &self.http_cl, tstamp)
-            .await?;
+        let (tx_id, _) = wallet.read().await.pay(p_id, &self.http_cl, tstamp).await?;
 
         Ok(tx_id)
     }
 
-    pub async fn wallet_mint(&self, idx: usize, amount: u64) -> Result<MintSummary> {
-        tracing::debug!("wallet_mint({idx}, {amount})");
+    pub async fn wallet_mint(&self, id: String, amount: u64) -> Result<MintSummary> {
+        tracing::debug!("wallet_mint({id}, {amount})");
 
         if amount < Self::MINT_MELT_THRESHOLD_SAT {
             return Err(Error::InsufficientOnChainMintAmount(amount));
         }
 
         let parsed_amount = bitcoin::Amount::from_sat(amount);
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let summary = wallet.read().await.mint(parsed_amount).await?;
 
         Ok(summary)
     }
 
-    pub async fn wallet_check_pending_mints(&self, idx: usize) -> Result<Vec<TransactionId>> {
-        tracing::debug!("wallet_check_pending_mints({idx})");
-        let wallet = self.get_wallet(idx).await?;
+    pub async fn wallet_check_pending_mints(&self, id: String) -> Result<Vec<TransactionId>> {
+        tracing::debug!("wallet_check_pending_mints({id})");
+        let wallet = self.get_wallet(&id).await?;
         let tx_ids = wallet.read().await.check_pending_mints().await?;
 
         Ok(tx_ids)
     }
 
-    pub async fn wallet_check_pending_commitments(&self, idx: usize) -> Result<()> {
-        tracing::debug!("wallet_check_pending_commitments({idx})");
-        let wallet = self.get_wallet(idx).await?;
+    pub async fn wallet_check_pending_commitments(&self, id: String) -> Result<()> {
+        tracing::debug!("wallet_check_pending_commitments({id})");
+        let wallet = self.get_wallet(&id).await?;
         wallet.read().await.check_pending_commitments().await?;
         Ok(())
     }
 
     pub async fn wallet_protest_mint(
         &self,
-        idx: usize,
+        id: String,
         quote_id: String,
     ) -> Result<(
         bcr_common::wire::common::ProtestStatus,
         Option<cashu::Amount>,
     )> {
-        tracing::debug!("wallet_protest_mint({idx}, {quote_id})");
+        tracing::debug!("wallet_protest_mint({id}, {quote_id})");
         let qid = Uuid::from_str(&quote_id)?;
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let WalletProtestResult { status, result } = wallet.read().await.protest_mint(qid).await?;
         Ok((status, result.map(|(amount, _)| amount)))
     }
 
     pub async fn wallet_protest_swap(
         &self,
-        idx: usize,
+        id: String,
         commitment_sig: String,
     ) -> Result<(
         bcr_common::wire::common::ProtestStatus,
         Option<cashu::Amount>,
     )> {
-        tracing::debug!("wallet_protest_swap({idx}, {commitment_sig})");
+        tracing::debug!("wallet_protest_swap({id}, {commitment_sig})");
         let sig = bitcoin::secp256k1::schnorr::Signature::from_str(&commitment_sig)
             .map_err(|e| Error::SchnorrSignature(e.to_string()))?;
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let WalletProtestResult { status, result } = wallet.read().await.protest_swap(sig).await?;
         Ok((status, result.map(|(amount, _)| amount)))
     }
 
     pub async fn wallet_protest_melt(
         &self,
-        idx: usize,
+        id: String,
         quote_id: String,
     ) -> Result<(
         bcr_common::wire::common::ProtestStatus,
         Option<cashu::Amount>,
     )> {
-        tracing::debug!("wallet_protest_melt({idx}, {quote_id})");
+        tracing::debug!("wallet_protest_melt({id}, {quote_id})");
         let qid = Uuid::from_str(&quote_id)?;
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let WalletProtestResult { status, result } = wallet.read().await.protest_melt(qid).await?;
         Ok((status, result.map(|(amount, _)| amount)))
     }
 
-    pub async fn wallet_check_pending_melt_commitments(&self, idx: usize) -> Result<()> {
-        tracing::debug!("wallet_check_pending_melt_commitments({idx})");
-        let wallet = self.get_wallet(idx).await?;
+    pub async fn wallet_check_pending_melt_commitments(&self, id: String) -> Result<()> {
+        tracing::debug!("wallet_check_pending_melt_commitments({id})");
+        let wallet = self.get_wallet(&id).await?;
         wallet.read().await.check_pending_melt_commitments().await?;
         Ok(())
     }
 
     pub async fn wallet_prepare_payment(
         &self,
-        idx: usize,
+        id: String,
         input: String,
     ) -> Result<PaymentSummary> {
-        tracing::debug!("wallet_prepare_payment({idx}, {input})");
+        tracing::debug!("wallet_prepare_payment({id}, {input})");
 
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let summary = wallet.read().await.prepare_pay(input).await?;
 
         Ok(summary)
     }
 
-    pub async fn wallet_pay(&self, idx: usize, rid: String) -> Result<TransactionId> {
+    pub async fn wallet_pay(&self, id: String, rid: String) -> Result<TransactionId> {
         let tstamp = chrono::Utc::now().timestamp() as u64;
         tracing::debug!("wallet_pay({rid}, {tstamp})");
 
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let p_id = Uuid::from_str(&rid)?;
 
-        let (tx_id, _) = wallet
-            .read()
-            .await
-            .pay(p_id, &self.nostr_cl, &self.http_cl, tstamp)
-            .await?;
+        let (tx_id, _) = wallet.read().await.pay(p_id, &self.http_cl, tstamp).await?;
         Ok(tx_id)
     }
 
     pub async fn wallet_prepare_payment_request(
         &self,
-        idx: usize,
+        id: String,
         amount: u64,
         description: Option<String>,
     ) -> Result<PaymentRequest> {
-        tracing::debug!("wallet_prepare_pay_request({idx}, {amount}, {description:?})");
+        tracing::debug!("wallet_prepare_pay_request({id}, {amount}, {description:?})");
 
         let amount = cashu::Amount::from(amount);
 
-        let nostr_transport = cdk18::Transport {
-            _type: cdk18::TransportType::Nostr,
-            target: self.myself.to_bech32()?,
-            tags: Some(vec![vec![String::from("n"), String::from("17")]]),
-        };
-
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let unit = wallet.read().await.debit_unit();
         let request = wallet
             .read()
             .await
-            .prepare_payment_request(amount, unit, description, nostr_transport)
+            .prepare_payment_request(amount, unit, description)
             .await?;
         Ok(PaymentRequest {
             p_id: request.payment_id.clone().unwrap_or_default(),
@@ -535,7 +493,7 @@ impl AppState {
 
     pub async fn wallet_check_received_payment(
         &self,
-        idx: usize,
+        id: String,
         max_wait_sec: u64,
         p_id: String,
         cancel_token: CancellationToken,
@@ -544,61 +502,55 @@ impl AppState {
         tracing::debug!("wallet_check_received_payment({p_id})");
 
         let p_id = Uuid::from_str(&p_id)?;
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
 
         let max_wait = core::time::Duration::from_secs(max_wait_sec);
         wallet
             .read()
             .await
-            .check_received_payment(
-                max_wait,
-                p_id,
-                &self.nostr_cl,
-                cancel_token,
-                result_callback,
-            )
+            .check_received_payment(max_wait, p_id, cancel_token, result_callback)
             .await?;
         Ok(())
     }
 
-    pub async fn wallet_list_tx_ids(&self, idx: usize) -> Result<Vec<TransactionId>> {
-        tracing::debug!("wallet_list_tx_ids({idx})");
+    pub async fn wallet_list_tx_ids(&self, id: String) -> Result<Vec<TransactionId>> {
+        tracing::debug!("wallet_list_tx_ids({id})");
 
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let tx_ids = wallet.read().await.list_tx_ids().await?;
         Ok(tx_ids)
     }
 
-    pub async fn wallet_list_txs(&self, idx: usize) -> Result<Vec<Transaction>> {
-        tracing::debug!("wallet_list_txs({idx})");
+    pub async fn wallet_list_txs(&self, id: String) -> Result<Vec<Transaction>> {
+        tracing::debug!("wallet_list_txs({id})");
 
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let mut txs = wallet.read().await.list_txs().await?;
         txs.sort_by_key(|b| std::cmp::Reverse(b.timestamp)); // sort by timestamp desc
         Ok(txs)
     }
 
-    pub async fn wallet_load_tx(&self, idx: usize, tx_id: &str) -> Result<Transaction> {
-        tracing::debug!("wallet_load_tx({idx}, {tx_id})");
+    pub async fn wallet_load_tx(&self, id: String, tx_id: &str) -> Result<Transaction> {
+        tracing::debug!("wallet_load_tx({id}, {tx_id})");
 
         let tx_id = TransactionId::from_str(tx_id)?;
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let tx = wallet.read().await.load_tx(tx_id).await?;
         Ok(tx)
     }
 
-    pub async fn wallet_reclaim_tx(&self, idx: usize, tx_id: &str) -> Result<cashu::Amount> {
-        tracing::debug!("wallet_reclaim_tx({idx}, {tx_id})");
+    pub async fn wallet_reclaim_tx(&self, id: String, tx_id: &str) -> Result<cashu::Amount> {
+        tracing::debug!("wallet_reclaim_tx({id}, {tx_id})");
         let tx_id = TransactionId::from_str(tx_id)?;
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let amount = wallet.read().await.reclaim_tx(tx_id).await?;
         Ok(amount)
     }
 
     // Recover pending stale proofs
-    pub async fn wallet_recover_pending_stale_proofs(&self, idx: usize) -> Result<cashu::Amount> {
-        tracing::debug!("wallet_recover_pending_stale_proofs({idx})");
-        let wallet = self.get_wallet(idx).await?;
+    pub async fn wallet_recover_pending_stale_proofs(&self, id: String) -> Result<cashu::Amount> {
+        tracing::debug!("wallet_recover_pending_stale_proofs({id})");
+        let wallet = self.get_wallet(&id).await?;
         let wlt = wallet.read().await;
         // collect ys for pending transactions, so we don't recover proofs from open transactions
 
@@ -616,9 +568,9 @@ impl AppState {
     }
 
     // Refreshes the state of all pending transactions of the given wallet
-    pub async fn wallet_refresh_txs(&self, idx: usize) -> Result<usize> {
-        tracing::debug!("wallet_refresh_txs({idx})");
-        let wallet = self.get_wallet(idx).await?;
+    pub async fn wallet_refresh_txs(&self, id: String) -> Result<usize> {
+        tracing::debug!("wallet_refresh_txs({id})");
+        let wallet = self.get_wallet(&id).await?;
         let txs = wallet.read().await.list_txs().await?;
         let mut updated = 0;
 
@@ -645,11 +597,11 @@ impl AppState {
     }
 
     // Refreshes the state of the transaction with the given id
-    pub async fn wallet_refresh_tx(&self, idx: usize, tx_id: &str) -> Result<bool> {
-        tracing::debug!("wallet_refresh_tx({idx}, {tx_id})");
+    pub async fn wallet_refresh_tx(&self, id: String, tx_id: &str) -> Result<bool> {
+        tracing::debug!("wallet_refresh_tx({id}, {tx_id})");
 
         let tx_id = TransactionId::from_str(tx_id)?;
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         let updated = wallet.read().await.refresh_tx(tx_id).await?;
         Ok(updated)
     }
@@ -657,14 +609,14 @@ impl AppState {
     //////////////////////////////////////////////////// Wallet Dev Mode Calls
     pub async fn wallet_dev_mode_detailed_balance(
         &self,
-        idx: usize,
+        id: String,
     ) -> Result<Vec<WalletDetailedBalanceEntry>> {
-        tracing::debug!("dev_mode_detailed_wallet_balance({idx})");
+        tracing::debug!("dev_mode_detailed_wallet_balance({id})");
         if !self.cfg.dev_mode {
             return Err(Error::NoDevMode);
         }
 
-        let wallet = self.get_wallet(idx).await?;
+        let wallet = self.get_wallet(&id).await?;
         wallet.read().await.dev_mode_detailed_balance().await
     }
 
@@ -689,7 +641,7 @@ impl AppState {
 
         let wallet_ids = self.get_purse().ids().await;
         for wallet_id in wallet_ids.iter() {
-            match self.wallet_refresh_txs(*wallet_id as usize).await {
+            match self.wallet_refresh_txs(wallet_id.to_owned()).await {
                 Ok(updated) => {
                     tracing::info!("Updated {updated} transactions for wallet {wallet_id}");
                 }
@@ -700,7 +652,7 @@ impl AppState {
                     );
                 }
             };
-            match self.wallet_check_pending_mints(*wallet_id as usize).await {
+            match self.wallet_check_pending_mints(wallet_id.to_owned()).await {
                 Ok(result) => {
                     tracing::info!(
                         "Received {} transactions from pending mints for wallet {wallet_id}, Tx Ids: {:?}",
@@ -719,7 +671,7 @@ impl AppState {
                 }
             }
             match self
-                .wallet_check_pending_commitments(*wallet_id as usize)
+                .wallet_check_pending_commitments(wallet_id.to_owned())
                 .await
             {
                 Ok(()) => {
@@ -733,7 +685,7 @@ impl AppState {
                 }
             }
             match self
-                .wallet_recover_pending_stale_proofs(*wallet_id as usize)
+                .wallet_recover_pending_stale_proofs(wallet_id.to_owned())
                 .await
             {
                 Ok(recovered) => {
@@ -749,7 +701,7 @@ impl AppState {
                 }
             }
             match self
-                .wallet_check_pending_melt_commitments(*wallet_id as usize)
+                .wallet_check_pending_melt_commitments(wallet_id.to_owned())
                 .await
             {
                 Ok(()) => {
@@ -769,7 +721,7 @@ impl AppState {
     }
 }
 
-pub fn generate_random_mnemonic(mnemonic_len: u32) -> String {
+pub fn generate_random_mnemonic(mnemonic_len: u32, network: bitcoin::Network) -> (String, String) {
     let mnemonic_len = if mnemonic_len == 0 { 12 } else { mnemonic_len };
     tracing::info!("Generate random {}-word mnemonic", mnemonic_len);
 
@@ -780,12 +732,20 @@ pub fn generate_random_mnemonic(mnemonic_len: u32) -> String {
     );
     let returned = bip39::Mnemonic::generate_in(bip39::Language::English, mnemonic_len as usize);
     match returned {
-        Ok(mnemonic) => mnemonic.to_string(),
+        Ok(mnemonic) => {
+            let seed = seed_from_mnemonic(&mnemonic);
+            (mnemonic.to_string(), build_wallet_id(&seed, network))
+        }
         Err(e) => {
             tracing::error!("generate_random_mnemonic({mnemonic_len}): {e}");
-            String::default()
+            (String::default(), String::default())
         }
     }
+}
+
+pub fn get_wallet_id(mnemonic: &bip39::Mnemonic, network: bitcoin::Network) -> String {
+    let seed = seed_from_mnemonic(mnemonic);
+    build_wallet_id(&seed, network)
 }
 
 pub fn is_valid_token(token: &str) -> Result<Token> {
@@ -813,19 +773,16 @@ pub struct CreatedToken {
 }
 
 async fn create_new_wallet(
-    name: String,
-    network: bitcoin::Network,
-    mint_url: cashu::MintUrl,
-    mnemonic: bip39::Mnemonic,
+    cfg: CreateWalletConfig,
     db_version: u32,
     swap_expiry: chrono::TimeDelta,
     db: Arc<Database>,
 ) -> Result<wallet::Wallet> {
-    let seed = seed_from_mnemonic(&mnemonic);
-    let keypair = keypair_from_mnemonic(&mnemonic);
-    let client = HttpClientExt::new(mint_url.clone());
+    let seed = seed_from_mnemonic(&cfg.mnemonic);
+    let keypair = keypair_from_mnemonic(&cfg.mnemonic);
+    let client = HttpClientExt::new(cfg.default_mint_url.clone());
 
-    let wallet_id = build_wallet_id(&seed);
+    let wallet_id = build_wallet_id(&seed, cfg.network);
     let clowder_id = client.get_clowder_id().await?;
     let keyset_infos = client.get_mint_keysets().await?;
     let betas = client.get_clowder_betas().await?;
@@ -849,18 +806,51 @@ async fn create_new_wallet(
         }
     };
 
+    let (nostr_cl, nprofile) = setup_nostr_client(&cfg.mnemonic, &cfg.nostr_relays).await?;
+
     let w_cfg = WalletConfig {
         wallet_id,
-        name,
-        network,
-        mint: mint_url,
+        name: cfg.name,
+        network: cfg.network,
+        mint: cfg.default_mint_url,
         mint_keyset_infos: keyset_infos,
         clowder_id,
         debit: debit_unit.to_owned(),
         pub_key: keypair.public_key(),
         betas,
+        nostr_relays: cfg.nostr_relays,
     };
-    build_wallet(w_cfg, client, db_version, swap_expiry, db, seed).await
+    build_wallet(
+        w_cfg,
+        client,
+        db_version,
+        swap_expiry,
+        db,
+        seed,
+        nostr_cl,
+        nprofile,
+    )
+    .await
+}
+
+async fn setup_nostr_client(
+    mnemonic: &bip39::Mnemonic,
+    nostr_relays: &[RelayUrl],
+) -> Result<(Arc<nostr_sdk::Client>, Nip19Profile)> {
+    let nostr_cfg = NostrConfig::new(mnemonic.to_owned(), nostr_relays.to_owned())?;
+    let nostr_filter = nostr_sdk::Filter::new()
+        .kind(nostr_sdk::Kind::GiftWrap)
+        .pubkey(nostr_cfg.nostr_signer.public_key());
+    let nostr_cl = Arc::new(nostr_sdk::Client::new(nostr_cfg.nostr_signer));
+    for nostr_relay in &nostr_cfg.relays {
+        nostr_cl.add_relay(nostr_relay).await?;
+    }
+    nostr_cl.connect().await;
+
+    // create long-running subscription
+    nostr_cl.subscribe(nostr_filter, None).await?;
+
+    Ok((nostr_cl, nostr_cfg.nprofile))
 }
 
 async fn build_wallet(
@@ -870,6 +860,8 @@ async fn build_wallet(
     swap_expiry: chrono::TimeDelta,
     db: Arc<Database>,
     seed: Seed,
+    nostr_cl: Arc<nostr_sdk::Client>,
+    nostr_profile: Nip19Profile,
 ) -> Result<wallet::Wallet> {
     // building wallet dbs
     let (tx_repo, (debitdb, mintmeltdb)) =
@@ -906,6 +898,9 @@ async fn build_wallet(
         beta_clients,
         Box::new(|url| Arc::new(external::mint::HttpClientExt::new(url))),
         swap_expiry,
+        w_cfg.nostr_relays,
+        nostr_cl,
+        nostr_profile,
     )
     .await?;
     Ok(new_wallet)

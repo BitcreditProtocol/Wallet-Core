@@ -552,6 +552,32 @@ impl PocketDB {
         write_txn.commit()?;
         Ok(())
     }
+
+    fn delete_repo(
+        db: Arc<Database>,
+        proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+
+        {
+            if write_txn.open_table(proof_table).is_ok() {
+                write_txn.delete_table(proof_table)?;
+            }
+
+            if write_txn.open_table(commitment_table).is_ok() {
+                write_txn.delete_table(commitment_table)?;
+            }
+
+            if write_txn.open_table(counter_table).is_ok() {
+                write_txn.delete_table(counter_table)?;
+            }
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -761,6 +787,17 @@ impl PocketRepository for PocketDB {
         let db_clone = self.db.clone();
         let table = self.commitment_table;
         spawn_blocking(move || Self::list_commitments_sync(db_clone, table)).await?
+    }
+
+    async fn delete_repo(&self) -> Result<()> {
+        let db_clone = self.db.clone();
+        let proof_table = self.proof_table;
+        let commitment_table = self.commitment_table;
+        let counter_table = self.counter_table;
+        spawn_blocking(move || {
+            Self::delete_repo(db_clone, proof_table, commitment_table, counter_table)
+        })
+        .await?
     }
 }
 

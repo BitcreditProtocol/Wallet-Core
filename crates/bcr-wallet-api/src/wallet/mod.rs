@@ -24,7 +24,7 @@ use bitcoin::{
     hashes::{Hash, sha256::Hash as Sha256},
     secp256k1,
 };
-use nostr::{nips::nip59::UnwrappedGift, signer::NostrSigner};
+use nostr::{nips::nip59::UnwrappedGift, signer::NostrSigner, types::RelayUrl};
 use nostr_sdk::nips::nip19::{FromBech32, Nip19Profile};
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use tokio::sync::Mutex;
@@ -45,6 +45,9 @@ pub struct Wallet {
     clowder_id: secp256k1::PublicKey,
     client_factory: Box<dyn Fn(cashu::MintUrl) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
     swap_expiry: chrono::TimeDelta,
+    nostr_relays: Vec<RelayUrl>,
+    nostr_cl: Arc<nostr_sdk::Client>,
+    nostr_profile: Nip19Profile,
 }
 
 impl Wallet {
@@ -61,6 +64,9 @@ impl Wallet {
         beta_clients: HashMap<cashu::MintUrl, Arc<dyn ClowderMintConnector>>,
         client_factory: Box<dyn Fn(cashu::MintUrl) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
         swap_expiry: chrono::TimeDelta,
+        nostr_relays: Vec<RelayUrl>,
+        nostr_cl: Arc<nostr_sdk::Client>,
+        nostr_profile: Nip19Profile,
     ) -> Result<Self> {
         Ok(Self {
             network,
@@ -77,11 +83,18 @@ impl Wallet {
             clowder_id,
             client_factory,
             swap_expiry,
+            nostr_relays,
+            nostr_cl,
+            nostr_profile,
         })
     }
 
     pub fn name(&self) -> String {
         self.name.clone()
+    }
+
+    pub fn network(&self) -> bitcoin::Network {
+        self.network
     }
 
     fn swap_config(&self) -> SwapConfig {
@@ -787,7 +800,6 @@ mod tests {
         MockTransactionRepository,
         test_utils::tests::{test_pub_key, valid_payment_address_testnet},
     };
-    use nostr::nips::nip19::ToBech32;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -815,6 +827,7 @@ mod tests {
 
     fn wallet(ctx: MockWalletCtx) -> Wallet {
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(ctx.client);
+        let nostr_keys = nostr_sdk::Keys::generate();
         Wallet {
             network: bitcoin::Network::Testnet,
             client: arc_client,
@@ -830,6 +843,9 @@ mod tests {
             clowder_id: test_pub_key(),
             client_factory: Box::new(|url| Arc::new(HttpClientExt::new(url))),
             swap_expiry: chrono::TimeDelta::seconds(60),
+            nostr_relays: vec![],
+            nostr_cl: Arc::new(nostr_sdk::Client::new(nostr_keys.clone())),
+            nostr_profile: Nip19Profile::new(nostr_keys.public_key(), vec![]),
         }
     }
 
@@ -985,20 +1001,11 @@ mod tests {
             .returning(|| cashu::MintUrl::from_str("https://mint.example").unwrap());
 
         let wlt = wallet(ctx);
-        let nostr_transport = cdk18::Transport {
-            _type: cdk18::TransportType::Nostr,
-            target: nostr::PublicKey::from(test_pub_key().x_only_public_key().0)
-                .to_bech32()
-                .unwrap(),
-            tags: Some(vec![vec![String::from("n"), String::from("17")]]),
-        };
-
         let req = wlt
             .prepare_payment_request(
                 cashu::Amount::from(123),
                 CurrencyUnit::Sat,
                 Some("hello".to_string()),
-                nostr_transport,
             )
             .await
             .unwrap();
@@ -1017,8 +1024,6 @@ mod tests {
         let ctx = wallet_ctx();
         let wlt = wallet(ctx);
 
-        let nostr_cl = nostr_sdk::Client::new(nostr_sdk::Keys::generate());
-
         let callback: PaymentResultCallback = Arc::new(move |_| {});
         let cancel_token = CancellationToken::new();
 
@@ -1027,7 +1032,6 @@ mod tests {
             .check_received_payment(
                 std::time::Duration::from_millis(1),
                 pid,
-                &nostr_cl,
                 cancel_token,
                 callback,
             )
@@ -1096,19 +1100,6 @@ mod tests {
 
         let res = wlt.list_txs().await.unwrap();
         assert!(res.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_cleanup_local_proofs_calls_both_pockets() {
-        let mut ctx = wallet_ctx();
-
-        ctx.debit
-            .expect_cleanup_local_proofs()
-            .times(1)
-            .returning(|_client| Ok(vec![]));
-
-        let wlt = wallet(ctx);
-        wlt.cleanup_local_proofs().await.unwrap();
     }
 
     #[tokio::test]
@@ -1299,10 +1290,9 @@ mod tests {
             memo: Some("memo".to_string()),
         });
 
-        let nostr_cl = nostr_sdk::Client::new(nostr_sdk::Keys::generate());
         let http_cl = reqwest::Client::new();
 
-        let (_txid, token) = wlt.pay(pid, &nostr_cl, &http_cl, 123).await.unwrap();
+        let (_txid, token) = wlt.pay(pid, &http_cl, 123).await.unwrap();
 
         assert!(token.is_some());
     }
