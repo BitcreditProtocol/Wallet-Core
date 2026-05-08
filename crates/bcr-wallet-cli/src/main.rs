@@ -24,7 +24,7 @@ pub struct CliSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletSettings {
-    pub mint_url: bcr_common::cashu::MintUrl,
+    pub mint_url: url::Url,
     pub mnemonic: bip39::Mnemonic,
     pub network: bitcoin::Network,
     pub nostr_relays: Vec<RelayUrl>,

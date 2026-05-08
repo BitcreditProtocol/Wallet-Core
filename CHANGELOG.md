@@ -14,6 +14,8 @@
     * Nostr clients are now running per-wallet, instead of one per application
 * Add proper error logging to external mint calls
 * Upgrade dependencies
+* Upgrade to latest bcr-common
+* Implement Melt Fees
 
 # 0.9.1
 

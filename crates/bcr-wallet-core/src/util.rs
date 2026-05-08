@@ -1,3 +1,6 @@
+use std::str::FromStr;
+
+use bcr_common::cashu;
 use bitcoin::{
     hashes::{Hash, HashEngine, sha256},
     hex::DisplayHex,
@@ -30,4 +33,12 @@ pub fn keypair_from_seed(seed: Seed) -> Keypair {
 pub fn keypair_from_mnemonic(mnemonic: &bip39::Mnemonic) -> Keypair {
     let seed = seed_from_mnemonic(mnemonic);
     keypair_from_seed(seed)
+}
+
+pub fn to_mint_url(url: &url::Url) -> cashu::MintUrl {
+    cashu::MintUrl::from_str(url.as_ref()).expect("valid urls are valid mint urls")
+}
+
+pub fn from_mint_url(mint_url: &cashu::MintUrl) -> url::Url {
+    url::Url::from_str(&mint_url.to_string()).expect("valid mint urls are valid urls")
 }

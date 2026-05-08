@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(target_os = "android")]
 use android_logger::FilterBuilder;
 use bcr_common::{
-    cashu::{self, MintUrl},
+    cashu::{self},
     cdk_common,
 };
 use bcr_wallet_api::{
@@ -218,7 +218,7 @@ fn init_panic_hook() {
 #[frb]
 pub async fn wallet_add(req: CreateWalletRequest) -> Result<AddWalletResponse, WalletError> {
     let name = Uuid::new_v4().to_string();
-    let parsed_url = MintUrl::from_str(&req.default_mint_url).expect("Not a valid mint URL");
+    let parsed_url = url::Url::from_str(&req.default_mint_url).expect("Not a valid mint URL");
     let parsed_mnemonic =
         bip39::Mnemonic::from_str(&req.mnemonic).expect("Not a valid bip39 mnemonic");
     let parsed_nostr_relays: Vec<RelayUrl> = req
@@ -252,7 +252,7 @@ pub async fn wallet_restore(
     req: CreateWalletRequest,
 ) -> Result<RestoreWalletResponse, WalletError> {
     let name = Uuid::new_v4().to_string();
-    let parsed_url = MintUrl::from_str(&req.default_mint_url).expect("Not a valid mint URL");
+    let parsed_url = url::Url::from_str(&req.default_mint_url).expect("Not a valid mint URL");
     let parsed_mnemonic =
         bip39::Mnemonic::from_str(&req.mnemonic).expect("Not a valid bip39 mnemonic");
     let parsed_nostr_relays: Vec<RelayUrl> = req
@@ -1288,7 +1288,6 @@ pub enum WalletErrorCode {
     InsufficientOnChainMintAmount,
     NoDevMode,
     InvalidBitcoinAddress,
-    InvalidMintUrl,
     InvalidMnemonic,
     MnemonicNotFound,
     WalletUniqueName,
@@ -1389,9 +1388,6 @@ impl From<BcrWalletError> for WalletError {
             }
             BcrWalletError::InvalidMnemonic => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidMnemonic)
-            }
-            BcrWalletError::InvalidMintUrl(_, _) => {
-                WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidMintUrl)
             }
             BcrWalletError::InvalidBitcoinAddress(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidBitcoinAddress)

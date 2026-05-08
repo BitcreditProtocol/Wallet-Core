@@ -4,7 +4,7 @@ use crate::wallet::types::{WalletBalance, WalletDetailedBalanceEntry, WalletProt
 use crate::{config::NostrConfig, wallet::api::WalletApi};
 use bcr_common::cdk_common::wallet::Transaction;
 use bcr_common::{
-    cashu::{self, CurrencyUnit, MintUrl},
+    cashu::{self, CurrencyUnit},
     cdk_common::wallet::TransactionId,
     wallet::Token,
 };
@@ -225,7 +225,7 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn purse_migrate_rabid(&self) -> Result<HashMap<String, MintUrl>> {
+    pub async fn purse_migrate_rabid(&self) -> Result<HashMap<String, url::Url>> {
         tracing::debug!("purse_migrate_rabid");
 
         let purse = self.get_purse();
@@ -875,7 +875,7 @@ async fn build_wallet(
         seed,
     ));
 
-    let mut beta_clients = HashMap::<cashu::MintUrl, Arc<dyn ClowderMintConnector>>::new();
+    let mut beta_clients = HashMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
     for beta in w_cfg.betas.clone() {
         let beta_client = HttpClientExt::new(beta.clone());
         beta_clients.insert(beta, Arc::new(beta_client));

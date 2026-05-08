@@ -2,7 +2,6 @@ use crate::{
     error::{Error, Result},
     wallet::api::WalletApi,
 };
-use bcr_common::cashu::MintUrl;
 use bcr_wallet_core::types::WalletConfig;
 use bcr_wallet_persistence::{PurseRepository, redb::purse::PurseDB};
 use std::{collections::HashMap, sync::Arc};
@@ -77,7 +76,7 @@ where
         Ok(())
     }
 
-    pub async fn migrate_rabid_wallets(&self) -> Result<HashMap<String, MintUrl>> {
+    pub async fn migrate_rabid_wallets(&self) -> Result<HashMap<String, url::Url>> {
         let mut res = HashMap::new();
         let wlts = self.wallets.read().await;
         for (wallet_id, wlt) in wlts.iter() {
@@ -135,7 +134,7 @@ mod tests {
             wallet_id: "wlt-1".to_owned(),
             name: "wallet-1".to_owned(),
             network: bitcoin::Network::Testnet,
-            mint: MintUrl::from_str("https://example.com").unwrap(),
+            mint: url::Url::from_str("https://example.com").unwrap(),
             mint_keyset_infos: vec![],
             clowder_id: test_pub_key(),
             debit: CurrencyUnit::Sat,
@@ -195,11 +194,11 @@ mod tests {
             .returning(|| Ok(true));
         wlt.expect_mint_substitute().times(1).returning(|| {
             Ok(Some(
-                MintUrl::from_str("https://substitute.example.com").unwrap(),
+                url::Url::from_str("https://substitute.example.com").unwrap(),
             ))
         });
         wlt.expect_migrate_pockets_substitute()
-            .returning(|_| Ok(MintUrl::from_str("https://substitute.example.com").unwrap()));
+            .returning(|_| Ok(url::Url::from_str("https://substitute.example.com").unwrap()));
 
         let _wlt_id = purse.add_wallet(wlt).await.expect("can create wallet");
 

@@ -22,3 +22,4 @@ toml = "1.1"
 tracing-log.workspace = true
 tracing-subscriber.workspace = true
 tracing.workspace = true
+url.workspace = true

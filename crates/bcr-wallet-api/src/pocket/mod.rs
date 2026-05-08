@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn unblind_proofs() {
-        let amounts = [Amount::from(8u64)];
+        let amounts = [Amount::from(8)];
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = cdk02::KeySet::from(mintkeyset.clone());
         let premint =
@@ -487,12 +487,11 @@ mod tests {
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = cdk02::KeySet::from(mintkeyset.clone());
         let premint =
-            cdk00::PreMintSecrets::random(keyset.id, Amount::from(8u64), &SplitTarget::None)
-                .unwrap();
+            cdk00::PreMintSecrets::random(keyset.id, Amount::from(8), &SplitTarget::None).unwrap();
         assert_eq!(premint.blinded_messages().len(), 1);
         let signatures = core_tests::generate_ecash_signatures(
             &mintkeyset,
-            &[Amount::from(8u64), Amount::from(32u64)],
+            &[Amount::from(8), Amount::from(32)],
         );
         let proofs = super::unblind_proofs(&keyset, signatures, premint);
         assert_eq!(proofs.len(), 1);
@@ -503,12 +502,11 @@ mod tests {
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = cdk02::KeySet::from(mintkeyset.clone());
         let premint =
-            cdk00::PreMintSecrets::random(keyset.id, Amount::from(40u64), &SplitTarget::None)
-                .unwrap();
+            cdk00::PreMintSecrets::random(keyset.id, Amount::from(40), &SplitTarget::None).unwrap();
         assert_eq!(premint.blinded_messages().len(), 2);
         let signatures = core_tests::generate_ecash_signatures(
             &mintkeyset,
-            &[Amount::from(16u64), Amount::from(4u64)],
+            &[Amount::from(16), Amount::from(4)],
         );
         let proofs = super::unblind_proofs(&keyset, signatures, premint);
         assert_eq!(proofs.len(), 0);
@@ -520,9 +518,9 @@ mod tests {
         let keyset = cdk02::KeySet::from(mintkeyset.clone());
         let kid2 = core_tests::generate_random_ecash_keyset().0.id;
         let premint =
-            cdk00::PreMintSecrets::random(kid2, Amount::from(16u64), &SplitTarget::None).unwrap();
+            cdk00::PreMintSecrets::random(kid2, Amount::from(16), &SplitTarget::None).unwrap();
         assert_eq!(premint.blinded_messages().len(), 1);
-        let signatures = core_tests::generate_ecash_signatures(&mintkeyset, &[Amount::from(16u64)]);
+        let signatures = core_tests::generate_ecash_signatures(&mintkeyset, &[Amount::from(16)]);
         let proofs = super::unblind_proofs(&keyset, signatures, premint);
         assert_eq!(proofs.len(), 0);
     }
@@ -533,8 +531,8 @@ mod tests {
     async fn swap_proof_to_target() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let k_infos = vec![KeySetInfo::from(info)];
-        let amount = Amount::from(16u64);
-        let target = Amount::from(13u64);
+        let amount = Amount::from(16);
+        let target = Amount::from(13);
         let proof = core_tests::generate_random_ecash_proofs(&keyset, &[amount])[0].clone();
         let seed = zero_seed();
         let mut mockdb = MockPocketRepository::new();
@@ -589,13 +587,12 @@ mod tests {
     #[tokio::test]
     async fn swap() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
-        let amounts = [Amount::from(8u64), Amount::from(16u64)];
+        let amounts = [Amount::from(8), Amount::from(16)];
         let unit = CurrencyUnit::Sat;
         let inputs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
         let premints = HashMap::from_iter([(
             info.id,
-            cdk00::PreMintSecrets::random(info.id, Amount::from(24u64), &SplitTarget::None)
-                .unwrap(),
+            cdk00::PreMintSecrets::random(info.id, Amount::from(24), &SplitTarget::None).unwrap(),
         )]);
         let keysets = HashMap::from([(info.id, KeySet::from(keyset.clone()))]);
         let mut mockclient = MockMintConnector::new();
@@ -626,13 +623,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(amount, Amount::from(24u64));
+        assert_eq!(amount, Amount::from(24));
     }
 
     #[tokio::test]
     async fn send_proofs_ready() {
         let (_, keyset) = core_tests::generate_random_ecash_keyset();
-        let amounts = [Amount::from(8u64), Amount::from(16u64)];
+        let amounts = [Amount::from(8), Amount::from(16)];
         let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
         let ys = proofs.iter().map(|p| p.y().unwrap()).collect::<Vec<_>>();
 
@@ -654,7 +651,7 @@ mod tests {
         let sent = super::send_proofs(
             SendPlan::Ready { proofs: ys },
             &[],
-            Amount::from(24u64),
+            Amount::from(24),
             &zero_seed(),
             &mockdb,
             &arc_client,
@@ -670,7 +667,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .total_amount()
                 .unwrap(),
-            Amount::from(24u64)
+            Amount::from(24)
         );
     }
 
@@ -680,12 +677,12 @@ mod tests {
         let k_infos = vec![KeySetInfo::from(info.clone())];
 
         let swap_proof =
-            core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(16u64)])[0].clone();
+            core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(16)])[0].clone();
         let swap_y = swap_proof.y().unwrap();
 
         let ready_proofs = core_tests::generate_random_ecash_proofs(
             &keyset,
-            &[Amount::from(8u64), Amount::from(4u64), Amount::from(1u64)],
+            &[Amount::from(8), Amount::from(4), Amount::from(1)],
         );
 
         let ready_by_y = ready_proofs
@@ -748,11 +745,11 @@ mod tests {
         let sent = super::send_proofs(
             SendPlan::NeedSplit {
                 proof: swap_y,
-                split_amount: Amount::from(13u64),
-                estimated_fee: Amount::from(0u64),
+                split_amount: Amount::from(13),
+                estimated_fee: Amount::from(0),
             },
             &k_infos,
-            Amount::from(13u64),
+            Amount::from(13),
             &zero_seed(),
             &mockdb,
             &arc_client,
@@ -768,7 +765,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .total_amount()
                 .unwrap(),
-            Amount::from(13u64)
+            Amount::from(13)
         );
     }
 
@@ -778,11 +775,11 @@ mod tests {
         let k_infos = vec![KeySetInfo::from(info.clone())];
 
         let swap_proof =
-            core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(16u64)])[0].clone();
+            core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(16)])[0].clone();
         let swap_y = swap_proof.y().unwrap();
 
         let unsplittable =
-            core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(16u64)])[0].clone();
+            core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(16)])[0].clone();
         let unspent = HashMap::from([(unsplittable.y().unwrap(), unsplittable)]);
 
         let mut mockdb = MockPocketRepository::new();
@@ -832,11 +829,11 @@ mod tests {
         let err = super::send_proofs(
             SendPlan::NeedSplit {
                 proof: swap_y,
-                split_amount: Amount::from(13u64),
-                estimated_fee: Amount::from(0u64),
+                split_amount: Amount::from(13),
+                estimated_fee: Amount::from(0),
             },
             &k_infos,
-            Amount::from(13u64),
+            Amount::from(13),
             &zero_seed(),
             &mockdb,
             &arc_client,
@@ -845,6 +842,6 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(matches!(err, Error::ExcessiveSplitting(a) if a == Amount::from(13u64)));
+        assert!(matches!(err, Error::ExcessiveSplitting(a) if a == Amount::from(13)));
     }
 }

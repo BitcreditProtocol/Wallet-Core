@@ -2362,11 +2362,10 @@ impl SseDecode for crate::api::WalletErrorCode {
             20 => crate::api::WalletErrorCode::InsufficientOnChainMintAmount,
             21 => crate::api::WalletErrorCode::NoDevMode,
             22 => crate::api::WalletErrorCode::InvalidBitcoinAddress,
-            23 => crate::api::WalletErrorCode::InvalidMintUrl,
-            24 => crate::api::WalletErrorCode::InvalidMnemonic,
-            25 => crate::api::WalletErrorCode::MnemonicNotFound,
-            26 => crate::api::WalletErrorCode::WalletUniqueName,
-            27 => crate::api::WalletErrorCode::WalletUniqueId,
+            23 => crate::api::WalletErrorCode::InvalidMnemonic,
+            24 => crate::api::WalletErrorCode::MnemonicNotFound,
+            25 => crate::api::WalletErrorCode::WalletUniqueName,
+            26 => crate::api::WalletErrorCode::WalletUniqueId,
             _ => unreachable!("Invalid variant for WalletErrorCode: {}", inner),
         };
     }
@@ -3438,11 +3437,10 @@ impl flutter_rust_bridge::IntoDart for crate::api::WalletErrorCode {
             Self::InsufficientOnChainMintAmount => 20.into_dart(),
             Self::NoDevMode => 21.into_dart(),
             Self::InvalidBitcoinAddress => 22.into_dart(),
-            Self::InvalidMintUrl => 23.into_dart(),
-            Self::InvalidMnemonic => 24.into_dart(),
-            Self::MnemonicNotFound => 25.into_dart(),
-            Self::WalletUniqueName => 26.into_dart(),
-            Self::WalletUniqueId => 27.into_dart(),
+            Self::InvalidMnemonic => 23.into_dart(),
+            Self::MnemonicNotFound => 24.into_dart(),
+            Self::WalletUniqueName => 25.into_dart(),
+            Self::WalletUniqueId => 26.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -4665,11 +4663,10 @@ impl SseEncode for crate::api::WalletErrorCode {
                 crate::api::WalletErrorCode::InsufficientOnChainMintAmount => 20,
                 crate::api::WalletErrorCode::NoDevMode => 21,
                 crate::api::WalletErrorCode::InvalidBitcoinAddress => 22,
-                crate::api::WalletErrorCode::InvalidMintUrl => 23,
-                crate::api::WalletErrorCode::InvalidMnemonic => 24,
-                crate::api::WalletErrorCode::MnemonicNotFound => 25,
-                crate::api::WalletErrorCode::WalletUniqueName => 26,
-                crate::api::WalletErrorCode::WalletUniqueId => 27,
+                crate::api::WalletErrorCode::InvalidMnemonic => 23,
+                crate::api::WalletErrorCode::MnemonicNotFound => 24,
+                crate::api::WalletErrorCode::WalletUniqueName => 25,
+                crate::api::WalletErrorCode::WalletUniqueId => 26,
                 _ => {
                     unimplemented!("");
                 }

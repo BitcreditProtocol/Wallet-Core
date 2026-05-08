@@ -10,7 +10,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use bcr_common::{
-    cashu::{self, Amount, CurrencyUnit, MintUrl, ProofsMethods, nut00 as cdk00, nut18 as cdk18},
+    cashu::{self, Amount, CurrencyUnit, ProofsMethods, nut00 as cdk00, nut18 as cdk18},
     cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
     wallet::Token,
     wire::clowder::{self as wire_clowder},
@@ -21,6 +21,7 @@ use bcr_wallet_core::{
         BTC_ALPHA_TX_ID_TYPE_METADATA_KEY, BTC_BETA_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback,
         PaymentType, TransactionStatus,
     },
+    util::to_mint_url,
 };
 use bitcoin::secp256k1;
 use futures::StreamExt;
@@ -37,11 +38,11 @@ pub trait WalletApi: SendSync {
     fn config(&self) -> Result<WalletConfig>;
     fn name(&self) -> String;
     fn id(&self) -> String;
-    fn mint_url(&self) -> Result<MintUrl>;
-    fn betas(&self) -> Vec<MintUrl>;
+    fn mint_url(&self) -> Result<url::Url>;
+    fn betas(&self) -> Vec<url::Url>;
     #[allow(dead_code)]
     fn clowder_id(&self) -> secp256k1::PublicKey;
-    fn mint_urls(&self) -> Result<Vec<MintUrl>>;
+    fn mint_urls(&self) -> Vec<url::Url>;
     async fn prepare_melt(
         &self,
         amount: bitcoin::Amount,
@@ -64,7 +65,7 @@ pub trait WalletApi: SendSync {
     ) -> Result<()>;
     async fn is_wallet_mint_rabid(&self) -> Result<bool>;
     async fn is_wallet_mint_offline(&self) -> Result<bool>;
-    async fn mint_substitute(&self) -> Result<Option<MintUrl>>;
+    async fn mint_substitute(&self) -> Result<Option<url::Url>>;
     async fn pay(
         &self,
         p_id: Uuid,
@@ -84,12 +85,12 @@ pub trait WalletApi: SendSync {
     async fn migrate_pockets_substitute(
         &mut self,
         substitute: Arc<dyn ClowderMintConnector>,
-    ) -> Result<MintUrl>;
+    ) -> Result<url::Url>;
     async fn receive_proofs(
         &self,
         proofs: Vec<cdk00::Proof>,
         unit: CurrencyUnit,
-        mint: MintUrl,
+        mint: url::Url,
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,
@@ -136,7 +137,7 @@ impl WalletApi for super::Wallet {
         self.id.clone()
     }
 
-    fn mint_url(&self) -> Result<cashu::MintUrl> {
+    fn mint_url(&self) -> Result<url::Url> {
         Ok(self.client.mint_url())
     }
 
@@ -209,7 +210,11 @@ impl WalletApi for super::Wallet {
             target: self.nostr_profile.to_bech32()?,
             tags: Some(vec![vec![String::from("n"), String::from("17")]]),
         };
-        let mints = self.mint_urls()?;
+        let mints = self
+            .mint_urls()
+            .into_iter()
+            .map(|url| to_mint_url(&url))
+            .collect();
         let request = cdk18::PaymentRequest {
             payment_id: Some(Uuid::new_v4().to_string()),
             amount: Some(amount),
@@ -339,7 +344,7 @@ impl WalletApi for super::Wallet {
                 );
 
                 let partial_tx = Transaction {
-                    mint_url: self.client.mint_url(),
+                    mint_url: to_mint_url(&self.client.mint_url()),
                     fee: fees,
                     direction: TransactionDirection::Outgoing,
                     memo,
@@ -381,7 +386,7 @@ impl WalletApi for super::Wallet {
                     (
                         p.clone(),
                         Token::new_cashu(
-                            self.client.mint_url(),
+                            to_mint_url(&self.client.mint_url()),
                             p.into_values().collect(),
                             memo.clone(),
                             self.debit.unit(),
@@ -402,7 +407,7 @@ impl WalletApi for super::Wallet {
                 );
 
                 let partial_tx = Transaction {
-                    mint_url: self.client.mint_url(),
+                    mint_url: to_mint_url(&self.client.mint_url()),
                     fee: fees,
                     direction: TransactionDirection::Outgoing,
                     memo,
@@ -447,7 +452,7 @@ impl WalletApi for super::Wallet {
                 }
 
                 let partial_tx = Transaction {
-                    mint_url: self.client.mint_url(),
+                    mint_url: to_mint_url(&self.client.mint_url()),
                     fee: fees,
                     direction: TransactionDirection::Outgoing,
                     memo,
@@ -500,7 +505,7 @@ impl WalletApi for super::Wallet {
             );
 
             let tx = Transaction {
-                mint_url: self.client.mint_url(),
+                mint_url: to_mint_url(&self.client.mint_url()),
                 fee: mint_result.fee,
                 direction: TransactionDirection::Incoming,
                 memo: None,
@@ -548,7 +553,7 @@ impl WalletApi for super::Wallet {
             );
 
             let tx = Transaction {
-                mint_url: self.client.mint_url(),
+                mint_url: to_mint_url(&self.client.mint_url()),
                 fee: cashu::Amount::ZERO,
                 direction: TransactionDirection::Incoming,
                 memo: Some("Mint protest resolved".to_string()),
@@ -605,7 +610,7 @@ impl WalletApi for super::Wallet {
             );
 
             let tx = Transaction {
-                mint_url: self.client.mint_url(),
+                mint_url: to_mint_url(&self.client.mint_url()),
                 fee: cashu::Amount::ZERO,
                 direction: TransactionDirection::Incoming,
                 memo: Some("Swap protest resolved".to_string()),
@@ -665,7 +670,7 @@ impl WalletApi for super::Wallet {
             }
 
             let tx = Transaction {
-                mint_url: self.client.mint_url(),
+                mint_url: to_mint_url(&self.client.mint_url()),
                 fee: cashu::Amount::ZERO,
                 direction: TransactionDirection::Outgoing,
                 memo: Some("Melt protest resolved".to_string()),
@@ -706,7 +711,7 @@ impl WalletApi for super::Wallet {
         &self,
         proofs: Vec<cashu::Proof>,
         unit: CurrencyUnit,
-        mint: MintUrl,
+        mint: url::Url,
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,
@@ -791,7 +796,7 @@ impl WalletApi for super::Wallet {
         Ok(offline_count > betas_count / 2)
     }
 
-    async fn mint_substitute(&self) -> Result<Option<MintUrl>> {
+    async fn mint_substitute(&self) -> Result<Option<url::Url>> {
         let mint_id = self.clowder_id;
         let betas_count = self.betas().len();
         let threshold = betas_count / 2;
@@ -805,11 +810,11 @@ impl WalletApi for super::Wallet {
 
             futures.push(async move {
                 let mint = beta_client.get_alpha_substitute(mint_id).await?.mint;
-                Ok::<MintUrl, Error>(mint)
+                Ok::<url::Url, Error>(mint)
             });
         }
 
-        let mut substitute_counts = HashMap::<MintUrl, usize>::new();
+        let mut substitute_counts = HashMap::<url::Url, usize>::new();
 
         while let Some(vote) = futures.next().await {
             let mint = vote?;
@@ -824,13 +829,13 @@ impl WalletApi for super::Wallet {
         Ok(None)
     }
 
-    fn mint_urls(&self) -> Result<Vec<cashu::MintUrl>> {
+    fn mint_urls(&self) -> Vec<url::Url> {
         let mut urls = self.betas();
         urls.push(self.client.mint_url());
-        Ok(urls)
+        urls
     }
 
-    fn betas(&self) -> Vec<cashu::MintUrl> {
+    fn betas(&self) -> Vec<url::Url> {
         self.beta_clients.keys().cloned().collect()
     }
 
@@ -841,7 +846,7 @@ impl WalletApi for super::Wallet {
     async fn migrate_pockets_substitute(
         &mut self,
         substitute: Arc<dyn ClowderMintConnector>,
-    ) -> Result<MintUrl> {
+    ) -> Result<url::Url> {
         let debit_proofs = self.debit.delete_proofs().await?;
 
         // Exchange debit
@@ -867,7 +872,7 @@ impl WalletApi for super::Wallet {
 
         self.client = substitute;
         self.clowder_id = self.client.get_clowder_id().await?;
-        let mut beta_clients = HashMap::<cashu::MintUrl, Arc<dyn ClowderMintConnector>>::new();
+        let mut beta_clients = HashMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
 
         for beta in self.client.as_ref().get_clowder_betas().await? {
             let beta_client = (self.client_factory)(beta.clone());
@@ -986,7 +991,7 @@ impl WalletApi for super::Wallet {
                 .unzip();
             tracing::debug!("Offline Pay by Token: Create Token");
             let token = Token::new_cashu(
-                substitute.clone(),
+                to_mint_url(&substitute.clone()),
                 proofs.clone(),
                 memo.clone(),
                 self.debit.unit(),
@@ -1005,7 +1010,7 @@ impl WalletApi for super::Wallet {
 
             // Create Transaction
             let partial_tx = Transaction {
-                mint_url: substitute,
+                mint_url: to_mint_url(&substitute),
                 fee: fees,
                 direction: TransactionDirection::Outgoing,
                 memo,

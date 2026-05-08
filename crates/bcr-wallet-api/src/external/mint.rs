@@ -18,7 +18,6 @@ use bcr_wallet_core::SendSync;
 use bitcoin::base64::prelude::*;
 use bitcoin::secp256k1;
 use rand::seq::IndexedRandom;
-use std::str::FromStr;
 use tracing::debug;
 
 pub struct SwapCommitmentResult {
@@ -34,6 +33,7 @@ pub struct SwapCommitmentResult {
 pub struct MeltQuoteResult {
     pub quote_id: uuid::Uuid,
     pub expiry: u64,
+    pub amount: bitcoin::Amount,
     pub commitment: secp256k1::schnorr::Signature,
     pub ephemeral_secret: secp256k1::SecretKey,
     pub body_content: String,
@@ -111,7 +111,6 @@ async fn post_melt_quote_onchain_inner(
     url: reqwest::Url,
     inputs: Vec<cashu::Proof>,
     address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-    amount: bitcoin::Amount,
     alpha_pk: secp256k1::PublicKey,
 ) -> Result<MeltQuoteResult> {
     let ephemeral_keypair =
@@ -127,7 +126,6 @@ async fn post_melt_quote_onchain_inner(
     let request = wire_melt::MeltQuoteOnchainRequest {
         inputs: fingerprints,
         address,
-        amount,
         wallet_key,
     };
 
@@ -151,6 +149,7 @@ async fn post_melt_quote_onchain_inner(
             Ok(MeltQuoteResult {
                 quote_id: response_body.quote,
                 expiry: response_body.expiry,
+                amount: response_body.amount,
                 commitment,
                 ephemeral_secret,
                 body_content: response_content,
@@ -171,13 +170,9 @@ async fn post_melt_quote_onchain_inner(
     }
 }
 
-fn convert_mint_url(mint_url: cashu::MintUrl) -> MintResult<reqwest::Url> {
-    reqwest::Url::from_str(&mint_url.to_string()).map_err(|e| MintError::Internal(e.to_string()))
-}
-
 #[async_trait]
 pub trait ClowderMintConnector: SendSync {
-    fn mint_url(&self) -> cashu::MintUrl;
+    fn mint_url(&self) -> url::Url;
     async fn post_restore(
         &self,
         request: cashu::RestoreRequest,
@@ -188,7 +183,7 @@ pub trait ClowderMintConnector: SendSync {
     ) -> MintResult<Vec<cashu::ProofState>>;
     async fn get_mint_keyset(&self, keyset_id: cashu::Id) -> MintResult<cashu::KeySet>;
     async fn get_mint_keysets(&self) -> MintResult<Vec<cashu::KeySetInfo>>;
-    async fn get_clowder_betas(&self) -> MintResult<Vec<cashu::MintUrl>>;
+    async fn get_clowder_betas(&self) -> MintResult<Vec<url::Url>>;
     async fn post_online_exchange(
         &self,
         alpha_proofs: Vec<Proof>,
@@ -197,7 +192,7 @@ pub trait ClowderMintConnector: SendSync {
     async fn get_clowder_id(&self) -> MintResult<secp256k1::PublicKey>;
     async fn post_clowder_path(
         &self,
-        origin_mint_url: cashu::MintUrl,
+        origin_mint_url: url::Url,
     ) -> MintResult<ConnectedMintsResponse>;
     async fn get_alpha_keysets(
         &self,
@@ -237,7 +232,6 @@ pub trait ClowderMintConnector: SendSync {
         &self,
         inputs: Vec<cashu::Proof>,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-        amount: bitcoin::Amount,
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<MeltQuoteResult>;
     async fn post_melt_onchain(
@@ -270,12 +264,10 @@ pub struct HttpClientExt {
 }
 
 impl HttpClientExt {
-    pub fn new(cdk_url: cashu::MintUrl) -> Self {
-        let mint_url = reqwest::Url::parse(&cdk_url.to_string())
-            .expect("cashu::MintUrl is as good as reqwest::Url");
+    pub fn new(cdk_url: url::Url) -> Self {
         Self {
-            main: MintClient::new(mint_url.clone()),
-            url: mint_url,
+            main: MintClient::new(cdk_url.clone()),
+            url: cdk_url,
             secondary: reqwest::Client::new(),
         }
     }
@@ -283,9 +275,8 @@ impl HttpClientExt {
 
 #[async_trait]
 impl ClowderMintConnector for HttpClientExt {
-    fn mint_url(&self) -> cashu::MintUrl {
-        cashu::MintUrl::from_str(self.url.as_str())
-            .expect("cashu::MintUrl is as good as reqwest::Url")
+    fn mint_url(&self) -> url::Url {
+        self.url.clone()
     }
 
     async fn post_restore(
@@ -357,7 +348,7 @@ impl ClowderMintConnector for HttpClientExt {
         self.main.get_substitute(&alpha_id).await
     }
 
-    async fn get_clowder_betas(&self) -> MintResult<Vec<cashu::MintUrl>> {
+    async fn get_clowder_betas(&self) -> MintResult<Vec<url::Url>> {
         debug!("Clowder client call to get_clowder_betas");
         let response = self.main.get_betas().await?;
         Ok(response.mints.into_iter().map(|m| m.mint).collect())
@@ -408,12 +399,10 @@ impl ClowderMintConnector for HttpClientExt {
 
     async fn post_clowder_path(
         &self,
-        origin_mint_url: cashu::MintUrl,
+        origin_mint_url: url::Url,
     ) -> MintResult<ConnectedMintsResponse> {
         debug!("Clowder client call to post_clowder_path for mint url {origin_mint_url}");
-        self.main
-            .post_path(convert_mint_url(origin_mint_url)?)
-            .await
+        self.main.post_path(origin_mint_url).await
     }
 
     async fn post_swap_commitment(
@@ -503,7 +492,6 @@ impl ClowderMintConnector for HttpClientExt {
         &self,
         inputs: Vec<cashu::Proof>,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-        amount: bitcoin::Amount,
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<MeltQuoteResult> {
         let url = self
@@ -511,7 +499,7 @@ impl ClowderMintConnector for HttpClientExt {
             .join("v1/melt/quote/onchain")
             .expect("melt_quote_onchain url error");
         debug!("HTTP call to melt_quote_onchain on {url}");
-        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, amount, alpha_pk).await
+        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, alpha_pk).await
     }
 
     async fn post_melt_onchain(
@@ -683,15 +671,7 @@ pub struct SentinelClient {
 }
 
 impl SentinelClient {
-    pub fn new(client: HttpClientExt, sentinels: Vec<cashu::MintUrl>) -> Self {
-        let sentinels = sentinels
-            .iter()
-            .map(|url| {
-                reqwest::Url::parse(&url.to_string())
-                    .expect("cashu::MintUrl is as good as reqwest::Url")
-            })
-            .collect();
-
+    pub fn new(client: HttpClientExt, sentinels: Vec<url::Url>) -> Self {
         let HttpClientExt {
             main,
             url,
@@ -718,9 +698,8 @@ impl SentinelClient {
 
 #[async_trait]
 impl ClowderMintConnector for SentinelClient {
-    fn mint_url(&self) -> cashu::MintUrl {
-        cashu::MintUrl::from_str(self.url.as_str())
-            .expect("cashu::MintUrl is as good as reqwest::Url")
+    fn mint_url(&self) -> url::Url {
+        self.url.clone()
     }
 
     async fn post_restore(
@@ -783,7 +762,7 @@ impl ClowderMintConnector for SentinelClient {
         self.main.get_substitute(&alpha_id).await
     }
 
-    async fn get_clowder_betas(&self) -> MintResult<Vec<cashu::MintUrl>> {
+    async fn get_clowder_betas(&self) -> MintResult<Vec<url::Url>> {
         debug!("Clowder client call to get_clowder_betas on sentinel");
         let response = self.main.get_betas().await?;
         Ok(response.mints.into_iter().map(|m| m.mint).collect())
@@ -834,14 +813,12 @@ impl ClowderMintConnector for SentinelClient {
 
     async fn post_clowder_path(
         &self,
-        origin_mint_url: cashu::MintUrl,
+        origin_mint_url: url::Url,
     ) -> MintResult<ConnectedMintsResponse> {
         debug!(
             "Clowder client call to post_clowder_path on sentinel for mint url {origin_mint_url}"
         );
-        self.main
-            .post_path(convert_mint_url(origin_mint_url)?)
-            .await
+        self.main.post_path(origin_mint_url).await
     }
 
     async fn post_swap_commitment(
@@ -946,7 +923,6 @@ impl ClowderMintConnector for SentinelClient {
         &self,
         inputs: Vec<cashu::Proof>,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-        amount: bitcoin::Amount,
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<MeltQuoteResult> {
         let url = self
@@ -954,7 +930,7 @@ impl ClowderMintConnector for SentinelClient {
             .join(TreasuryEp::MELTQUOTE_ONCHAIN_V1_EXT)
             .expect("melt_quote_onchain url error");
         debug!("HTTP call on sentinel to melt_quote_onchain on {url}");
-        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, amount, alpha_pk).await
+        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, alpha_pk).await
     }
 
     async fn post_melt_onchain(
