@@ -3,12 +3,12 @@ use crate::{
     error::{Error, Result},
 };
 use async_trait::async_trait;
-use bcr_common::cashu::CurrencyUnit;
+use bcr_common::cashu::{self, CurrencyUnit};
 use bcr_wallet_core::types::WalletConfig;
 use bitcoin::secp256k1;
 use nostr_sdk::RelayUrl;
 use redb::{Database, ReadableDatabase, TableDefinition, TableError};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokio::task::spawn_blocking;
 
 ///////////////////////////////////////////// WalletEntry
@@ -18,7 +18,7 @@ struct WalletEntry {
     name: String,
     network: bitcoin::Network,
     mint: url::Url,
-    mint_keyset_infos: Vec<bcr_common::cashu::KeySetInfo>,
+    mint_keyset_infos: HashMap<cashu::Id, cashu::KeySetInfo>,
     clowder_id: secp256k1::PublicKey,
     pub_key: secp256k1::PublicKey,
     debit: CurrencyUnit,
@@ -194,7 +194,7 @@ mod tests {
 
             network: bitcoin::Network::Bitcoin,
             mint: url::Url::from_str("https://example.com").expect("valid mint url"),
-            mint_keyset_infos: vec![],
+            mint_keyset_infos: HashMap::new(),
             clowder_id: test_clowder_id,
             pub_key: test_pub_key(),
             debit: CurrencyUnit::Sat,

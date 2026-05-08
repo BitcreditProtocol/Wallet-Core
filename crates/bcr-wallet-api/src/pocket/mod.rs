@@ -31,25 +31,30 @@ pub mod test_utils;
 #[async_trait]
 pub trait PocketApi: SendSync {
     fn unit(&self) -> CurrencyUnit;
-    async fn balance(&self, keysets_info: &[KeySetInfo]) -> Result<PocketBalance>;
+    async fn balance(&self, keysets_info: &HashMap<cashu::Id, KeySetInfo>)
+    -> Result<PocketBalance>;
     async fn receive_proofs(
         &self,
         client: Arc<dyn ClowderMintConnector>,
-        keysets_info: &[KeySetInfo],
+        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         proofs: Vec<cashu::Proof>,
         swap_config: SwapConfig,
     ) -> Result<(Amount, Vec<cashu::PublicKey>)>;
-    async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo]) -> Result<SendSummary>;
+    async fn prepare_send(
+        &self,
+        amount: Amount,
+        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+    ) -> Result<SendSummary>;
     async fn send_proofs(
         &self,
         rid: Uuid,
-        keysets_info: &[KeySetInfo],
+        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
     ) -> Result<HashMap<cashu::PublicKey, cashu::Proof>>;
     async fn restore_local_proofs(
         &self,
-        keysets_info: &[KeySetInfo],
+        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
     ) -> Result<usize>;
     async fn delete_proofs(&self) -> Result<HashMap<cashu::Id, Vec<cashu::Proof>>>;
@@ -61,14 +66,14 @@ pub trait PocketApi: SendSync {
     async fn swap_to_unlocked_substitute_proofs(
         &self,
         proofs: Vec<cashu::Proof>,
-        keysets_info: &[KeySetInfo],
+        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
         send_amount: Amount,
         swap_config: SwapConfig,
     ) -> Result<Vec<cashu::Proof>>;
     async fn dev_mode_detailed_balance(
         &self,
-        keysets_info: &[KeySetInfo],
+        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
     ) -> Result<HashMap<cashu::Id, (Option<u64>, Amount)>>;
     async fn delete(&self) -> Result<()>;
 }
@@ -248,7 +253,7 @@ async fn swap(
 ///////////////////////////////////////////// swap_proof_to_target
 async fn swap_proof_to_target(
     proof: cdk00::Proof,
-    keysets_info: &[KeySetInfo],
+    keysets_info: &HashMap<cashu::Id, KeySetInfo>,
     target_keyset: &KeySet,
     target_amount: Amount,
     seed: &Seed,
@@ -256,10 +261,7 @@ async fn swap_proof_to_target(
     client: &Arc<dyn ClowderMintConnector>,
     swap_config: SwapConfig,
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
-    let kinfos: HashMap<cashu::Id, KeySetInfo> =
-        keysets_info.iter().cloned().map(|k| (k.id, k)).collect();
-
-    let swap_plan = prepare_swap(std::slice::from_ref(&proof), &kinfos)?;
+    let swap_plan = prepare_swap(std::slice::from_ref(&proof), keysets_info)?;
     tracing::debug!("Swapping Proof to Target {target_amount}, {swap_plan:?}");
     let Some(swap_amount) = swap_plan.get(&proof.keyset_id) else {
         return Err(Error::Swap(
@@ -309,19 +311,15 @@ async fn swap_proof_to_target(
 }
 
 ///////////////////////////////////////////// collect_keyset_infos_from_proofs
-fn collect_keyset_infos_from_proofs<'it, 'inf>(
+fn collect_keyset_infos_from_proofs<'it, 'a>(
     proofs: impl Iterator<Item = &'it cdk00::Proof>,
-    keysets_info: &'inf [KeySetInfo],
-) -> Result<HashMap<cashu::Id, &'inf KeySetInfo>> {
+    keysets_info: &'a HashMap<cashu::Id, KeySetInfo>,
+) -> Result<HashMap<cashu::Id, &'a KeySetInfo>> {
     let kids = proofs.map(|p| p.keyset_id).collect::<HashSet<_>>();
-    let mut infos: HashMap<cashu::Id, &'inf KeySetInfo> = HashMap::new();
+    let mut infos = HashMap::with_capacity(kids.len());
     for kid in kids {
-        let info = keysets_info.iter().find(|info| info.id == kid);
-        if let Some(info) = info {
-            infos.insert(kid, info);
-        } else {
-            return Err(Error::UnknownKeysetId(kid));
-        }
+        let info = keysets_info.get(&kid).ok_or(Error::UnknownKeysetId(kid))?;
+        infos.insert(kid, info);
     }
     Ok(infos)
 }
@@ -346,7 +344,7 @@ fn sign_content_b64(
 ///////////////////////////////////////////// send_proofs
 async fn send_proofs(
     plan: SendPlan,
-    keysets_info: &[KeySetInfo],
+    keysets_info: &HashMap<cashu::Id, KeySetInfo>,
     target_amount: Amount,
     seed: &Seed,
     db: &dyn PocketRepository,
@@ -461,7 +459,9 @@ async fn return_proofs_to_send_for_offline_payment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::external::test_utils::tests::MockMintConnector;
+    use crate::{
+        external::test_utils::tests::MockMintConnector, pocket::test_utils::tests::test_kinfos,
+    };
     use bcr_common::{cashu::Proof, core::signature, core_tests};
     use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
     use cashu::nut02 as cdk02;
@@ -530,7 +530,7 @@ mod tests {
     #[tokio::test]
     async fn swap_proof_to_target() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
-        let k_infos = vec![KeySetInfo::from(info)];
+        let k_infos = test_kinfos(info);
         let amount = Amount::from(16);
         let target = Amount::from(13);
         let proof = core_tests::generate_random_ecash_proofs(&keyset, &[amount])[0].clone();
@@ -650,7 +650,7 @@ mod tests {
 
         let sent = super::send_proofs(
             SendPlan::Ready { proofs: ys },
-            &[],
+            &HashMap::new(),
             Amount::from(24),
             &zero_seed(),
             &mockdb,
@@ -674,7 +674,7 @@ mod tests {
     #[tokio::test]
     async fn send_proofs_need_split_then_ready() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
-        let k_infos = vec![KeySetInfo::from(info.clone())];
+        let k_infos = test_kinfos(info.clone());
 
         let swap_proof =
             core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(16)])[0].clone();
@@ -772,7 +772,7 @@ mod tests {
     #[tokio::test]
     async fn send_proofs_need_split_errors_if_second_plan_still_needs_split() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
-        let k_infos = vec![KeySetInfo::from(info.clone())];
+        let k_infos = test_kinfos(info.clone());
 
         let swap_proof =
             core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(16)])[0].clone();

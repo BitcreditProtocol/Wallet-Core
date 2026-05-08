@@ -135,7 +135,7 @@ mod tests {
             name: "wallet-1".to_owned(),
             network: bitcoin::Network::Testnet,
             mint: url::Url::from_str("https://example.com").unwrap(),
-            mint_keyset_infos: vec![],
+            mint_keyset_infos: HashMap::new(),
             clowder_id: test_pub_key(),
             debit: CurrencyUnit::Sat,
             pub_key: test_pub_key(),
