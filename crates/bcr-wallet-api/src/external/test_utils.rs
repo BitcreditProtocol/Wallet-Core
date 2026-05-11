@@ -4,7 +4,10 @@ pub mod tests {
     use bcr_common::cashu;
     use bcr_common::{
         client::mint::Result as MintResult,
-        wire::{keys as wire_keys, melt as wire_melt, mint as wire_mint, swap as wire_swap},
+        wire::{
+            attestation as wire_attestation, keys as wire_keys, melt as wire_melt,
+            mint as wire_mint, swap as wire_swap,
+        },
     };
     use bitcoin::secp256k1;
 
@@ -71,6 +74,7 @@ pub mod tests {
                 &self,
                 inputs: Vec<cashu::Proof>,
                 address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+                amount: bitcoin::Amount,
                 alpha_pk: secp256k1::PublicKey,
             ) -> Result<crate::external::mint::MeltQuoteResult>;
             async fn post_melt_onchain(
@@ -93,6 +97,10 @@ pub mod tests {
                 &self,
                 req: wire_mint::MintProtestRequest,
             ) -> Result<wire_mint::MintProtestResponse>;
+            async fn post_attest_issuance(
+                &self,
+                request: wire_attestation::IssuanceAttestationRequest,
+            ) -> Result<wire_attestation::IssuanceAttestation>;
         }
     }
 }

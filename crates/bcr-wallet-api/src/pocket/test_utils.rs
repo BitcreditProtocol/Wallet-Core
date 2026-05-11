@@ -38,6 +38,18 @@ pub mod tests {
         }
     }
 
+    pub fn mock_attestation() -> bcr_common::wire::attestation::IssuanceAttestation {
+        let keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let msg = secp256k1::Message::from_digest([7u8; 32]);
+        let signature = secp256k1::global::SECP256K1.sign_schnorr(&msg, &keypair);
+        bcr_common::wire::attestation::IssuanceAttestation {
+            beta_id: keypair.public_key(),
+            fp_digest: [1u8; 32],
+            coords_mac: [2u8; 32],
+            signature,
+        }
+    }
+
     pub fn setup_commitment_mocks(
         connector: &mut crate::external::test_utils::tests::MockMintConnector,
         db: &mut bcr_wallet_persistence::MockPocketRepository,
@@ -48,6 +60,14 @@ pub mod tests {
             .returning(|_, _, _, _| Ok(mock_commitment_result()));
         db.expect_store_commitment().times(1).returning(|_| Ok(()));
         db.expect_delete_commitment().times(1).returning(|_| Ok(()));
+    }
+
+    pub fn setup_attestation_mock(
+        connector: &mut crate::external::test_utils::tests::MockMintConnector,
+    ) {
+        connector
+            .expect_post_attest_issuance()
+            .returning(|_| Ok(mock_attestation()));
     }
 
     mockall::mock! {
@@ -131,7 +151,6 @@ pub mod tests {
                 amount: bitcoin::Amount,
                 keysets_info: &[KeySetInfo],
                 client: Arc<dyn ClowderMintConnector>,
-                clowder_id: bitcoin::secp256k1::PublicKey,
             ) -> Result<MintSummary>;
             async fn check_pending_mints(
                 &self,
@@ -139,7 +158,6 @@ pub mod tests {
                 client: Arc<dyn ClowderMintConnector>,
                 tstamp: u64,
                 swap_config: SwapConfig,
-                clowder_id: bitcoin::secp256k1::PublicKey,
             ) -> Result<HashMap<Uuid, crate::pocket::debit::CheckPendingMintResult>>;
             async fn check_pending_commitments(&self, tstamp: u64) -> Result<()>;
             async fn protest_mint(
@@ -148,22 +166,17 @@ pub mod tests {
                 keysets_info: &[KeySetInfo],
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
-                clowder_id: bitcoin::secp256k1::PublicKey,
             ) -> Result<ProtestResult>;
             async fn protest_swap(
                 &self,
                 commitment_sig: bitcoin::secp256k1::schnorr::Signature,
                 keysets_info: &[KeySetInfo],
                 alpha_client: Arc<dyn ClowderMintConnector>,
-                beta_client: Arc<dyn ClowderMintConnector>,
-                alpha_id: bitcoin::secp256k1::PublicKey,
                 swap_config: SwapConfig,
             ) -> Result<ProtestResult>;
             async fn protest_melt(
                 &self,
                 quote_id: Uuid,
-                beta_client: Arc<dyn ClowderMintConnector>,
-                alpha_id: bitcoin::secp256k1::PublicKey,
             ) -> Result<MeltProtestResult>;
             async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>>;
         }

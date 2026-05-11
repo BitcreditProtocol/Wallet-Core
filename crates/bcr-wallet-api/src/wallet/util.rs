@@ -64,6 +64,8 @@ pub async fn htlc_lock(
     key_locks: Vec<secp256k1::PublicKey>,
     wallet_pubkey: secp256k1::PublicKey,
     swap_config: SwapConfig,
+    beta_client: &dyn ClowderMintConnector,
+    alpha_id: secp256k1::PublicKey,
 ) -> Result<Vec<cashu::Proof>> {
     tracing::debug!("HTLC-locking proofs");
     let amount = proofs.total_amount()?;
@@ -97,6 +99,7 @@ pub async fn htlc_lock(
     let premints =
         cashu::PreMintSecrets::with_conditions(active_keyset_id, amount, &split_target, &htlc)?;
 
+    let attestation = crate::pocket::fetch_attestation(beta_client, alpha_id, &proofs).await?;
     let signatures = crate::pocket::committed_swap(
         client,
         None,
@@ -104,6 +107,7 @@ pub async fn htlc_lock(
         premints.blinded_messages(),
         &swap_config,
         std::collections::HashMap::new(),
+        attestation,
     )
     .await?;
 

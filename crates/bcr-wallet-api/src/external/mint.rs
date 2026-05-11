@@ -8,6 +8,7 @@ use bcr_common::{
         treasury::web_ep as TreasuryEp,
     },
     wire::{
+        attestation as wire_attestation,
         clowder::{self as wire_clowder, ConnectedMintsResponse},
         exchange as wire_exchange,
         keys::{self as wire_keys, KeysetInfoFilters},
@@ -111,6 +112,7 @@ async fn post_melt_quote_onchain_inner(
     url: reqwest::Url,
     inputs: Vec<cashu::Proof>,
     address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+    amount: bitcoin::Amount,
     alpha_pk: secp256k1::PublicKey,
 ) -> Result<MeltQuoteResult> {
     let ephemeral_keypair =
@@ -126,6 +128,7 @@ async fn post_melt_quote_onchain_inner(
     let request = wire_melt::MeltQuoteOnchainRequest {
         inputs: fingerprints,
         address,
+        amount,
         wallet_key,
     };
 
@@ -161,6 +164,36 @@ async fn post_melt_quote_onchain_inner(
 
             tracing::error!(
                 "post_melt_quote_onchain failed: status={:?}, body={}",
+                status,
+                body
+            );
+
+            Err(err.into())
+        }
+    }
+}
+
+async fn post_attest_issuance_inner(
+    http_client: &reqwest::Client,
+    url: reqwest::Url,
+    request: wire_attestation::IssuanceAttestationRequest,
+) -> Result<wire_attestation::IssuanceAttestation> {
+    let url = url
+        .join("v1/attest/issuance")
+        .expect("attest_issuance url error");
+    debug!("HTTP call to attest_issuance on {url}");
+    let res = http_client.post(url).json(&request).send().await?;
+    match res.error_for_status_ref() {
+        Ok(_) => {
+            let response: wire_attestation::IssuanceAttestation = res.json().await?;
+            Ok(response)
+        }
+        Err(err) => {
+            let status = err.status();
+            let body = res.text().await.unwrap_or_default();
+
+            tracing::error!(
+                "post_attest_issuance failed: status={:?}, body={}",
                 status,
                 body
             );
@@ -232,6 +265,7 @@ pub trait ClowderMintConnector: SendSync {
         &self,
         inputs: Vec<cashu::Proof>,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        amount: bitcoin::Amount,
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<MeltQuoteResult>;
     async fn post_melt_onchain(
@@ -254,6 +288,10 @@ pub trait ClowderMintConnector: SendSync {
         &self,
         req: wire_mint::MintProtestRequest,
     ) -> Result<wire_mint::MintProtestResponse>;
+    async fn post_attest_issuance(
+        &self,
+        request: wire_attestation::IssuanceAttestationRequest,
+    ) -> Result<wire_attestation::IssuanceAttestation>;
 }
 
 #[derive(Debug, Clone)]
@@ -351,7 +389,11 @@ impl ClowderMintConnector for HttpClientExt {
     async fn get_clowder_betas(&self) -> MintResult<Vec<url::Url>> {
         debug!("Clowder client call to get_clowder_betas");
         let response = self.main.get_betas().await?;
-        Ok(response.mints.into_iter().map(|m| m.mint).collect())
+        Ok(response
+            .mints
+            .into_iter()
+            .map(|m| bcr_wallet_core::util::from_mint_url(&m.mint))
+            .collect())
     }
 
     async fn post_offline_exchange(
@@ -492,6 +534,7 @@ impl ClowderMintConnector for HttpClientExt {
         &self,
         inputs: Vec<cashu::Proof>,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        amount: bitcoin::Amount,
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<MeltQuoteResult> {
         let url = self
@@ -499,7 +542,7 @@ impl ClowderMintConnector for HttpClientExt {
             .join("v1/melt/quote/onchain")
             .expect("melt_quote_onchain url error");
         debug!("HTTP call to melt_quote_onchain on {url}");
-        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, alpha_pk).await
+        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, amount, alpha_pk).await
     }
 
     async fn post_melt_onchain(
@@ -656,6 +699,13 @@ impl ClowderMintConnector for HttpClientExt {
             }
         }
     }
+
+    async fn post_attest_issuance(
+        &self,
+        request: wire_attestation::IssuanceAttestationRequest,
+    ) -> Result<wire_attestation::IssuanceAttestation> {
+        post_attest_issuance_inner(&self.secondary, self.url.clone(), request).await
+    }
 }
 
 /// A client wrapper that forwards wallet events to sentinel nodes.
@@ -765,7 +815,11 @@ impl ClowderMintConnector for SentinelClient {
     async fn get_clowder_betas(&self) -> MintResult<Vec<url::Url>> {
         debug!("Clowder client call to get_clowder_betas on sentinel");
         let response = self.main.get_betas().await?;
-        Ok(response.mints.into_iter().map(|m| m.mint).collect())
+        Ok(response
+            .mints
+            .into_iter()
+            .map(|m| bcr_wallet_core::util::from_mint_url(&m.mint))
+            .collect())
     }
 
     async fn post_offline_exchange(
@@ -923,6 +977,7 @@ impl ClowderMintConnector for SentinelClient {
         &self,
         inputs: Vec<cashu::Proof>,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        amount: bitcoin::Amount,
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<MeltQuoteResult> {
         let url = self
@@ -930,7 +985,7 @@ impl ClowderMintConnector for SentinelClient {
             .join(TreasuryEp::MELTQUOTE_ONCHAIN_V1_EXT)
             .expect("melt_quote_onchain url error");
         debug!("HTTP call on sentinel to melt_quote_onchain on {url}");
-        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, alpha_pk).await
+        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, amount, alpha_pk).await
     }
 
     async fn post_melt_onchain(
@@ -1085,5 +1140,12 @@ impl ClowderMintConnector for SentinelClient {
                 Err(err.into())
             }
         }
+    }
+
+    async fn post_attest_issuance(
+        &self,
+        request: wire_attestation::IssuanceAttestationRequest,
+    ) -> Result<wire_attestation::IssuanceAttestation> {
+        post_attest_issuance_inner(&self.secondary, self.url.clone(), request).await
     }
 }

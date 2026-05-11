@@ -60,7 +60,6 @@ pub trait DebitPocketApi: super::PocketApi {
         amount: bitcoin::Amount,
         keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
-        clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<MintSummary>;
     async fn check_pending_mints(
         &self,
@@ -68,7 +67,6 @@ pub trait DebitPocketApi: super::PocketApi {
         client: Arc<dyn ClowderMintConnector>,
         tstamp: u64,
         swap_config: SwapConfig,
-        clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<HashMap<Uuid, CheckPendingMintResult>>;
     async fn protest_mint(
         &self,
@@ -76,7 +74,6 @@ pub trait DebitPocketApi: super::PocketApi {
         keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
-        clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<ProtestResult>;
     async fn check_pending_commitments(&self, tstamp: u64) -> Result<()>;
     async fn protest_swap(
@@ -84,16 +81,9 @@ pub trait DebitPocketApi: super::PocketApi {
         commitment_sig: bitcoin::secp256k1::schnorr::Signature,
         keysets_info: &[KeySetInfo],
         alpha_client: Arc<dyn ClowderMintConnector>,
-        beta_client: Arc<dyn ClowderMintConnector>,
-        alpha_id: bitcoin::secp256k1::PublicKey,
         swap_config: SwapConfig,
     ) -> Result<ProtestResult>;
-    async fn protest_melt(
-        &self,
-        quote_id: Uuid,
-        beta_client: Arc<dyn ClowderMintConnector>,
-        alpha_id: bitcoin::secp256k1::PublicKey,
-    ) -> Result<MeltProtestResult>;
+    async fn protest_melt(&self, quote_id: Uuid) -> Result<MeltProtestResult>;
     async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>>;
 }
 
@@ -127,6 +117,8 @@ pub struct Pocket {
     pub pdb: Arc<dyn PocketRepository>,
     pub mdb: Arc<dyn MintMeltRepository>,
     seed: Seed,
+    beta_client: Arc<dyn ClowderMintConnector>,
+    alpha_id: bitcoin::secp256k1::PublicKey,
 
     current_send: Mutex<Option<SendReference>>,
     current_melt: Mutex<Option<MeltReference>>,
@@ -138,12 +130,16 @@ impl Pocket {
         pdb: Arc<dyn PocketRepository>,
         mdb: Arc<dyn MintMeltRepository>,
         seed: Seed,
+        beta_client: Arc<dyn ClowderMintConnector>,
+        alpha_id: bitcoin::secp256k1::PublicKey,
     ) -> Self {
         Self {
             unit,
             pdb,
             mdb,
             seed,
+            beta_client,
+            alpha_id,
             current_send: Mutex::new(None),
             current_melt: Mutex::new(None),
         }
@@ -230,6 +226,8 @@ impl Pocket {
             client,
             self.pdb.as_ref(),
             swap_config,
+            self.beta_client.as_ref(),
+            self.alpha_id,
         )
         .await?;
         Ok((cashed_in, ys))
@@ -332,7 +330,6 @@ impl Pocket {
         client: Arc<dyn ClowderMintConnector>,
         _tstamp: u64,
         swap_config: SwapConfig,
-        clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<Option<CheckPendingMintResult>> {
         let record = self.mdb.load_mint(qid).await?;
         let mint_amount = Amount::from(record.summary.amount.to_sat());
@@ -341,7 +338,7 @@ impl Pocket {
         tracing::info!("Mint {qid} - attempting to mint..");
         let mint_req = wire_mint::OnchainMintRequest {
             quote: mint_summary.quote_id,
-            alpha_id: clowder_id,
+            alpha_id: self.alpha_id,
         };
         match client.post_mint_onchain(mint_req).await {
             Ok(mint_response) => {
@@ -472,6 +469,8 @@ impl super::PocketApi for Pocket {
             self.pdb.as_ref(),
             &client,
             swap_config,
+            self.beta_client.as_ref(),
+            self.alpha_id,
         )
         .await?;
 
@@ -575,6 +574,8 @@ impl super::PocketApi for Pocket {
             .flat_map(|premint| premint.blinded_messages())
             .collect();
 
+        let attestation =
+            super::fetch_attestation(self.beta_client.as_ref(), self.alpha_id, &proofs).await?;
         let all_signatures = super::committed_swap(
             client.as_ref(),
             None,
@@ -582,6 +583,7 @@ impl super::PocketApi for Pocket {
             blinds,
             &swap_config,
             HashMap::new(),
+            attestation,
         )
         .await?;
 
@@ -772,6 +774,8 @@ impl DebitPocketApi for Pocket {
             self.pdb.as_ref(),
             &client,
             swap_config.clone(),
+            self.beta_client.as_ref(),
+            self.alpha_id,
         )
         .await?;
         let sent_ys: Vec<cdk01::PublicKey> = sending_proofs.keys().cloned().collect();
@@ -779,7 +783,12 @@ impl DebitPocketApi for Pocket {
         let quote_record_amount = async {
             let proofs: Vec<cashu::Proof> = sending_proofs.values().cloned().collect();
             let quote_result = client
-                .post_melt_quote_onchain(proofs, parsed_address, swap_config.alpha_pk)
+                .post_melt_quote_onchain(
+                    proofs,
+                    parsed_address,
+                    bitcoin::Amount::from_sat(amount),
+                    swap_config.alpha_pk,
+                )
                 .await?;
             let quote_id = quote_result.quote_id;
             let expiry = quote_result.expiry;
@@ -844,9 +853,13 @@ impl DebitPocketApi for Pocket {
         let input_ys: Vec<cashu::PublicKey> = body.inputs.iter().map(|fp| fp.y).collect();
         let sending_proofs = self.pdb.load_proofs(&input_ys).await?;
 
+        let inputs: Vec<cdk00::Proof> = sending_proofs.values().cloned().collect();
+        let attestation =
+            super::fetch_attestation(self.beta_client.as_ref(), self.alpha_id, &inputs).await?;
         let request = wire_melt::MeltOnchainRequest {
             quote: melt_ref.quote_id,
-            inputs: sending_proofs.values().cloned().collect(),
+            inputs,
+            attestation,
         };
         let response = client.post_melt_onchain(request).await?;
 
@@ -859,7 +872,6 @@ impl DebitPocketApi for Pocket {
         amount: bitcoin::Amount,
         keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
-        clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<MintSummary> {
         let active_info = self.find_debit_keysetid(keysets_info)?;
         let kid = active_info.id;
@@ -894,7 +906,7 @@ impl DebitPocketApi for Pocket {
         bcr_common::core::signature::schnorr_verify_b64(
             &response.content,
             &response.commitment,
-            &clowder_id.x_only_public_key().0,
+            &self.alpha_id.x_only_public_key().0,
         )?;
 
         let body: wire_mint::OnchainMintQuoteResponseBody =
@@ -939,7 +951,6 @@ impl DebitPocketApi for Pocket {
         client: Arc<dyn ClowderMintConnector>,
         tstamp: u64,
         swap_config: SwapConfig,
-        clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<HashMap<Uuid, CheckPendingMintResult>> {
         let mint_ids = self.mdb.list_mints().await?;
         let mut res = HashMap::with_capacity(mint_ids.len());
@@ -953,7 +964,6 @@ impl DebitPocketApi for Pocket {
                     client.clone(),
                     tstamp,
                     swap_config.clone(),
-                    clowder_id,
                 )
                 .await
             {
@@ -994,7 +1004,6 @@ impl DebitPocketApi for Pocket {
         keysets_info: &[KeySetInfo],
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
-        clowder_id: bitcoin::secp256k1::PublicKey,
     ) -> Result<ProtestResult> {
         let record = self.mdb.load_mint(qid).await?;
 
@@ -1003,7 +1012,7 @@ impl DebitPocketApi for Pocket {
         let wallet_signature = super::sign_content_b64(&record.content, &ephemeral_keypair)?;
 
         let request = wire_mint::MintProtestRequest {
-            alpha_id: clowder_id,
+            alpha_id: self.alpha_id,
             quote_id: record.summary.quote_id,
             content: record.content,
             commitment: record.commitment,
@@ -1051,8 +1060,6 @@ impl DebitPocketApi for Pocket {
         commitment_sig: bitcoin::secp256k1::schnorr::Signature,
         keysets_info: &[KeySetInfo],
         alpha_client: Arc<dyn ClowderMintConnector>,
-        beta_client: Arc<dyn ClowderMintConnector>,
-        alpha_id: bitcoin::secp256k1::PublicKey,
         swap_config: SwapConfig,
     ) -> Result<ProtestResult> {
         let record = self.pdb.load_commitment(commitment_sig).await?;
@@ -1062,7 +1069,7 @@ impl DebitPocketApi for Pocket {
         let wallet_signature = super::sign_content_b64(&record.body_content, &ephemeral_keypair)?;
 
         let request = wire_swap::SwapProtestRequest {
-            alpha_id,
+            alpha_id: self.alpha_id,
             proofs: loaded_proofs.into_values().collect(),
             content: record.body_content,
             commitment: record.commitment,
@@ -1070,7 +1077,7 @@ impl DebitPocketApi for Pocket {
             blind_signatures: None,
         };
 
-        let response = beta_client.post_protest_swap(request).await?;
+        let response = self.beta_client.post_protest_swap(request).await?;
 
         match response.status {
             wire_common::ProtestStatus::Resolved => {
@@ -1131,26 +1138,21 @@ impl DebitPocketApi for Pocket {
         }
     }
 
-    async fn protest_melt(
-        &self,
-        quote_id: Uuid,
-        beta_client: Arc<dyn ClowderMintConnector>,
-        alpha_id: bitcoin::secp256k1::PublicKey,
-    ) -> Result<MeltProtestResult> {
+    async fn protest_melt(&self, quote_id: Uuid) -> Result<MeltProtestResult> {
         let record = self.mdb.load_melt_commitment(quote_id).await?;
         let ephemeral_keypair =
             secp256k1::Keypair::from_secret_key(secp256k1::SECP256K1, &record.ephemeral_secret);
         let wallet_signature = super::sign_content_b64(&record.body_content, &ephemeral_keypair)?;
 
         let request = wire_melt::MeltProtestRequest {
-            alpha_id,
+            alpha_id: self.alpha_id,
             quote_id,
             content: record.body_content.clone(),
             commitment: record.commitment,
             wallet_signature,
         };
 
-        let response = beta_client.post_protest_melt(request).await?;
+        let response = self.beta_client.post_protest_melt(request).await?;
 
         match response.status {
             wire_common::ProtestStatus::Resolved => {
@@ -1205,13 +1207,29 @@ mod tests {
     };
     use mockall::predicate::*;
 
-    use crate::pocket::test_utils::tests::{setup_commitment_mocks, test_swap_config};
+    use crate::pocket::test_utils::tests::{
+        setup_attestation_mock, setup_commitment_mocks, test_swap_config,
+    };
 
     fn pocket(pdb: Arc<dyn PocketRepository>, mdb: Arc<dyn MintMeltRepository>) -> super::Pocket {
+        let mut beta_mock = MockMintConnector::new();
+        setup_attestation_mock(&mut beta_mock);
+        let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
+            &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+        );
+        pocket_with_beta(pdb, mdb, Arc::new(beta_mock), alpha_id)
+    }
+
+    fn pocket_with_beta(
+        pdb: Arc<dyn PocketRepository>,
+        mdb: Arc<dyn MintMeltRepository>,
+        beta_client: Arc<dyn crate::ClowderMintConnector>,
+        alpha_id: bitcoin::secp256k1::PublicKey,
+    ) -> super::Pocket {
         let unit = CurrencyUnit::Sat;
         let mnemonic = bip39::Mnemonic::generate(12).unwrap();
         let seed = mnemonic.to_seed("");
-        super::Pocket::new(unit, pdb, mdb, seed)
+        super::Pocket::new(unit, pdb, mdb, seed, beta_client, alpha_id)
     }
 
     #[tokio::test]
@@ -1560,6 +1578,7 @@ mod tests {
             address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
                 .expect("valid address"),
             amount: bitcoin::Amount::from_sat(100),
+            total: cashu::Amount::from(100u64),
             expiry: 999999,
             wallet_key,
         };
@@ -1614,6 +1633,7 @@ mod tests {
             address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
                 .expect("valid address"),
             amount: bitcoin::Amount::from_sat(amount),
+            total: cashu::Amount::from(amount),
             expiry: 999999,
             wallet_key,
         };
@@ -1635,7 +1655,6 @@ mod tests {
 
         let mut mdb = MockMintMeltRepository::new();
         let pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
 
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let commitment_sig = cashu::SecretKey::generate().sign(&[0u8; 32]).unwrap();
@@ -1652,7 +1671,12 @@ mod tests {
                 })
             });
 
-        connector
+        mdb.expect_delete_melt_commitment()
+            .times(1)
+            .returning(|_| Ok(()));
+
+        let mut beta_mock = MockMintConnector::new();
+        beta_mock
             .expect_post_protest_melt()
             .times(1)
             .returning(move |_| {
@@ -1661,17 +1685,12 @@ mod tests {
                     txid: Some(melt_tx.clone()),
                 })
             });
-
-        mdb.expect_delete_melt_commitment()
-            .times(1)
-            .returning(|_| Ok(()));
-
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
             &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
         );
-        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let pocket = pocket_with_beta(Arc::new(pdb), Arc::new(mdb), Arc::new(beta_mock), alpha_id);
         let result = pocket
-            .protest_melt(quote_id, Arc::new(connector), alpha_id)
+            .protest_melt(quote_id)
             .await
             .expect("protest_melt resolved works");
 
@@ -1689,7 +1708,6 @@ mod tests {
 
         let mut mdb = MockMintMeltRepository::new();
         let pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
 
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let commitment_sig = cashu::SecretKey::generate().sign(&[0u8; 32]).unwrap();
@@ -1706,7 +1724,8 @@ mod tests {
                 })
             });
 
-        connector
+        let mut beta_mock = MockMintConnector::new();
+        beta_mock
             .expect_post_protest_melt()
             .times(1)
             .returning(|_| {
@@ -1715,13 +1734,12 @@ mod tests {
                     txid: None,
                 })
             });
-
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
             &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
         );
-        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let pocket = pocket_with_beta(Arc::new(pdb), Arc::new(mdb), Arc::new(beta_mock), alpha_id);
         let result = pocket
-            .protest_melt(quote_id, Arc::new(connector), alpha_id)
+            .protest_melt(quote_id)
             .await
             .expect("protest_melt rabid works");
 
@@ -1764,7 +1782,7 @@ mod tests {
             )
             .unwrap()
         };
-        let clowder_pk = bitcoin::secp256k1::PublicKey::from_keypair(&clowder_keypair);
+        let clowder_id = bitcoin::secp256k1::PublicKey::from_keypair(&clowder_keypair);
 
         connector
             .expect_post_mint_quote_onchain()
@@ -1790,10 +1808,17 @@ mod tests {
                 })
             });
 
-        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let mut beta_mock = MockMintConnector::new();
+        setup_attestation_mock(&mut beta_mock);
+        let pocket = pocket_with_beta(
+            Arc::new(pdb),
+            Arc::new(mdb),
+            Arc::new(beta_mock),
+            clowder_id,
+        );
 
         let summary = pocket
-            .mint_onchain(amount, &k_infos, Arc::new(connector), clowder_pk)
+            .mint_onchain(amount, &k_infos, Arc::new(connector))
             .await
             .expect("mint onchain works");
         assert_eq!(summary.amount, amount);
@@ -1853,25 +1878,14 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(MintResponse { signatures: vec![] }));
 
-        let clowder_keypair = {
-            let secret_bytes: [u8; 32] = rand::random();
-            bitcoin::secp256k1::Keypair::from_seckey_slice(
-                bitcoin::secp256k1::SECP256K1,
-                &secret_bytes,
-            )
-            .unwrap()
-        };
-
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
 
-        let clowder_id = bitcoin::secp256k1::PublicKey::from_keypair(&clowder_keypair);
         let res = pocket
             .check_pending_mints(
                 &k_infos,
                 Arc::new(connector),
                 chrono::Utc::now().timestamp() as u64,
                 test_swap_config(),
-                clowder_id,
             )
             .await
             .expect("check pending mint works");
@@ -1967,25 +1981,9 @@ mod tests {
 
         mdb.expect_delete_mint().times(1).returning(move |_| Ok(()));
 
-        let clowder_keypair = {
-            let secret_bytes: [u8; 32] = rand::random();
-            bitcoin::secp256k1::Keypair::from_seckey_slice(
-                bitcoin::secp256k1::SECP256K1,
-                &secret_bytes,
-            )
-            .unwrap()
-        };
-        let clowder_id = bitcoin::secp256k1::PublicKey::from_keypair(&clowder_keypair);
-
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
         let ProtestResult { status, result } = pocket
-            .protest_mint(
-                uuid,
-                &k_infos,
-                Arc::new(connector),
-                test_swap_config(),
-                clowder_id,
-            )
+            .protest_mint(uuid, &k_infos, Arc::new(connector), test_swap_config())
             .await
             .expect("protest_mint resolved works");
 
@@ -2042,25 +2040,9 @@ mod tests {
                 })
             });
 
-        let clowder_keypair = {
-            let secret_bytes: [u8; 32] = rand::random();
-            bitcoin::secp256k1::Keypair::from_seckey_slice(
-                bitcoin::secp256k1::SECP256K1,
-                &secret_bytes,
-            )
-            .unwrap()
-        };
-        let clowder_id = bitcoin::secp256k1::PublicKey::from_keypair(&clowder_keypair);
-
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
         let ProtestResult { status, result } = pocket
-            .protest_mint(
-                uuid,
-                &k_infos,
-                Arc::new(connector),
-                test_swap_config(),
-                clowder_id,
-            )
+            .protest_mint(uuid, &k_infos, Arc::new(connector), test_swap_config())
             .await
             .expect("protest_mint rabid works");
 
@@ -2110,8 +2092,8 @@ mod tests {
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let mut beta_connector = MockMintConnector::new();
         let mut alpha_connector = MockMintConnector::new();
+        let mut beta_connector = MockMintConnector::new();
 
         let record_inputs = input_ys.clone();
         let record_secret = ephemeral_secret;
@@ -2141,11 +2123,12 @@ mod tests {
             .expect_post_protest_swap()
             .times(1)
             .returning(move |_| {
-                Ok(wire_swap::SwapProtestResponse {
+                Ok(bcr_common::wire::swap::SwapProtestResponse {
                     status: wire_common::ProtestStatus::Resolved,
                     signatures: Some(blind_sigs.clone()),
                 })
             });
+        setup_attestation_mock(&mut beta_connector);
 
         // Alpha handles keyset lookup (for unblinding + digest_proofs)
         let keyset_clone = mintkeyset.clone();
@@ -2176,20 +2159,20 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(()));
 
-        let clowder_keypair = {
-            let secret_bytes: [u8; 32] = rand::random();
-            secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &secret_bytes).unwrap()
-        };
-        let clowder_id = secp256k1::PublicKey::from_keypair(&clowder_keypair);
-
-        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
+            &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+        );
+        let pocket = pocket_with_beta(
+            Arc::new(pdb),
+            Arc::new(mdb),
+            Arc::new(beta_connector),
+            alpha_id,
+        );
         let ProtestResult { status, result } = pocket
             .protest_swap(
                 commitment_sig,
                 &k_infos,
                 Arc::new(alpha_connector),
-                Arc::new(beta_connector),
-                clowder_id,
                 test_swap_config(),
             )
             .await
@@ -2227,8 +2210,8 @@ mod tests {
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let mut beta_connector = MockMintConnector::new();
         let alpha_connector = MockMintConnector::new();
+        let mut beta_connector = MockMintConnector::new();
 
         let record_inputs = input_ys.clone();
         let record_secret = ephemeral_secret;
@@ -2255,27 +2238,27 @@ mod tests {
         beta_connector
             .expect_post_protest_swap()
             .times(1)
-            .returning(move |_| {
-                Ok(wire_swap::SwapProtestResponse {
+            .returning(|_| {
+                Ok(bcr_common::wire::swap::SwapProtestResponse {
                     status: wire_common::ProtestStatus::Rabid,
                     signatures: None,
                 })
             });
 
-        let clowder_keypair = {
-            let secret_bytes: [u8; 32] = rand::random();
-            secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &secret_bytes).unwrap()
-        };
-        let clowder_id = secp256k1::PublicKey::from_keypair(&clowder_keypair);
-
-        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
+            &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+        );
+        let pocket = pocket_with_beta(
+            Arc::new(pdb),
+            Arc::new(mdb),
+            Arc::new(beta_connector),
+            alpha_id,
+        );
         let ProtestResult { status, result } = pocket
             .protest_swap(
                 commitment_sig,
                 &k_infos,
                 Arc::new(alpha_connector),
-                Arc::new(beta_connector),
-                clowder_id,
                 test_swap_config(),
             )
             .await
@@ -2536,12 +2519,6 @@ mod tests {
 
         mdb.expect_delete_mint().times(1).returning(|_| Ok(()));
 
-        let clowder_keypair = {
-            let secret_bytes: [u8; 32] = rand::random();
-            secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &secret_bytes).unwrap()
-        };
-        let clowder_id = secp256k1::PublicKey::from_keypair(&clowder_keypair);
-
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
 
         let result = pocket
@@ -2551,7 +2528,6 @@ mod tests {
                 Arc::new(connector),
                 chrono::Utc::now().timestamp() as u64,
                 test_swap_config(),
-                clowder_id,
             )
             .await
             .unwrap()
@@ -2604,12 +2580,6 @@ mod tests {
 
         mdb.expect_delete_mint().times(0);
 
-        let clowder_keypair = {
-            let secret_bytes: [u8; 32] = rand::random();
-            secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &secret_bytes).unwrap()
-        };
-        let clowder_id = secp256k1::PublicKey::from_keypair(&clowder_keypair);
-
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
 
         let result = pocket
@@ -2619,7 +2589,6 @@ mod tests {
                 Arc::new(connector),
                 chrono::Utc::now().timestamp() as u64,
                 test_swap_config(),
-                clowder_id,
             )
             .await;
 
@@ -2662,7 +2631,7 @@ mod tests {
         connector
             .expect_post_melt_quote_onchain()
             .times(1)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 Ok(MeltQuoteResult {
                     quote_id,
                     expiry,
