@@ -126,7 +126,7 @@ impl Wallet {
         HashMap<cashu::Id, KeySetInfo>,
     )> {
         let local_keysets_info = self.get_wallet_mint_keyset_infos().await?;
-        if mint_url == self.client.mint_url() {
+        if &mint_url == self.client.mint_url() {
             Ok((None, local_keysets_info))
         } else {
             // Intermint Exchange
@@ -150,7 +150,7 @@ impl Wallet {
                 beta_mint.to_string()
             );
             // In the direct exchange case this is the same as the Wallet's mint
-            let substitute_client = if beta_mint == self.client.mint_url() {
+            let substitute_client = if &beta_mint == self.client.mint_url() {
                 &self.client
             } else {
                 self.beta_clients
@@ -215,7 +215,7 @@ impl Wallet {
         req: &cashu::PaymentRequest,
     ) -> Result<(Amount, CurrencyUnit, cashu::Transport)> {
         if let Some(mints) = &req.mints
-            && !mints.contains(&to_mint_url(&self.client.mint_url()))
+            && !mints.contains(&to_mint_url(self.client.mint_url()))
         {
             return Err(Error::InterMint);
         }
@@ -379,14 +379,14 @@ impl Wallet {
             return Err(Error::InvalidCurrencyUnit(unit.to_string()));
         }
         let mut proofs = proofs;
-        if mint != self.client.mint_url() {
+        if &mint != self.client.mint_url() {
             if let Some((clowder_path, _)) = intermint_infos {
                 let alpha_id = clowder_path.mints[0].node_id;
                 let alpha_client = (self.client_factory)(mint.clone());
                 let substitute_beta_mint = clowder_path.mints[1].mint.clone();
 
                 // In the direct exchange case this is the same as the Wallet's mint
-                let substitute_client = if substitute_beta_mint == self.client.mint_url() {
+                let substitute_client = if &substitute_beta_mint == self.client.mint_url() {
                     &self.client
                 } else {
                     self.beta_clients
@@ -447,7 +447,7 @@ impl Wallet {
             )
             .await?;
         let tx = Transaction {
-            mint_url: to_mint_url(&self.client.mint_url()),
+            mint_url: to_mint_url(self.client.mint_url()),
             direction: TransactionDirection::Incoming,
             fee: received_amount
                 .checked_sub(stored_amount)
@@ -502,7 +502,7 @@ impl Wallet {
     ) -> Result<Vec<Proof>> {
         tracing::debug!(alpha_url=?alpha_url, "intermint exchange from ");
         // Already proofs on our mint
-        if alpha_url == self.client.mint_url() {
+        if &alpha_url == self.client.mint_url() {
             tracing::debug!("not intermint exchanging proofs, since they're already on our mint");
             return Ok(alpha_proofs);
         }
@@ -588,7 +588,7 @@ impl Wallet {
             .get_clowder_path_and_keysets_info(from_mint_url(&token.mint_url()))
             .await?;
 
-        let proofs = if token_mint_url == self.client.mint_url() {
+        let proofs = if &token_mint_url == self.client.mint_url() {
             let keysets: Vec<KeySetInfo> = keysets_info.values().cloned().collect();
             token.proofs(&keysets)?
         } else if let Some((_, ref intermint_alpha_infos)) = intermint_infos {
@@ -646,7 +646,7 @@ impl Wallet {
             id: p_id,
             memo: partial_tx.memo.clone(),
             unit: partial_tx.unit.clone(),
-            mint: to_mint_url(&self.client.mint_url()),
+            mint: to_mint_url(self.client.mint_url()),
             proofs,
         };
         match transport._type {
@@ -878,7 +878,7 @@ mod tests {
         ctx.client
             .expect_mint_url()
             .times(1)
-            .returning(|| url::Url::from_str("https://mint.example").unwrap());
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
 
         let wlt = wallet(ctx);
         let cfg = wlt.config().expect("config works");
@@ -915,10 +915,10 @@ mod tests {
         ctx.client
             .expect_mint_url()
             .times(1)
-            .returning(|| url::Url::from_str("https://mint.example").unwrap());
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
 
         let wlt = wallet(ctx);
-        let url = wlt.mint_url().unwrap();
+        let url = wlt.mint_url();
         assert_eq!(url.to_string(), "https://mint.example/");
     }
 
@@ -928,7 +928,7 @@ mod tests {
         ctx.client
             .expect_mint_url()
             .times(1)
-            .returning(|| url::Url::from_str("https://mint.example").unwrap());
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
         let mut wlt = wallet(ctx);
 
         let b1 = url::Url::from_str("https://beta1.example").unwrap();
@@ -985,7 +985,7 @@ mod tests {
         ctx.client
             .expect_mint_url()
             .times(1)
-            .returning(|| url::Url::from_str("https://mint.example").unwrap());
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
 
         let wlt = wallet(ctx);
         let req = wlt
@@ -1251,7 +1251,7 @@ mod tests {
         ctx.client
             .expect_mint_url()
             .times(2) // token creation + tx mint_url
-            .returning(|| url::Url::from_str("https://mint.example").unwrap());
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
 
         ctx.debit
             .expect_unit()
