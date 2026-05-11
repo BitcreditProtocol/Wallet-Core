@@ -172,7 +172,7 @@ async fn post_melt_quote_onchain_inner(
 
 #[async_trait]
 pub trait ClowderMintConnector: SendSync {
-    fn mint_url(&self) -> url::Url;
+    fn mint_url(&self) -> &url::Url;
     async fn post_restore(
         &self,
         request: cashu::RestoreRequest,
@@ -259,7 +259,6 @@ pub trait ClowderMintConnector: SendSync {
 #[derive(Debug, Clone)]
 pub struct HttpClientExt {
     main: MintClient,
-    url: reqwest::Url,
     secondary: reqwest::Client,
 }
 
@@ -267,7 +266,6 @@ impl HttpClientExt {
     pub fn new(cdk_url: url::Url) -> Self {
         Self {
             main: MintClient::new(cdk_url.clone()),
-            url: cdk_url,
             secondary: reqwest::Client::new(),
         }
     }
@@ -275,8 +273,8 @@ impl HttpClientExt {
 
 #[async_trait]
 impl ClowderMintConnector for HttpClientExt {
-    fn mint_url(&self) -> url::Url {
-        self.url.clone()
+    fn mint_url(&self) -> &url::Url {
+        self.main.mint_url()
     }
 
     async fn post_restore(
@@ -413,7 +411,7 @@ impl ClowderMintConnector for HttpClientExt {
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<SwapCommitmentResult> {
         let url = self
-            .url
+            .mint_url()
             .join(CoreEp::SWAP_COMMIT_V1_EXT)
             .expect("post_swap_commitment url error");
         debug!("HTTP call to post_swap_commitment on {url}");
@@ -433,7 +431,7 @@ impl ClowderMintConnector for HttpClientExt {
         request: wire_swap::SwapRequest,
     ) -> Result<wire_swap::SwapResponse> {
         let url = self
-            .url
+            .mint_url()
             .join(CoreEp::SWAP_V1_EXT)
             .expect("post_swap_committed url error");
         debug!("HTTP call to post_swap_committed on {url}");
@@ -463,7 +461,7 @@ impl ClowderMintConnector for HttpClientExt {
         req: wire_swap::SwapProtestRequest,
     ) -> Result<wire_swap::SwapProtestResponse> {
         let url = self
-            .url
+            .mint_url()
             .join("v1/protest/swap")
             .expect("protest_swap url error");
         debug!("HTTP call to protest_swap on {url}");
@@ -495,7 +493,7 @@ impl ClowderMintConnector for HttpClientExt {
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<MeltQuoteResult> {
         let url = self
-            .url
+            .mint_url()
             .join("v1/melt/quote/onchain")
             .expect("melt_quote_onchain url error");
         debug!("HTTP call to melt_quote_onchain on {url}");
@@ -507,7 +505,7 @@ impl ClowderMintConnector for HttpClientExt {
         req: wire_melt::MeltOnchainRequest,
     ) -> Result<wire_melt::MeltOnchainResponse> {
         let url = self
-            .url
+            .mint_url()
             .join("v1/melt/onchain")
             .expect("melt_onchain url error");
         debug!("HTTP call to melt_onchain on {url}");
@@ -538,7 +536,7 @@ impl ClowderMintConnector for HttpClientExt {
         req: wire_melt::MeltProtestRequest,
     ) -> Result<wire_melt::MeltProtestResponse> {
         let url = self
-            .url
+            .mint_url()
             .join("v1/protest/melt")
             .expect("protest_melt url error");
         debug!("HTTP call to protest_melt on {url}");
@@ -568,7 +566,7 @@ impl ClowderMintConnector for HttpClientExt {
         req: wire_mint::OnchainMintQuoteRequest,
     ) -> Result<wire_mint::OnchainMintQuoteResponse> {
         let url = self
-            .url
+            .mint_url()
             .join(TreasuryEp::MINTQUOTE_ONCHAIN_V1_EXT)
             .expect("mint_quote_onchain url error");
         debug!("HTTP call to mint_quote_onchain on {url}");
@@ -599,7 +597,7 @@ impl ClowderMintConnector for HttpClientExt {
         req: wire_mint::OnchainMintRequest,
     ) -> Result<wire_mint::MintResponse> {
         let url = self
-            .url
+            .mint_url()
             .join(TreasuryEp::MINT_ONCHAIN_V1_EXT)
             .expect("mint_onchain url error");
         debug!("HTTP call to mint_onchain on {url}");
@@ -631,7 +629,7 @@ impl ClowderMintConnector for HttpClientExt {
         req: wire_mint::MintProtestRequest,
     ) -> Result<wire_mint::MintProtestResponse> {
         let url = self
-            .url
+            .mint_url()
             .join("v1/protest/mint")
             .expect("protest_mint url error");
         debug!("HTTP call to protest_mint on {url}");
@@ -665,21 +663,15 @@ impl ClowderMintConnector for HttpClientExt {
 #[derive(Debug, Clone)]
 pub struct SentinelClient {
     main: MintClient,
-    url: reqwest::Url,
     secondary: reqwest::Client,
     sentinels: Vec<reqwest::Url>,
 }
 
 impl SentinelClient {
     pub fn new(client: HttpClientExt, sentinels: Vec<url::Url>) -> Self {
-        let HttpClientExt {
-            main,
-            url,
-            secondary,
-        } = client;
+        let HttpClientExt { main, secondary } = client;
         Self {
             main,
-            url,
             secondary,
             sentinels,
         }
@@ -698,8 +690,8 @@ impl SentinelClient {
 
 #[async_trait]
 impl ClowderMintConnector for SentinelClient {
-    fn mint_url(&self) -> url::Url {
-        self.url.clone()
+    fn mint_url(&self) -> &url::Url {
+        self.main.mint_url()
     }
 
     async fn post_restore(
@@ -829,7 +821,7 @@ impl ClowderMintConnector for SentinelClient {
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<SwapCommitmentResult> {
         let url = self
-            .url
+            .mint_url()
             .join(CoreEp::SWAP_COMMIT_V1_EXT)
             .expect("post_swap_commitment url error");
         debug!("HTTP call to post_swap_commitment on sentinel {url}");
@@ -849,7 +841,7 @@ impl ClowderMintConnector for SentinelClient {
         request: wire_swap::SwapRequest,
     ) -> Result<wire_swap::SwapResponse> {
         let url = self
-            .url
+            .mint_url()
             .join(CoreEp::SWAP_V1_EXT)
             .expect("post_swap_committed url error");
         debug!("HTTP call to post_swap_committed on sentinel {url}");
@@ -893,7 +885,7 @@ impl ClowderMintConnector for SentinelClient {
         req: wire_swap::SwapProtestRequest,
     ) -> Result<wire_swap::SwapProtestResponse> {
         let url = self
-            .url
+            .mint_url()
             .join("v1/protest/swap")
             .expect("protest_swap url error");
         debug!("HTTP call on sentinel to protest_swap on {url}");
@@ -926,7 +918,7 @@ impl ClowderMintConnector for SentinelClient {
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<MeltQuoteResult> {
         let url = self
-            .url
+            .mint_url()
             .join(TreasuryEp::MELTQUOTE_ONCHAIN_V1_EXT)
             .expect("melt_quote_onchain url error");
         debug!("HTTP call on sentinel to melt_quote_onchain on {url}");
@@ -938,7 +930,7 @@ impl ClowderMintConnector for SentinelClient {
         req: wire_melt::MeltOnchainRequest,
     ) -> Result<wire_melt::MeltOnchainResponse> {
         let url = self
-            .url
+            .mint_url()
             .join(TreasuryEp::MELT_ONCHAIN_V1_EXT)
             .expect("melt_onchain url error");
         debug!("HTTP call on sentinel to melt_onchain on {url}");
@@ -969,7 +961,7 @@ impl ClowderMintConnector for SentinelClient {
         req: wire_melt::MeltProtestRequest,
     ) -> Result<wire_melt::MeltProtestResponse> {
         let url = self
-            .url
+            .mint_url()
             .join("v1/protest/melt")
             .expect("protest_melt url error");
         debug!("HTTP call on sentinel to protest_melt on {url}");
@@ -999,7 +991,7 @@ impl ClowderMintConnector for SentinelClient {
         req: wire_mint::OnchainMintQuoteRequest,
     ) -> Result<wire_mint::OnchainMintQuoteResponse> {
         let url = self
-            .url
+            .mint_url()
             .join(TreasuryEp::MINTQUOTE_ONCHAIN_V1_EXT)
             .expect("mint_quote_onchain url error");
         debug!("HTTP call on sentinel to mint_quote_onchain on {url}");
@@ -1030,7 +1022,7 @@ impl ClowderMintConnector for SentinelClient {
         req: wire_mint::OnchainMintRequest,
     ) -> Result<wire_mint::MintResponse> {
         let url = self
-            .url
+            .mint_url()
             .join(TreasuryEp::MINT_ONCHAIN_V1_EXT)
             .expect("mint_onchain url error");
         debug!("HTTP call on sentinel to mint_onchain on {url}");
@@ -1061,7 +1053,7 @@ impl ClowderMintConnector for SentinelClient {
         req: wire_mint::MintProtestRequest,
     ) -> Result<wire_mint::MintProtestResponse> {
         let url = self
-            .url
+            .mint_url()
             .join("v1/protest/mint")
             .expect("protest_mint url error");
         debug!("HTTP call on sentinel to protest_mint on {url}");

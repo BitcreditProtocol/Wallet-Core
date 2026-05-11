@@ -245,7 +245,7 @@ impl AppState {
     pub async fn wallet_mint_url(&self, id: String) -> Result<String> {
         tracing::debug!("mint_url for wallet {id}");
         let wallet = self.get_wallet(&id).await?;
-        Ok(wallet.read().await.mint_url()?.to_string())
+        Ok(wallet.read().await.mint_url().to_string())
     }
 
     pub async fn wallet_currency_unit(&self, id: String) -> Result<WalletCurrencyUnit> {

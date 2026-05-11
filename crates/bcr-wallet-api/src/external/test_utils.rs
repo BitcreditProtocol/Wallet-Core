@@ -17,7 +17,7 @@ pub mod tests {
         }
         #[async_trait]
         impl crate::ClowderMintConnector for MintConnector {
-            fn mint_url(&self) -> url::Url;
+            fn mint_url(&self) -> &url::Url;
             async fn post_restore(
                 &self,
                 request: cashu::RestoreRequest,

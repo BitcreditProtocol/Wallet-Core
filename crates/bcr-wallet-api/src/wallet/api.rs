@@ -38,7 +38,7 @@ pub trait WalletApi: SendSync {
     fn config(&self) -> Result<WalletConfig>;
     fn name(&self) -> String;
     fn id(&self) -> String;
-    fn mint_url(&self) -> Result<url::Url>;
+    fn mint_url(&self) -> url::Url;
     fn betas(&self) -> Vec<url::Url>;
     #[allow(dead_code)]
     fn clowder_id(&self) -> secp256k1::PublicKey;
@@ -120,7 +120,7 @@ impl WalletApi for super::Wallet {
             name: self.name.clone(),
             network: self.network,
             debit: self.debit.unit(),
-            mint: self.client.mint_url(),
+            mint: self.client.mint_url().to_owned(),
             mint_keyset_infos: self.mint_keyset_infos.clone(),
             clowder_id: self.clowder_id,
             pub_key: self.pub_key,
@@ -137,8 +137,8 @@ impl WalletApi for super::Wallet {
         self.id.clone()
     }
 
-    fn mint_url(&self) -> Result<url::Url> {
-        Ok(self.client.mint_url())
+    fn mint_url(&self) -> url::Url {
+        self.client.mint_url().to_owned()
     }
 
     async fn prepare_melt(
@@ -344,7 +344,7 @@ impl WalletApi for super::Wallet {
                 );
 
                 let partial_tx = Transaction {
-                    mint_url: to_mint_url(&self.client.mint_url()),
+                    mint_url: to_mint_url(self.client.mint_url()),
                     fee: fees,
                     direction: TransactionDirection::Outgoing,
                     memo,
@@ -386,7 +386,7 @@ impl WalletApi for super::Wallet {
                     (
                         p.clone(),
                         Token::new_bitcr(
-                            to_mint_url(&self.client.mint_url()),
+                            to_mint_url(self.client.mint_url()),
                             p.into_values().collect(),
                             memo.clone(),
                             self.debit.unit(),
@@ -407,7 +407,7 @@ impl WalletApi for super::Wallet {
                 );
 
                 let partial_tx = Transaction {
-                    mint_url: to_mint_url(&self.client.mint_url()),
+                    mint_url: to_mint_url(self.client.mint_url()),
                     fee: fees,
                     direction: TransactionDirection::Outgoing,
                     memo,
@@ -452,7 +452,7 @@ impl WalletApi for super::Wallet {
                 }
 
                 let partial_tx = Transaction {
-                    mint_url: to_mint_url(&self.client.mint_url()),
+                    mint_url: to_mint_url(self.client.mint_url()),
                     fee: fees,
                     direction: TransactionDirection::Outgoing,
                     memo,
@@ -505,7 +505,7 @@ impl WalletApi for super::Wallet {
             );
 
             let tx = Transaction {
-                mint_url: to_mint_url(&self.client.mint_url()),
+                mint_url: to_mint_url(self.client.mint_url()),
                 fee: mint_result.fee,
                 direction: TransactionDirection::Incoming,
                 memo: None,
@@ -553,7 +553,7 @@ impl WalletApi for super::Wallet {
             );
 
             let tx = Transaction {
-                mint_url: to_mint_url(&self.client.mint_url()),
+                mint_url: to_mint_url(self.client.mint_url()),
                 fee: cashu::Amount::ZERO,
                 direction: TransactionDirection::Incoming,
                 memo: Some("Mint protest resolved".to_string()),
@@ -610,7 +610,7 @@ impl WalletApi for super::Wallet {
             );
 
             let tx = Transaction {
-                mint_url: to_mint_url(&self.client.mint_url()),
+                mint_url: to_mint_url(self.client.mint_url()),
                 fee: cashu::Amount::ZERO,
                 direction: TransactionDirection::Incoming,
                 memo: Some("Swap protest resolved".to_string()),
@@ -670,7 +670,7 @@ impl WalletApi for super::Wallet {
             }
 
             let tx = Transaction {
-                mint_url: to_mint_url(&self.client.mint_url()),
+                mint_url: to_mint_url(self.client.mint_url()),
                 fee: cashu::Amount::ZERO,
                 direction: TransactionDirection::Outgoing,
                 memo: Some("Melt protest resolved".to_string()),
@@ -831,7 +831,7 @@ impl WalletApi for super::Wallet {
 
     fn mint_urls(&self) -> Vec<url::Url> {
         let mut urls = self.betas();
-        urls.push(self.client.mint_url());
+        urls.push(self.client.mint_url().to_owned());
         urls
     }
 
@@ -893,7 +893,7 @@ impl WalletApi for super::Wallet {
 
         tracing::info!("Migration successful balance: {:?}", balance);
 
-        Ok(self.client.mint_url())
+        Ok(self.client.mint_url().to_owned())
     }
 
     async fn prepare_pay_by_token(
