@@ -93,7 +93,7 @@ impl AppState {
             };
             match client.get_mint_keysets().await {
                 Ok(ks) => {
-                    w_cfg.mint_keyset_infos = ks;
+                    w_cfg.mint_keyset_infos = ks.into_iter().map(|k| (k.id, k)).collect();
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -567,6 +567,15 @@ impl AppState {
         Ok(recovered)
     }
 
+    // Clean up Spent proofs
+    pub async fn wallet_clean_up_spent_proofs(&self, id: String) -> Result<usize> {
+        tracing::debug!("wallet_clean_up_spent_proofs({id})");
+        let wallet = self.get_wallet(&id).await?;
+        let wlt = wallet.read().await;
+        let cleaned_up = wlt.clean_up_spent_proofs().await?;
+        Ok(cleaned_up)
+    }
+
     // Refreshes the state of all pending transactions of the given wallet
     pub async fn wallet_refresh_txs(&self, id: String) -> Result<usize> {
         tracing::debug!("wallet_refresh_txs({id})");
@@ -714,6 +723,20 @@ impl AppState {
                     );
                 }
             }
+            match self
+                .wallet_clean_up_spent_proofs(wallet_id.to_owned())
+                .await
+            {
+                Ok(num) => {
+                    tracing::info!("Cleaned up {num} spent proofs for wallet {wallet_id}");
+                }
+                Err(e) => {
+                    job_failed = true;
+                    tracing::error!(
+                        "Error running wallet_clean_up_spent_proofs job for wallet {wallet_id}: {e}"
+                    );
+                }
+            }
         }
 
         // successful = true
@@ -784,11 +807,16 @@ async fn create_new_wallet(
 
     let wallet_id = build_wallet_id(&seed, cfg.network);
     let clowder_id = client.get_clowder_id().await?;
-    let keyset_infos = client.get_mint_keysets().await?;
+    let keyset_infos: HashMap<cashu::Id, cashu::KeySetInfo> = client
+        .get_mint_keysets()
+        .await?
+        .into_iter()
+        .map(|k| (k.id, k))
+        .collect();
     let betas = client.get_clowder_betas().await?;
     // Attempt to find debit unit in the given keysets
     let currencies = keyset_infos
-        .iter()
+        .values()
         .map(|k| k.unit.clone())
         .collect::<HashSet<_>>();
     if currencies.len() > 1 {

@@ -1,5 +1,6 @@
 # 0.9.2
 
+* API & DB Breaking Change!
 * Add support for multiple wallets
     * `default_mint_url`, `bitcoin_network`, `mnemonic`, `nostr_relays` are now wallet-specific, not application-specific
     * `WalletFfiConfig` now takes a `HashMap<WalletId, Mnemonic>` where existing wallets need to be added with their ids and `mnemonics`
@@ -16,6 +17,7 @@
 * Upgrade dependencies
 * Upgrade to latest bcr-common
 * Implement Melt Fees
+* Small Performance Optimizations
 
 # 0.9.1
 

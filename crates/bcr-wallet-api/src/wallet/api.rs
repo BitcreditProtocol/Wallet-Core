@@ -385,7 +385,7 @@ impl WalletApi for super::Wallet {
                         .await?;
                     (
                         p.clone(),
-                        Token::new_cashu(
+                        Token::new_bitcr(
                             to_mint_url(&self.client.mint_url()),
                             p.into_values().collect(),
                             memo.clone(),
@@ -853,18 +853,16 @@ impl WalletApi for super::Wallet {
         let mut exchanged_debit = Vec::new();
 
         tracing::info!("Exchanging debit offline");
-        for (_, proofs) in debit_proofs.iter() {
-            match self
-                .offline_exchange(substitute.as_ref(), proofs.clone())
-                .await
-            {
+        for (_, proofs) in debit_proofs.into_iter() {
+            let proofs_len = proofs.len();
+            match self.offline_exchange(substitute.as_ref(), proofs).await {
                 Ok(exchanged) => {
                     exchanged_debit.extend(exchanged);
                 }
                 Err(e) => {
                     tracing::error!(
                         "Could not exchange {} proofs during pocket migration: {e}",
-                        proofs.len()
+                        proofs_len
                     );
                 }
             }
@@ -970,7 +968,12 @@ impl WalletApi for super::Wallet {
                 .await?;
 
             // Fetch keyset infos
-            let keysets_info = substitute_client.get_mint_keysets().await?;
+            let keysets_info: HashMap<cashu::Id, cashu::KeySetInfo> = substitute_client
+                .get_mint_keysets()
+                .await?
+                .into_iter()
+                .map(|k| (k.id, k))
+                .collect();
             tracing::debug!("Offline Pay by Token: Swap to unlocked substitute proofs to target.");
             // Swap to unlocked substitute proofs to target
             let unlocked_sending_proofs = self
@@ -990,14 +993,14 @@ impl WalletApi for super::Wallet {
                 .map(|proof| (proof.y().expect("Hash to curve should not fail"), proof))
                 .unzip();
             tracing::debug!("Offline Pay by Token: Create Token");
-            let token = Token::new_cashu(
+            let amount = proofs.total_amount()?;
+            let token = Token::new_bitcr(
                 to_mint_url(&substitute.clone()),
-                proofs.clone(),
+                proofs,
                 memo.clone(),
                 self.debit.unit(),
             );
 
-            let amount = proofs.total_amount()?;
             let mut metadata = HashMap::default();
             metadata.insert(
                 PAYMENT_TYPE_METADATA_KEY.to_owned(),

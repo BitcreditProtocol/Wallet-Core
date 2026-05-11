@@ -8,6 +8,7 @@ pub mod tests {
     use crate::types::{MeltSummary, MintSummary, SendSummary};
     use crate::wallet::types::SwapConfig;
     use async_trait::async_trait;
+    use bcr_common::cdk_common::mint::MintKeySetInfo;
     use bcr_common::wire::melt as wire_melt;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -15,6 +16,12 @@ pub mod tests {
 
     use bcr_common::cashu::{self, Amount, CurrencyUnit, KeySetInfo};
     use bitcoin::secp256k1;
+
+    pub fn test_kinfos(info: MintKeySetInfo) -> HashMap<cashu::Id, KeySetInfo> {
+        let mut map = HashMap::new();
+        map.insert(info.id, KeySetInfo::from(info));
+        map
+    }
 
     pub fn test_swap_config() -> SwapConfig {
         let keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
@@ -56,25 +63,29 @@ pub mod tests {
         #[async_trait]
         impl PocketApi for DebitPocket {
             fn unit(&self) -> CurrencyUnit;
-            async fn balance(&self, keysets_info: &[KeySetInfo]) -> Result<crate::pocket::PocketBalance>;
+            async fn balance(&self,
+                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+            ) -> Result<crate::pocket::PocketBalance>;
             async fn receive_proofs(
                 &self,
                 client: Arc<dyn ClowderMintConnector>,
-                keysets_info: &[KeySetInfo],
+                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 proofs: Vec<cashu::Proof>,
                 swap_config: SwapConfig,
             ) -> Result<(Amount, Vec<cashu::PublicKey>)>;
-            async fn prepare_send(&self, amount: Amount, infos: &[KeySetInfo]) -> Result<SendSummary>;
+            async fn prepare_send(&self, amount: Amount,
+                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+            ) -> Result<SendSummary>;
             async fn send_proofs(
                 &self,
                 rid: Uuid,
-                keysets_info: &[KeySetInfo],
+                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
             ) -> Result<HashMap<cashu::PublicKey, cashu::Proof>>;
             async fn restore_local_proofs(
                 &self,
-                keysets_info: &[KeySetInfo],
+                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
             ) -> Result<usize>;
             async fn delete_proofs(&self) -> Result<HashMap<cashu::Id, Vec<cashu::Proof>>>;
@@ -85,14 +96,14 @@ pub mod tests {
             async fn swap_to_unlocked_substitute_proofs(
                 &self,
                 proofs: Vec<cashu::Proof>,
-                keysets_info: &[KeySetInfo],
+                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
                 send_amount: Amount,
                 swap_config: SwapConfig,
             ) -> Result<Vec<cashu::Proof>>;
             async fn dev_mode_detailed_balance(
                 &self,
-                keysets_info: &[KeySetInfo],
+                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
             ) -> Result<HashMap<cashu::Id, (Option<u64>, Amount)>>;
             async fn delete(&self) -> Result<()>;
         }
@@ -102,22 +113,23 @@ pub mod tests {
             async fn reclaim_proofs(
                 &self,
                 ys: &[cashu::PublicKey],
-                keysets_info: &[KeySetInfo],
+                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
             ) -> Result<Amount>;
             async fn recover_pending_stale_proofs(
                 &self,
                 pending_txs_ys: &[cashu::PublicKey],
-                keysets_info: &[KeySetInfo],
+                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
             ) -> Result<Amount>;
+            async fn clean_up_spent_proofs(&self, client: Arc<dyn ClowderMintConnector>) -> Result<usize>;
             async fn prepare_onchain_melt(
                 &self,
                 address: String,
                 amount: u64,
-                keysets_info: &[KeySetInfo],
+                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
             ) -> Result<MeltSummary>;
@@ -129,13 +141,13 @@ pub mod tests {
             async fn mint_onchain(
                 &self,
                 amount: bitcoin::Amount,
-                keysets_info: &[KeySetInfo],
+                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
                 clowder_id: bitcoin::secp256k1::PublicKey,
             ) -> Result<MintSummary>;
             async fn check_pending_mints(
                 &self,
-                keysets_info: &[KeySetInfo],
+                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
                 tstamp: u64,
                 swap_config: SwapConfig,
@@ -145,7 +157,7 @@ pub mod tests {
             async fn protest_mint(
                 &self,
                 qid: Uuid,
-                keysets_info: &[KeySetInfo],
+                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
                 clowder_id: bitcoin::secp256k1::PublicKey,
@@ -153,7 +165,7 @@ pub mod tests {
             async fn protest_swap(
                 &self,
                 commitment_sig: bitcoin::secp256k1::schnorr::Signature,
-                keysets_info: &[KeySetInfo],
+                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 alpha_client: Arc<dyn ClowderMintConnector>,
                 beta_client: Arc<dyn ClowderMintConnector>,
                 alpha_id: bitcoin::secp256k1::PublicKey,

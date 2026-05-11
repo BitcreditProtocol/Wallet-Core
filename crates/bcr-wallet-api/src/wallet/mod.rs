@@ -36,7 +36,7 @@ use uuid::Uuid;
 pub struct Wallet {
     network: bitcoin::Network,
     client: Arc<dyn ClowderMintConnector>,
-    mint_keyset_infos: Vec<cashu::KeySetInfo>,
+    mint_keyset_infos: HashMap<cashu::Id, KeySetInfo>,
     beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>>,
     tx_repo: Box<dyn TransactionRepository>,
     debit: Box<dyn DebitPocketApi>,
@@ -57,7 +57,7 @@ impl Wallet {
     pub async fn new(
         network: bitcoin::Network,
         client: Arc<dyn ClowderMintConnector>,
-        mint_keyset_infos: Vec<cashu::KeySetInfo>,
+        mint_keyset_infos: HashMap<cashu::Id, KeySetInfo>,
         tx_repo: Box<dyn TransactionRepository>,
         debit: Box<dyn DebitPocketApi>,
         name: String,
@@ -122,8 +122,8 @@ impl Wallet {
         &self,
         mint_url: url::Url,
     ) -> Result<(
-        Option<(ConnectedMintsResponse, Vec<KeySetInfo>)>,
-        Vec<KeySetInfo>,
+        Option<(ConnectedMintsResponse, HashMap<cashu::Id, KeySetInfo>)>,
+        HashMap<cashu::Id, KeySetInfo>,
     )> {
         let local_keysets_info = self.get_wallet_mint_keyset_infos().await?;
         if mint_url == self.client.mint_url() {
@@ -164,23 +164,28 @@ impl Wallet {
             let alpha_keysets = substitute_client.get_alpha_keysets(alpha_id).await?;
 
             // The endpoint only returns active keysets
-            let intermint_alpha_infos: Vec<cashu::KeySetInfo> = alpha_keysets
+            let intermint_alpha_infos: HashMap<cashu::Id, KeySetInfo> = alpha_keysets
                 .iter()
-                .map(|keyset| cashu::KeySetInfo {
-                    id: keyset.id,
-                    unit: keyset.unit.clone(),
-                    active: true,
-                    input_fee_ppk: 1, // TODO: get fees from the clowder keyset
-                    final_expiry: keyset.final_expiry,
+                .map(|keyset| {
+                    (
+                        keyset.id,
+                        cashu::KeySetInfo {
+                            id: keyset.id,
+                            unit: keyset.unit.clone(),
+                            active: true,
+                            input_fee_ppk: 1, // TODO: get fees from the clowder keyset
+                            final_expiry: keyset.final_expiry,
+                        },
+                    )
                 })
                 .collect();
             Ok((Some((path, intermint_alpha_infos)), local_keysets_info))
         }
     }
 
-    async fn get_wallet_mint_keyset_infos(&self) -> Result<Vec<KeySetInfo>> {
+    async fn get_wallet_mint_keyset_infos(&self) -> Result<HashMap<cashu::Id, KeySetInfo>> {
         Ok(match self.client.get_mint_keysets().await {
-            Ok(infos) => infos,
+            Ok(infos) => infos.into_iter().map(|k| (k.id, k)).collect(),
             Err(e) => {
                 tracing::warn!(
                     "Couldn't fetch mint keysets for wallet mint - falling back to config: {:?}, {e}",
@@ -298,6 +303,14 @@ impl Wallet {
         Ok(recovered)
     }
 
+    pub async fn clean_up_spent_proofs(&self) -> Result<usize> {
+        let cleaned_up = self
+            .debit
+            .clean_up_spent_proofs(self.client.clone())
+            .await?;
+        Ok(cleaned_up)
+    }
+
     pub async fn reclaim_tx(&self, tx_id: TransactionId) -> Result<Amount> {
         let infos = self.get_wallet_mint_keyset_infos().await?;
         self.refresh_tx(tx_id).await?;
@@ -353,11 +366,11 @@ impl Wallet {
 
     async fn _receive_proofs(
         &self,
-        local_alpha_keysets_info: &[KeySetInfo],
+        local_alpha_keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         proofs: Vec<cashu::Proof>,
         unit: CurrencyUnit,
         mint: url::Url,
-        intermint_infos: Option<(ConnectedMintsResponse, Vec<KeySetInfo>)>,
+        intermint_infos: Option<(ConnectedMintsResponse, HashMap<cashu::Id, KeySetInfo>)>,
         tstamp: u64,
         memo: Option<String>,
         metadata: HashMap<String, String>,
@@ -401,17 +414,6 @@ impl Wallet {
                     let substitute_proofs = self
                         .offline_exchange(substitute_client.as_ref(), proofs)
                         .await?;
-
-                    // log for debugging
-                    tracing::debug!(
-                        "Offline Exchanged token: {}",
-                        cashu::Token::new(
-                            to_mint_url(&substitute_beta_mint),
-                            substitute_proofs.clone(),
-                            None,
-                            cashu::CurrencyUnit::Sat,
-                        )
-                    );
 
                     // Alpha proofs -> Substitute Beta proofs is done, so we only need the path from
                     // Substitute Beta to the Wallet Mint
@@ -542,17 +544,6 @@ impl Wallet {
         )
         .await?;
 
-        // log for debugging
-        tracing::debug!(
-            "Locked alpha token: {}",
-            cashu::Token::new(
-                to_mint_url(&alpha_url.clone()),
-                locked_alpha_proofs.clone(),
-                None,
-                cashu::CurrencyUnit::Sat,
-            )
-        );
-
         let mut exchange_path: Vec<secp256k1::PublicKey> = path.iter().map(|m| m.node_id).collect();
         // Include wallet pubkey as last to be p2pk
         exchange_path.push(*wallet_pk.public_key());
@@ -586,16 +577,6 @@ impl Wallet {
         for p in beta_proofs.iter_mut() {
             util::sign_htlc_proof(p, &preimage, &wallet_pk)?;
         }
-        // log for debugging
-        tracing::debug!(
-            "Unlocked beta token: {}",
-            cashu::Token::new(
-                to_mint_url(&self.client.mint_url()),
-                beta_proofs.clone(),
-                None,
-                cashu::CurrencyUnit::Sat,
-            )
-        );
         tracing::debug!("Returning same mint proofs");
         Ok(beta_proofs)
     }
@@ -608,9 +589,11 @@ impl Wallet {
             .await?;
 
         let proofs = if token_mint_url == self.client.mint_url() {
-            token.proofs(&keysets_info)?
+            let keysets: Vec<KeySetInfo> = keysets_info.values().cloned().collect();
+            token.proofs(&keysets)?
         } else if let Some((_, ref intermint_alpha_infos)) = intermint_infos {
-            token.proofs(intermint_alpha_infos)?
+            let keysets: Vec<KeySetInfo> = intermint_alpha_infos.values().cloned().collect();
+            token.proofs(&keysets)?
         } else {
             // different mint, but no clowder-path set
             return Err(Error::InterMintButNoClowderPath);
@@ -835,7 +818,7 @@ mod tests {
         Wallet {
             network: bitcoin::Network::Testnet,
             client: arc_client,
-            mint_keyset_infos: vec![],
+            mint_keyset_infos: HashMap::new(),
             beta_clients: HashMap::new(),
             tx_repo: Box::new(ctx.tx_repo),
             debit: Box::new(ctx.debit),
