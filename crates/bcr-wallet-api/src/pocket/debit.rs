@@ -117,8 +117,7 @@ pub struct Pocket {
     pub pdb: Arc<dyn PocketRepository>,
     pub mdb: Arc<dyn MintMeltRepository>,
     seed: Seed,
-    beta_client: Arc<dyn ClowderMintConnector>,
-    alpha_id: bitcoin::secp256k1::PublicKey,
+    beta: Arc<dyn super::BetaProvider>,
 
     current_send: Mutex<Option<SendReference>>,
     current_melt: Mutex<Option<MeltReference>>,
@@ -130,16 +129,14 @@ impl Pocket {
         pdb: Arc<dyn PocketRepository>,
         mdb: Arc<dyn MintMeltRepository>,
         seed: Seed,
-        beta_client: Arc<dyn ClowderMintConnector>,
-        alpha_id: bitcoin::secp256k1::PublicKey,
+        beta: Arc<dyn super::BetaProvider>,
     ) -> Self {
         Self {
             unit,
             pdb,
             mdb,
             seed,
-            beta_client,
-            alpha_id,
+            beta,
             current_send: Mutex::new(None),
             current_melt: Mutex::new(None),
         }
@@ -226,8 +223,7 @@ impl Pocket {
             client,
             self.pdb.as_ref(),
             swap_config,
-            self.beta_client.as_ref(),
-            self.alpha_id,
+            self.beta.as_ref(),
         )
         .await?;
         Ok((cashed_in, ys))
@@ -338,7 +334,7 @@ impl Pocket {
         tracing::info!("Mint {qid} - attempting to mint..");
         let mint_req = wire_mint::OnchainMintRequest {
             quote: mint_summary.quote_id,
-            alpha_id: self.alpha_id,
+            alpha_id: self.beta.alpha_id(),
         };
         match client.post_mint_onchain(mint_req).await {
             Ok(mint_response) => {
@@ -469,8 +465,7 @@ impl super::PocketApi for Pocket {
             self.pdb.as_ref(),
             &client,
             swap_config,
-            self.beta_client.as_ref(),
-            self.alpha_id,
+            self.beta.as_ref(),
         )
         .await?;
 
@@ -574,8 +569,7 @@ impl super::PocketApi for Pocket {
             .flat_map(|premint| premint.blinded_messages())
             .collect();
 
-        let attestation =
-            super::fetch_attestation(self.beta_client.as_ref(), self.alpha_id, &proofs).await?;
+        let attestation = self.beta.attest(&proofs).await?;
         let all_signatures = super::committed_swap(
             client.as_ref(),
             None,
@@ -774,8 +768,7 @@ impl DebitPocketApi for Pocket {
             self.pdb.as_ref(),
             &client,
             swap_config.clone(),
-            self.beta_client.as_ref(),
-            self.alpha_id,
+            self.beta.as_ref(),
         )
         .await?;
         let sent_ys: Vec<cdk01::PublicKey> = sending_proofs.keys().cloned().collect();
@@ -854,8 +847,7 @@ impl DebitPocketApi for Pocket {
         let sending_proofs = self.pdb.load_proofs(&input_ys).await?;
 
         let inputs: Vec<cdk00::Proof> = sending_proofs.values().cloned().collect();
-        let attestation =
-            super::fetch_attestation(self.beta_client.as_ref(), self.alpha_id, &inputs).await?;
+        let attestation = self.beta.attest(&inputs).await?;
         let request = wire_melt::MeltOnchainRequest {
             quote: melt_ref.quote_id,
             inputs,
@@ -906,7 +898,7 @@ impl DebitPocketApi for Pocket {
         bcr_common::core::signature::schnorr_verify_b64(
             &response.content,
             &response.commitment,
-            &self.alpha_id.x_only_public_key().0,
+            &self.beta.alpha_id().x_only_public_key().0,
         )?;
 
         let body: wire_mint::OnchainMintQuoteResponseBody =
@@ -1012,7 +1004,7 @@ impl DebitPocketApi for Pocket {
         let wallet_signature = super::sign_content_b64(&record.content, &ephemeral_keypair)?;
 
         let request = wire_mint::MintProtestRequest {
-            alpha_id: self.alpha_id,
+            alpha_id: self.beta.alpha_id(),
             quote_id: record.summary.quote_id,
             content: record.content,
             commitment: record.commitment,
@@ -1069,7 +1061,7 @@ impl DebitPocketApi for Pocket {
         let wallet_signature = super::sign_content_b64(&record.body_content, &ephemeral_keypair)?;
 
         let request = wire_swap::SwapProtestRequest {
-            alpha_id: self.alpha_id,
+            alpha_id: self.beta.alpha_id(),
             proofs: loaded_proofs.into_values().collect(),
             content: record.body_content,
             commitment: record.commitment,
@@ -1077,7 +1069,11 @@ impl DebitPocketApi for Pocket {
             blind_signatures: None,
         };
 
-        let response = self.beta_client.post_protest_swap(request).await?;
+        let response = self
+            .beta
+            .random_client()?
+            .post_protest_swap(request)
+            .await?;
 
         match response.status {
             wire_common::ProtestStatus::Resolved => {
@@ -1145,14 +1141,18 @@ impl DebitPocketApi for Pocket {
         let wallet_signature = super::sign_content_b64(&record.body_content, &ephemeral_keypair)?;
 
         let request = wire_melt::MeltProtestRequest {
-            alpha_id: self.alpha_id,
+            alpha_id: self.beta.alpha_id(),
             quote_id,
             content: record.body_content.clone(),
             commitment: record.commitment,
             wallet_signature,
         };
 
-        let response = self.beta_client.post_protest_melt(request).await?;
+        let response = self
+            .beta
+            .random_client()?
+            .post_protest_melt(request)
+            .await?;
 
         match response.status {
             wire_common::ProtestStatus::Resolved => {
@@ -1217,19 +1217,25 @@ mod tests {
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
             &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
         );
-        pocket_with_beta(pdb, mdb, Arc::new(beta_mock), alpha_id)
+        pocket_with_beta(
+            pdb,
+            mdb,
+            vec![Arc::new(beta_mock) as Arc<dyn crate::ClowderMintConnector>],
+            alpha_id,
+        )
     }
 
     fn pocket_with_beta(
         pdb: Arc<dyn PocketRepository>,
         mdb: Arc<dyn MintMeltRepository>,
-        beta_client: Arc<dyn crate::ClowderMintConnector>,
+        betas: Vec<Arc<dyn crate::ClowderMintConnector>>,
         alpha_id: bitcoin::secp256k1::PublicKey,
     ) -> super::Pocket {
         let unit = CurrencyUnit::Sat;
         let mnemonic = bip39::Mnemonic::generate(12).unwrap();
         let seed = mnemonic.to_seed("");
-        super::Pocket::new(unit, pdb, mdb, seed, beta_client, alpha_id)
+        let beta_provider = Arc::new(crate::pocket::RandomBetaProvider::new(betas, alpha_id));
+        super::Pocket::new(unit, pdb, mdb, seed, beta_provider)
     }
 
     #[tokio::test]
@@ -1688,7 +1694,12 @@ mod tests {
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
             &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
         );
-        let pocket = pocket_with_beta(Arc::new(pdb), Arc::new(mdb), Arc::new(beta_mock), alpha_id);
+        let pocket = pocket_with_beta(
+            Arc::new(pdb),
+            Arc::new(mdb),
+            vec![Arc::new(beta_mock) as Arc<dyn crate::ClowderMintConnector>],
+            alpha_id,
+        );
         let result = pocket
             .protest_melt(quote_id)
             .await
@@ -1737,7 +1748,12 @@ mod tests {
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
             &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
         );
-        let pocket = pocket_with_beta(Arc::new(pdb), Arc::new(mdb), Arc::new(beta_mock), alpha_id);
+        let pocket = pocket_with_beta(
+            Arc::new(pdb),
+            Arc::new(mdb),
+            vec![Arc::new(beta_mock) as Arc<dyn crate::ClowderMintConnector>],
+            alpha_id,
+        );
         let result = pocket
             .protest_melt(quote_id)
             .await
@@ -1813,7 +1829,7 @@ mod tests {
         let pocket = pocket_with_beta(
             Arc::new(pdb),
             Arc::new(mdb),
-            Arc::new(beta_mock),
+            vec![Arc::new(beta_mock) as Arc<dyn crate::ClowderMintConnector>],
             clowder_id,
         );
 
@@ -2165,7 +2181,7 @@ mod tests {
         let pocket = pocket_with_beta(
             Arc::new(pdb),
             Arc::new(mdb),
-            Arc::new(beta_connector),
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
             alpha_id,
         );
         let ProtestResult { status, result } = pocket
@@ -2251,7 +2267,7 @@ mod tests {
         let pocket = pocket_with_beta(
             Arc::new(pdb),
             Arc::new(mdb),
-            Arc::new(beta_connector),
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
             alpha_id,
         );
         let ProtestResult { status, result } = pocket

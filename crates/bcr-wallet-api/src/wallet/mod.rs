@@ -527,11 +527,13 @@ impl Wallet {
         let preimage = format!("CLWDR {}", cashu::SecretKey::generate().to_secret_hex());
         let hash_lock = Sha256::hash(preimage.as_bytes());
 
-        use rand::seq::IndexedRandom;
         let alpha_betas = alpha_client.get_clowder_betas().await?;
-        let alpha_beta_url = alpha_betas.choose(&mut rand::rng()).ok_or(Error::NoBetas)?;
-        let alpha_beta_client = (self.client_factory)(alpha_beta_url.clone());
-        let alpha_id = path[0].node_id;
+        let alpha_beta_clients: Vec<_> = alpha_betas
+            .iter()
+            .map(|url| (self.client_factory)(url.clone()))
+            .collect();
+        let alpha_beta =
+            crate::pocket::RandomBetaProvider::new(alpha_beta_clients, path[0].node_id);
         let locked_alpha_proofs = util::htlc_lock(
             unit,
             tstamp,
@@ -541,8 +543,7 @@ impl Wallet {
             key_locks,
             *wallet_pk.public_key(),
             self.swap_config(),
-            alpha_beta_client.as_ref(),
-            alpha_id,
+            &alpha_beta,
         )
         .await?;
 

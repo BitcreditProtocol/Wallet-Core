@@ -874,19 +874,17 @@ async fn build_wallet(
         beta_clients.insert(beta, Arc::new(beta_client));
     }
 
-    let pocket_beta = beta_clients
-        .values()
-        .next()
-        .cloned()
-        .ok_or(Error::NoBetas)?;
+    let beta_provider = Arc::new(pocket::RandomBetaProvider::new(
+        beta_clients.values().cloned().collect(),
+        w_cfg.clowder_id,
+    ));
 
     let debit_pocket = Box::new(pocket::debit::Pocket::new(
         w_cfg.debit.clone(),
         Arc::new(debitdb),
         Arc::new(mintmeltdb),
         seed,
-        pocket_beta,
-        w_cfg.clowder_id,
+        beta_provider,
     ));
     // Wrap the client with SentinelClient to send events to sentinel nodes
     let client = {

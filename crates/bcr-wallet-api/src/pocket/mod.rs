@@ -17,6 +17,7 @@ use bcr_wallet_core::{
     types::{Seed, SendSummary},
 };
 use bcr_wallet_persistence::PocketRepository;
+use rand::seq::{IndexedRandom, SliceRandom};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -78,6 +79,69 @@ pub trait PocketApi: SendSync {
 pub struct PocketBalance {
     pub debit: Amount,
     pub credit: Amount,
+}
+
+///////////////////////////////////////////// BetaProvider
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub(crate) trait BetaProvider: SendSync {
+    async fn attest(
+        &self,
+        proofs: &[cdk00::Proof],
+    ) -> Result<wire_attestation::IssuanceAttestation>;
+    fn random_client(&self) -> Result<Arc<dyn ClowderMintConnector>>;
+    fn alpha_id(&self) -> bitcoin::secp256k1::PublicKey;
+}
+
+pub(crate) struct RandomBetaProvider {
+    betas: Vec<Arc<dyn ClowderMintConnector>>,
+    alpha_id: bitcoin::secp256k1::PublicKey,
+}
+
+impl RandomBetaProvider {
+    pub fn new(
+        betas: Vec<Arc<dyn ClowderMintConnector>>,
+        alpha_id: bitcoin::secp256k1::PublicKey,
+    ) -> Self {
+        Self { betas, alpha_id }
+    }
+}
+
+#[async_trait]
+impl BetaProvider for RandomBetaProvider {
+    async fn attest(
+        &self,
+        proofs: &[cdk00::Proof],
+    ) -> Result<wire_attestation::IssuanceAttestation> {
+        if self.betas.is_empty() {
+            return Err(Error::NoBetas);
+        }
+        let mut indices: Vec<usize> = (0..self.betas.len()).collect();
+        indices.shuffle(&mut rand::rng());
+        let max = indices.len().min(crate::config::MAX_ATTESTATION_ATTEMPTS);
+        let mut last_err = None;
+        for &i in indices.iter().take(max) {
+            match fetch_attestation(self.betas[i].as_ref(), self.alpha_id, proofs).await {
+                Ok(att) => return Ok(att),
+                Err(e) => {
+                    tracing::warn!("Beta attestation attempt failed: {e}");
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or(Error::NoBetas))
+    }
+
+    fn random_client(&self) -> Result<Arc<dyn ClowderMintConnector>> {
+        self.betas
+            .choose(&mut rand::rng())
+            .cloned()
+            .ok_or(Error::NoBetas)
+    }
+
+    fn alpha_id(&self) -> bitcoin::secp256k1::PublicKey {
+        self.alpha_id
+    }
 }
 
 ///////////////////////////////////////////// SendReference
@@ -215,8 +279,7 @@ async fn swap(
     client: Arc<dyn ClowderMintConnector>,
     db: &dyn PocketRepository,
     swap_config: SwapConfig,
-    beta_client: &dyn ClowderMintConnector,
-    alpha_id: bitcoin::secp256k1::PublicKey,
+    beta: &dyn BetaProvider,
 ) -> Result<Amount> {
     let total_input = inputs.total_amount()?;
     let input_len = inputs.len();
@@ -225,7 +288,7 @@ async fn swap(
         .flat_map(|premint| premint.blinded_messages())
         .collect();
 
-    let attestation = fetch_attestation(beta_client, alpha_id, &inputs).await?;
+    let attestation = beta.attest(&inputs).await?;
     let signatures = committed_swap(
         client.as_ref(),
         Some(db),
@@ -280,8 +343,7 @@ async fn swap_proof_to_target(
     db: &dyn PocketRepository,
     client: &Arc<dyn ClowderMintConnector>,
     swap_config: SwapConfig,
-    beta_client: &dyn ClowderMintConnector,
-    alpha_id: bitcoin::secp256k1::PublicKey,
+    beta: &dyn BetaProvider,
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
     let kinfos: HashMap<cashu::Id, KeySetInfo> =
         keysets_info.iter().cloned().map(|k| (k.id, k)).collect();
@@ -301,8 +363,7 @@ async fn swap_proof_to_target(
     db.increment_counter(target_keyset.id, counter, premint.len() as u32)
         .await?;
 
-    let attestation =
-        fetch_attestation(beta_client, alpha_id, std::slice::from_ref(&proof)).await?;
+    let attestation = beta.attest(std::slice::from_ref(&proof)).await?;
     let signatures = committed_swap(
         client.as_ref(),
         Some(db),
@@ -382,8 +443,7 @@ async fn send_proofs(
     db: &dyn PocketRepository,
     client: &Arc<dyn ClowderMintConnector>,
     swap_config: SwapConfig,
-    beta_client: &dyn ClowderMintConnector,
-    alpha_id: bitcoin::secp256k1::PublicKey,
+    beta: &dyn BetaProvider,
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
     let mut current_amount = Amount::ZERO;
     let mut sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
@@ -417,8 +477,7 @@ async fn send_proofs(
                 db,
                 client,
                 swap_config,
-                beta_client,
-                alpha_id,
+                beta,
             )
             .await?;
 
@@ -631,9 +690,12 @@ mod tests {
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
         let mut beta_mock = MockMintConnector::new();
         setup_attestation_mock(&mut beta_mock);
-        let beta_client: Arc<dyn ClowderMintConnector> = Arc::new(beta_mock);
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
             &bitcoin::secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng()),
+        );
+        let beta = super::RandomBetaProvider::new(
+            vec![Arc::new(beta_mock) as Arc<dyn ClowderMintConnector>],
+            alpha_id,
         );
         let proofs = super::swap_proof_to_target(
             proof,
@@ -644,8 +706,7 @@ mod tests {
             &mockdb,
             &arc_client,
             test_swap_config(),
-            beta_client.as_ref(),
-            alpha_id,
+            &beta,
         )
         .await
         .unwrap();
@@ -685,9 +746,12 @@ mod tests {
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
         let mut beta_mock = MockMintConnector::new();
         setup_attestation_mock(&mut beta_mock);
-        let beta_client: Arc<dyn ClowderMintConnector> = Arc::new(beta_mock);
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
             &bitcoin::secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng()),
+        );
+        let beta = super::RandomBetaProvider::new(
+            vec![Arc::new(beta_mock) as Arc<dyn ClowderMintConnector>],
+            alpha_id,
         );
         let amount = super::swap(
             unit,
@@ -697,8 +761,7 @@ mod tests {
             arc_client,
             &mockdb,
             test_swap_config(),
-            beta_client.as_ref(),
-            alpha_id,
+            &beta,
         )
         .await
         .unwrap();
@@ -728,9 +791,12 @@ mod tests {
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
         let mut beta_mock = MockMintConnector::new();
         setup_attestation_mock(&mut beta_mock);
-        let beta_client: Arc<dyn ClowderMintConnector> = Arc::new(beta_mock);
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
             &bitcoin::secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng()),
+        );
+        let beta = super::RandomBetaProvider::new(
+            vec![Arc::new(beta_mock) as Arc<dyn ClowderMintConnector>],
+            alpha_id,
         );
 
         let sent = super::send_proofs(
@@ -741,8 +807,7 @@ mod tests {
             &mockdb,
             &arc_client,
             test_swap_config(),
-            beta_client.as_ref(),
-            alpha_id,
+            &beta,
         )
         .await
         .unwrap();
@@ -830,9 +895,12 @@ mod tests {
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
         let mut beta_mock = MockMintConnector::new();
         setup_attestation_mock(&mut beta_mock);
-        let beta_client: Arc<dyn ClowderMintConnector> = Arc::new(beta_mock);
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
             &bitcoin::secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng()),
+        );
+        let beta = super::RandomBetaProvider::new(
+            vec![Arc::new(beta_mock) as Arc<dyn ClowderMintConnector>],
+            alpha_id,
         );
 
         let sent = super::send_proofs(
@@ -847,8 +915,7 @@ mod tests {
             &mockdb,
             &arc_client,
             test_swap_config(),
-            beta_client.as_ref(),
-            alpha_id,
+            &beta,
         )
         .await
         .unwrap();
@@ -922,9 +989,12 @@ mod tests {
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
         let mut beta_mock = MockMintConnector::new();
         setup_attestation_mock(&mut beta_mock);
-        let beta_client: Arc<dyn ClowderMintConnector> = Arc::new(beta_mock);
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
             &bitcoin::secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng()),
+        );
+        let beta = super::RandomBetaProvider::new(
+            vec![Arc::new(beta_mock) as Arc<dyn ClowderMintConnector>],
+            alpha_id,
         );
 
         let err = super::send_proofs(
@@ -939,8 +1009,7 @@ mod tests {
             &mockdb,
             &arc_client,
             test_swap_config(),
-            beta_client.as_ref(),
-            alpha_id,
+            &beta,
         )
         .await
         .unwrap_err();
