@@ -70,6 +70,23 @@ pub mod tests {
             .returning(|_| Ok(mock_attestation()));
     }
 
+    pub fn test_beta_provider() -> (
+        bitcoin::secp256k1::PublicKey,
+        crate::pocket::RandomBetaProvider,
+    ) {
+        let mut beta_mock = crate::external::test_utils::tests::MockMintConnector::new();
+        setup_attestation_mock(&mut beta_mock);
+        let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
+            &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+        );
+        let provider = crate::pocket::RandomBetaProvider::new(
+            vec![Arc::new(beta_mock) as Arc<dyn crate::ClowderMintConnector>],
+            alpha_id,
+        )
+        .unwrap();
+        (alpha_id, provider)
+    }
+
     mockall::mock! {
         pub DebitPocket {}
 

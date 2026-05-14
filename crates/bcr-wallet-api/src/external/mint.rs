@@ -112,7 +112,6 @@ async fn post_melt_quote_onchain_inner(
     url: reqwest::Url,
     inputs: Vec<cashu::Proof>,
     address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-    amount: bitcoin::Amount,
     alpha_pk: secp256k1::PublicKey,
 ) -> Result<MeltQuoteResult> {
     let ephemeral_keypair =
@@ -128,7 +127,6 @@ async fn post_melt_quote_onchain_inner(
     let request = wire_melt::MeltQuoteOnchainRequest {
         inputs: fingerprints,
         address,
-        amount,
         wallet_key,
     };
 
@@ -265,7 +263,6 @@ pub trait ClowderMintConnector: SendSync {
         &self,
         inputs: Vec<cashu::Proof>,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-        amount: bitcoin::Amount,
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<MeltQuoteResult>;
     async fn post_melt_onchain(
@@ -389,11 +386,7 @@ impl ClowderMintConnector for HttpClientExt {
     async fn get_clowder_betas(&self) -> MintResult<Vec<url::Url>> {
         debug!("Clowder client call to get_clowder_betas");
         let response = self.main.get_betas().await?;
-        Ok(response
-            .mints
-            .into_iter()
-            .map(|m| bcr_wallet_core::util::from_mint_url(&m.mint))
-            .collect())
+        Ok(response.mints.into_iter().map(|m| m.mint).collect())
     }
 
     async fn post_offline_exchange(
@@ -534,7 +527,6 @@ impl ClowderMintConnector for HttpClientExt {
         &self,
         inputs: Vec<cashu::Proof>,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-        amount: bitcoin::Amount,
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<MeltQuoteResult> {
         let url = self
@@ -542,7 +534,7 @@ impl ClowderMintConnector for HttpClientExt {
             .join("v1/melt/quote/onchain")
             .expect("melt_quote_onchain url error");
         debug!("HTTP call to melt_quote_onchain on {url}");
-        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, amount, alpha_pk).await
+        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, alpha_pk).await
     }
 
     async fn post_melt_onchain(
@@ -815,11 +807,7 @@ impl ClowderMintConnector for SentinelClient {
     async fn get_clowder_betas(&self) -> MintResult<Vec<url::Url>> {
         debug!("Clowder client call to get_clowder_betas on sentinel");
         let response = self.main.get_betas().await?;
-        Ok(response
-            .mints
-            .into_iter()
-            .map(|m| bcr_wallet_core::util::from_mint_url(&m.mint))
-            .collect())
+        Ok(response.mints.into_iter().map(|m| m.mint).collect())
     }
 
     async fn post_offline_exchange(
@@ -977,7 +965,6 @@ impl ClowderMintConnector for SentinelClient {
         &self,
         inputs: Vec<cashu::Proof>,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-        amount: bitcoin::Amount,
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<MeltQuoteResult> {
         let url = self
@@ -985,7 +972,7 @@ impl ClowderMintConnector for SentinelClient {
             .join(TreasuryEp::MELTQUOTE_ONCHAIN_V1_EXT)
             .expect("melt_quote_onchain url error");
         debug!("HTTP call on sentinel to melt_quote_onchain on {url}");
-        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, amount, alpha_pk).await
+        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, alpha_pk).await
     }
 
     async fn post_melt_onchain(

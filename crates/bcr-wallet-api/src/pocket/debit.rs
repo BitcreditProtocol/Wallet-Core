@@ -776,12 +776,7 @@ impl DebitPocketApi for Pocket {
         let quote_record_amount = async {
             let proofs: Vec<cashu::Proof> = sending_proofs.values().cloned().collect();
             let quote_result = client
-                .post_melt_quote_onchain(
-                    proofs,
-                    parsed_address,
-                    bitcoin::Amount::from_sat(amount),
-                    swap_config.alpha_pk,
-                )
+                .post_melt_quote_onchain(proofs, parsed_address, swap_config.alpha_pk)
                 .await?;
             let quote_id = quote_result.quote_id;
             let expiry = quote_result.expiry;
@@ -1208,21 +1203,12 @@ mod tests {
     use mockall::predicate::*;
 
     use crate::pocket::test_utils::tests::{
-        setup_attestation_mock, setup_commitment_mocks, test_swap_config,
+        setup_attestation_mock, setup_commitment_mocks, test_beta_provider, test_swap_config,
     };
 
     fn pocket(pdb: Arc<dyn PocketRepository>, mdb: Arc<dyn MintMeltRepository>) -> super::Pocket {
-        let mut beta_mock = MockMintConnector::new();
-        setup_attestation_mock(&mut beta_mock);
-        let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
-            &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
-        );
-        pocket_with_beta(
-            pdb,
-            mdb,
-            vec![Arc::new(beta_mock) as Arc<dyn crate::ClowderMintConnector>],
-            alpha_id,
-        )
+        let (_alpha_id, provider) = test_beta_provider();
+        pocket_with_provider(pdb, mdb, Arc::new(provider))
     }
 
     fn pocket_with_beta(
@@ -1231,10 +1217,19 @@ mod tests {
         betas: Vec<Arc<dyn crate::ClowderMintConnector>>,
         alpha_id: bitcoin::secp256k1::PublicKey,
     ) -> super::Pocket {
+        let beta_provider =
+            Arc::new(crate::pocket::RandomBetaProvider::new(betas, alpha_id).unwrap());
+        pocket_with_provider(pdb, mdb, beta_provider)
+    }
+
+    fn pocket_with_provider(
+        pdb: Arc<dyn PocketRepository>,
+        mdb: Arc<dyn MintMeltRepository>,
+        beta_provider: Arc<dyn crate::pocket::BetaProvider>,
+    ) -> super::Pocket {
         let unit = CurrencyUnit::Sat;
         let mnemonic = bip39::Mnemonic::generate(12).unwrap();
         let seed = mnemonic.to_seed("");
-        let beta_provider = Arc::new(crate::pocket::RandomBetaProvider::new(betas, alpha_id));
         super::Pocket::new(unit, pdb, mdb, seed, beta_provider)
     }
 
@@ -1584,7 +1579,6 @@ mod tests {
             address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
                 .expect("valid address"),
             amount: bitcoin::Amount::from_sat(100),
-            total: cashu::Amount::from(100u64),
             expiry: 999999,
             wallet_key,
         };
@@ -1639,7 +1633,6 @@ mod tests {
             address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
                 .expect("valid address"),
             amount: bitcoin::Amount::from_sat(amount),
-            total: cashu::Amount::from(amount),
             expiry: 999999,
             wallet_key,
         };
@@ -2108,8 +2101,8 @@ mod tests {
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let mut alpha_connector = MockMintConnector::new();
         let mut beta_connector = MockMintConnector::new();
+        let mut alpha_connector = MockMintConnector::new();
 
         let record_inputs = input_ys.clone();
         let record_secret = ephemeral_secret;
@@ -2139,7 +2132,7 @@ mod tests {
             .expect_post_protest_swap()
             .times(1)
             .returning(move |_| {
-                Ok(bcr_common::wire::swap::SwapProtestResponse {
+                Ok(wire_swap::SwapProtestResponse {
                     status: wire_common::ProtestStatus::Resolved,
                     signatures: Some(blind_sigs.clone()),
                 })
@@ -2226,8 +2219,8 @@ mod tests {
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let alpha_connector = MockMintConnector::new();
         let mut beta_connector = MockMintConnector::new();
+        let alpha_connector = MockMintConnector::new();
 
         let record_inputs = input_ys.clone();
         let record_secret = ephemeral_secret;
@@ -2255,7 +2248,7 @@ mod tests {
             .expect_post_protest_swap()
             .times(1)
             .returning(|_| {
-                Ok(bcr_common::wire::swap::SwapProtestResponse {
+                Ok(wire_swap::SwapProtestResponse {
                     status: wire_common::ProtestStatus::Rabid,
                     signatures: None,
                 })
@@ -2647,7 +2640,7 @@ mod tests {
         connector
             .expect_post_melt_quote_onchain()
             .times(1)
-            .returning(move |_, _, _, _| {
+            .returning(move |_, _, _| {
                 Ok(MeltQuoteResult {
                     quote_id,
                     expiry,

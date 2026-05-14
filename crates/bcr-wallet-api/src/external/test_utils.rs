@@ -74,7 +74,6 @@ pub mod tests {
                 &self,
                 inputs: Vec<cashu::Proof>,
                 address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-                amount: bitcoin::Amount,
                 alpha_pk: secp256k1::PublicKey,
             ) -> Result<crate::external::mint::MeltQuoteResult>;
             async fn post_melt_onchain(

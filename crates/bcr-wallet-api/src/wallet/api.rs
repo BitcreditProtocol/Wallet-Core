@@ -788,7 +788,7 @@ impl WalletApi for super::Wallet {
 
             futures.push(async move {
                 let mint = beta_client.get_alpha_substitute(mint_id).await?.mint;
-                Ok::<url::Url, Error>(bcr_wallet_core::util::from_mint_url(&mint))
+                Ok::<url::Url, Error>(mint)
             });
         }
 

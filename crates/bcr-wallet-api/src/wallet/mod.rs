@@ -143,11 +143,13 @@ impl Wallet {
             }
 
             let alpha_id = path.mints[0].node_id;
-            let beta_mint = from_mint_url(&path.mints[1].mint);
+            // The path goes through the substitute Beta if the Alpha origin mint is offline
+            let beta_mint = path.mints[1].mint.clone();
             tracing::debug!(
                 "Intermint Exchange - Alpha: {alpha_id}, Substitute Beta: {}",
                 beta_mint.to_string()
             );
+            // In the direct exchange case this is the same as the Wallet's mint
             let substitute_client = if beta_mint == self.client.mint_url() {
                 &self.client
             } else {
@@ -368,8 +370,9 @@ impl Wallet {
             if let Some((clowder_path, _)) = intermint_infos {
                 let alpha_id = clowder_path.mints[0].node_id;
                 let alpha_client = (self.client_factory)(mint.clone());
-                let substitute_beta_mint = from_mint_url(&clowder_path.mints[1].mint);
+                let substitute_beta_mint = clowder_path.mints[1].mint.clone();
 
+                // In the direct exchange case this is the same as the Wallet's mint
                 let substitute_client = if substitute_beta_mint == self.client.mint_url() {
                     &self.client
                 } else {
@@ -533,7 +536,7 @@ impl Wallet {
             .map(|url| (self.client_factory)(url.clone()))
             .collect();
         let alpha_beta =
-            crate::pocket::RandomBetaProvider::new(alpha_beta_clients, path[0].node_id);
+            crate::pocket::RandomBetaProvider::new(alpha_beta_clients, path[0].node_id)?;
         let locked_alpha_proofs = util::htlc_lock(
             unit,
             tstamp,
@@ -1211,7 +1214,7 @@ mod tests {
             let substitute = substitute.clone();
             move |_pk| {
                 Ok(wire_clowder::ConnectedMintResponse {
-                    mint: to_mint_url(&substitute),
+                    mint: substitute.clone(),
                     clowder: url::Url::from_str("https://clowder.example").unwrap(),
                     node_id: test_pub_key(),
                 })
@@ -1221,7 +1224,7 @@ mod tests {
             let substitute = substitute.clone();
             move |_pk| {
                 Ok(wire_clowder::ConnectedMintResponse {
-                    mint: to_mint_url(&substitute),
+                    mint: substitute.clone(),
                     clowder: url::Url::from_str("https://clowder.example").unwrap(),
                     node_id: test_pub_key(),
                 })
@@ -1231,7 +1234,7 @@ mod tests {
             let other = other.clone();
             move |_pk| {
                 Ok(wire_clowder::ConnectedMintResponse {
-                    mint: to_mint_url(&other),
+                    mint: other.clone(),
                     clowder: url::Url::from_str("https://clowder.example").unwrap(),
                     node_id: test_pub_key(),
                 })

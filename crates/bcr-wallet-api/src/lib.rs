@@ -877,7 +877,7 @@ async fn build_wallet(
     let beta_provider = Arc::new(pocket::RandomBetaProvider::new(
         beta_clients.values().cloned().collect(),
         w_cfg.clowder_id,
-    ));
+    )?);
 
     let debit_pocket = Box::new(pocket::debit::Pocket::new(
         w_cfg.debit.clone(),
