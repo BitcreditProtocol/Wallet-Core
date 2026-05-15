@@ -7,6 +7,7 @@ use bcr_common::{
         mint::{Client as MintClient, Error as MintError, Result as MintResult},
         treasury::web_ep as TreasuryEp,
     },
+    core,
     wire::{
         clowder::{self as wire_clowder, ConnectedMintsResponse},
         exchange as wire_exchange,
@@ -40,15 +41,13 @@ pub struct MeltQuoteResult {
 }
 
 async fn post_swap_commitment_inner(
-    http_client: &reqwest::Client,
-    url: reqwest::Url,
+    client: &MintClient,
     inputs: Vec<cashu::Proof>,
     outputs: Vec<cashu::BlindedMessage>,
     expiry_seconds: chrono::TimeDelta,
     alpha_pk: secp256k1::PublicKey,
 ) -> Result<SwapCommitmentResult> {
-    let ephemeral_keypair =
-        secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng());
+    let ephemeral_keypair = core::generate_random_keypair();
     let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
     let wallet_pk = secp256k1::PublicKey::from_keypair(&ephemeral_keypair);
     let wallet_key = cashu::PublicKey::from(wallet_pk);
@@ -57,64 +56,29 @@ async fn post_swap_commitment_inner(
         .into_iter()
         .map(wire_keys::ProofFingerprint::try_from)
         .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
+    let inputs_ys = fingerprints.iter().map(|fp| fp.y).collect::<Vec<_>>();
     let expiry = (chrono::Utc::now() + expiry_seconds).timestamp() as u64;
-
-    let request = wire_swap::SwapCommitmentRequest {
-        inputs: fingerprints,
+    let (committed_content, commitment) = client
+        .commit_swap(fingerprints, outputs.clone(), expiry, wallet_pk, alpha_pk)
+        .await?;
+    Ok(SwapCommitmentResult {
+        inputs_ys,
         outputs,
         expiry,
-        wallet_key: wallet_pk,
-    };
-
-    let response = http_client.post(url).json(&request).send().await?;
-    match response.error_for_status_ref() {
-        Ok(_) => {
-            let wire_swap::SwapCommitmentResponse {
-                content: committed_content,
-                commitment,
-            } = response.json().await?;
-
-            bcr_common::core::signature::schnorr_verify_b64(
-                &committed_content,
-                &commitment,
-                &alpha_pk.x_only_public_key().0,
-            )?;
-
-            let inputs_ys: Vec<cashu::PublicKey> = request.inputs.iter().map(|fp| fp.y).collect();
-            Ok(SwapCommitmentResult {
-                inputs_ys,
-                outputs: request.outputs,
-                expiry,
-                commitment,
-                ephemeral_secret,
-                body_content: committed_content,
-                wallet_key,
-            })
-        }
-        Err(err) => {
-            let status = err.status();
-            let body = response.text().await.unwrap_or_default();
-
-            tracing::error!(
-                "post_swap_commitment failed: status={:?}, body={}",
-                status,
-                body
-            );
-
-            Err(err.into())
-        }
-    }
+        commitment,
+        ephemeral_secret,
+        body_content: committed_content,
+        wallet_key,
+    })
 }
 
 async fn post_melt_quote_onchain_inner(
-    http_client: &reqwest::Client,
-    url: reqwest::Url,
+    client: &MintClient,
     inputs: Vec<cashu::Proof>,
     address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
     alpha_pk: secp256k1::PublicKey,
 ) -> Result<MeltQuoteResult> {
-    let ephemeral_keypair =
-        secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng());
+    let ephemeral_keypair = core::generate_random_keypair();
     let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
     let wallet_key = cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
 
@@ -122,52 +86,19 @@ async fn post_melt_quote_onchain_inner(
         .into_iter()
         .map(wire_keys::ProofFingerprint::try_from)
         .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
-
-    let request = wire_melt::MeltQuoteOnchainRequest {
-        inputs: fingerprints,
-        address,
-        wallet_key,
-    };
-
-    let response = http_client.post(url).json(&request).send().await?;
-    match response.error_for_status_ref() {
-        Ok(_) => {
-            let wire_melt::MeltQuoteOnchainResponse {
-                content: response_content,
-                commitment,
-            } = response.json().await?;
-
-            bcr_common::core::signature::schnorr_verify_b64(
-                &response_content,
-                &commitment,
-                &alpha_pk.x_only_public_key().0,
-            )?;
-
-            let response_body: wire_melt::MeltQuoteOnchainResponseBody =
-                bcr_common::core::signature::deserialize_borsh_msg(&response_content)?;
-
-            Ok(MeltQuoteResult {
-                quote_id: response_body.quote,
-                expiry: response_body.expiry,
-                amount: response_body.amount,
-                commitment,
-                ephemeral_secret,
-                body_content: response_content,
-            })
-        }
-        Err(err) => {
-            let status = err.status();
-            let body = response.text().await.unwrap_or_default();
-
-            tracing::error!(
-                "post_melt_quote_onchain failed: status={:?}, body={}",
-                status,
-                body
-            );
-
-            Err(err.into())
-        }
-    }
+    let (content, commitment) = client
+        .onchain_melt_quote(fingerprints, address, wallet_key, alpha_pk)
+        .await?;
+    let response_body: wire_melt::MeltQuoteOnchainResponseBody =
+        bcr_common::core::signature::deserialize_borsh_msg(&content)?;
+    Ok(MeltQuoteResult {
+        quote_id: response_body.quote,
+        expiry: response_body.expiry,
+        amount: response_body.amount,
+        commitment,
+        ephemeral_secret,
+        body_content: content,
+    })
 }
 
 #[async_trait]
@@ -410,20 +341,7 @@ impl ClowderMintConnector for HttpClientExt {
         expiry_seconds: chrono::TimeDelta,
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<SwapCommitmentResult> {
-        let url = self
-            .mint_url()
-            .join(CoreEp::SWAP_COMMIT_V1_EXT)
-            .expect("post_swap_commitment url error");
-        debug!("HTTP call to post_swap_commitment on {url}");
-        post_swap_commitment_inner(
-            &self.secondary,
-            url,
-            inputs,
-            outputs,
-            expiry_seconds,
-            alpha_pk,
-        )
-        .await
+        post_swap_commitment_inner(&self.main, inputs, outputs, expiry_seconds, alpha_pk).await
     }
 
     async fn post_swap_committed(
@@ -492,12 +410,7 @@ impl ClowderMintConnector for HttpClientExt {
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<MeltQuoteResult> {
-        let url = self
-            .mint_url()
-            .join("v1/melt/quote/onchain")
-            .expect("melt_quote_onchain url error");
-        debug!("HTTP call to melt_quote_onchain on {url}");
-        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, alpha_pk).await
+        post_melt_quote_onchain_inner(&self.main, inputs, address, alpha_pk).await
     }
 
     async fn post_melt_onchain(
@@ -820,20 +733,7 @@ impl ClowderMintConnector for SentinelClient {
         expiry_seconds: chrono::TimeDelta,
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<SwapCommitmentResult> {
-        let url = self
-            .mint_url()
-            .join(CoreEp::SWAP_COMMIT_V1_EXT)
-            .expect("post_swap_commitment url error");
-        debug!("HTTP call to post_swap_commitment on sentinel {url}");
-        post_swap_commitment_inner(
-            &self.secondary,
-            url,
-            inputs,
-            outputs,
-            expiry_seconds,
-            alpha_pk,
-        )
-        .await
+        post_swap_commitment_inner(&self.main, inputs, outputs, expiry_seconds, alpha_pk).await
     }
 
     async fn post_swap_committed(
@@ -917,12 +817,7 @@ impl ClowderMintConnector for SentinelClient {
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         alpha_pk: secp256k1::PublicKey,
     ) -> Result<MeltQuoteResult> {
-        let url = self
-            .mint_url()
-            .join(TreasuryEp::MELTQUOTE_ONCHAIN_V1_EXT)
-            .expect("melt_quote_onchain url error");
-        debug!("HTTP call on sentinel to melt_quote_onchain on {url}");
-        post_melt_quote_onchain_inner(&self.secondary, url, inputs, address, alpha_pk).await
+        post_melt_quote_onchain_inner(&self.main, inputs, address, alpha_pk).await
     }
 
     async fn post_melt_onchain(
