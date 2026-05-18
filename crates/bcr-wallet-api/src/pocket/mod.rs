@@ -174,12 +174,9 @@ pub(crate) async fn committed_swap(
         .await?;
     }
 
-    let request = bcr_common::wire::swap::SwapRequest {
-        inputs,
-        outputs,
-        commitment: commitment_sig,
-    };
-    let response = client.post_swap_committed(request).await?;
+    let signatures = client
+        .post_swap_committed(inputs, outputs, commitment_sig)
+        .await?;
 
     if let Some(db) = db
         && let Err(e) = db.delete_commitment(commitment_sig).await
@@ -187,7 +184,7 @@ pub(crate) async fn committed_swap(
         tracing::warn!("Failed to delete commitment after swap: {e}");
     }
 
-    Ok(response.signatures)
+    Ok(signatures)
 }
 
 ///////////////////////////////////////////// swap
@@ -459,9 +456,7 @@ async fn return_proofs_to_send_for_offline_payment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        external::test_utils::tests::MockMintConnector, pocket::test_utils::tests::test_kinfos,
-    };
+    use crate::{external::mint::MockClowderMintConnector, pocket::test_utils::tests::test_kinfos};
     use bcr_common::{cashu::Proof, core::signature, core_tests};
     use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
     use cashu::nut02 as cdk02;
@@ -536,7 +531,7 @@ mod tests {
         let proof = core_tests::generate_random_ecash_proofs(&keyset, &[amount])[0].clone();
         let seed = zero_seed();
         let mut mockdb = MockPocketRepository::new();
-        let mut mockclient = MockMintConnector::new();
+        let mut mockclient = MockClowderMintConnector::new();
         mockdb
             .expect_counter()
             .times(1)
@@ -552,13 +547,11 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |request| {
-                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
+            .returning(move |_, outp, _| {
+                let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let mock_signatures =
                     core_tests::generate_ecash_signatures(&cloned_keyset, &amounts);
-                Ok(bcr_common::wire::swap::SwapResponse {
-                    signatures: mock_signatures,
-                })
+                Ok(mock_signatures)
             });
         mockdb.expect_store_new().times(5).returning(|p| {
             let y = p.y().expect("Hash to curve should not fail");
@@ -595,16 +588,16 @@ mod tests {
             cdk00::PreMintSecrets::random(info.id, Amount::from(24), &SplitTarget::None).unwrap(),
         )]);
         let keysets = HashMap::from([(info.id, KeySet::from(keyset.clone()))]);
-        let mut mockclient = MockMintConnector::new();
+        let mut mockclient = MockClowderMintConnector::new();
         let mut mockdb = MockPocketRepository::new();
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |request| {
-                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
+            .returning(move |_, outp, _| {
+                let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
-                Ok(bcr_common::wire::swap::SwapResponse { signatures })
+                Ok(signatures)
             });
         mockdb.expect_store_new().times(2).returning(|p| {
             let y = p.y().expect("Hash to curve should not fail");
@@ -645,7 +638,7 @@ mod tests {
             .times(2)
             .returning(move |y| Ok(proof_by_y.get(&y).unwrap().clone()));
 
-        let mockclient = MockMintConnector::new();
+        let mockclient = MockClowderMintConnector::new();
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
 
         let sent = super::send_proofs(
@@ -694,7 +687,7 @@ mod tests {
         let unspent = ready_by_y.clone();
 
         let mut mockdb = MockPocketRepository::new();
-        let mut mockclient = MockMintConnector::new();
+        let mut mockclient = MockClowderMintConnector::new();
 
         mockdb.expect_counter().times(1).returning(|_| Ok(0));
         mockdb
@@ -715,11 +708,11 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |request| {
-                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
+            .returning(move |_, outp, _| {
+                let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures =
                     core_tests::generate_ecash_signatures(&cloned_keyset_for_sign, &amounts);
-                Ok(bcr_common::wire::swap::SwapResponse { signatures })
+                Ok(signatures)
             });
 
         mockdb.expect_store_new().returning(|p| Ok(p.y().unwrap()));
@@ -783,7 +776,7 @@ mod tests {
         let unspent = HashMap::from([(unsplittable.y().unwrap(), unsplittable)]);
 
         let mut mockdb = MockPocketRepository::new();
-        let mut mockclient = MockMintConnector::new();
+        let mut mockclient = MockClowderMintConnector::new();
 
         mockdb.expect_counter().times(1).returning(|_| Ok(0));
         mockdb
@@ -804,11 +797,11 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |request| {
-                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
+            .returning(move |_, outp, _| {
+                let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures =
                     core_tests::generate_ecash_signatures(&cloned_keyset_for_sign, &amounts);
-                Ok(bcr_common::wire::swap::SwapResponse { signatures })
+                Ok(signatures)
             });
 
         mockdb.expect_store_new().returning(|p| Ok(p.y().unwrap()));

@@ -791,20 +791,19 @@ mod tests {
 
     use super::*;
     use crate::{
-        external::{mint::HttpClientExt, test_utils::tests::MockMintConnector},
+        external::mint::{HttpClientExt, MockClowderMintConnector},
         pocket::{PocketBalance, test_utils::tests::MockDebitPocket},
         wallet::{api::WalletApi, types::WalletPaymentType},
     };
 
     struct MockWalletCtx {
-        pub client: MockMintConnector,
+        pub client: MockClowderMintConnector,
         pub tx_repo: MockTransactionRepository,
         pub debit: MockDebitPocket,
     }
 
     fn wallet_ctx() -> MockWalletCtx {
-        let mut client = MockMintConnector::new();
-        client.expect_fmt().returning(|_| Ok(()));
+        let client = MockClowderMintConnector::new();
         MockWalletCtx {
             client,
             tx_repo: MockTransactionRepository::new(),
@@ -934,8 +933,8 @@ mod tests {
         let b1 = url::Url::from_str("https://beta1.example").unwrap();
         let b2 = url::Url::from_str("https://beta2.example").unwrap();
 
-        let beta1: Arc<dyn ClowderMintConnector> = Arc::new(MockMintConnector::new());
-        let beta2: Arc<dyn ClowderMintConnector> = Arc::new(MockMintConnector::new());
+        let beta1: Arc<dyn ClowderMintConnector> = Arc::new(MockClowderMintConnector::new());
+        let beta2: Arc<dyn ClowderMintConnector> = Arc::new(MockClowderMintConnector::new());
 
         wlt = wallet_with_betas(wlt, vec![(b1.clone(), beta1), (b2.clone(), beta2)]);
 
@@ -1098,9 +1097,9 @@ mod tests {
         let b2 = url::Url::from_str("https://b2.example").unwrap();
         let b3 = url::Url::from_str("https://b3.example").unwrap();
 
-        let mut m1 = MockMintConnector::new();
-        let mut m2 = MockMintConnector::new();
-        let mut m3 = MockMintConnector::new();
+        let mut m1 = MockClowderMintConnector::new();
+        let mut m2 = MockClowderMintConnector::new();
+        let mut m3 = MockClowderMintConnector::new();
 
         m1.expect_get_alpha_status().returning(|_pk| {
             Ok(wire_clowder::AlphaStateResponse {
@@ -1135,8 +1134,8 @@ mod tests {
         let b1 = url::Url::from_str("https://b1.example").unwrap();
         let b2 = url::Url::from_str("https://b2.example").unwrap();
 
-        let mut m1 = MockMintConnector::new();
-        let mut m2 = MockMintConnector::new();
+        let mut m1 = MockClowderMintConnector::new();
+        let mut m2 = MockClowderMintConnector::new();
 
         m1.expect_get_alpha_status().returning(|_pk| {
             Ok(wire_clowder::AlphaStateResponse {
@@ -1167,9 +1166,9 @@ mod tests {
         let substitute = url::Url::from_str("https://sub.example").unwrap();
         let other = url::Url::from_str("https://other.example").unwrap();
 
-        let mut m1 = MockMintConnector::new();
-        let mut m2 = MockMintConnector::new();
-        let mut m3 = MockMintConnector::new();
+        let mut m1 = MockClowderMintConnector::new();
+        let mut m2 = MockClowderMintConnector::new();
+        let mut m3 = MockClowderMintConnector::new();
 
         m1.expect_get_alpha_substitute().returning({
             let substitute = substitute.clone();

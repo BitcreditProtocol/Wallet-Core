@@ -123,7 +123,7 @@ async fn restore_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::external::test_utils::tests::MockMintConnector;
+    use crate::external::mint::MockClowderMintConnector;
     use bcr_common::{core::signature, core_tests};
     use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
     use cashu::{Amount, KeySet, nut07 as cdk07};
@@ -135,7 +135,7 @@ mod tests {
         let seed = zero_seed();
         let (_, keyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(keyset);
-        let mut client = MockMintConnector::new();
+        let mut client = MockClowderMintConnector::new();
         let db = MockPocketRepository::new();
         client
             .expect_post_restore()
@@ -153,7 +153,7 @@ mod tests {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
-        let mut client = MockMintConnector::new();
+        let mut client = MockClowderMintConnector::new();
         let db = MockPocketRepository::new();
         let cloned = mintkeyset.clone();
         client
@@ -209,7 +209,7 @@ mod tests {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
-        let mut client = MockMintConnector::new();
+        let mut client = MockClowderMintConnector::new();
         let mut db = MockPocketRepository::new();
         let cloned_mintkeyset = mintkeyset.clone();
         client
@@ -270,7 +270,7 @@ mod tests {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
-        let mut client = MockMintConnector::new();
+        let mut client = MockClowderMintConnector::new();
         let mut db = MockPocketRepository::new();
         let cloned_mintkeyset = mintkeyset.clone();
         client
@@ -331,7 +331,7 @@ mod tests {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
-        let mut client = MockMintConnector::new();
+        let mut client = MockClowderMintConnector::new();
         client
             .expect_get_mint_keyset()
             .times(1)
@@ -396,7 +396,7 @@ mod tests {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
-        let mut client = MockMintConnector::new();
+        let mut client = MockClowderMintConnector::new();
         client
             .expect_get_mint_keyset()
             .times(1)
@@ -465,7 +465,7 @@ mod tests {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = KeySet::from(mintkeyset.clone());
-        let mut client = MockMintConnector::new();
+        let mut client = MockClowderMintConnector::new();
         client
             .expect_get_mint_keyset()
             .times(1)
