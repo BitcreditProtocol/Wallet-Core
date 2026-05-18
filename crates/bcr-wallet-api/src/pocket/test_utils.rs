@@ -46,7 +46,7 @@ pub mod tests {
     }
 
     pub fn setup_commitment_mocks(
-        connector: &mut crate::external::test_utils::tests::MockMintConnector,
+        connector: &mut crate::external::mint::MockClowderMintConnector,
         db: &mut bcr_wallet_persistence::MockPocketRepository,
     ) {
         connector

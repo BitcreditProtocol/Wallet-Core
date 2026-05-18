@@ -1,6 +1,4 @@
 pub mod mint;
-#[cfg(test)]
-pub mod test_utils;
 
 use thiserror::Error;
 

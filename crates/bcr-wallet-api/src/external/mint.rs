@@ -3,7 +3,6 @@ use async_trait::async_trait;
 use bcr_common::{
     cashu::{self, Proof},
     client::{
-        core::web_ep as CoreEp,
         mint::{Client as MintClient, Error as MintError, Result as MintResult},
         treasury::web_ep as TreasuryEp,
     },
@@ -101,8 +100,9 @@ async fn post_melt_quote_onchain_inner(
     })
 }
 
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
-pub trait ClowderMintConnector: SendSync {
+pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
     fn mint_url(&self) -> &url::Url;
     async fn post_restore(
         &self,
@@ -153,8 +153,10 @@ pub trait ClowderMintConnector: SendSync {
     ) -> Result<SwapCommitmentResult>;
     async fn post_swap_committed(
         &self,
-        request: wire_swap::SwapRequest,
-    ) -> Result<wire_swap::SwapResponse>;
+        inputs: Vec<cashu::Proof>,
+        outputs: Vec<cashu::BlindedMessage>,
+        commitment: secp256k1::schnorr::Signature,
+    ) -> Result<Vec<cashu::BlindSignature>>;
     async fn post_protest_swap(
         &self,
         req: wire_swap::SwapProtestRequest,
@@ -346,32 +348,12 @@ impl ClowderMintConnector for HttpClientExt {
 
     async fn post_swap_committed(
         &self,
-        request: wire_swap::SwapRequest,
-    ) -> Result<wire_swap::SwapResponse> {
-        let url = self
-            .mint_url()
-            .join(CoreEp::SWAP_V1_EXT)
-            .expect("post_swap_committed url error");
-        debug!("HTTP call to post_swap_committed on {url}");
-        let res = self.secondary.post(url).json(&request).send().await?;
-        match res.error_for_status_ref() {
-            Ok(_) => {
-                let response: wire_swap::SwapResponse = res.json().await?;
-                Ok(response)
-            }
-            Err(err) => {
-                let status = err.status();
-                let body = res.text().await.unwrap_or_default();
-
-                tracing::error!(
-                    "post_swap_committed failed: status={:?}, body={}",
-                    status,
-                    body
-                );
-
-                Err(err.into())
-            }
-        }
+        inputs: Vec<cashu::Proof>,
+        outputs: Vec<cashu::BlindedMessage>,
+        commitment: secp256k1::schnorr::Signature,
+    ) -> Result<Vec<cashu::BlindSignature>> {
+        let signatures = self.main.swap(inputs, outputs, commitment).await?;
+        Ok(signatures)
     }
 
     async fn post_protest_swap(
@@ -738,46 +720,12 @@ impl ClowderMintConnector for SentinelClient {
 
     async fn post_swap_committed(
         &self,
-        request: wire_swap::SwapRequest,
-    ) -> Result<wire_swap::SwapResponse> {
-        let url = self
-            .mint_url()
-            .join(CoreEp::SWAP_V1_EXT)
-            .expect("post_swap_committed url error");
-        debug!("HTTP call to post_swap_committed on sentinel {url}");
-        let response = self.secondary.post(url).json(&request).send().await?;
-        match response.error_for_status_ref() {
-            Ok(_) => {
-                let response: wire_swap::SwapResponse = response.json().await?;
-
-                // Send sentinel event
-                if let Some(sentinel_url) = self.random_sentinel() {
-                    let event_url = Self::sentinel_ep(sentinel_url);
-                    let event = wire_clowder::WalletEvent::Swap {
-                        minted: response.signatures.clone(),
-                    };
-                    let resp = self.secondary.post(event_url).json(&event).send().await;
-                    if let Err(e) = resp {
-                        tracing::error!(
-                            "Failed to send swap event to sentinel {sentinel_url}: {e}"
-                        );
-                    }
-                }
-                Ok(response)
-            }
-            Err(err) => {
-                let status = err.status();
-                let body = response.text().await.unwrap_or_default();
-
-                tracing::error!(
-                    "post_swap_committed failed: status={:?}, body={}",
-                    status,
-                    body
-                );
-
-                Err(err.into())
-            }
-        }
+        inputs: Vec<cashu::Proof>,
+        outputs: Vec<cashu::BlindedMessage>,
+        commitment: secp256k1::schnorr::Signature,
+    ) -> Result<Vec<cashu::BlindSignature>> {
+        let signatures = self.main.swap(inputs, outputs, commitment).await?;
+        Ok(signatures)
     }
 
     async fn post_protest_swap(

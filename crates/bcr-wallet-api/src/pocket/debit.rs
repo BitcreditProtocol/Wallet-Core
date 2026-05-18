@@ -1217,7 +1217,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        external::{mint::MeltQuoteResult, test_utils::tests::MockMintConnector},
+        external::mint::{MeltQuoteResult, MockClowderMintConnector},
         pocket::{PocketApi, debit::DebitPocketApi, test_utils::tests::test_kinfos},
     };
     use bcr_common::{core_tests, wire::mint::MintResponse};
@@ -1380,7 +1380,7 @@ mod tests {
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut connector = MockClowderMintConnector::new();
         let cloned_keyset = keyset.clone();
         connector
             .expect_get_mint_keyset()
@@ -1399,10 +1399,10 @@ mod tests {
         connector
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |request| {
-                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
+            .returning(move |_, outp, _| {
+                let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
-                Ok(bcr_common::wire::swap::SwapResponse { signatures })
+                Ok(signatures)
             });
         pdb.expect_store_new().times(2).returning(|p| {
             let y = p.y().expect("Hash to curve should not fail");
@@ -1428,7 +1428,7 @@ mod tests {
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut connector = MockClowderMintConnector::new();
         let cloned_keyset = keyset.clone();
 
         connector
@@ -1459,10 +1459,10 @@ mod tests {
         connector
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |request| {
-                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
+            .returning(move |_, outp, _| {
+                let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
-                Ok(bcr_common::wire::swap::SwapResponse { signatures })
+                Ok(signatures)
             });
         pdb.expect_store_new().times(2).returning(|p| {
             let y = p.y().expect("Hash to curve should not fail");
@@ -1490,7 +1490,7 @@ mod tests {
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut connector = MockClowderMintConnector::new();
         let cloned_keyset = keyset.clone();
 
         connector
@@ -1536,10 +1536,10 @@ mod tests {
         connector
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |request| {
-                let amounts = request.outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
+            .returning(move |_, outp, _| {
+                let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
-                Ok(bcr_common::wire::swap::SwapResponse { signatures })
+                Ok(signatures)
             });
         pdb.expect_store_new().times(1).returning(|p| {
             let y = p.y().expect("Hash to curve should not fail");
@@ -1574,7 +1574,7 @@ mod tests {
 
         let mut mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut connector = MockClowderMintConnector::new();
 
         // Mock load_melt_commitment
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
@@ -1661,7 +1661,7 @@ mod tests {
 
         let mut mdb = MockMintMeltRepository::new();
         let pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut connector = MockClowderMintConnector::new();
 
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let commitment_sig = cashu::SecretKey::generate().sign(&[0u8; 32]).unwrap();
@@ -1715,7 +1715,7 @@ mod tests {
 
         let mut mdb = MockMintMeltRepository::new();
         let pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut connector = MockClowderMintConnector::new();
 
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let commitment_sig = cashu::SecretKey::generate().sign(&[0u8; 32]).unwrap();
@@ -1768,7 +1768,7 @@ mod tests {
 
         let mut mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut connector = MockClowderMintConnector::new();
 
         pdb.expect_counter()
             .times(1)
@@ -1834,7 +1834,7 @@ mod tests {
 
         let mut mdb = MockMintMeltRepository::new();
         let pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut connector = MockClowderMintConnector::new();
 
         mdb.expect_list_mints()
             .times(1)
@@ -1927,7 +1927,7 @@ mod tests {
         let premint_clone = premint.clone();
         let mut mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut connector = MockClowderMintConnector::new();
 
         let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64])
             .expect("valid sig bytes");
@@ -1980,10 +1980,10 @@ mod tests {
         connector
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |request| {
-                let amounts: Vec<_> = request.outputs.iter().map(|b| b.amount).collect();
+            .returning(move |_, outp, _| {
+                let amounts: Vec<_> = outp.iter().map(|b| b.amount).collect();
                 let signatures = core_tests::generate_ecash_signatures(&swap_keyset, &amounts);
-                Ok(bcr_common::wire::swap::SwapResponse { signatures })
+                Ok(signatures)
             });
 
         pdb.expect_store_new().returning(|p| {
@@ -2035,7 +2035,7 @@ mod tests {
 
         let mut mdb = MockMintMeltRepository::new();
         let pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut connector = MockClowderMintConnector::new();
 
         let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64])
             .expect("valid sig bytes");
@@ -2136,8 +2136,8 @@ mod tests {
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let mut beta_connector = MockMintConnector::new();
-        let mut alpha_connector = MockMintConnector::new();
+        let mut beta_connector = MockClowderMintConnector::new();
+        let mut alpha_connector = MockClowderMintConnector::new();
 
         let record_inputs = input_ys.clone();
         let record_secret = ephemeral_secret;
@@ -2187,10 +2187,10 @@ mod tests {
         alpha_connector
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |request| {
-                let amounts: Vec<_> = request.outputs.iter().map(|b| b.amount).collect();
+            .returning(move |_, outp, _| {
+                let amounts: Vec<_> = outp.iter().map(|b| b.amount).collect();
                 let signatures = core_tests::generate_ecash_signatures(&swap_keyset, &amounts);
-                Ok(bcr_common::wire::swap::SwapResponse { signatures })
+                Ok(signatures)
             });
 
         pdb.expect_store_new().returning(|p| {
@@ -2253,8 +2253,8 @@ mod tests {
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let mut beta_connector = MockMintConnector::new();
-        let alpha_connector = MockMintConnector::new();
+        let mut beta_connector = MockClowderMintConnector::new();
+        let alpha_connector = MockClowderMintConnector::new();
 
         let record_inputs = input_ys.clone();
         let record_secret = ephemeral_secret;
@@ -2497,7 +2497,7 @@ mod tests {
 
         let mut mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut connector = MockClowderMintConnector::new();
 
         let premint_clone = premint.clone();
         let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64]).unwrap();
@@ -2549,10 +2549,10 @@ mod tests {
         connector
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |request| {
-                let amounts: Vec<_> = request.outputs.iter().map(|b| b.amount).collect();
+            .returning(move |_, out, _| {
+                let amounts: Vec<_> = out.iter().map(|b| b.amount).collect();
                 let signatures = core_tests::generate_ecash_signatures(&swap_keyset, &amounts);
-                Ok(bcr_common::wire::swap::SwapResponse { signatures })
+                Ok(signatures)
             });
 
         pdb.expect_store_new().returning(|p| {
@@ -2603,7 +2603,7 @@ mod tests {
 
         let mut mdb = MockMintMeltRepository::new();
         let pdb = MockPocketRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut connector = MockClowderMintConnector::new();
 
         let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64]).unwrap();
         let dummy_secret = secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap();
@@ -2673,7 +2673,7 @@ mod tests {
 
         let mut pdb = MockPocketRepository::new();
         let mut mdb = MockMintMeltRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut connector = MockClowderMintConnector::new();
 
         let unspent = proofs_by_y.clone();
         pdb.expect_list_unspent()
@@ -2735,7 +2735,7 @@ mod tests {
 
         let pdb = MockPocketRepository::new();
         let mdb = MockMintMeltRepository::new();
-        let connector = MockMintConnector::new();
+        let connector = MockClowderMintConnector::new();
 
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
 
@@ -2764,7 +2764,7 @@ mod tests {
 
         let mut pdb = MockPocketRepository::new();
         let mdb = MockMintMeltRepository::new();
-        let mut connector = MockMintConnector::new();
+        let mut connector = MockClowderMintConnector::new();
 
         let spent_clone = spent_map.clone();
         pdb.expect_list_spent()
