@@ -473,7 +473,7 @@ impl WalletApi for super::Wallet {
         let keysets_info = self.get_wallet_mint_keyset_infos().await?;
         let summary = self
             .debit
-            .mint_onchain(amount, &keysets_info, self.client.clone(), self.clowder_id)
+            .mint_onchain(amount, &keysets_info, self.client.clone())
             .await?;
         Ok(summary)
     }
@@ -489,7 +489,6 @@ impl WalletApi for super::Wallet {
                 self.client.clone(),
                 now.timestamp() as u64,
                 self.swap_config(),
-                self.clowder_id,
             )
             .await?;
 
@@ -536,7 +535,6 @@ impl WalletApi for super::Wallet {
                 &keysets_info,
                 self.client.clone(),
                 self.swap_config(),
-                self.clowder_id,
             )
             .await?;
 
@@ -577,22 +575,12 @@ impl WalletApi for super::Wallet {
         let keysets_info = self.get_wallet_mint_keyset_infos().await?;
         let swap_config = self.swap_config();
 
-        // Pick a beta client
-        let beta_url = self.betas().into_iter().next().ok_or(Error::NoBetas)?;
-        let beta_client = self
-            .beta_clients
-            .get(&beta_url)
-            .ok_or(Error::BetaNotFound(beta_url))?
-            .clone();
-
         let ProtestResult { status, result } = self
             .debit
             .protest_swap(
                 commitment_sig,
                 &keysets_info,
                 self.client.clone(),
-                beta_client,
-                self.clowder_id,
                 swap_config,
             )
             .await?;
@@ -628,20 +616,10 @@ impl WalletApi for super::Wallet {
     }
 
     async fn protest_melt(&self, quote_id: Uuid) -> Result<WalletProtestResult> {
-        let beta_url = self.betas().into_iter().next().ok_or(Error::NoBetas)?;
-        let beta_client = self
-            .beta_clients
-            .get(&beta_url)
-            .ok_or(Error::BetaNotFound(beta_url))?
-            .clone();
-
         let MeltProtestResult {
             base: ProtestResult { status, result },
             txid,
-        } = self
-            .debit
-            .protest_melt(quote_id, beta_client, self.clowder_id)
-            .await?;
+        } = self.debit.protest_melt(quote_id).await?;
 
         if let Some((amount, ref ys)) = result {
             let now = chrono::Utc::now();

@@ -896,18 +896,24 @@ async fn build_wallet(
         build_wallet_dbs(db_version, &w_cfg.wallet_id, &w_cfg.debit, db).await?;
 
     // building the debit pocket
-    let debit_pocket = Box::new(pocket::debit::Pocket::new(
-        w_cfg.debit.clone(),
-        Arc::new(debitdb),
-        Arc::new(mintmeltdb),
-        seed,
-    ));
-
     let mut beta_clients = HashMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
     for beta in w_cfg.betas.clone() {
         let beta_client = HttpClientExt::new(beta.clone());
         beta_clients.insert(beta, Arc::new(beta_client));
     }
+
+    let beta_provider = Arc::new(pocket::RandomBetaProvider::new(
+        beta_clients.values().cloned().collect(),
+        w_cfg.clowder_id,
+    )?);
+
+    let debit_pocket = Box::new(pocket::debit::Pocket::new(
+        w_cfg.debit.clone(),
+        Arc::new(debitdb),
+        Arc::new(mintmeltdb),
+        seed,
+        beta_provider,
+    ));
     // Wrap the client with SentinelClient to send events to sentinel nodes
     let client = {
         let cl = external::mint::SentinelClient::new(client, w_cfg.betas);

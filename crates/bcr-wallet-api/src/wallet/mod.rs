@@ -532,6 +532,13 @@ impl Wallet {
         let preimage = format!("CLWDR {}", cashu::SecretKey::generate().to_secret_hex());
         let hash_lock = Sha256::hash(preimage.as_bytes());
 
+        let alpha_betas = alpha_client.get_clowder_betas().await?;
+        let alpha_beta_clients: Vec<_> = alpha_betas
+            .iter()
+            .map(|url| (self.client_factory)(url.clone()))
+            .collect();
+        let alpha_beta =
+            crate::pocket::RandomBetaProvider::new(alpha_beta_clients, path[0].node_id)?;
         let locked_alpha_proofs = util::htlc_lock(
             unit,
             tstamp,
@@ -541,6 +548,7 @@ impl Wallet {
             key_locks,
             *wallet_pk.public_key(),
             self.swap_config(),
+            &alpha_beta,
         )
         .await?;
 
@@ -814,11 +822,25 @@ mod tests {
     fn wallet(ctx: MockWalletCtx) -> Wallet {
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(ctx.client);
         let nostr_keys = nostr_sdk::Keys::generate();
+        let mut beta_mock = crate::external::mint::MockClowderMintConnector::new();
+        beta_mock.expect_get_alpha_status().returning(|_| {
+            Ok(bcr_common::wire::clowder::AlphaStateResponse {
+                state: bcr_common::wire::clowder::SimpleAlphaState::Online(0),
+            })
+        });
+        beta_mock.expect_get_alpha_substitute().returning(|_| {
+            Err(bcr_common::client::mint::Error::Internal(
+                "no substitute".to_string(),
+            ))
+        });
+        let beta_url = url::Url::parse("https://beta.test").unwrap();
+        let mut beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>> = HashMap::new();
+        beta_clients.insert(beta_url, Arc::new(beta_mock));
         Wallet {
             network: bitcoin::Network::Testnet,
             client: arc_client,
             mint_keyset_infos: HashMap::new(),
-            beta_clients: HashMap::new(),
+            beta_clients,
             tx_repo: Box::new(ctx.tx_repo),
             debit: Box::new(ctx.debit),
             name: "wallet-1".to_owned(),
@@ -889,7 +911,7 @@ mod tests {
         assert_eq!(cfg.mint.to_string(), "https://mint.example/");
         assert_eq!(cfg.pub_key, test_pub_key());
         assert_eq!(cfg.clowder_id, test_pub_key());
-        assert!(cfg.betas.is_empty());
+        assert_eq!(cfg.betas.len(), 1);
     }
 
     #[tokio::test]
@@ -1212,13 +1234,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_offline_pay_by_token_errors_if_no_substitute() {
-        // no betas = no substitute
         let mut ctx = wallet_ctx();
         ctx.debit
             .expect_unit()
             .times(1)
             .returning(|| CurrencyUnit::Sat);
-        let wlt = wallet(ctx);
+        let mut wlt = wallet(ctx);
+        wlt.beta_clients.clear();
 
         let err = wlt
             .offline_pay_by_token(
@@ -1292,16 +1314,17 @@ mod tests {
             .times(1)
             .returning(|| Ok(vec![]));
 
-        ctx.debit.expect_mint_onchain().times(1).returning(
-            |_amount, _keysets_info, _client, _clowder_id| {
+        ctx.debit
+            .expect_mint_onchain()
+            .times(1)
+            .returning(|_amount, _keysets_info, _client| {
                 Ok(MintSummary {
                     quote_id: Uuid::new_v4(),
                     amount: bitcoin::Amount::from_sat(1000),
                     address: valid_payment_address_testnet(),
                     expiry: 0,
                 })
-            },
-        );
+            });
 
         let wlt = wallet(ctx);
         let _ = wlt.mint(bitcoin::Amount::from_sat(1000)).await.unwrap();

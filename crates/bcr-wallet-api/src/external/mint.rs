@@ -8,6 +8,7 @@ use bcr_common::{
     },
     core,
     wire::{
+        attestation as wire_attestation,
         clowder::{self as wire_clowder, ConnectedMintsResponse},
         exchange as wire_exchange,
         keys::{self as wire_keys, KeysetInfoFilters},
@@ -156,6 +157,7 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
         inputs: Vec<cashu::Proof>,
         outputs: Vec<cashu::BlindedMessage>,
         commitment: secp256k1::schnorr::Signature,
+        attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<Vec<cashu::BlindSignature>>;
     async fn post_protest_swap(
         &self,
@@ -187,6 +189,10 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
         &self,
         req: wire_mint::MintProtestRequest,
     ) -> Result<wire_mint::MintProtestResponse>;
+    async fn post_attest_issuance(
+        &self,
+        request: wire_attestation::IssuanceAttestationRequest,
+    ) -> Result<wire_attestation::IssuanceAttestation>;
 }
 
 #[derive(Debug, Clone)]
@@ -351,8 +357,12 @@ impl ClowderMintConnector for HttpClientExt {
         inputs: Vec<cashu::Proof>,
         outputs: Vec<cashu::BlindedMessage>,
         commitment: secp256k1::schnorr::Signature,
+        attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<Vec<cashu::BlindSignature>> {
-        let signatures = self.main.swap(inputs, outputs, commitment).await?;
+        let signatures = self
+            .main
+            .swap(inputs, outputs, commitment, attestation)
+            .await?;
         Ok(signatures)
     }
 
@@ -549,6 +559,14 @@ impl ClowderMintConnector for HttpClientExt {
             }
         }
     }
+
+    async fn post_attest_issuance(
+        &self,
+        request: wire_attestation::IssuanceAttestationRequest,
+    ) -> Result<wire_attestation::IssuanceAttestation> {
+        debug!("HTTP call to post_attest_issuance");
+        Ok(self.main.post_attest_issuance(&request).await?)
+    }
 }
 
 /// A client wrapper that forwards wallet events to sentinel nodes.
@@ -723,8 +741,12 @@ impl ClowderMintConnector for SentinelClient {
         inputs: Vec<cashu::Proof>,
         outputs: Vec<cashu::BlindedMessage>,
         commitment: secp256k1::schnorr::Signature,
+        attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<Vec<cashu::BlindSignature>> {
-        let signatures = self.main.swap(inputs, outputs, commitment).await?;
+        let signatures = self
+            .main
+            .swap(inputs, outputs, commitment, attestation)
+            .await?;
         Ok(signatures)
     }
 
@@ -920,5 +942,13 @@ impl ClowderMintConnector for SentinelClient {
                 Err(err.into())
             }
         }
+    }
+
+    async fn post_attest_issuance(
+        &self,
+        request: wire_attestation::IssuanceAttestationRequest,
+    ) -> Result<wire_attestation::IssuanceAttestation> {
+        debug!("HTTP call to post_attest_issuance on sentinel");
+        Ok(self.main.post_attest_issuance(&request).await?)
     }
 }
