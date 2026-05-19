@@ -265,7 +265,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 [[package]]
 name = "bcr-common"
 version = "0.7.0"
-source = "git+https://github.com/BitcreditProtocol/bcr-common.git?rev=5ca0e68c9eef74fb4d40d9f4a07ab254d020bbb8#5ca0e68c9eef74fb4d40d9f4a07ab254d020bbb8"
+source = "git+https://github.com/BitcreditProtocol/bcr-common.git?rev=70af7c088fa44d0045b75c6a20d5d5f3699dc503#70af7c088fa44d0045b75c6a20d5d5f3699dc503"
 dependencies = [
  "async-trait",
  "bdk_wallet",

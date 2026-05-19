@@ -9,7 +9,7 @@ use bcr_common::{
         self, Amount, CurrencyUnit, KeySet, KeySetInfo, ProofsMethods, amount::SplitTarget,
         nut00 as cdk00, nut01 as cdk01, nut07 as cdk07,
     },
-    core::swap::wallet::{PaymentPlan, prepare_payment, prepare_swap},
+    core::swap::wallet::prepare_swap,
     wire::{attestation as wire_attestation, keys as wire_keys},
 };
 use bcr_wallet_core::{
@@ -168,9 +168,9 @@ enum SendPlan {
     Ready {
         proofs: Vec<cdk01::PublicKey>,
     },
-    NeedSplit {
-        proof: cdk01::PublicKey,
-        split_amount: Amount,
+    NeedSwap {
+        inputs: Vec<cdk01::PublicKey>,
+        target: Amount,
         estimated_fee: Amount,
     },
 }
@@ -340,11 +340,11 @@ async fn swap(
     Ok(total_cashed_in)
 }
 
-///////////////////////////////////////////// swap_proof_to_target
-async fn swap_proof_to_target(
-    proof: cdk00::Proof,
+///////////////////////////////////////////// swap_proofs_to_target
+async fn swap_proofs_to_target(
+    swap_proofs: Vec<cdk00::Proof>,
     keysets_info: &HashMap<cashu::Id, KeySetInfo>,
-    target_keyset: &KeySet,
+    keysets: HashMap<cashu::Id, KeySet>,
     target_amount: Amount,
     seed: &Seed,
     db: &dyn PocketRepository,
@@ -352,54 +352,110 @@ async fn swap_proof_to_target(
     swap_config: SwapConfig,
     beta: &dyn BetaProvider,
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
-    let swap_plan = prepare_swap(std::slice::from_ref(&proof), keysets_info)?;
+    let swap_plan: Vec<_> = prepare_swap(&swap_proofs, keysets_info)?
+        .into_iter()
+        .collect();
     tracing::debug!("Swapping Proof to Target {target_amount}, {swap_plan:?}");
-    let Some(swap_amount) = swap_plan.get(&proof.keyset_id) else {
-        return Err(Error::Swap(
-            "Swap Plan didn't contain proof keyset to swap to".to_string(),
-        ));
-    };
-    let target = SplitTarget::Value(target_amount);
-    let counter = db.counter(target_keyset.id).await?;
-    let premint =
-        cdk00::PreMintSecrets::from_seed(target_keyset.id, counter, seed, *swap_amount, &target)?;
-    let blinds = premint.blinded_messages();
-    db.increment_counter(target_keyset.id, counter, premint.len() as u32)
-        .await?;
 
-    let attestation = beta.attest(std::slice::from_ref(&proof)).await?;
+    // prepare the premints
+    let mut premints: HashMap<cashu::Id, cdk00::PreMintSecrets> = HashMap::new();
+    let mut remaining_payment = target_amount;
+    // collect payments by kid, so we can reconstruct it after the swap
+    let mut payment_targets_by_kid: HashMap<cashu::Id, Amount> = HashMap::new();
+
+    for (kid, amount) in swap_plan {
+        let keyset_payment_target = std::cmp::min(amount, remaining_payment);
+
+        let target = if keyset_payment_target > Amount::ZERO {
+            // used for our payment - needs to add up to our payment amount
+            payment_targets_by_kid.insert(kid, keyset_payment_target);
+            remaining_payment -= keyset_payment_target;
+            SplitTarget::Value(keyset_payment_target)
+        } else {
+            // change - doesn't matter how we get it
+            SplitTarget::default()
+        };
+
+        let counter = db.counter(kid).await?;
+        let premint = cdk00::PreMintSecrets::from_seed(kid, counter, seed, amount, &target)?;
+        let increment = premint.len() as u32;
+        premints.insert(kid, premint);
+        db.increment_counter(kid, counter, increment).await?;
+    }
+
+    if remaining_payment != Amount::ZERO {
+        return Err(Error::Swap(format!(
+            "swap plan cannot fund payment target {target_amount}, missing {remaining_payment}"
+        )));
+    }
+
+    let blinds: Vec<cdk00::BlindedMessage> = premints
+        .values()
+        .flat_map(|premint| premint.blinded_messages())
+        .collect();
+
+    let attestation = beta.attest(&swap_proofs).await?;
     let signatures = committed_swap(
         client.as_ref(),
         Some(db),
-        vec![proof],
+        swap_proofs,
         blinds,
         &swap_config,
-        HashMap::from([(target_keyset.id, premint.clone())]),
+        premints.iter().map(|(k, v)| (*k, v.clone())).collect(),
         attestation,
     )
     .await?;
     let mut on_target: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
-    let mut proofs = unblind_proofs(target_keyset, signatures, premint);
-    proofs.sort_by_key(|proof| std::cmp::Reverse(proof.amount));
-    let mut current_amount = Amount::ZERO;
-    for proof in proofs.into_iter() {
-        let result = db.store_new(proof.clone()).await;
-        match result {
-            Ok(y) => {
-                if current_amount + proof.amount <= target_amount {
-                    current_amount += proof.amount;
-                    on_target.insert(y, proof);
+
+    let mut sigs_by_kid: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
+    for signature in signatures {
+        sigs_by_kid
+            .entry(signature.keyset_id)
+            .and_modify(|v| v.push(signature.clone()))
+            .or_insert_with(|| vec![signature]);
+    }
+
+    let mut selected_amount = Amount::ZERO;
+    for (kid, sigs) in sigs_by_kid.into_iter() {
+        let premint = premints.remove(&kid).expect("premint should be here");
+        let keyset = keysets.get(&kid).expect("keyset should be here");
+        let mut proofs = unblind_proofs(keyset, sigs, premint);
+
+        // get payment amount for this keyset
+        let keyset_target_amount = payment_targets_by_kid.remove(&kid).unwrap_or(Amount::ZERO);
+        let mut selected_amount_per_keyset = Amount::ZERO;
+
+        proofs.sort_by_key(|proof| std::cmp::Reverse(proof.amount));
+        for proof in proofs {
+            let amount = proof.amount;
+            let result = db.store_new(proof.clone()).await;
+            match result {
+                Ok(y) => {
+                    if selected_amount_per_keyset + amount <= keyset_target_amount {
+                        selected_amount_per_keyset += amount;
+                        selected_amount += amount;
+                        on_target.insert(y, proof);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("error in storing proof {}, {}: {e}", kid, amount);
                 }
             }
-            Err(e) => {
-                tracing::error!(
-                    "error in storing proof {}, {}: {e}",
-                    target_keyset.id,
-                    proof.amount
-                );
-            }
+        }
+
+        if selected_amount_per_keyset != keyset_target_amount {
+            return Err(Error::Swap(format!(
+                "did not select exact payment proofs for keyset {kid}: {selected_amount_per_keyset} / {keyset_target_amount}"
+            )));
         }
     }
+
+    if selected_amount != target_amount {
+        return Err(Error::Swap(format!(
+            "did not select exact payment proofs for total amount: {selected_amount} / {target_amount}"
+        )));
+    }
+
     Ok(on_target)
 }
 
@@ -456,23 +512,32 @@ async fn send_proofs(
                 sending_proofs.insert(y, proof);
             }
         }
-        SendPlan::NeedSplit {
-            proof,
-            split_amount,
+        SendPlan::NeedSwap {
+            inputs,
+            target,
             estimated_fee,
         } => {
             tracing::debug!(
-                "Send Proof for {target_amount} - splitting with split {split_amount} and {estimated_fee} fee"
+                "Send Proof for {target_amount} - swapping with target {target} and {estimated_fee} fee"
             );
-            let swap_proof = db.mark_as_pendingspent(proof).await?;
-            let target_kid = swap_proof.keyset_id;
-            let swap_proof_keyset = client.get_mint_keyset(target_kid).await?;
 
-            let _swapped_to_target = swap_proof_to_target(
-                swap_proof,
+            let swap_proofs = db.load_proofs(&inputs).await?;
+            let kids: HashSet<cashu::Id> = swap_proofs.values().map(|p| p.keyset_id).collect();
+            let mut keysets: HashMap<cashu::Id, KeySet> = HashMap::new();
+            for kid in kids.iter() {
+                let keyset = client.get_mint_keyset(*kid).await?;
+                keysets.insert(*kid, keyset);
+            }
+
+            for (y, _) in swap_proofs.iter() {
+                let _ = db.mark_as_pendingspent(*y).await?;
+            }
+
+            let swapped_to_target_proofs = swap_proofs_to_target(
+                swap_proofs.into_values().collect(),
                 keysets_info,
-                &swap_proof_keyset,
-                split_amount,
+                keysets,
+                target,
                 seed,
                 db,
                 client,
@@ -481,34 +546,11 @@ async fn send_proofs(
             )
             .await?;
 
-            // after swap, do prepare_payment again, expecting Ready and send proofs
-            let unspent_proofs = db.list_unspent().await?;
-            let mut proofs: Vec<cashu::Proof> = unspent_proofs.values().cloned().collect();
-            // sort by amount as required by `prepare_payment`
-            proofs.sort_by_key(|proof| proof.amount);
-
-            let infos = collect_keyset_infos_from_proofs(unspent_proofs.values(), keysets_info)?;
-            let kinfos: HashMap<cashu::Id, KeySetInfo> =
-                infos.iter().map(|(k, v)| (*k, (*v).clone())).collect();
-
-            let payment_plan = prepare_payment(&proofs, target_amount, &kinfos)?;
-
-            match payment_plan {
-                PaymentPlan::Ready { inputs, .. } => {
-                    let proofs_to_send = inputs
-                        .iter()
-                        .map(|proof| proof.y())
-                        .collect::<std::result::Result<Vec<cashu::PublicKey>, _>>()?;
-                    for y in proofs_to_send {
-                        let proof = db.mark_as_pendingspent(y).await?;
-                        current_amount += proof.amount;
-                        sending_proofs.insert(y, proof);
-                    }
-                }
-                PaymentPlan::NeedSplit { .. } => {
-                    return Err(Error::ExcessiveSplitting(target_amount));
-                }
-            };
+            for (y, proof) in swapped_to_target_proofs.iter() {
+                let _ = db.mark_as_pendingspent(*y).await?;
+                current_amount += proof.amount;
+                sending_proofs.insert(*y, proof.clone());
+            }
         }
     };
 
@@ -536,15 +578,12 @@ async fn return_proofs_to_send_for_offline_payment(
                 sending_proofs.insert(y, proof);
             }
         }
-        SendPlan::NeedSplit {
-            proof,
-            split_amount,
-            ..
-        } => {
-            // Also add swap proof as-is, without swapping to target
-            let swap_proof = db.mark_as_pendingspent(proof).await?;
-            sending_proofs.insert(proof, swap_proof);
-            send_amount += split_amount;
+        SendPlan::NeedSwap { inputs, target, .. } => {
+            for proof in inputs {
+                let swap_proof = db.mark_as_pendingspent(proof).await?;
+                sending_proofs.insert(proof, swap_proof);
+            }
+            send_amount += target;
         }
     };
 
@@ -650,7 +689,7 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn swap_proof_to_target() {
+    async fn swap_proofs_to_target() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let k_infos = test_kinfos(info);
         let amount = Amount::from(16);
@@ -687,10 +726,12 @@ mod tests {
 
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
         let beta = test_beta_provider();
-        let proofs = super::swap_proof_to_target(
-            proof,
+        let mut keysets = HashMap::new();
+        keysets.insert(keyset.id, keyset.into());
+        let proofs = super::swap_proofs_to_target(
+            vec![proof],
             &k_infos,
-            &KeySet::from(keyset),
+            keysets,
             target,
             &seed,
             &mockdb,
@@ -805,19 +846,7 @@ mod tests {
         let swap_proof =
             core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(16)])[0].clone();
         let swap_y = swap_proof.y().unwrap();
-
-        let ready_proofs = core_tests::generate_random_ecash_proofs(
-            &keyset,
-            &[Amount::from(8), Amount::from(4), Amount::from(1)],
-        );
-
-        let ready_by_y = ready_proofs
-            .iter()
-            .cloned()
-            .map(|p| (p.y().unwrap(), p))
-            .collect::<HashMap<_, _>>();
-
-        let unspent = ready_by_y.clone();
+        let load_proofs = HashMap::from([(swap_proof.y().unwrap(), swap_proof.clone())]);
 
         let mut mockdb = MockPocketRepository::new();
         let mut mockclient = MockClowderMintConnector::new();
@@ -851,28 +880,21 @@ mod tests {
         mockdb.expect_store_new().returning(|p| Ok(p.y().unwrap()));
 
         mockdb
-            .expect_list_unspent()
+            .expect_load_proofs()
             .times(1)
-            .returning(move || Ok(unspent.clone()));
+            .returning(move |_| Ok(load_proofs.clone()));
 
         mockdb
             .expect_mark_as_pendingspent()
-            .times(4)
-            .returning(move |y| {
-                if y == swap_y {
-                    Ok(swap_proof.clone())
-                } else {
-                    Ok(ready_by_y.get(&y).unwrap().clone())
-                }
-            });
+            .returning(move |_| Ok(swap_proof.clone()));
 
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
-        let beta = test_beta_provider();
 
+        let beta = test_beta_provider();
         let sent = super::send_proofs(
-            SendPlan::NeedSplit {
-                proof: swap_y,
-                split_amount: Amount::from(13),
+            SendPlan::NeedSwap {
+                inputs: vec![swap_y],
+                target: Amount::from(13),
                 estimated_fee: Amount::from(0),
             },
             &k_infos,
@@ -898,17 +920,118 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_proofs_need_split_errors_if_second_plan_still_needs_split() {
+    async fn send_proofs_need_split_then_ready_big_amounts() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info.clone());
+
+        let amounts = [
+            Amount::from(512),
+            Amount::from(128),
+            Amount::from(64),
+            Amount::from(32),
+            Amount::from(16),
+            Amount::from(8),
+            Amount::from(4),
+            Amount::from(4),
+            Amount::from(4),
+            Amount::from(4),
+            Amount::from(4),
+            Amount::from(4),
+            Amount::from(4),
+            Amount::from(4), // extra over 788
+        ];
+        let swap_proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts).clone();
+        let swap_ys = swap_proofs
+            .iter()
+            .map(|p| p.y().unwrap())
+            .collect::<Vec<_>>();
+
+        let proof_by_y = swap_proofs
+            .iter()
+            .cloned()
+            .map(|p| (p.y().unwrap(), p))
+            .collect::<HashMap<_, _>>();
+
+        let mut mockdb = MockPocketRepository::new();
+        let mut mockclient = MockClowderMintConnector::new();
+
+        mockdb.expect_counter().times(1).returning(|_| Ok(0));
+        mockdb
+            .expect_increment_counter()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+
+        setup_commitment_mocks(&mut mockclient, &mut mockdb);
+
+        let cloned_keyset_for_get = keyset.clone();
+        mockclient
+            .expect_get_mint_keyset()
+            .times(1)
+            .with(eq(info.id))
+            .returning(move |_| Ok(KeySet::from(cloned_keyset_for_get.clone())));
+
+        let cloned_keyset_for_sign = keyset.clone();
+        mockclient
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(move |_, outp, _, _| {
+                let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
+                let signatures =
+                    core_tests::generate_ecash_signatures(&cloned_keyset_for_sign, &amounts);
+                Ok(signatures)
+            });
+
+        mockdb.expect_store_new().returning(|p| Ok(p.y().unwrap()));
+
+        let proofs_clone = proof_by_y.clone();
+        mockdb
+            .expect_load_proofs()
+            .times(1)
+            .returning(move |_| Ok(proofs_clone.clone()));
+
+        mockdb
+            .expect_mark_as_pendingspent()
+            .returning(move |_| Ok(swap_proofs[0].clone()));
+
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
+
+        let beta = test_beta_provider();
+        let sent = super::send_proofs(
+            SendPlan::NeedSwap {
+                inputs: swap_ys,
+                target: Amount::from(788),
+                estimated_fee: Amount::from(0),
+            },
+            &k_infos,
+            Amount::from(788),
+            &zero_seed(),
+            &mockdb,
+            &arc_client,
+            test_swap_config(),
+            &beta,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            sent.values()
+                .cloned()
+                .collect::<Vec<_>>()
+                .total_amount()
+                .unwrap(),
+            Amount::from(788)
+        );
+    }
+
+    #[tokio::test]
+    async fn send_proofs_need_split_then_ready_fees() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let k_infos = test_kinfos(info.clone());
 
         let swap_proof =
             core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(16)])[0].clone();
         let swap_y = swap_proof.y().unwrap();
-
-        let unsplittable =
-            core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(16)])[0].clone();
-        let unspent = HashMap::from([(unsplittable.y().unwrap(), unsplittable)]);
+        let load_proofs = HashMap::from([(swap_proof.y().unwrap(), swap_proof.clone())]);
 
         let mut mockdb = MockPocketRepository::new();
         let mut mockclient = MockClowderMintConnector::new();
@@ -942,24 +1065,22 @@ mod tests {
         mockdb.expect_store_new().returning(|p| Ok(p.y().unwrap()));
 
         mockdb
-            .expect_list_unspent()
+            .expect_load_proofs()
             .times(1)
-            .returning(move || Ok(unspent.clone()));
+            .returning(move |_| Ok(load_proofs.clone()));
 
         mockdb
             .expect_mark_as_pendingspent()
-            .times(1)
-            .with(eq(swap_y))
             .returning(move |_| Ok(swap_proof.clone()));
 
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
         let beta = test_beta_provider();
 
-        let err = super::send_proofs(
-            SendPlan::NeedSplit {
-                proof: swap_y,
-                split_amount: Amount::from(13),
-                estimated_fee: Amount::from(0),
+        let sent = super::send_proofs(
+            SendPlan::NeedSwap {
+                inputs: vec![swap_y],
+                target: Amount::from(13),
+                estimated_fee: Amount::from(1),
             },
             &k_infos,
             Amount::from(13),
@@ -970,8 +1091,120 @@ mod tests {
             &beta,
         )
         .await
-        .unwrap_err();
+        .unwrap();
 
-        assert!(matches!(err, Error::ExcessiveSplitting(a) if a == Amount::from(13)));
+        assert_eq!(sent.len(), 3);
+        assert_eq!(
+            sent.values()
+                .cloned()
+                .collect::<Vec<_>>()
+                .total_amount()
+                .unwrap(),
+            Amount::from(13)
+        );
+    }
+
+    #[tokio::test]
+    async fn send_proofs_need_split_multi_keys() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let (info_2, keyset_2) = core_tests::generate_random_ecash_keyset();
+        let mut k_infos = test_kinfos(info.clone());
+        k_infos.insert(info_2.id, KeySetInfo::from(info_2.clone()));
+
+        let swap_proof =
+            core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(16)])[0].clone();
+        let swap_proof_ks_2 =
+            core_tests::generate_random_ecash_proofs(&keyset_2, &[Amount::from(16)])[0].clone();
+        let swap_y = swap_proof.y().unwrap();
+        let swap_y_ks_2 = swap_proof_ks_2.y().unwrap();
+        let load_proofs = HashMap::from([
+            (swap_proof.y().unwrap(), swap_proof.clone()),
+            (swap_proof_ks_2.y().unwrap(), swap_proof_ks_2.clone()),
+        ]);
+
+        let mut mockdb = MockPocketRepository::new();
+        let mut mockclient = MockClowderMintConnector::new();
+
+        mockdb.expect_counter().times(2).returning(|_| Ok(0));
+        mockdb
+            .expect_increment_counter()
+            .times(2)
+            .returning(|_, _, _| Ok(()));
+
+        setup_commitment_mocks(&mut mockclient, &mut mockdb);
+
+        let cloned_keyset_for_get = keyset.clone();
+        mockclient
+            .expect_get_mint_keyset()
+            .times(1)
+            .with(eq(info.id))
+            .returning(move |_| Ok(KeySet::from(cloned_keyset_for_get.clone())));
+        let cloned_keyset_for_get_2 = keyset_2.clone();
+        mockclient
+            .expect_get_mint_keyset()
+            .times(1)
+            .with(eq(info_2.id))
+            .returning(move |_| Ok(KeySet::from(cloned_keyset_for_get_2.clone())));
+
+        let ks_clone = keyset.clone();
+        let ks_2_clone = keyset_2.clone();
+        mockclient
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(move |_, outp, _, _| {
+                let mut signatures = vec![];
+                for o in outp {
+                    let ks = if o.keyset_id == keyset.id {
+                        ks_clone.clone()
+                    } else {
+                        ks_2_clone.clone()
+                    };
+                    signatures.extend_from_slice(&core_tests::generate_ecash_signatures(
+                        &ks,
+                        &[o.amount],
+                    ));
+                }
+                Ok(signatures)
+            });
+
+        mockdb.expect_store_new().returning(|p| Ok(p.y().unwrap()));
+
+        mockdb
+            .expect_load_proofs()
+            .times(1)
+            .returning(move |_| Ok(load_proofs.clone()));
+
+        mockdb
+            .expect_mark_as_pendingspent()
+            .returning(move |_| Ok(swap_proof.clone()));
+
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
+
+        let beta = test_beta_provider();
+        let sent = super::send_proofs(
+            SendPlan::NeedSwap {
+                inputs: vec![swap_y, swap_y_ks_2],
+                target: Amount::from(23),
+                estimated_fee: Amount::from(1),
+            },
+            &k_infos,
+            Amount::from(23),
+            &zero_seed(),
+            &mockdb,
+            &arc_client,
+            test_swap_config(),
+            &beta,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            sent.values()
+                .cloned()
+                .collect::<Vec<_>>()
+                .total_amount()
+                .unwrap(),
+            Amount::from(23)
+        );
     }
 }

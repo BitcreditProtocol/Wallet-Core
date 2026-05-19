@@ -18,7 +18,6 @@ use bcr_common::{
 use bcr_wallet_core::SendSync;
 use bitcoin::base64::prelude::*;
 use bitcoin::secp256k1;
-use rand::seq::IndexedRandom;
 use tracing::debug;
 
 pub struct SwapCommitmentResult {
@@ -577,27 +576,12 @@ impl ClowderMintConnector for HttpClientExt {
 pub struct SentinelClient {
     main: MintClient,
     secondary: reqwest::Client,
-    sentinels: Vec<reqwest::Url>,
 }
 
 impl SentinelClient {
-    pub fn new(client: HttpClientExt, sentinels: Vec<url::Url>) -> Self {
+    pub fn new(client: HttpClientExt) -> Self {
         let HttpClientExt { main, secondary } = client;
-        Self {
-            main,
-            secondary,
-            sentinels,
-        }
-    }
-    /// Returns a randomly selected sentinel URL from the configured list, or `None` if no sentinels are configured.
-    fn random_sentinel(&self) -> Option<&reqwest::Url> {
-        self.sentinels.choose(&mut rand::rng())
-    }
-    /// Constructs the sentinel event endpoint URL from a base sentinel URL.
-    fn sentinel_ep(base_url: &reqwest::Url) -> reqwest::Url {
-        base_url
-            .join("v1/wallet/event")
-            .expect("wallet event url error")
+        Self { main, secondary }
     }
 }
 

@@ -1327,7 +1327,6 @@ impl From<BcrWalletError> for WalletError {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::InsufficientBalance)
             }
             BcrWalletError::InvalidSplitTarget => WalletError::internal(value.to_string()),
-            BcrWalletError::ExcessiveSplitting(_) => WalletError::internal(value.to_string()),
             BcrWalletError::WalletNotFound(id) => {
                 WalletError::not_found(id.to_string(), WalletErrorCode::WalletNotFound)
             }

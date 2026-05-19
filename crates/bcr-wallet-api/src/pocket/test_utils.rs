@@ -69,9 +69,7 @@ pub mod tests {
         db.expect_delete_commitment().times(1).returning(|_| Ok(()));
     }
 
-    pub fn setup_attestation_mock(
-        connector: &mut crate::external::mint::MockClowderMintConnector,
-    ) {
+    pub fn setup_attestation_mock(connector: &mut crate::external::mint::MockClowderMintConnector) {
         connector
             .expect_post_attest_issuance()
             .returning(|_| Ok(mock_attestation()));
