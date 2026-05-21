@@ -18,6 +18,8 @@
 * Upgrade to latest bcr-common
 * Implement Melt Fees
 * Small Performance Optimizations
+* Use Capped Smallest-First Coin Selection
+* Add Issuance Attestation for Melts and Swaps
 
 # 0.9.1
 
