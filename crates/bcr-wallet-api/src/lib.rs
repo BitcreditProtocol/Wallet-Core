@@ -916,7 +916,7 @@ async fn build_wallet(
     ));
     // Wrap the client with SentinelClient to send events to sentinel nodes
     let client = {
-        let cl = external::mint::SentinelClient::new(client, w_cfg.betas);
+        let cl = external::mint::SentinelClient::new(client);
         Arc::new(cl) as Arc<dyn ClowderMintConnector>
     };
     let new_wallet: wallet::Wallet = wallet::Wallet::new(

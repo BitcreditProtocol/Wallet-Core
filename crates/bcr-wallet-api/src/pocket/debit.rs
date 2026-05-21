@@ -252,8 +252,8 @@ impl Pocket {
                 };
                 (pocket_summary, send_ref)
             }
-            PaymentPlan::NeedSplit {
-                proof,
+            PaymentPlan::NeedSwap {
+                inputs,
                 target,
                 estimated_fee,
             } => {
@@ -261,15 +261,18 @@ impl Pocket {
                 pocket_summary.amount = target_amount;
                 pocket_summary.unit = self.unit.clone();
                 pocket_summary.swap_fees = estimated_fee;
-                let SplitTarget::Value(split_amount) = target else {
+                let SplitTarget::Value(target_amount) = target else {
                     return Err(Error::InvalidSplitTarget);
                 };
                 let send_ref = SendReference {
                     rid: pocket_summary.request_id,
                     target_amount,
-                    plan: SendPlan::NeedSplit {
-                        proof: proof.y()?,
-                        split_amount,
+                    plan: SendPlan::NeedSwap {
+                        inputs: inputs
+                            .iter()
+                            .map(|proof| proof.y())
+                            .collect::<std::result::Result<Vec<cashu::PublicKey>, _>>()?,
+                        target: target_amount,
                         estimated_fee,
                     },
                 };
@@ -2325,19 +2328,17 @@ mod tests {
                     assert!(selected.contains(&y));
                 }
             }
-            SendPlan::NeedSplit { .. } => panic!("expected ready send plan"),
+            SendPlan::NeedSwap { .. } => panic!("expected ready send plan"),
         }
     }
 
     #[tokio::test]
-    async fn compute_send_costs_need_split_after_collecting_input() {
+    async fn compute_send_costs_need_swap_after_collecting_input() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let k_infos = test_kinfos(info);
 
-        // The split candidate (16) is checked against full target (41), but not usable
-        // Fall back to gt_p => none
-        // Fall back to last() => 32, can satisfy split_target
-        // => split proof is 32
+        // smallest first approach
+        // 8 + 16 + 32 = 48, swap with 1 fee, 41 payment, 6 change
         let target = Amount::from(41u64);
         let amounts = [Amount::from(8u64), Amount::from(16u64), Amount::from(32u64)];
         let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
@@ -2346,8 +2347,6 @@ mod tests {
         let mdb = MockMintMeltRepository::new();
 
         let proofs_clone = proofs.clone();
-        let split_proof_y = proofs[2].y().unwrap();
-
         pdb.expect_list_unspent().times(1).returning(move || {
             let mut map = HashMap::new();
             for proof in &proofs_clone {
@@ -2368,35 +2367,33 @@ mod tests {
         assert_eq!(send_ref.target_amount, target);
 
         match send_ref.plan {
-            SendPlan::NeedSplit {
-                proof,
-                split_amount,
+            SendPlan::NeedSwap {
+                inputs,
+                target,
                 estimated_fee,
             } => {
-                assert_eq!(proof, split_proof_y);
-                assert_eq!(split_amount, Amount::from(1u64));
+                assert_eq!(inputs.len(), amounts.len());
+                assert_eq!(target, Amount::from(41u64));
                 assert_eq!(summary.swap_fees, estimated_fee);
             }
-            SendPlan::Ready { .. } => panic!("expected split send plan"),
+            SendPlan::Ready { .. } => panic!("expected swap send plan"),
         }
     }
 
     #[tokio::test]
-    async fn compute_send_costs_need_split_from_gtp_candidate() {
+    async fn compute_send_costs_need_swap_small_over() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let k_infos = test_kinfos(info);
 
-        // gt_p points to 64, because it is the first proof > target.
-        // => split proof is 64
-        let target = Amount::from(40u64);
-        let amounts = [Amount::from(8u64), Amount::from(16u64), Amount::from(64u64)];
+        // swap 16+8
+        let target = Amount::from(23u64);
+        let amounts = [Amount::from(8u64), Amount::from(16u64)];
         let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
 
         let mut pdb = MockPocketRepository::new();
         let mdb = MockMintMeltRepository::new();
 
         let proofs_clone = proofs.clone();
-        let split_proof_y = proofs[2].y().unwrap();
 
         pdb.expect_list_unspent().times(1).returning(move || {
             let mut map = HashMap::new();
@@ -2418,16 +2415,16 @@ mod tests {
         assert_eq!(send_ref.target_amount, target);
 
         match send_ref.plan {
-            SendPlan::NeedSplit {
-                proof,
-                split_amount,
+            SendPlan::NeedSwap {
+                inputs,
+                target,
                 estimated_fee,
             } => {
-                assert_eq!(proof, split_proof_y);
-                assert_eq!(split_amount, Amount::from(16u64));
+                assert_eq!(inputs.len(), amounts.len());
+                assert_eq!(target, Amount::from(23u64));
                 assert_eq!(summary.swap_fees, estimated_fee);
             }
-            SendPlan::Ready { .. } => panic!("expected split send plan"),
+            SendPlan::Ready { .. } => panic!("expected swap send plan"),
         }
     }
 

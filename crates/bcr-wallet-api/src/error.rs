@@ -39,8 +39,6 @@ pub enum Error {
     InvalidSplitTarget,
     #[error("Error during Swap: {0}")]
     Swap(String),
-    #[error("More than one Split was necessary for a payment {0}")]
-    ExcessiveSplitting(cashu::Amount),
     #[error("bitcoin::bip32 {0}")]
     BtcBip32(#[from] bitcoin::bip32::Error),
     #[error("uuid:: {0}")]
