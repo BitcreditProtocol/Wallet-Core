@@ -3,8 +3,13 @@ use bcr_common::{
     cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
 };
 use bitcoin::{address::NetworkUnchecked, secp256k1};
+use chrono::{DateTime, Datelike, Utc};
 use nostr_sdk::RelayUrl;
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    str::FromStr,
+    sync::Arc,
+};
 use uuid::Uuid;
 
 pub type Seed = [u8; 64];
@@ -275,5 +280,111 @@ impl TransactionCursor {
                 tx.amount < *amount || (tx.amount == *amount && tx.id() < *id)
             }
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ListTransactionsResult {
+    pub txs: Vec<Transaction>,
+    pub next_cursor: Option<TransactionCursor>,
+    pub fees_by_month: Vec<FeesByMonth>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FeesByMonth {
+    pub year: i32,
+    pub month: u32,
+    pub fees: Amount,
+}
+
+// Sums up fees per month for a given set of transactions
+pub fn extract_fees_per_month(transactions: &[Transaction]) -> Vec<FeesByMonth> {
+    let mut fees_by_month: BTreeMap<(i32, u32), Amount> = BTreeMap::new();
+
+    for tx in transactions {
+        let Some(dt) = DateTime::<Utc>::from_timestamp(tx.timestamp as i64, 0) else {
+            continue;
+        };
+
+        let year = dt.year();
+        let month = dt.month();
+
+        fees_by_month
+            .entry((year, month))
+            .and_modify(|fees| *fees += tx.fee)
+            .or_insert(tx.fee);
+    }
+
+    fees_by_month
+        .into_iter()
+        .rev()
+        .map(|((year, month), fees)| FeesByMonth { year, month, fees })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+
+    fn ts(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> u64 {
+        Utc.with_ymd_and_hms(year, month, day, hour, min, sec)
+            .unwrap()
+            .timestamp() as u64
+    }
+
+    fn tx(timestamp: u64, fee: Amount) -> Transaction {
+        Transaction {
+            mint_url: cashu::MintUrl::from_str("https://mint.example").unwrap(),
+            direction: TransactionDirection::Incoming,
+            amount: Amount::from(0),
+            fee,
+            unit: CurrencyUnit::Sat,
+            ys: vec![],
+            timestamp,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+        }
+    }
+
+    #[test]
+    fn test_empty_vec() {
+        let result = extract_fees_per_month(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_fees_by_month() {
+        let transactions = vec![
+            tx(ts(2025, 2, 1, 12, 0, 0), Amount::from(10)),
+            tx(ts(2025, 2, 15, 12, 0, 0), Amount::from(20)),
+            tx(ts(2025, 3, 1, 12, 0, 0), Amount::from(5)),
+        ];
+        let result = extract_fees_per_month(&transactions);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].year, 2025);
+        assert_eq!(result[0].month, 3);
+        assert_eq!(result[0].fees, Amount::from(5));
+        assert_eq!(result[1].year, 2025);
+        assert_eq!(result[1].month, 2);
+        assert_eq!(result[1].fees, Amount::from(30));
+    }
+
+    #[test]
+    fn sorts_by_year_and_month_descending() {
+        let transactions = vec![
+            tx(ts(2024, 12, 15, 12, 0, 0), Amount::from(1)),
+            tx(ts(2025, 1, 15, 12, 0, 0), Amount::from(2)),
+            tx(ts(2025, 3, 15, 12, 0, 0), Amount::from(3)),
+            tx(ts(2025, 2, 15, 12, 0, 0), Amount::from(4)),
+        ];
+        let result = extract_fees_per_month(&transactions);
+        let year_months: Vec<(i32, u32)> =
+            result.iter().map(|item| (item.year, item.month)).collect();
+        assert_eq!(
+            year_months,
+            vec![(2025, 3), (2025, 2), (2025, 1), (2024, 12),]
+        );
     }
 }

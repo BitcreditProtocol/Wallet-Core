@@ -23,7 +23,8 @@ use bcr_common::{
 };
 use bcr_wallet_core::{
     types::{
-        PaymentType, TransactionCursor, TransactionFilters, TransactionSort, TransactionStatus,
+        ListTransactionsResult, PaymentType, TransactionCursor, TransactionFilters,
+        TransactionSort, TransactionStatus, extract_fees_per_month,
     },
     util::{from_mint_url, to_mint_url},
 };
@@ -123,7 +124,7 @@ impl Wallet {
         sort: TransactionSort,
         limit: usize,
         cursor: Option<TransactionCursor>,
-    ) -> Result<(Vec<Transaction>, Option<TransactionCursor>)> {
+    ) -> Result<ListTransactionsResult> {
         if let Some(ref cursor) = cursor
             && !cursor.matches_sort(sort)
         {
@@ -171,7 +172,12 @@ impl Wallet {
         } else {
             None
         };
-        Ok((res, next_cursor))
+        let fees_by_month = extract_fees_per_month(&res);
+        Ok(ListTransactionsResult {
+            txs: res,
+            next_cursor,
+            fees_by_month,
+        })
     }
 
     // Returns (Option<(clowder_path, intermint_alpha_keyset)>, local_alpha_keyset)
@@ -1332,8 +1338,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(res.0.is_empty());
-        assert!(res.1.is_none());
+        assert!(res.txs.is_empty());
+        assert!(res.next_cursor.is_none());
     }
 
     #[tokio::test]
@@ -1789,12 +1795,14 @@ mod tests {
                 .returning(move || Ok(txs.clone()));
 
             let wlt = wallet(ctx);
-            let (res, next_cursor) = wlt
+            let ListTransactionsResult {
+                txs, next_cursor, ..
+            } = wlt
                 .list_txs(TransactionFilters::default(), sort, 20, None)
                 .await
                 .unwrap();
 
-            assert_eq!(tx_ids(&res), tx_ids(&expected));
+            assert_eq!(tx_ids(&txs), tx_ids(&expected));
             assert!(next_cursor.is_none());
         }
     }
@@ -1812,7 +1820,7 @@ mod tests {
 
         let wlt = wallet(ctx);
 
-        let (page1, cursor1) = wlt
+        let res1 = wlt
             .list_txs(
                 TransactionFilters::default(),
                 TransactionSort::TimeDesc,
@@ -1821,6 +1829,8 @@ mod tests {
             )
             .await
             .unwrap();
+        let page1 = res1.txs;
+        let cursor1 = res1.next_cursor;
 
         assert_eq!(tx_ids(&page1), tx_ids(&expected[0..2]));
         assert_eq!(
@@ -1831,7 +1841,7 @@ mod tests {
             ))
         );
 
-        let (page2, cursor2) = wlt
+        let res2 = wlt
             .list_txs(
                 TransactionFilters::default(),
                 TransactionSort::TimeDesc,
@@ -1840,6 +1850,8 @@ mod tests {
             )
             .await
             .unwrap();
+        let page2 = res2.txs;
+        let cursor2 = res2.next_cursor;
 
         assert_eq!(tx_ids(&page2), tx_ids(&expected[2..4]));
         assert_eq!(
@@ -1850,7 +1862,7 @@ mod tests {
             ))
         );
 
-        let (page3, cursor3) = wlt
+        let res3 = wlt
             .list_txs(
                 TransactionFilters::default(),
                 TransactionSort::TimeDesc,
@@ -1859,6 +1871,8 @@ mod tests {
             )
             .await
             .unwrap();
+        let page3 = res3.txs;
+        let cursor3 = res3.next_cursor;
 
         assert_eq!(tx_ids(&page3), tx_ids(&expected[4..6]));
         assert!(cursor3.is_none());
@@ -1905,14 +1919,16 @@ mod tests {
             .returning(move || Ok(txs.clone()));
 
         let wlt = wallet(ctx);
-        let (res, next_cursor) = wlt
+        let ListTransactionsResult {
+            txs, next_cursor, ..
+        } = wlt
             .list_txs(filters, TransactionSort::TimeDesc, 2, None)
             .await
             .unwrap();
 
-        assert_eq!(tx_ids(&res), tx_ids(&expected));
+        assert_eq!(tx_ids(&txs), tx_ids(&expected));
         assert!(next_cursor.is_none());
-        assert!(res.iter().any(|tx| tx.timestamp == 300));
+        assert!(txs.iter().any(|tx| tx.timestamp == 300));
     }
 
     #[tokio::test]
@@ -1928,7 +1944,9 @@ mod tests {
 
         let wlt = wallet(ctx);
 
-        let (page, next_cursor) = wlt
+        let ListTransactionsResult {
+            txs, next_cursor, ..
+        } = wlt
             .list_txs(
                 TransactionFilters::default(),
                 TransactionSort::TimeDesc,
@@ -1938,11 +1956,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(tx_ids(&page), tx_ids(&expected[0..5]));
+        assert_eq!(tx_ids(&txs), tx_ids(&expected[0..5]));
         assert_eq!(
             next_cursor,
             Some(TransactionCursor::from_tx(
-                page.last().unwrap(),
+                txs.last().unwrap(),
                 TransactionSort::TimeDesc,
             ))
         );
@@ -1981,7 +1999,7 @@ mod tests {
             .returning(move || Ok(txs_without_cursor.clone()));
 
         let wlt = wallet(ctx);
-        let (page, _next_cursor) = wlt
+        let ListTransactionsResult { txs, .. } = wlt
             .list_txs(
                 TransactionFilters::default(),
                 TransactionSort::TimeDesc,
@@ -1991,6 +2009,6 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(tx_ids(&page), tx_ids(&expected_after_cursor));
+        assert_eq!(tx_ids(&txs), tx_ids(&expected_after_cursor));
     }
 }
