@@ -83,6 +83,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_wallet_check_received_payment_request(dynamic raw);
 
   @protected
+  WalletEditTransactionMemoRequest
+  dco_decode_box_autoadd_wallet_edit_transaction_memo_request(dynamic raw);
+
+  @protected
   WalletFfiConfig dco_decode_box_autoadd_wallet_ffi_config(dynamic raw);
 
   @protected
@@ -277,6 +281,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletDevModeDetailedBalanceResponse
   dco_decode_wallet_dev_mode_detailed_balance_response(dynamic raw);
+
+  @protected
+  WalletEditTransactionMemoRequest
+  dco_decode_wallet_edit_transaction_memo_request(dynamic raw);
+
+  @protected
+  WalletEditTransactionMemoResponse
+  dco_decode_wallet_edit_transaction_memo_response(dynamic raw);
 
   @protected
   WalletError dco_decode_wallet_error(dynamic raw);
@@ -496,6 +508,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletCheckReceivedPaymentRequest
   sse_decode_box_autoadd_wallet_check_received_payment_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletEditTransactionMemoRequest
+  sse_decode_box_autoadd_wallet_edit_transaction_memo_request(
     SseDeserializer deserializer,
   );
 
@@ -742,6 +760,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletDevModeDetailedBalanceResponse
   sse_decode_wallet_dev_mode_detailed_balance_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletEditTransactionMemoRequest
+  sse_decode_wallet_edit_transaction_memo_request(SseDeserializer deserializer);
+
+  @protected
+  WalletEditTransactionMemoResponse
+  sse_decode_wallet_edit_transaction_memo_response(
     SseDeserializer deserializer,
   );
 
@@ -1011,6 +1039,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_wallet_check_received_payment_request(
     WalletCheckReceivedPaymentRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_wallet_edit_transaction_memo_request(
+    WalletEditTransactionMemoRequest self,
     SseSerializer serializer,
   );
 
@@ -1305,6 +1339,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_dev_mode_detailed_balance_response(
     WalletDevModeDetailedBalanceResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_edit_transaction_memo_request(
+    WalletEditTransactionMemoRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_edit_transaction_memo_response(
+    WalletEditTransactionMemoResponse self,
     SseSerializer serializer,
   );
 

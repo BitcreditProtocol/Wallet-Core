@@ -343,6 +343,17 @@ pub async fn wallet_load_transaction(
 }
 
 #[frb]
+pub async fn wallet_edit_transaction_memo(
+    req: WalletEditTransactionMemoRequest,
+) -> Result<WalletEditTransactionMemoResponse, WalletError> {
+    let app_state = get_app_state().await;
+    app_state
+        .wallet_edit_tx_memo(req.wallet_id, req.tx_id, req.new_memo)
+        .await?;
+    Ok(WalletEditTransactionMemoResponse { updated: true })
+}
+
+#[frb]
 pub async fn wallet_refresh_transaction(
     req: WalletRefreshTransactionRequest,
 ) -> Result<WalletRefreshTransactionResponse, WalletError> {
@@ -772,6 +783,18 @@ pub struct WalletRequest {
 pub struct WalletTransactionRequest {
     pub wallet_id: String,
     pub tx_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletEditTransactionMemoRequest {
+    pub wallet_id: String,
+    pub tx_id: String,
+    pub new_memo: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletEditTransactionMemoResponse {
+    pub updated: bool,
 }
 
 #[derive(Debug, Clone)]

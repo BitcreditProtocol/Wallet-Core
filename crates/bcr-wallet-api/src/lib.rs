@@ -539,6 +539,20 @@ impl AppState {
         Ok(tx)
     }
 
+    pub async fn wallet_edit_tx_memo(
+        &self,
+        id: String,
+        tx_id: String,
+        new_memo: Option<String>,
+    ) -> Result<()> {
+        tracing::debug!("wallet_edit_tx_memo({id}, {tx_id}, {new_memo:?})");
+
+        let tx_id = TransactionId::from_str(&tx_id)?;
+        let wallet = self.get_wallet(&id).await?;
+        wallet.read().await.edit_tx_memo(tx_id, new_memo).await?;
+        Ok(())
+    }
+
     pub async fn wallet_reclaim_tx(&self, id: String, tx_id: &str) -> Result<cashu::Amount> {
         tracing::debug!("wallet_reclaim_tx({id}, {tx_id})");
         let tx_id = TransactionId::from_str(tx_id)?;

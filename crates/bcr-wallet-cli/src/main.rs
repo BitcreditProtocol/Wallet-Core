@@ -101,6 +101,12 @@ enum Commands {
     CheckToken { token: String },
     #[command(name = "check_rabid_offline")]
     CheckRabidOffline { id: String },
+    #[command(name = "edit_tx_memo")]
+    EditTxMemo {
+        id: String,
+        tx_id: String,
+        new_memo: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -312,6 +318,17 @@ async fn main() -> Result<()> {
                 id,
                 app_state.wallet_mint_is_rabid(id.clone()).await?,
                 app_state.wallet_mint_is_offline(id.clone()).await?,
+            );
+        }
+        Commands::EditTxMemo {
+            id,
+            tx_id,
+            new_memo,
+        } => {
+            info!(
+                "Edit Tx Memo for {}: {}",
+                cli.wallet,
+                command::cmd_edit_tx_memo(&app_state, &cli.wallet, &id, &tx_id, &new_memo).await?
             );
         }
     }
