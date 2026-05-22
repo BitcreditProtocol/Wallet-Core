@@ -1,3 +1,12 @@
+# 0.9.3
+
+* Adapt `wallet_get_transactions` to be filtered and paged - takes filters, sorting and a limit and can be progressed using a returned cursor
+    * Can be filtered by `payment_type`, `status`, `direction` and a range for `timestamp`
+    * Can be sorted by `timestamp` and `amount` ascending and descending
+    * There is a `limit`, to set the amount of items returned, clamped between 5 - 100 per call
+    * A `TransactionCursor` is returned per call, which can be passed into the next request to get the next page
+        * if the `next_cursor` is empty, all results have been returned
+
 # 0.9.2
 
 * API & DB Breaking Change!

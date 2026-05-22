@@ -7,7 +7,10 @@ use crate::{
     error::{Error, Result},
     pocket::debit::DebitPocketApi,
     types::{PAYMENT_TYPE_METADATA_KEY, TRANSACTION_STATUS_METADATA_KEY},
-    wallet::types::{PayReference, SwapConfig, WalletBalance, WalletDetailedBalanceEntry},
+    wallet::{
+        types::{PayReference, SwapConfig, WalletBalance, WalletDetailedBalanceEntry},
+        util::tx_can_be_refreshed,
+    },
 };
 use bcr_common::{
     cashu::{
@@ -19,7 +22,9 @@ use bcr_common::{
     wire::clowder::{ConnectedMintResponse, ConnectedMintsResponse},
 };
 use bcr_wallet_core::{
-    types::{PaymentType, TransactionStatus},
+    types::{
+        PaymentType, TransactionCursor, TransactionFilters, TransactionSort, TransactionStatus,
+    },
     util::{from_mint_url, to_mint_url},
 };
 use bcr_wallet_persistence::TransactionRepository;
@@ -112,9 +117,61 @@ impl Wallet {
         Ok(res)
     }
 
-    pub async fn list_txs(&self) -> Result<Vec<Transaction>> {
-        let res = self.tx_repo.list_txs().await?;
-        Ok(res)
+    pub async fn list_txs(
+        &self,
+        filters: TransactionFilters,
+        sort: TransactionSort,
+        limit: usize,
+        cursor: Option<TransactionCursor>,
+    ) -> Result<(Vec<Transaction>, Option<TransactionCursor>)> {
+        if let Some(ref cursor) = cursor
+            && !cursor.matches_sort(sort)
+        {
+            return Err(Error::SortMismatch);
+        }
+
+        let mut res = self.tx_repo.list_txs().await?;
+        // apply filters
+        res.retain(|tx| filters.matches_tx(tx));
+        // apply cursor
+        if let Some(ref cursor) = cursor {
+            res.retain(|tx| cursor.tx_is_after(tx));
+        }
+        // apply sorting
+        match sort {
+            TransactionSort::TimeAsc => {
+                res.sort_by(|a, b| {
+                    a.timestamp
+                        .cmp(&b.timestamp)
+                        .then_with(|| a.id().cmp(&b.id()))
+                });
+            }
+
+            TransactionSort::TimeDesc => {
+                res.sort_by(|a, b| {
+                    b.timestamp
+                        .cmp(&a.timestamp)
+                        .then_with(|| b.id().cmp(&a.id()))
+                });
+            }
+
+            TransactionSort::AmountAsc => {
+                res.sort_by(|a, b| a.amount.cmp(&b.amount).then_with(|| a.id().cmp(&b.id())));
+            }
+
+            TransactionSort::AmountDesc => {
+                res.sort_by(|a, b| b.amount.cmp(&a.amount).then_with(|| b.id().cmp(&a.id())));
+            }
+        }
+        // apply limit
+        let has_more = res.len() > limit;
+        res.truncate(limit);
+        let next_cursor = if has_more {
+            res.last().map(|tx| TransactionCursor::from_tx(tx, sort))
+        } else {
+            None
+        };
+        Ok((res, next_cursor))
     }
 
     // Returns (Option<(clowder_path, intermint_alpha_keyset)>, local_alpha_keyset)
@@ -291,15 +348,47 @@ impl Wallet {
         Ok(updated)
     }
 
-    pub async fn recover_pending_stale_proofs(
-        &self,
-        pending_txs_ys: &[cashu::PublicKey],
-    ) -> Result<Amount> {
+    pub async fn refresh_txs(&self) -> Result<usize> {
+        let txs = self.tx_repo.list_txs().await?;
+        let mut updated = 0;
+
+        for tx in txs.iter() {
+            if !tx_can_be_refreshed(tx) {
+                continue;
+            }
+
+            let tx_id = tx.id();
+
+            match self.refresh_tx(tx_id).await {
+                Ok(tx_updated) => {
+                    if tx_updated {
+                        updated += 1;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Error refreshing tx {}: {e}", tx_id);
+                }
+            };
+        }
+
+        Ok(updated)
+    }
+
+    pub async fn recover_pending_stale_proofs(&self) -> Result<Amount> {
         let infos = self.get_wallet_mint_keyset_infos().await?;
+        // collect ys for pending transactions, so we don't recover proofs from open transactions
+        let pending_txs_ys: Vec<cashu::PublicKey> = self
+            .tx_repo
+            .list_txs()
+            .await?
+            .into_iter()
+            .filter(tx_can_be_refreshed)
+            .flat_map(|tx| tx.ys)
+            .collect();
         let recovered = self
             .debit
             .recover_pending_stale_proofs(
-                pending_txs_ys,
+                &pending_txs_ys,
                 &infos,
                 self.client.clone(),
                 self.swap_config(),
@@ -795,11 +884,14 @@ impl Wallet {
 #[cfg(test)]
 mod tests {
     use bcr_common::wire::clowder as wire_clowder;
-    use bcr_wallet_core::types::{MintSummary, PaymentResultCallback};
+    use bcr_wallet_core::types::{
+        MintSummary, PaymentResultCallback, TimeRange, get_payment_type, get_transaction_status,
+    };
     use bcr_wallet_persistence::{
         MockTransactionRepository,
         test_utils::tests::{test_pub_key, valid_payment_address_testnet},
     };
+    use secp256k1::SECP256K1;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -890,6 +982,126 @@ mod tests {
             ys: vec![],
             quote_id: None,
         }
+    }
+
+    fn tx_with(
+        n: u64,
+        timestamp: u64,
+        amount: u64,
+        direction: TransactionDirection,
+        ptype: PaymentType,
+        status: TransactionStatus,
+    ) -> Transaction {
+        Transaction {
+            mint_url: cashu::MintUrl::from_str("https://mint.example").unwrap(),
+            direction,
+            fee: Amount::ZERO,
+            amount: Amount::from(amount),
+            memo: None,
+            metadata: HashMap::from([
+                (String::from(PAYMENT_TYPE_METADATA_KEY), ptype.to_string()),
+                (
+                    String::from(TRANSACTION_STATUS_METADATA_KEY),
+                    status.to_string(),
+                ),
+            ]),
+            timestamp,
+            unit: CurrencyUnit::Sat,
+            ys: vec![test_cashu_pubkey(n)],
+            quote_id: None,
+        }
+    }
+
+    fn test_cashu_pubkey(n: u64) -> cashu::PublicKey {
+        let mut sk_bytes = [1u8; 32];
+        sk_bytes[24..].copy_from_slice(&(n + 1).to_be_bytes());
+        let sk = secp256k1::SecretKey::from_slice(&sk_bytes).unwrap();
+        let pk = secp256k1::PublicKey::from_secret_key(SECP256K1, &sk);
+        cashu::PublicKey::from_slice(&pk.serialize()).unwrap()
+    }
+
+    fn sample_txs() -> Vec<Transaction> {
+        vec![
+            tx_with(
+                1,
+                100,
+                50,
+                TransactionDirection::Incoming,
+                PaymentType::Token,
+                TransactionStatus::Settled,
+            ),
+            tx_with(
+                2,
+                100,
+                20,
+                TransactionDirection::Outgoing,
+                PaymentType::Token,
+                TransactionStatus::Pending,
+            ),
+            tx_with(
+                3,
+                200,
+                20,
+                TransactionDirection::Incoming,
+                PaymentType::Cdk18,
+                TransactionStatus::Settled,
+            ),
+            tx_with(
+                4,
+                300,
+                80,
+                TransactionDirection::Outgoing,
+                PaymentType::Cdk18,
+                TransactionStatus::Canceled,
+            ),
+            tx_with(
+                5,
+                300,
+                10,
+                TransactionDirection::Incoming,
+                PaymentType::Token,
+                TransactionStatus::Pending,
+            ),
+            tx_with(
+                6,
+                400,
+                80,
+                TransactionDirection::Outgoing,
+                PaymentType::Token,
+                TransactionStatus::Settled,
+            ),
+        ]
+    }
+
+    fn sort_expected(mut txs: Vec<Transaction>, sort: TransactionSort) -> Vec<Transaction> {
+        match sort {
+            TransactionSort::TimeAsc => {
+                txs.sort_by(|a, b| {
+                    a.timestamp
+                        .cmp(&b.timestamp)
+                        .then_with(|| a.id().cmp(&b.id()))
+                });
+            }
+            TransactionSort::TimeDesc => {
+                txs.sort_by(|a, b| {
+                    b.timestamp
+                        .cmp(&a.timestamp)
+                        .then_with(|| b.id().cmp(&a.id()))
+                });
+            }
+            TransactionSort::AmountAsc => {
+                txs.sort_by(|a, b| a.amount.cmp(&b.amount).then_with(|| a.id().cmp(&b.id())));
+            }
+            TransactionSort::AmountDesc => {
+                txs.sort_by(|a, b| b.amount.cmp(&a.amount).then_with(|| b.id().cmp(&a.id())));
+            }
+        }
+
+        txs
+    }
+
+    fn tx_ids(txs: &[Transaction]) -> Vec<TransactionId> {
+        txs.iter().map(|tx| tx.id()).collect()
     }
 
     #[tokio::test]
@@ -1111,8 +1323,17 @@ mod tests {
             .returning(|| Ok(vec![]));
         let wlt = wallet(ctx);
 
-        let res = wlt.list_txs().await.unwrap();
-        assert!(res.is_empty());
+        let res = wlt
+            .list_txs(
+                TransactionFilters::default(),
+                TransactionSort::default(),
+                5,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(res.0.is_empty());
+        assert!(res.1.is_none());
     }
 
     #[tokio::test]
@@ -1349,8 +1570,10 @@ mod tests {
             .times(1)
             .returning(|_, _, _, _| Ok(Amount::from(10)));
 
+        ctx.tx_repo.expect_list_txs().returning(|| Ok(vec![]));
+
         let wlt = wallet(ctx);
-        let recovered = wlt.recover_pending_stale_proofs(&[]).await.unwrap();
+        let recovered = wlt.recover_pending_stale_proofs().await.unwrap();
         assert_eq!(recovered, Amount::from(10));
     }
 
@@ -1536,7 +1759,6 @@ mod tests {
     async fn test_edit_tx_memo() {
         let mut ctx = wallet_ctx();
         let tx_id = TransactionId::new(vec![]);
-
         ctx.tx_repo
             .expect_update_memo()
             .times(2)
@@ -1547,5 +1769,228 @@ mod tests {
             .await
             .unwrap();
         wlt.edit_tx_memo(tx_id, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_list_txs_all_sorts() {
+        for sort in [
+            TransactionSort::TimeAsc,
+            TransactionSort::TimeDesc,
+            TransactionSort::AmountAsc,
+            TransactionSort::AmountDesc,
+        ] {
+            let txs = sample_txs();
+            let expected = sort_expected(txs.clone(), sort);
+
+            let mut ctx = wallet_ctx();
+            ctx.tx_repo
+                .expect_list_txs()
+                .times(1)
+                .returning(move || Ok(txs.clone()));
+
+            let wlt = wallet(ctx);
+            let (res, next_cursor) = wlt
+                .list_txs(TransactionFilters::default(), sort, 20, None)
+                .await
+                .unwrap();
+
+            assert_eq!(tx_ids(&res), tx_ids(&expected));
+            assert!(next_cursor.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_txs_paginates_without_overlap() {
+        let txs = sample_txs();
+        let expected = sort_expected(txs.clone(), TransactionSort::TimeDesc);
+
+        let mut ctx = wallet_ctx();
+        ctx.tx_repo
+            .expect_list_txs()
+            .times(3)
+            .returning(move || Ok(txs.clone()));
+
+        let wlt = wallet(ctx);
+
+        let (page1, cursor1) = wlt
+            .list_txs(
+                TransactionFilters::default(),
+                TransactionSort::TimeDesc,
+                2,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(tx_ids(&page1), tx_ids(&expected[0..2]));
+        assert_eq!(
+            cursor1,
+            Some(TransactionCursor::from_tx(
+                page1.last().unwrap(),
+                TransactionSort::TimeDesc
+            ))
+        );
+
+        let (page2, cursor2) = wlt
+            .list_txs(
+                TransactionFilters::default(),
+                TransactionSort::TimeDesc,
+                2,
+                cursor1,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(tx_ids(&page2), tx_ids(&expected[2..4]));
+        assert_eq!(
+            cursor2,
+            Some(TransactionCursor::from_tx(
+                page2.last().unwrap(),
+                TransactionSort::TimeDesc
+            ))
+        );
+
+        let (page3, cursor3) = wlt
+            .list_txs(
+                TransactionFilters::default(),
+                TransactionSort::TimeDesc,
+                2,
+                cursor2,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(tx_ids(&page3), tx_ids(&expected[4..6]));
+        assert!(cursor3.is_none());
+
+        let all_ids = [tx_ids(&page1), tx_ids(&page2), tx_ids(&page3)].concat();
+        let unique_ids: std::collections::BTreeSet<_> = all_ids.iter().collect();
+
+        assert_eq!(all_ids.len(), expected.len());
+        assert_eq!(unique_ids.len(), expected.len());
+        assert_eq!(all_ids, tx_ids(&expected));
+    }
+
+    #[tokio::test]
+    async fn test_list_txs_applies_filters_and_inclusive_time_range() {
+        let txs = sample_txs();
+        let filters = TransactionFilters {
+            payment_types: vec![PaymentType::Token],
+            statuses: vec![TransactionStatus::Pending],
+            direction: Some(TransactionDirection::Incoming),
+            time_range: Some(TimeRange {
+                from: Some(100),
+                to: Some(300),
+            }),
+        };
+
+        let mut expected: Vec<_> = txs
+            .clone()
+            .into_iter()
+            .filter(|tx| {
+                get_payment_type(&tx.metadata) == PaymentType::Token
+                    && get_transaction_status(&tx.metadata) == TransactionStatus::Pending
+                    && tx.direction == TransactionDirection::Incoming
+                    && tx.timestamp >= 100
+                    && tx.timestamp <= 300
+            })
+            .collect();
+
+        expected = sort_expected(expected, TransactionSort::TimeDesc);
+
+        let mut ctx = wallet_ctx();
+        ctx.tx_repo
+            .expect_list_txs()
+            .times(1)
+            .returning(move || Ok(txs.clone()));
+
+        let wlt = wallet(ctx);
+        let (res, next_cursor) = wlt
+            .list_txs(filters, TransactionSort::TimeDesc, 2, None)
+            .await
+            .unwrap();
+
+        assert_eq!(tx_ids(&res), tx_ids(&expected));
+        assert!(next_cursor.is_none());
+        assert!(res.iter().any(|tx| tx.timestamp == 300));
+    }
+
+    #[tokio::test]
+    async fn test_list_txs_next_cursor_uses_last_returned_tx() {
+        let txs = sample_txs();
+        let expected = sort_expected(txs.clone(), TransactionSort::TimeDesc);
+
+        let mut ctx = wallet_ctx();
+        ctx.tx_repo
+            .expect_list_txs()
+            .times(1)
+            .returning(move || Ok(txs.clone()));
+
+        let wlt = wallet(ctx);
+
+        let (page, next_cursor) = wlt
+            .list_txs(
+                TransactionFilters::default(),
+                TransactionSort::TimeDesc,
+                5,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(tx_ids(&page), tx_ids(&expected[0..5]));
+        assert_eq!(
+            next_cursor,
+            Some(TransactionCursor::from_tx(
+                page.last().unwrap(),
+                TransactionSort::TimeDesc,
+            ))
+        );
+
+        assert_ne!(
+            next_cursor,
+            Some(TransactionCursor::from_tx(
+                &expected[5],
+                TransactionSort::TimeDesc,
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_txs_cursor_transaction_does_not_need_to_exist() {
+        let txs = sample_txs();
+        let expected = sort_expected(txs.clone(), TransactionSort::TimeDesc);
+
+        let cursor_tx = expected[5].clone();
+        let cursor = TransactionCursor::from_tx(&cursor_tx, TransactionSort::TimeDesc);
+
+        let mut txs_without_cursor = txs.clone();
+        txs_without_cursor.retain(|tx| tx.id() != cursor_tx.id());
+
+        let expected_after_cursor: Vec<_> =
+            sort_expected(txs_without_cursor.clone(), TransactionSort::TimeDesc)
+                .into_iter()
+                .filter(|tx| cursor.tx_is_after(tx))
+                .take(6)
+                .collect();
+
+        let mut ctx = wallet_ctx();
+        ctx.tx_repo
+            .expect_list_txs()
+            .times(1)
+            .returning(move || Ok(txs_without_cursor.clone()));
+
+        let wlt = wallet(ctx);
+        let (page, _next_cursor) = wlt
+            .list_txs(
+                TransactionFilters::default(),
+                TransactionSort::TimeDesc,
+                6,
+                Some(cursor),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(tx_ids(&page), tx_ids(&expected_after_cursor));
     }
 }

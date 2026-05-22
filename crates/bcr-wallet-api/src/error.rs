@@ -87,6 +87,12 @@ pub enum Error {
     NoDebitCurrencyInMint(Vec<cashu::CurrencyUnit>),
     #[error("network mismatch, ours: {0}, theirs: {1}")]
     InvalidNetwork(bitcoin::Network, bitcoin::Network),
+    #[error("invalid transaction id")]
+    InvalidTransactionId,
+    #[error("invalid cursor")]
+    InvalidCursor,
+    #[error("sort has to match cursor sort")]
+    SortMismatch,
     #[error("mnemonic mismatch")]
     InvalidMnemonic,
     #[error("payment request, missing amount")]

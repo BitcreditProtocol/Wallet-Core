@@ -78,6 +78,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MnemonicRequest dco_decode_box_autoadd_mnemonic_request(dynamic raw);
 
   @protected
+  TimeRange dco_decode_box_autoadd_time_range(dynamic raw);
+
+  @protected
+  TransactionCursor dco_decode_box_autoadd_transaction_cursor(dynamic raw);
+
+  @protected
+  TransactionDirection dco_decode_box_autoadd_transaction_direction(
+    dynamic raw,
+  );
+
+  @protected
   BigInt dco_decode_box_autoadd_u_64(dynamic raw);
 
   @protected
@@ -96,6 +107,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_wallet_id_for_mnemonic_and_network_request(
     dynamic raw,
   );
+
+  @protected
+  WalletListTransactionsRequest
+  dco_decode_box_autoadd_wallet_list_transactions_request(dynamic raw);
 
   @protected
   WalletMintRequest dco_decode_box_autoadd_wallet_mint_request(dynamic raw);
@@ -179,6 +194,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
+  List<PaymentType> dco_decode_list_payment_type(dynamic raw);
+
+  @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
@@ -186,6 +204,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Transaction> dco_decode_list_transaction(dynamic raw);
+
+  @protected
+  List<TransactionStatus> dco_decode_list_transaction_status(dynamic raw);
 
   @protected
   List<WalletDevModeDetailedBalanceEntry>
@@ -213,6 +234,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? dco_decode_opt_String(dynamic raw);
 
   @protected
+  TimeRange? dco_decode_opt_box_autoadd_time_range(dynamic raw);
+
+  @protected
+  TransactionCursor? dco_decode_opt_box_autoadd_transaction_cursor(dynamic raw);
+
+  @protected
+  TransactionDirection? dco_decode_opt_box_autoadd_transaction_direction(
+    dynamic raw,
+  );
+
+  @protected
   BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw);
 
   @protected
@@ -237,10 +269,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   StatusResponse dco_decode_status_response(dynamic raw);
 
   @protected
+  TimeRange dco_decode_time_range(dynamic raw);
+
+  @protected
   Transaction dco_decode_transaction(dynamic raw);
 
   @protected
+  TransactionCursor dco_decode_transaction_cursor(dynamic raw);
+
+  @protected
   TransactionDirection dco_decode_transaction_direction(dynamic raw);
+
+  @protected
+  TransactionFilters dco_decode_transaction_filters(dynamic raw);
+
+  @protected
+  TransactionSort dco_decode_transaction_sort(dynamic raw);
 
   @protected
   TransactionStatus dco_decode_transaction_status(dynamic raw);
@@ -311,6 +355,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletIdForMnemonicAndNetworkResponse
   dco_decode_wallet_id_for_mnemonic_and_network_response(dynamic raw);
+
+  @protected
+  WalletListTransactionsRequest dco_decode_wallet_list_transactions_request(
+    dynamic raw,
+  );
+
+  @protected
+  WalletListTransactionsResponse dco_decode_wallet_list_transactions_response(
+    dynamic raw,
+  );
 
   @protected
   WalletMaybeTransactionIdResponse
@@ -442,11 +496,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletTransactionResponse dco_decode_wallet_transaction_response(dynamic raw);
 
   @protected
-  WalletTransactionsResponse dco_decode_wallet_transactions_response(
-    dynamic raw,
-  );
-
-  @protected
   WalletsIdsResponse dco_decode_wallets_ids_response(dynamic raw);
 
   @protected
@@ -505,6 +554,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  TimeRange sse_decode_box_autoadd_time_range(SseDeserializer deserializer);
+
+  @protected
+  TransactionCursor sse_decode_box_autoadd_transaction_cursor(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TransactionDirection sse_decode_box_autoadd_transaction_direction(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
 
   @protected
@@ -527,6 +589,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletIdForMnemonicAndNetworkRequest
   sse_decode_box_autoadd_wallet_id_for_mnemonic_and_network_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletListTransactionsRequest
+  sse_decode_box_autoadd_wallet_list_transactions_request(
     SseDeserializer deserializer,
   );
 
@@ -636,6 +704,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
+  List<PaymentType> sse_decode_list_payment_type(SseDeserializer deserializer);
+
+  @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
@@ -645,6 +716,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Transaction> sse_decode_list_transaction(SseDeserializer deserializer);
+
+  @protected
+  List<TransactionStatus> sse_decode_list_transaction_status(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<WalletDevModeDetailedBalanceEntry>
@@ -680,6 +756,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? sse_decode_opt_String(SseDeserializer deserializer);
 
   @protected
+  TimeRange? sse_decode_opt_box_autoadd_time_range(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TransactionCursor? sse_decode_opt_box_autoadd_transaction_cursor(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TransactionDirection? sse_decode_opt_box_autoadd_transaction_direction(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer);
 
   @protected
@@ -708,12 +799,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   StatusResponse sse_decode_status_response(SseDeserializer deserializer);
 
   @protected
+  TimeRange sse_decode_time_range(SseDeserializer deserializer);
+
+  @protected
   Transaction sse_decode_transaction(SseDeserializer deserializer);
+
+  @protected
+  TransactionCursor sse_decode_transaction_cursor(SseDeserializer deserializer);
 
   @protected
   TransactionDirection sse_decode_transaction_direction(
     SseDeserializer deserializer,
   );
+
+  @protected
+  TransactionFilters sse_decode_transaction_filters(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TransactionSort sse_decode_transaction_sort(SseDeserializer deserializer);
 
   @protected
   TransactionStatus sse_decode_transaction_status(SseDeserializer deserializer);
@@ -796,6 +901,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletIdForMnemonicAndNetworkResponse
   sse_decode_wallet_id_for_mnemonic_and_network_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletListTransactionsRequest sse_decode_wallet_list_transactions_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletListTransactionsResponse sse_decode_wallet_list_transactions_response(
     SseDeserializer deserializer,
   );
 
@@ -953,11 +1068,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletTransactionsResponse sse_decode_wallet_transactions_response(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   WalletsIdsResponse sse_decode_wallets_ids_response(
     SseDeserializer deserializer,
   );
@@ -1036,6 +1146,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_time_range(
+    TimeRange self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_transaction_cursor(
+    TransactionCursor self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_transaction_direction(
+    TransactionDirection self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
 
   @protected
@@ -1059,6 +1187,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_wallet_id_for_mnemonic_and_network_request(
     WalletIdForMnemonicAndNetworkRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_wallet_list_transactions_request(
+    WalletListTransactionsRequest self,
     SseSerializer serializer,
   );
 
@@ -1180,6 +1314,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_payment_type(
+    List<PaymentType> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
     SseSerializer serializer,
@@ -1194,6 +1334,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_transaction(
     List<Transaction> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_transaction_status(
+    List<TransactionStatus> self,
     SseSerializer serializer,
   );
 
@@ -1240,6 +1386,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_String(String? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_time_range(
+    TimeRange? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_transaction_cursor(
+    TransactionCursor? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_transaction_direction(
+    TransactionDirection? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);
 
   @protected
@@ -1279,11 +1443,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_time_range(TimeRange self, SseSerializer serializer);
+
+  @protected
   void sse_encode_transaction(Transaction self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_transaction_cursor(
+    TransactionCursor self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_transaction_direction(
     TransactionDirection self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_transaction_filters(
+    TransactionFilters self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_transaction_sort(
+    TransactionSort self,
     SseSerializer serializer,
   );
 
@@ -1386,6 +1571,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_id_for_mnemonic_and_network_response(
     WalletIdForMnemonicAndNetworkResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_list_transactions_request(
+    WalletListTransactionsRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_list_transactions_response(
+    WalletListTransactionsResponse self,
     SseSerializer serializer,
   );
 
@@ -1575,12 +1772,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_transaction_response(
     WalletTransactionResponse self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_transactions_response(
-    WalletTransactionsResponse self,
     SseSerializer serializer,
   );
 

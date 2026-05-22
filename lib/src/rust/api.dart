@@ -8,7 +8,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `get_app_state`, `init_logging`, `init_panic_hook`, `new`, `reset_runtime`, `start_jobs`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `WalletCleanLocalDbResponse`, `WalletRuntime`, `WalletsNamesResponse`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `try_from`
 
 Future<void> initWalletFfi({required WalletFfiConfig conf}) =>
     RustLib.instance.api.crateApiInitWalletFfi(conf: conf);
@@ -125,8 +125,8 @@ Future<WalletTransactionIdsResponse> walletGetTransactionIds({
   required WalletRequest req,
 }) => RustLib.instance.api.crateApiWalletGetTransactionIds(req: req);
 
-Future<WalletTransactionsResponse> walletGetTransactions({
-  required WalletRequest req,
+Future<WalletListTransactionsResponse> walletGetTransactions({
+  required WalletListTransactionsRequest req,
 }) => RustLib.instance.api.crateApiWalletGetTransactions(req: req);
 
 Future<WalletsIdsResponse> walletGetIds() =>
@@ -470,6 +470,27 @@ class StatusResponse {
           appVersion == other.appVersion;
 }
 
+class TimeRange {
+  /// Inclusive lower bound
+  final BigInt? from;
+
+  /// Inclusive upper bound
+  final BigInt? to;
+
+  const TimeRange({this.from, this.to});
+
+  @override
+  int get hashCode => from.hashCode ^ to.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TimeRange &&
+          runtimeType == other.runtimeType &&
+          from == other.from &&
+          to == other.to;
+}
+
 class Transaction {
   final String id;
   final BigInt amount;
@@ -529,12 +550,91 @@ class Transaction {
           quoteId == other.quoteId;
 }
 
+class TransactionCursor {
+  final TransactionSort sort;
+  final BigInt? tstamp;
+  final BigInt? amount;
+  final String id;
+
+  const TransactionCursor({
+    required this.sort,
+    this.tstamp,
+    this.amount,
+    required this.id,
+  });
+
+  @override
+  int get hashCode =>
+      sort.hashCode ^ tstamp.hashCode ^ amount.hashCode ^ id.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TransactionCursor &&
+          runtimeType == other.runtimeType &&
+          sort == other.sort &&
+          tstamp == other.tstamp &&
+          amount == other.amount &&
+          id == other.id;
+}
+
 enum TransactionDirection {
   incoming,
   outgoing;
 
   static Future<TransactionDirection> default_() =>
       RustLib.instance.api.crateApiTransactionDirectionDefault();
+}
+
+class TransactionFilters {
+  /// Empty means all payment types
+  final List<PaymentType> paymentTypes;
+
+  /// Empty means all statuses
+  final List<TransactionStatus> statuses;
+
+  /// None means both incoming and outgoing
+  final TransactionDirection? direction;
+
+  /// None means no time restriction
+  final TimeRange? timeRange;
+
+  const TransactionFilters({
+    required this.paymentTypes,
+    required this.statuses,
+    this.direction,
+    this.timeRange,
+  });
+
+  static Future<TransactionFilters> default_() =>
+      RustLib.instance.api.crateApiTransactionFiltersDefault();
+
+  @override
+  int get hashCode =>
+      paymentTypes.hashCode ^
+      statuses.hashCode ^
+      direction.hashCode ^
+      timeRange.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TransactionFilters &&
+          runtimeType == other.runtimeType &&
+          paymentTypes == other.paymentTypes &&
+          statuses == other.statuses &&
+          direction == other.direction &&
+          timeRange == other.timeRange;
+}
+
+enum TransactionSort {
+  timeAsc,
+  timeDesc,
+  amountAsc,
+  amountDesc;
+
+  static Future<TransactionSort> default_() =>
+      RustLib.instance.api.crateApiTransactionSortDefault();
 }
 
 enum TransactionStatus {
@@ -773,6 +873,9 @@ enum WalletErrorCode {
   noDevMode,
   invalidBitcoinAddress,
   invalidMnemonic,
+  invalidTransactionId,
+  invalidCursor,
+  sortMismatch,
   mnemonicNotFound,
   walletUniqueName,
   walletUniqueId,
@@ -865,6 +968,59 @@ class WalletIdForMnemonicAndNetworkResponse {
       other is WalletIdForMnemonicAndNetworkResponse &&
           runtimeType == other.runtimeType &&
           walletId == other.walletId;
+}
+
+class WalletListTransactionsRequest {
+  final String walletId;
+  final TransactionFilters filter;
+  final TransactionSort sort;
+  final BigInt limit;
+  final TransactionCursor? cursor;
+
+  const WalletListTransactionsRequest({
+    required this.walletId,
+    required this.filter,
+    required this.sort,
+    required this.limit,
+    this.cursor,
+  });
+
+  @override
+  int get hashCode =>
+      walletId.hashCode ^
+      filter.hashCode ^
+      sort.hashCode ^
+      limit.hashCode ^
+      cursor.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletListTransactionsRequest &&
+          runtimeType == other.runtimeType &&
+          walletId == other.walletId &&
+          filter == other.filter &&
+          sort == other.sort &&
+          limit == other.limit &&
+          cursor == other.cursor;
+}
+
+class WalletListTransactionsResponse {
+  final List<Transaction> txs;
+  final TransactionCursor? nextCursor;
+
+  const WalletListTransactionsResponse({required this.txs, this.nextCursor});
+
+  @override
+  int get hashCode => txs.hashCode ^ nextCursor.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletListTransactionsResponse &&
+          runtimeType == other.runtimeType &&
+          txs == other.txs &&
+          nextCursor == other.nextCursor;
 }
 
 class WalletMaybeTransactionIdResponse {
@@ -1479,22 +1635,6 @@ class WalletTransactionResponse {
       other is WalletTransactionResponse &&
           runtimeType == other.runtimeType &&
           transaction == other.transaction;
-}
-
-class WalletTransactionsResponse {
-  final List<Transaction> txs;
-
-  const WalletTransactionsResponse({required this.txs});
-
-  @override
-  int get hashCode => txs.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is WalletTransactionsResponse &&
-          runtimeType == other.runtimeType &&
-          txs == other.txs;
 }
 
 class WalletsIdsResponse {
