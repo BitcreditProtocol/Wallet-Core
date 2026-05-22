@@ -510,6 +510,24 @@ pub async fn cmd_migrate_rabid(app_state: &AppState, name: &str) -> Result<Strin
     Ok(res)
 }
 
+pub async fn cmd_edit_tx_memo(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    tx_id: &str,
+    new_memo: &Option<String>,
+) -> Result<String> {
+    let mut res = String::new();
+    app_state
+        .wallet_edit_tx_memo(id.to_owned(), tx_id.to_owned(), new_memo.to_owned())
+        .await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!("Edited Memo for Tx {tx_id} for {name}:\n"));
+    push_break(&mut res);
+    Ok(res)
+}
+
 fn push_line(res: &mut String) {
     res.push_str("-----------------------\n");
 }

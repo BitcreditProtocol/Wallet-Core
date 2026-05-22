@@ -96,6 +96,11 @@ pub trait TransactionRepository: SendSync {
         key: String,
         value: String,
     ) -> Result<Option<String>>;
+    async fn update_memo(
+        &self,
+        tx_id: TransactionId,
+        new_memo: Option<String>,
+    ) -> Result<Option<String>>;
     async fn update_fee(&self, tx_id: TransactionId, fee_to_add: cashu::Amount) -> Result<()>;
     async fn delete_repo(&self) -> Result<()>;
 }

@@ -259,6 +259,11 @@ impl Wallet {
         Ok(tx)
     }
 
+    pub async fn edit_tx_memo(&self, tx_id: TransactionId, new_memo: Option<String>) -> Result<()> {
+        let _ = self.tx_repo.update_memo(tx_id, new_memo).await?;
+        Ok(())
+    }
+
     // Fetches the transaction with the given ID from the database and, if it's in a pending state
     // it attempts to get the current state from the mint and, if it's spent, changes it to spent
     // Returns whether the transaction has been updated
@@ -1525,5 +1530,22 @@ mod tests {
         let amount = wlt.reclaim_tx(tx_id).await.unwrap();
 
         assert_eq!(amount, Amount::from(7));
+    }
+
+    #[tokio::test]
+    async fn test_edit_tx_memo() {
+        let mut ctx = wallet_ctx();
+        let tx_id = TransactionId::new(vec![]);
+
+        ctx.tx_repo
+            .expect_update_memo()
+            .times(2)
+            .returning(move |_, _| Ok(None));
+
+        let wlt = wallet(ctx);
+        wlt.edit_tx_memo(tx_id, Some("new_memo".to_owned()))
+            .await
+            .unwrap();
+        wlt.edit_tx_memo(tx_id, None).await.unwrap();
     }
 }

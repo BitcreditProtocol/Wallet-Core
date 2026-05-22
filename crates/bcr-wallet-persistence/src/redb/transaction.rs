@@ -207,6 +207,35 @@ impl TransactionDB {
         Ok(old_v)
     }
 
+    fn update_memo_sync(
+        db: Arc<Database>,
+        tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        tx_id: TransactionId,
+        new_memo: Option<String>,
+    ) -> Result<Option<String>> {
+        let write_txn = db.begin_write()?;
+        let old_v = {
+            let mut table = write_txn.open_table(tx_table)?;
+            let old_value = table.get(tx_id.as_bytes().as_slice())?.map(|v| v.value());
+
+            if let Some(old_value) = old_value {
+                let mut tx: TransactionEntry = ciborium::from_reader(old_value.as_slice())?;
+                let old = tx.memo.clone();
+                tx.memo = new_memo;
+
+                let mut serialized = Vec::new();
+                ciborium::into_writer(&tx, &mut serialized)?;
+                table.insert(tx_id.as_bytes().as_slice(), serialized)?;
+                old
+            } else {
+                None
+            }
+        };
+
+        write_txn.commit()?;
+        Ok(old_v)
+    }
+
     fn update_fee_sync(
         db: Arc<Database>,
         tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
@@ -295,6 +324,16 @@ impl TransactionRepository for TransactionDB {
         let db_clone = self.db.clone();
         let table = self.transaction_table;
         spawn_blocking(move || Self::update_meta_sync(db_clone, table, tx_id, k, v)).await?
+    }
+
+    async fn update_memo(
+        &self,
+        tx_id: TransactionId,
+        new_memo: Option<String>,
+    ) -> Result<Option<String>> {
+        let db_clone = self.db.clone();
+        let table = self.transaction_table;
+        spawn_blocking(move || Self::update_memo_sync(db_clone, table, tx_id, new_memo)).await?
     }
 
     async fn update_fee(
@@ -417,6 +456,45 @@ mod tests {
 
         let txs = repo.list_txs().await.unwrap();
         assert_eq!(txs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_update_memo_missing_returns_none() {
+        let repo = get_db(&wallet_id());
+
+        let tx = test_tx();
+        let tx_id = tx.id();
+
+        let old = repo
+            .update_memo(tx_id, None)
+            .await
+            .expect("update_memo works");
+        assert_eq!(old, None);
+    }
+
+    #[tokio::test]
+    async fn test_update_memo_insert_and_overwrite() {
+        let repo = get_db(&wallet_id());
+
+        let tx = test_tx();
+        let tx_id = repo.store_tx(tx).await.unwrap();
+
+        // no value for memo before - returns set value
+        let old = repo
+            .update_memo(tx_id, Some("new memo".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(old, Some("some memo".to_owned()));
+
+        // overwrite value for memo - returns old memo
+        let old = repo
+            .update_memo(tx_id, Some("different memo".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(old, Some("new memo".to_string()));
+
+        let loaded = repo.load_tx(tx_id).await.unwrap();
+        assert_eq!(loaded.memo, Some("different memo".to_string()));
     }
 
     #[tokio::test]
