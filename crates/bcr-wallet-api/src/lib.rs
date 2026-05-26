@@ -41,7 +41,7 @@ pub struct AppState {
 
 impl AppState {
     pub const DB_VERSION: u32 = 1;
-    pub const MINT_MELT_THRESHOLD_SAT: u64 = 1000;
+    pub const MINT_MELT_THRESHOLD_SAT: u64 = 2000;
 
     pub async fn initialize(cfg: AppStateConfig) -> Result<Self> {
         tracing::debug!("Initializing API");
