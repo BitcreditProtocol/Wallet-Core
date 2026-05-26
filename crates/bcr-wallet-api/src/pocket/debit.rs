@@ -825,8 +825,8 @@ impl DebitPocketApi for Pocket {
             }
         };
 
-        let fee = if offered_amount.to_sat() > amount {
-            Amount::from(offered_amount.to_sat() - amount)
+        let fee = if offered_amount.to_sat() < amount {
+            Amount::from(amount - offered_amount.to_sat())
         } else {
             Amount::ZERO
         };
@@ -2618,7 +2618,7 @@ mod tests {
         let amount = 24;
         let quote_id = Uuid::new_v4();
         let expiry = 999999;
-        let offered_amount = bitcoin::Amount::from_sat(25);
+        let offered_amount = bitcoin::Amount::from_sat(23);
 
         let proofs =
             core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8), Amount::from(16)]);

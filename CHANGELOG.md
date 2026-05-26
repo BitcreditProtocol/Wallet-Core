@@ -21,6 +21,7 @@
 * Use Capped Smallest-First Coin Selection
 * Add Issuance Attestation for Melts and Swaps
 * Add `wallet_edit_transaction_memo` for editing transactions memos
+* Change minimum amount for melting to 2000
 
 # 0.9.1
 
