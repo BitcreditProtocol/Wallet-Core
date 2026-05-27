@@ -9,8 +9,8 @@ use bcr_common::{
     wallet::Token,
 };
 use bcr_wallet_core::types::{
-    self, MintSummary, PaymentResultCallback, PaymentSummary, Seed, TransactionCursor,
-    TransactionFilters, TransactionSort, WalletConfig,
+    self, ListTransactionsResult, MintSummary, PaymentResultCallback, PaymentSummary, Seed,
+    TransactionCursor, TransactionFilters, TransactionSort, WalletConfig,
 };
 use bcr_wallet_core::util::{build_wallet_id, keypair_from_mnemonic, seed_from_mnemonic};
 use bcr_wallet_persistence::redb::{Database, build_pursedb, build_wallet_dbs, create_db};
@@ -529,7 +529,7 @@ impl AppState {
         sort: TransactionSort,
         limit: usize,
         cursor: Option<TransactionCursor>,
-    ) -> Result<(Vec<Transaction>, Option<TransactionCursor>)> {
+    ) -> Result<ListTransactionsResult> {
         tracing::debug!("wallet_list_txs({id}, {filter:?}, {sort:?}, {limit}, {cursor:?})");
 
         let wallet = self.get_wallet(&id).await?;

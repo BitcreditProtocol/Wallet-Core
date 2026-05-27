@@ -1988,6 +1988,20 @@ impl SseDecode for crate::api::CreateWalletRequest {
     }
 }
 
+impl SseDecode for crate::api::FeesByMonth {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_year = <i32>::sse_decode(deserializer);
+        let mut var_month = <u32>::sse_decode(deserializer);
+        let mut var_fees = <u64>::sse_decode(deserializer);
+        return crate::api::FeesByMonth {
+            year: var_year,
+            month: var_month,
+            fees: var_fees,
+        };
+    }
+}
+
 impl SseDecode for i32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2033,6 +2047,18 @@ impl SseDecode for Vec<String> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<String>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::FeesByMonth> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::FeesByMonth>::sse_decode(deserializer));
         }
         return ans_;
     }
@@ -2700,9 +2726,11 @@ impl SseDecode for crate::api::WalletListTransactionsResponse {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_txs = <Vec<crate::api::Transaction>>::sse_decode(deserializer);
         let mut var_nextCursor = <Option<crate::api::TransactionCursor>>::sse_decode(deserializer);
+        let mut var_feesByMonth = <Vec<crate::api::FeesByMonth>>::sse_decode(deserializer);
         return crate::api::WalletListTransactionsResponse {
             txs: var_txs,
             next_cursor: var_nextCursor,
+            fees_by_month: var_feesByMonth,
         };
     }
 }
@@ -3235,6 +3263,23 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::CreateWalletRequest>
     for crate::api::CreateWalletRequest
 {
     fn into_into_dart(self) -> crate::api::CreateWalletRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::FeesByMonth {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.year.into_into_dart().into_dart(),
+            self.month.into_into_dart().into_dart(),
+            self.fees.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::FeesByMonth {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::FeesByMonth> for crate::api::FeesByMonth {
+    fn into_into_dart(self) -> crate::api::FeesByMonth {
         self
     }
 }
@@ -3959,6 +4004,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::WalletListTransactionsRespons
         [
             self.txs.into_into_dart().into_dart(),
             self.next_cursor.into_into_dart().into_dart(),
+            self.fees_by_month.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4685,6 +4731,15 @@ impl SseEncode for crate::api::CreateWalletRequest {
     }
 }
 
+impl SseEncode for crate::api::FeesByMonth {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.year, serializer);
+        <u32>::sse_encode(self.month, serializer);
+        <u64>::sse_encode(self.fees, serializer);
+    }
+}
+
 impl SseEncode for i32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -4725,6 +4780,16 @@ impl SseEncode for Vec<String> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <String>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::FeesByMonth> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::FeesByMonth>::sse_encode(item, serializer);
         }
     }
 }
@@ -5276,6 +5341,7 @@ impl SseEncode for crate::api::WalletListTransactionsResponse {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <Vec<crate::api::Transaction>>::sse_encode(self.txs, serializer);
         <Option<crate::api::TransactionCursor>>::sse_encode(self.next_cursor, serializer);
+        <Vec<crate::api::FeesByMonth>>::sse_encode(self.fees_by_month, serializer);
     }
 }
 

@@ -47,13 +47,13 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
                 )
                 .await?;
 
-            transactions.extend(res.0);
+            transactions.extend(res.txs);
 
-            if res.1.is_none() {
+            if res.next_cursor.is_none() {
                 break;
             }
 
-            cursor = res.1;
+            cursor = res.next_cursor;
         }
 
         res.push_str(&format!("Name: {name}\n"));

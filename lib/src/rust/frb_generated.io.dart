@@ -177,6 +177,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   CreateWalletRequest dco_decode_create_wallet_request(dynamic raw);
 
   @protected
+  FeesByMonth dco_decode_fees_by_month(dynamic raw);
+
+  @protected
   int dco_decode_i_32(dynamic raw);
 
   @protected
@@ -190,6 +193,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String> dco_decode_list_String(dynamic raw);
+
+  @protected
+  List<FeesByMonth> dco_decode_list_fees_by_month(dynamic raw);
 
   @protected
   List<PaymentType> dco_decode_list_payment_type(dynamic raw);
@@ -683,6 +689,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  FeesByMonth sse_decode_fees_by_month(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
@@ -700,6 +709,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
+
+  @protected
+  List<FeesByMonth> sse_decode_list_fees_by_month(SseDeserializer deserializer);
 
   @protected
   List<PaymentType> sse_decode_list_payment_type(SseDeserializer deserializer);
@@ -1291,6 +1303,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_fees_by_month(FeesByMonth self, SseSerializer serializer);
+
+  @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
@@ -1310,6 +1325,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_fees_by_month(
+    List<FeesByMonth> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_payment_type(

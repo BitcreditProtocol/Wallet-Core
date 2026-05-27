@@ -2223,6 +2223,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  FeesByMonth dco_decode_fees_by_month(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return FeesByMonth(
+      year: dco_decode_i_32(arr[0]),
+      month: dco_decode_u_32(arr[1]),
+      fees: dco_decode_u_64(arr[2]),
+    );
+  }
+
+  @protected
   int dco_decode_i_32(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as int;
@@ -2261,6 +2274,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<String> dco_decode_list_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_String).toList();
+  }
+
+  @protected
+  List<FeesByMonth> dco_decode_list_fees_by_month(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_fees_by_month).toList();
   }
 
   @protected
@@ -2769,11 +2788,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
     return WalletListTransactionsResponse(
       txs: dco_decode_list_transaction(arr[0]),
       nextCursor: dco_decode_opt_box_autoadd_transaction_cursor(arr[1]),
+      feesByMonth: dco_decode_list_fees_by_month(arr[2]),
     );
   }
 
@@ -3506,6 +3526,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  FeesByMonth sse_decode_fees_by_month(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_year = sse_decode_i_32(deserializer);
+    var var_month = sse_decode_u_32(deserializer);
+    var var_fees = sse_decode_u_64(deserializer);
+    return FeesByMonth(year: var_year, month: var_month, fees: var_fees);
+  }
+
+  @protected
   int sse_decode_i_32(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getInt32();
@@ -3551,6 +3580,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <String>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_String(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<FeesByMonth> sse_decode_list_fees_by_month(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <FeesByMonth>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_fees_by_month(deserializer));
     }
     return ans_;
   }
@@ -4140,9 +4183,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_nextCursor = sse_decode_opt_box_autoadd_transaction_cursor(
       deserializer,
     );
+    var var_feesByMonth = sse_decode_list_fees_by_month(deserializer);
     return WalletListTransactionsResponse(
       txs: var_txs,
       nextCursor: var_nextCursor,
+      feesByMonth: var_feesByMonth,
     );
   }
 
@@ -4867,6 +4912,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_fees_by_month(FeesByMonth self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.year, serializer);
+    sse_encode_u_32(self.month, serializer);
+    sse_encode_u_64(self.fees, serializer);
+  }
+
+  @protected
   void sse_encode_i_32(int self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putInt32(self);
@@ -4905,6 +4958,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_String(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_fees_by_month(
+    List<FeesByMonth> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_fees_by_month(item, serializer);
     }
   }
 
@@ -5426,6 +5491,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_transaction(self.txs, serializer);
     sse_encode_opt_box_autoadd_transaction_cursor(self.nextCursor, serializer);
+    sse_encode_list_fees_by_month(self.feesByMonth, serializer);
   }
 
   @protected

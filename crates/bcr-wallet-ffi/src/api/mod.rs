@@ -1,6 +1,6 @@
 use bcr_wallet_core::types::{
-    PaymentResultCallback, get_btc_alpha_tx_id, get_btc_beta_tx_id, get_payment_type,
-    get_transaction_status,
+    ListTransactionsResult, PaymentResultCallback, get_btc_alpha_tx_id, get_btc_beta_tx_id,
+    get_payment_type, get_transaction_status,
 };
 use nostr_sdk::RelayUrl;
 use once_cell::sync::Lazy;
@@ -643,7 +643,11 @@ pub async fn wallet_get_transactions(
 ) -> Result<WalletListTransactionsResponse, WalletError> {
     let app_state = get_app_state().await;
     let limit = req.limit.clamp(5, 100);
-    let (txs, next_cursor) = app_state
+    let ListTransactionsResult {
+        txs,
+        next_cursor,
+        fees_by_month,
+    } = app_state
         .wallet_list_txs(
             req.wallet_id,
             req.filter.into(),
@@ -655,6 +659,7 @@ pub async fn wallet_get_transactions(
     Ok(WalletListTransactionsResponse {
         txs: txs.into_iter().map(|t| t.into()).collect(),
         next_cursor: next_cursor.map(|nc| nc.into()),
+        fees_by_month: fees_by_month.into_iter().map(|fbm| fbm.into()).collect(),
     })
 }
 
@@ -803,6 +808,7 @@ pub struct WalletListTransactionsRequest {
 pub struct WalletListTransactionsResponse {
     pub txs: Vec<Transaction>,
     pub next_cursor: Option<TransactionCursor>,
+    pub fees_by_month: Vec<FeesByMonth>,
 }
 
 #[derive(Debug, Clone)]
@@ -1158,6 +1164,23 @@ impl From<bcr_wallet_core::types::TransactionCursor> for TransactionCursor {
                     id: id.to_string(),
                 }
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeesByMonth {
+    pub year: i32,
+    pub month: u32,
+    pub fees: u64,
+}
+
+impl From<bcr_wallet_core::types::FeesByMonth> for FeesByMonth {
+    fn from(value: bcr_wallet_core::types::FeesByMonth) -> Self {
+        FeesByMonth {
+            year: value.year,
+            month: value.month,
+            fees: u64::from(value.fees),
         }
     }
 }

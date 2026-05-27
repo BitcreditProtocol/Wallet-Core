@@ -6,6 +6,7 @@
     * There is a `limit`, to set the amount of items returned, clamped between 5 - 100 per call
     * A `TransactionCursor` is returned per call, which can be passed into the next request to get the next page
         * if the `next_cursor` is empty, all results have been returned
+* Add a `fees_by_month` field to the result of `wallet_get_transactions`, which sums up the fees for the distinct months present in the returned transactions by UTC time, sorted descending
 
 # 0.9.2
 
