@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use android_logger::FilterBuilder;
 use bcr_common::{
     cashu::{self},
-    cdk_common,
+    cdk_common::{self, wallet::TransactionId},
 };
 use bcr_wallet_api::{
     AppState,
@@ -639,12 +639,22 @@ pub async fn wallet_get_transaction_ids(
 
 #[frb]
 pub async fn wallet_get_transactions(
-    req: WalletRequest,
-) -> Result<WalletTransactionsResponse, WalletError> {
+    req: WalletListTransactionsRequest,
+) -> Result<WalletListTransactionsResponse, WalletError> {
     let app_state = get_app_state().await;
-    let ids = app_state.wallet_list_txs(req.wallet_id).await?;
-    Ok(WalletTransactionsResponse {
-        txs: ids.into_iter().map(|t| t.into()).collect(),
+    let limit = req.limit.clamp(5, 100);
+    let (txs, next_cursor) = app_state
+        .wallet_list_txs(
+            req.wallet_id,
+            req.filter.into(),
+            req.sort.into(),
+            limit,
+            req.cursor.map(|c| c.try_into()).transpose()?,
+        )
+        .await?;
+    Ok(WalletListTransactionsResponse {
+        txs: txs.into_iter().map(|t| t.into()).collect(),
+        next_cursor: next_cursor.map(|nc| nc.into()),
     })
 }
 
@@ -780,6 +790,22 @@ pub struct WalletRequest {
 }
 
 #[derive(Debug, Clone)]
+pub struct WalletListTransactionsRequest {
+    pub wallet_id: String,
+    pub filter: TransactionFilters,
+    pub sort: TransactionSort,
+    // returned entries limit - clamped to 5-100 per call
+    pub limit: usize,
+    pub cursor: Option<TransactionCursor>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletListTransactionsResponse {
+    pub txs: Vec<Transaction>,
+    pub next_cursor: Option<TransactionCursor>,
+}
+
+#[derive(Debug, Clone)]
 pub struct WalletTransactionRequest {
     pub wallet_id: String,
     pub tx_id: String,
@@ -848,11 +874,6 @@ pub struct WalletTransactionIdsResponse {
 }
 
 #[derive(Debug, Clone)]
-pub struct WalletTransactionsResponse {
-    pub txs: Vec<Transaction>,
-}
-
-#[derive(Debug, Clone)]
 pub struct WalletCheckReceivedPaymentRequest {
     pub wallet_id: String,
     pub max_wait_sec: u64,
@@ -882,11 +903,21 @@ pub enum TransactionDirection {
     Incoming,
     Outgoing,
 }
-impl std::convert::From<cdk_common::wallet::TransactionDirection> for TransactionDirection {
+
+impl From<cdk_common::wallet::TransactionDirection> for TransactionDirection {
     fn from(dir: cdk_common::wallet::TransactionDirection) -> Self {
         match dir {
             cdk_common::wallet::TransactionDirection::Incoming => TransactionDirection::Incoming,
             cdk_common::wallet::TransactionDirection::Outgoing => TransactionDirection::Outgoing,
+        }
+    }
+}
+
+impl From<TransactionDirection> for cdk_common::wallet::TransactionDirection {
+    fn from(dir: TransactionDirection) -> Self {
+        match dir {
+            TransactionDirection::Incoming => cdk_common::wallet::TransactionDirection::Incoming,
+            TransactionDirection::Outgoing => cdk_common::wallet::TransactionDirection::Outgoing,
         }
     }
 }
@@ -901,7 +932,7 @@ pub enum PaymentType {
     Swap,
 }
 
-impl std::convert::From<bcr_wallet_core::types::PaymentType> for PaymentType {
+impl From<bcr_wallet_core::types::PaymentType> for PaymentType {
     fn from(ptype: bcr_wallet_core::types::PaymentType) -> Self {
         match ptype {
             bcr_wallet_core::types::PaymentType::NotApplicable => PaymentType::NotApplicable,
@@ -909,6 +940,18 @@ impl std::convert::From<bcr_wallet_core::types::PaymentType> for PaymentType {
             bcr_wallet_core::types::PaymentType::Cdk18 => PaymentType::Cdk18,
             bcr_wallet_core::types::PaymentType::OnChain => PaymentType::OnChain,
             bcr_wallet_core::types::PaymentType::Swap => PaymentType::Swap,
+        }
+    }
+}
+
+impl From<PaymentType> for bcr_wallet_core::types::PaymentType {
+    fn from(ptype: PaymentType) -> Self {
+        match ptype {
+            PaymentType::NotApplicable => bcr_wallet_core::types::PaymentType::NotApplicable,
+            PaymentType::Token => bcr_wallet_core::types::PaymentType::Token,
+            PaymentType::Cdk18 => bcr_wallet_core::types::PaymentType::Cdk18,
+            PaymentType::OnChain => bcr_wallet_core::types::PaymentType::OnChain,
+            PaymentType::Swap => bcr_wallet_core::types::PaymentType::Swap,
         }
     }
 }
@@ -922,7 +965,7 @@ pub enum TransactionStatus {
     Canceled,
 }
 
-impl std::convert::From<bcr_wallet_core::types::TransactionStatus> for TransactionStatus {
+impl From<bcr_wallet_core::types::TransactionStatus> for TransactionStatus {
     fn from(status: bcr_wallet_core::types::TransactionStatus) -> Self {
         match status {
             bcr_wallet_core::types::TransactionStatus::NotApplicable => {
@@ -931,6 +974,19 @@ impl std::convert::From<bcr_wallet_core::types::TransactionStatus> for Transacti
             bcr_wallet_core::types::TransactionStatus::Pending => TransactionStatus::Pending,
             bcr_wallet_core::types::TransactionStatus::Settled => TransactionStatus::Settled,
             bcr_wallet_core::types::TransactionStatus::Canceled => TransactionStatus::Canceled,
+        }
+    }
+}
+
+impl From<TransactionStatus> for bcr_wallet_core::types::TransactionStatus {
+    fn from(status: TransactionStatus) -> Self {
+        match status {
+            TransactionStatus::NotApplicable => {
+                bcr_wallet_core::types::TransactionStatus::NotApplicable
+            }
+            TransactionStatus::Pending => bcr_wallet_core::types::TransactionStatus::Pending,
+            TransactionStatus::Settled => bcr_wallet_core::types::TransactionStatus::Settled,
+            TransactionStatus::Canceled => bcr_wallet_core::types::TransactionStatus::Canceled,
         }
     }
 }
@@ -964,6 +1020,146 @@ pub struct Transaction {
     pub status: TransactionStatus,
     pub melt_tx: MeltTx,
     pub quote_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TransactionFilters {
+    /// Empty means all payment types
+    pub payment_types: Vec<PaymentType>,
+    /// Empty means all statuses
+    pub statuses: Vec<TransactionStatus>,
+    /// None means both incoming and outgoing
+    pub direction: Option<TransactionDirection>,
+    /// None means no time restriction
+    pub time_range: Option<TimeRange>,
+}
+
+impl From<TransactionFilters> for bcr_wallet_core::types::TransactionFilters {
+    fn from(value: TransactionFilters) -> Self {
+        Self {
+            payment_types: value
+                .payment_types
+                .into_iter()
+                .map(|pt| pt.into())
+                .collect(),
+            statuses: value.statuses.into_iter().map(|s| s.into()).collect(),
+            direction: value.direction.map(|d| d.into()),
+            time_range: value.time_range.map(|t| t.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeRange {
+    /// Inclusive lower bound
+    pub from: Option<u64>,
+    /// Inclusive upper bound
+    pub to: Option<u64>,
+}
+
+impl From<TimeRange> for bcr_wallet_core::types::TimeRange {
+    fn from(value: TimeRange) -> Self {
+        Self {
+            from: value.from,
+            to: value.to,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransactionSort {
+    TimeAsc,
+    #[default]
+    TimeDesc,
+    AmountAsc,
+    AmountDesc,
+}
+
+impl From<TransactionSort> for bcr_wallet_core::types::TransactionSort {
+    fn from(value: TransactionSort) -> Self {
+        match value {
+            TransactionSort::TimeAsc => bcr_wallet_core::types::TransactionSort::TimeAsc,
+            TransactionSort::TimeDesc => bcr_wallet_core::types::TransactionSort::TimeDesc,
+            TransactionSort::AmountAsc => bcr_wallet_core::types::TransactionSort::AmountAsc,
+            TransactionSort::AmountDesc => bcr_wallet_core::types::TransactionSort::AmountDesc,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionCursor {
+    pub sort: TransactionSort,
+    pub tstamp: Option<u64>,
+    pub amount: Option<u64>,
+    pub id: String,
+}
+
+impl TryFrom<TransactionCursor> for bcr_wallet_core::types::TransactionCursor {
+    type Error = BcrWalletError;
+
+    fn try_from(value: TransactionCursor) -> Result<Self, Self::Error> {
+        Ok(match value.sort {
+            TransactionSort::TimeDesc => bcr_wallet_core::types::TransactionCursor::TimeDesc {
+                tstamp: value.tstamp.ok_or(BcrWalletError::InvalidCursor)?,
+                id: TransactionId::from_str(&value.id)
+                    .map_err(|_| BcrWalletError::InvalidTransactionId)?,
+            },
+            TransactionSort::TimeAsc => bcr_wallet_core::types::TransactionCursor::TimeAsc {
+                tstamp: value.tstamp.ok_or(BcrWalletError::InvalidCursor)?,
+                id: TransactionId::from_str(&value.id)
+                    .map_err(|_| BcrWalletError::InvalidTransactionId)?,
+            },
+            TransactionSort::AmountDesc => bcr_wallet_core::types::TransactionCursor::AmountDesc {
+                amount: cashu::Amount::from(value.amount.ok_or(BcrWalletError::InvalidCursor)?),
+                id: TransactionId::from_str(&value.id)
+                    .map_err(|_| BcrWalletError::InvalidTransactionId)?,
+            },
+            TransactionSort::AmountAsc => bcr_wallet_core::types::TransactionCursor::AmountAsc {
+                amount: cashu::Amount::from(value.amount.ok_or(BcrWalletError::InvalidCursor)?),
+                id: TransactionId::from_str(&value.id)
+                    .map_err(|_| BcrWalletError::InvalidTransactionId)?,
+            },
+        })
+    }
+}
+
+impl From<bcr_wallet_core::types::TransactionCursor> for TransactionCursor {
+    fn from(value: bcr_wallet_core::types::TransactionCursor) -> Self {
+        match value {
+            bcr_wallet_core::types::TransactionCursor::TimeDesc { tstamp, id } => {
+                TransactionCursor {
+                    sort: TransactionSort::TimeDesc,
+                    tstamp: Some(tstamp),
+                    amount: None,
+                    id: id.to_string(),
+                }
+            }
+            bcr_wallet_core::types::TransactionCursor::TimeAsc { tstamp, id } => {
+                TransactionCursor {
+                    sort: TransactionSort::TimeAsc,
+                    tstamp: Some(tstamp),
+                    amount: None,
+                    id: id.to_string(),
+                }
+            }
+            bcr_wallet_core::types::TransactionCursor::AmountDesc { amount, id } => {
+                TransactionCursor {
+                    sort: TransactionSort::AmountDesc,
+                    amount: Some(u64::from(amount)),
+                    tstamp: None,
+                    id: id.to_string(),
+                }
+            }
+            bcr_wallet_core::types::TransactionCursor::AmountAsc { amount, id } => {
+                TransactionCursor {
+                    sort: TransactionSort::AmountAsc,
+                    amount: Some(u64::from(amount)),
+                    tstamp: None,
+                    id: id.to_string(),
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1312,6 +1508,9 @@ pub enum WalletErrorCode {
     NoDevMode,
     InvalidBitcoinAddress,
     InvalidMnemonic,
+    InvalidTransactionId,
+    InvalidCursor,
+    SortMismatch,
     MnemonicNotFound,
     WalletUniqueName,
     WalletUniqueId,
@@ -1410,6 +1609,15 @@ impl From<BcrWalletError> for WalletError {
             }
             BcrWalletError::InvalidMnemonic => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidMnemonic)
+            }
+            BcrWalletError::InvalidTransactionId => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidTransactionId)
+            }
+            BcrWalletError::InvalidCursor => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidCursor)
+            }
+            BcrWalletError::SortMismatch => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::SortMismatch)
             }
             BcrWalletError::InvalidBitcoinAddress(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidBitcoinAddress)

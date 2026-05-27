@@ -4,8 +4,8 @@ use anyhow::Result;
 use bcr_common::cdk_common::wallet::TransactionId;
 use bcr_wallet_api::{AppState, config::CreateWalletConfig};
 use bcr_wallet_core::types::{
-    PaymentResultCallback, get_btc_alpha_tx_id, get_btc_beta_tx_id, get_payment_type,
-    get_transaction_status,
+    PaymentResultCallback, TransactionFilters, TransactionSort, get_btc_alpha_tx_id,
+    get_btc_beta_tx_id, get_payment_type, get_transaction_status,
 };
 use chrono::{DateTime, Utc};
 use tokio::sync::oneshot;
@@ -32,7 +32,29 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
             .wallet_dev_mode_detailed_balance(id.clone())
             .await?;
 
-        let transactions = app_state.wallet_list_txs(id.clone()).await?;
+        let mut transactions = vec![];
+        let mut cursor = None;
+        loop {
+            let res = app_state
+                .wallet_list_txs(
+                    id.clone(),
+                    TransactionFilters {
+                        ..Default::default()
+                    },
+                    TransactionSort::TimeDesc,
+                    20,
+                    cursor,
+                )
+                .await?;
+
+            transactions.extend(res.0);
+
+            if res.1.is_none() {
+                break;
+            }
+
+            cursor = res.1;
+        }
 
         res.push_str(&format!("Name: {name}\n"));
         res.push_str(&format!("Wallet ID: {id}\n"));
@@ -60,10 +82,10 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
         }
 
         if !transactions.is_empty() {
-            res.push_str("Transactions:");
+            res.push_str(&format!("Transactions ({}):", transactions.len()));
             push_break(&mut res);
 
-            for (idx, tx) in transactions.iter().enumerate() {
+            for tx in transactions.iter() {
                 let status = get_transaction_status(&tx.metadata);
                 let ptype = get_payment_type(&tx.metadata);
                 let alpha_btc_tx_id = get_btc_alpha_tx_id(&tx.metadata);
@@ -85,9 +107,6 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
                     tx.id(), tx.amount, tx.unit, tx.fee,  status, format_timestamp(tx.timestamp), &format!("{:?}", ptype), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id
                 ));
                 push_break(&mut res);
-                if idx > 20 {
-                    break;
-                }
             }
         }
         push_break(&mut res);

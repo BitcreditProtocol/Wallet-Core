@@ -9,7 +9,8 @@ use bcr_common::{
     wallet::Token,
 };
 use bcr_wallet_core::types::{
-    self, MintSummary, PaymentResultCallback, PaymentSummary, Seed, WalletConfig,
+    self, MintSummary, PaymentResultCallback, PaymentSummary, Seed, TransactionCursor,
+    TransactionFilters, TransactionSort, WalletConfig,
 };
 use bcr_wallet_core::util::{build_wallet_id, keypair_from_mnemonic, seed_from_mnemonic};
 use bcr_wallet_persistence::redb::{Database, build_pursedb, build_wallet_dbs, create_db};
@@ -521,13 +522,23 @@ impl AppState {
         Ok(tx_ids)
     }
 
-    pub async fn wallet_list_txs(&self, id: String) -> Result<Vec<Transaction>> {
-        tracing::debug!("wallet_list_txs({id})");
+    pub async fn wallet_list_txs(
+        &self,
+        id: String,
+        filter: TransactionFilters,
+        sort: TransactionSort,
+        limit: usize,
+        cursor: Option<TransactionCursor>,
+    ) -> Result<(Vec<Transaction>, Option<TransactionCursor>)> {
+        tracing::debug!("wallet_list_txs({id}, {filter:?}, {sort:?}, {limit}, {cursor:?})");
 
         let wallet = self.get_wallet(&id).await?;
-        let mut txs = wallet.read().await.list_txs().await?;
-        txs.sort_by_key(|b| std::cmp::Reverse(b.timestamp)); // sort by timestamp desc
-        Ok(txs)
+        let res = wallet
+            .read()
+            .await
+            .list_txs(filter, sort, limit, cursor)
+            .await?;
+        Ok(res)
     }
 
     pub async fn wallet_load_tx(&self, id: String, tx_id: &str) -> Result<Transaction> {
@@ -566,17 +577,7 @@ impl AppState {
         tracing::debug!("wallet_recover_pending_stale_proofs({id})");
         let wallet = self.get_wallet(&id).await?;
         let wlt = wallet.read().await;
-        // collect ys for pending transactions, so we don't recover proofs from open transactions
-
-        let pending_txs_ys: Vec<cashu::PublicKey> = wlt
-            .list_txs()
-            .await?
-            .into_iter()
-            .filter(wallet::util::tx_can_be_refreshed)
-            .flat_map(|tx| tx.ys)
-            .collect();
-
-        let recovered = wlt.recover_pending_stale_proofs(&pending_txs_ys).await?;
+        let recovered = wlt.recover_pending_stale_proofs().await?;
 
         Ok(recovered)
     }
@@ -594,28 +595,7 @@ impl AppState {
     pub async fn wallet_refresh_txs(&self, id: String) -> Result<usize> {
         tracing::debug!("wallet_refresh_txs({id})");
         let wallet = self.get_wallet(&id).await?;
-        let txs = wallet.read().await.list_txs().await?;
-        let mut updated = 0;
-
-        for tx in txs.iter() {
-            if !wallet::util::tx_can_be_refreshed(tx) {
-                continue;
-            }
-
-            let tx_id = tx.id();
-
-            match wallet.read().await.refresh_tx(tx_id).await {
-                Ok(tx_updated) => {
-                    if tx_updated {
-                        updated += 1;
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Error refreshing tx {}: {e}", tx_id);
-                }
-            };
-        }
-
+        let updated = wallet.read().await.refresh_txs().await?;
         Ok(updated)
     }
 
