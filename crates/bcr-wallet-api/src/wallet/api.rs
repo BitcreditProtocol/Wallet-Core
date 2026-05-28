@@ -17,9 +17,7 @@ use bcr_common::{
 };
 use bcr_wallet_core::{
     SendSync,
-    types::{
-        BTC_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback, PaymentType, TransactionStatus,
-    },
+    types::{BTC_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback, PaymentType, TransactionStatus},
     util::to_mint_url,
 };
 use bitcoin::secp256k1;
@@ -437,7 +435,10 @@ impl WalletApi for super::Wallet {
                     TRANSACTION_STATUS_METADATA_KEY.to_owned(),
                     TransactionStatus::Settled.to_string(),
                 );
-                metadata.insert(BTC_TX_ID_TYPE_METADATA_KEY.to_owned(), btc_tx_id.to_string());
+                metadata.insert(
+                    BTC_TX_ID_TYPE_METADATA_KEY.to_owned(),
+                    btc_tx_id.to_string(),
+                );
 
                 let partial_tx = Transaction {
                     mint_url: to_mint_url(self.client.mint_url()),
