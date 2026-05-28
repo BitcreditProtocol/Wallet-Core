@@ -43,12 +43,6 @@ pub enum Error {
     BtcBip32(#[from] bitcoin::bip32::Error),
     #[error("uuid:: {0}")]
     Uuid(#[from] uuid::Error),
-    #[error("nostr::nip19 {0}")]
-    Nip19(#[from] nostr_sdk::nips::nip19::Error),
-    #[error("nostr::nip06 {0}")]
-    Nip06(#[from] nostr_sdk::nips::nip06::Error),
-    #[error("nostr-sdk::client {0}")]
-    NostrClient(#[from] nostr_sdk::client::Error),
     #[error("serde_json: {0}")]
     SerdeJson(#[from] serde_json::Error),
     #[error("reqwest::Url {0}")]
@@ -129,6 +123,8 @@ pub enum Error {
     InsufficientOnChainMintAmount(u64),
     #[error("Database Error: {0}")]
     Database(#[from] bcr_wallet_persistence::error::Error),
+    #[error("Transport Error: {0}")]
+    Transport(#[from] bcr_wallet_transport::error::Error),
     #[error("External Error: {0}")]
     External(#[from] crate::external::Error),
     #[error("Dev Mode is disabled")]

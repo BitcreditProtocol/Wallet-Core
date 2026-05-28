@@ -6,7 +6,7 @@ license = "MIT"
 [workspace]
 resolver = "3"
 
-members = ["crates/bcr-wallet-core", "crates/bcr-wallet-cli", "crates/bcr-wallet-persistence", "crates/bcr-wallet-api", "crates/bcr-wallet-ffi"]
+members = ["crates/bcr-wallet-core", "crates/bcr-wallet-cli", "crates/bcr-wallet-persistence", "crates/bcr-wallet-api","crates/bcr-wallet-transport", "crates/bcr-wallet-ffi"]
 
 [profile.release]
 opt-level = "s"
@@ -20,6 +20,7 @@ bcr-common = {git = "https://github.com/BitcreditProtocol/bcr-common.git", rev =
 bcr-wallet-core = {path = "./crates/bcr-wallet-core"}
 bcr-wallet-api = {path = "./crates/bcr-wallet-api"}
 bcr-wallet-persistence = {path = "./crates/bcr-wallet-persistence"}
+bcr-wallet-transport = {path = "./crates/bcr-wallet-transport"}
 bip39 = {version = "2.1", features = ["rand"]}
 bitcoin = {version = "0.32"}
 borsh = {version = "1"}

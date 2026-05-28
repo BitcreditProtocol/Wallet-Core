@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use bcr_common::cashu::{self, CurrencyUnit};
 use bcr_wallet_core::types::WalletConfig;
 use bitcoin::secp256k1;
-use nostr_sdk::RelayUrl;
+use nostr::RelayUrl;
 use redb::{Database, ReadableDatabase, TableDefinition, TableError};
 use std::{collections::HashMap, sync::Arc};
 use tokio::task::spawn_blocking;

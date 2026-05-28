@@ -1,7 +1,5 @@
+use nostr::RelayUrl;
 use std::{collections::HashMap, path::PathBuf};
-
-use crate::error::Result;
-use nostr_sdk::{Keys, RelayUrl, nips::nip06::FromMnemonic, nips::nip19::Nip19Profile};
 
 pub const LOCK_REDUCTION_SECONDS_PER_HOP: u64 = 600;
 pub const MAX_INTERMINT_ATTEMPTS: u64 = 3;
@@ -22,23 +20,4 @@ pub struct CreateWalletConfig {
     pub nostr_relays: Vec<RelayUrl>,
     pub mnemonic: bip39::Mnemonic,
     pub default_mint_url: url::Url,
-}
-
-#[derive(Debug, Clone)]
-pub struct NostrConfig {
-    pub nprofile: Nip19Profile,
-    pub nostr_signer: Keys,
-    pub relays: Vec<RelayUrl>,
-}
-
-impl NostrConfig {
-    pub fn new(mnemonic: bip39::Mnemonic, nostr_relays: Vec<RelayUrl>) -> Result<Self> {
-        let keys = Keys::from_mnemonic(mnemonic.to_string(), None)?;
-
-        Ok(Self {
-            nprofile: Nip19Profile::new(keys.public_key, nostr_relays.clone()),
-            nostr_signer: keys,
-            relays: nostr_relays,
-        })
-    }
 }

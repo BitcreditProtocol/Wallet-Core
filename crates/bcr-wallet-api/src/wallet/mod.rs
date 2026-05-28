@@ -13,10 +13,7 @@ use crate::{
     },
 };
 use bcr_common::{
-    cashu::{
-        self, Amount, CurrencyUnit, KeySetInfo, PaymentRequest, Proof, ProofsMethods,
-        nut18 as cdk18,
-    },
+    cashu::{self, Amount, CurrencyUnit, KeySetInfo, PaymentRequest, Proof, ProofsMethods},
     cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
     wallet::Token,
     wire::clowder::{ConnectedMintResponse, ConnectedMintsResponse},
@@ -29,15 +26,14 @@ use bcr_wallet_core::{
     util::{from_mint_url, to_mint_url},
 };
 use bcr_wallet_persistence::TransactionRepository;
+use bcr_wallet_transport::NostrClient;
 use bitcoin::{
     hashes::{Hash, sha256::Hash as Sha256},
     secp256k1,
 };
-use nostr::{nips::nip59::UnwrappedGift, signer::NostrSigner, types::RelayUrl};
-use nostr_sdk::nips::nip19::{FromBech32, Nip19Profile};
+use nostr::types::RelayUrl;
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 pub struct Wallet {
     network: bitcoin::Network,
@@ -55,8 +51,7 @@ pub struct Wallet {
     client_factory: Box<dyn Fn(url::Url) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
     swap_expiry: chrono::TimeDelta,
     nostr_relays: Vec<RelayUrl>,
-    nostr_cl: Arc<nostr_sdk::Client>,
-    nostr_profile: Nip19Profile,
+    nostr_cl: NostrClient,
 }
 
 impl Wallet {
@@ -74,8 +69,7 @@ impl Wallet {
         client_factory: Box<dyn Fn(url::Url) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
         swap_expiry: chrono::TimeDelta,
         nostr_relays: Vec<RelayUrl>,
-        nostr_cl: Arc<nostr_sdk::Client>,
-        nostr_profile: Nip19Profile,
+        nostr_cl: NostrClient,
     ) -> Result<Self> {
         Ok(Self {
             network,
@@ -94,7 +88,6 @@ impl Wallet {
             swap_expiry,
             nostr_relays,
             nostr_cl,
-            nostr_profile,
         })
     }
 
@@ -744,7 +737,7 @@ impl Wallet {
     async fn pay_nut18(
         &self,
         proofs: Vec<cashu::Proof>,
-        nostr_cl: &nostr_sdk::Client,
+        nostr_cl: &NostrClient,
         http_cl: &reqwest::Client,
         transport: cashu::Transport,
         p_id: Option<String>,
@@ -765,101 +758,14 @@ impl Wallet {
             }
             cashu::TransportType::Nostr => {
                 let payload = serde_json::to_string(&payload)?;
-                let receiver = Nip19Profile::from_bech32(&transport.target)?;
-                let output = nostr_cl
-                    .send_private_msg_to(
-                        receiver.relays,
-                        receiver.public_key,
-                        payload,
-                        std::iter::empty(),
-                    )
-                    .await?;
+                let event_id = nostr_cl.send_private_msg(transport.target, payload).await?;
                 partial_tx
                     .metadata
-                    .insert(String::from("nostr::event_id"), output.id().to_string());
+                    .insert(String::from("nostr::event_id"), event_id.to_string());
             }
         }
         let txid = self.tx_repo.store_tx(partial_tx).await?;
         Ok(txid)
-    }
-
-    pub async fn handle_event(
-        &self,
-        event: nostr_sdk::Event,
-        signer: Arc<dyn NostrSigner>,
-        payment_id: Uuid,
-        expected: Amount,
-    ) -> Result<Option<TransactionId>> {
-        if event.kind != nostr_sdk::Kind::GiftWrap {
-            tracing::debug!("handle event, but no GiftWrap - {}", event.kind);
-            return Ok(None);
-        }
-
-        let payload = match UnwrappedGift::from_gift_wrap(&signer, &event).await {
-            Ok(UnwrappedGift { rumor, .. }) => {
-                if rumor.kind == nostr_sdk::Kind::PrivateDirectMessage {
-                    match serde_json::from_str::<cdk18::PaymentRequestPayload>(&rumor.content) {
-                        Ok(payload) => payload,
-                        Err(e) => {
-                            tracing::error!("Parsing Payment Request failed: {e}");
-                            return Ok(None);
-                        }
-                    }
-                } else {
-                    tracing::debug!(
-                        "handle event, but rumor no PrivateDirectMessage - {}",
-                        rumor.kind
-                    );
-                    return Ok(None);
-                }
-            }
-            Err(e) => {
-                tracing::error!("Unwrapping gift wrap failed: {e}");
-                return Ok(None);
-            }
-        };
-
-        if payload.id.unwrap_or_default() != payment_id.to_string() {
-            tracing::debug!("handle event, payment id doesn't match");
-            return Ok(None);
-        }
-
-        let amount = payload.proofs.total_amount()?;
-        if amount < expected {
-            tracing::warn!(
-                "Received amount {} is less than expected {}",
-                amount,
-                expected
-            );
-            return Ok(None);
-        }
-        let meta = HashMap::from([
-            (String::from("sender"), event.pubkey.to_string()),
-            (String::from("payment_id"), payment_id.to_string()),
-            (String::from("nostr_event_id"), event.id.to_string()),
-            (
-                String::from(PAYMENT_TYPE_METADATA_KEY),
-                PaymentType::Cdk18.to_string(),
-            ),
-            (
-                String::from(TRANSACTION_STATUS_METADATA_KEY),
-                TransactionStatus::Settled.to_string(),
-            ),
-        ]);
-        let response = <Self as api::WalletApi>::receive_proofs(
-            self,
-            payload.proofs,
-            payload.unit,
-            from_mint_url(&payload.mint),
-            chrono::Utc::now().timestamp() as u64,
-            payload.memo,
-            meta,
-        )
-        .await;
-        match response {
-            Ok(txid) => Ok(Some(txid)),
-            Err(e) => Err(e),
-        }
     }
 
     pub async fn dev_mode_detailed_balance(&self) -> Result<Vec<WalletDetailedBalanceEntry>> {
@@ -899,6 +805,7 @@ mod tests {
     };
     use secp256k1::SECP256K1;
     use tokio_util::sync::CancellationToken;
+    use uuid::Uuid;
 
     use super::*;
     use crate::{
@@ -906,6 +813,7 @@ mod tests {
         pocket::{PocketBalance, test_utils::tests::MockDebitPocket},
         wallet::{api::WalletApi, types::WalletPaymentType},
     };
+    use nostr_relay_builder::MockRelay;
 
     struct MockWalletCtx {
         pub client: MockClowderMintConnector,
@@ -922,9 +830,12 @@ mod tests {
         }
     }
 
-    fn wallet(ctx: MockWalletCtx) -> Wallet {
+    pub async fn get_mock_relay() -> MockRelay {
+        MockRelay::run().await.expect("could not create mock relay")
+    }
+
+    async fn wallet(ctx: MockWalletCtx) -> Wallet {
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(ctx.client);
-        let nostr_keys = nostr_sdk::Keys::generate();
         let mut beta_mock = crate::external::mint::MockClowderMintConnector::new();
         beta_mock.expect_get_alpha_status().returning(|_| {
             Ok(bcr_common::wire::clowder::AlphaStateResponse {
@@ -939,6 +850,8 @@ mod tests {
         let beta_url = url::Url::parse("https://beta.test").unwrap();
         let mut beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>> = HashMap::new();
         beta_clients.insert(beta_url, Arc::new(beta_mock));
+
+        let relay = get_mock_relay().await;
         Wallet {
             network: bitcoin::Network::Testnet,
             client: arc_client,
@@ -955,8 +868,12 @@ mod tests {
             client_factory: Box::new(|url| Arc::new(HttpClientExt::new(url))),
             swap_expiry: chrono::TimeDelta::seconds(60),
             nostr_relays: vec![],
-            nostr_cl: Arc::new(nostr_sdk::Client::new(nostr_keys.clone())),
-            nostr_profile: Nip19Profile::new(nostr_keys.public_key(), vec![]),
+            nostr_cl: NostrClient::new(
+                &bip39::Mnemonic::generate(12).unwrap(),
+                &[RelayUrl::from_str(&relay.url()).unwrap()],
+            )
+            .await
+            .unwrap(),
         }
     }
 
@@ -1124,7 +1041,7 @@ mod tests {
             .times(1)
             .return_const(url::Url::from_str("https://mint.example").unwrap());
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         let cfg = wlt.config().expect("config works");
 
         assert_eq!(cfg.wallet_id, "w-1");
@@ -1140,7 +1057,7 @@ mod tests {
     #[tokio::test]
     async fn test_name() {
         let ctx = wallet_ctx();
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
 
         let res = wlt.name();
         assert_eq!(res, "wallet-1".to_owned());
@@ -1149,7 +1066,7 @@ mod tests {
     #[tokio::test]
     async fn test_id() {
         let ctx = wallet_ctx();
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         assert_eq!(wlt.id(), "w-1".to_string());
     }
 
@@ -1161,7 +1078,7 @@ mod tests {
             .times(1)
             .return_const(url::Url::from_str("https://mint.example").unwrap());
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         let url = wlt.mint_url();
         assert_eq!(url.to_string(), "https://mint.example/");
     }
@@ -1173,7 +1090,7 @@ mod tests {
             .expect_mint_url()
             .times(1)
             .return_const(url::Url::from_str("https://mint.example").unwrap());
-        let mut wlt = wallet(ctx);
+        let mut wlt = wallet(ctx).await;
 
         let b1 = url::Url::from_str("https://beta1.example").unwrap();
         let b2 = url::Url::from_str("https://beta2.example").unwrap();
@@ -1198,7 +1115,7 @@ mod tests {
     #[tokio::test]
     async fn test_clowder_id() {
         let ctx = wallet_ctx();
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         assert_eq!(wlt.clowder_id(), test_pub_key());
     }
 
@@ -1209,7 +1126,7 @@ mod tests {
             .expect_get_mint_keysets()
             .times(1)
             .returning(|| Ok(vec![]));
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
 
         let err = wlt
             .prepare_pay("not-a-request".to_string())
@@ -1231,7 +1148,7 @@ mod tests {
             .times(1)
             .return_const(url::Url::from_str("https://mint.example").unwrap());
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         let req = wlt
             .prepare_payment_request(
                 cashu::Amount::from(123),
@@ -1253,7 +1170,7 @@ mod tests {
     #[tokio::test]
     async fn test_check_received_payment_errors_if_no_current_request() {
         let ctx = wallet_ctx();
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
 
         let callback: PaymentResultCallback = Arc::new(move |_| {});
         let cancel_token = CancellationToken::new();
@@ -1282,7 +1199,7 @@ mod tests {
             .expect_unit()
             .times(1)
             .returning(|| CurrencyUnit::Sat);
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
 
         let res = wlt.debit_unit();
         assert_eq!(res, CurrencyUnit::Sat);
@@ -1299,7 +1216,7 @@ mod tests {
             .expect_balance()
             .times(1)
             .returning(|_| Ok(PocketBalance::default()));
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
 
         let res = wlt.balance().await.expect("balance works");
         assert_eq!(res.debit, Amount::ZERO);
@@ -1314,7 +1231,7 @@ mod tests {
             .expect_list_tx_ids()
             .times(1)
             .returning(|| Ok(vec![]));
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
 
         let res = wlt.list_tx_ids().await.unwrap();
         assert!(res.is_empty());
@@ -1327,7 +1244,7 @@ mod tests {
             .expect_list_txs()
             .times(1)
             .returning(|| Ok(vec![]));
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
 
         let res = wlt
             .list_txs(
@@ -1345,7 +1262,7 @@ mod tests {
     #[tokio::test]
     async fn test_is_wallet_mint_offline_majority_true() {
         let ctx = wallet_ctx();
-        let mut wlt = wallet(ctx);
+        let mut wlt = wallet(ctx).await;
 
         let b1 = url::Url::from_str("https://b1.example").unwrap();
         let b2 = url::Url::from_str("https://b2.example").unwrap();
@@ -1383,7 +1300,7 @@ mod tests {
     #[tokio::test]
     async fn test_is_wallet_mint_rabid_majority_false() {
         let ctx = wallet_ctx();
-        let mut wlt = wallet(ctx);
+        let mut wlt = wallet(ctx).await;
 
         let b1 = url::Url::from_str("https://b1.example").unwrap();
         let b2 = url::Url::from_str("https://b2.example").unwrap();
@@ -1411,7 +1328,7 @@ mod tests {
     #[tokio::test]
     async fn test_mint_substitute_returns_some_on_majority_vote() {
         let ctx = wallet_ctx();
-        let mut wlt = wallet(ctx);
+        let mut wlt = wallet(ctx).await;
 
         let b1 = url::Url::from_str("https://b1.example").unwrap();
         let b2 = url::Url::from_str("https://b2.example").unwrap();
@@ -1471,7 +1388,7 @@ mod tests {
             .expect_unit()
             .times(1)
             .returning(|| CurrencyUnit::Sat);
-        let mut wlt = wallet(ctx);
+        let mut wlt = wallet(ctx).await;
         wlt.beta_clients.clear();
 
         let err = wlt
@@ -1521,7 +1438,7 @@ mod tests {
             .times(1)
             .returning(|_tx| Ok(TransactionId::new(vec![])));
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         *wlt.current_payment.lock().await = Some(PayReference {
             request_id: pid,
             unit: CurrencyUnit::Sat,
@@ -1558,7 +1475,7 @@ mod tests {
                 })
             });
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         let _ = wlt.mint(bitcoin::Amount::from_sat(1000)).await.unwrap();
     }
 
@@ -1578,7 +1495,7 @@ mod tests {
 
         ctx.tx_repo.expect_list_txs().returning(|| Ok(vec![]));
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         let recovered = wlt.recover_pending_stale_proofs().await.unwrap();
         assert_eq!(recovered, Amount::from(10));
     }
@@ -1606,7 +1523,7 @@ mod tests {
             .times(2)
             .returning(move |_| Ok(tx.clone()));
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         let err = wlt.reclaim_tx(tx_id).await.unwrap_err();
 
         match err {
@@ -1655,7 +1572,7 @@ mod tests {
             })
             .returning(|_, _, _| Ok(None));
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         let amount = wlt.reclaim_tx(tx_id).await.unwrap();
 
         assert_eq!(amount, Amount::ZERO);
@@ -1703,7 +1620,7 @@ mod tests {
 
         ctx.tx_repo.expect_update_fee().times(0);
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         let amount = wlt.reclaim_tx(tx_id).await.unwrap();
 
         assert_eq!(amount, Amount::from(10));
@@ -1755,7 +1672,7 @@ mod tests {
             .withf(|_, fee| *fee == Amount::from(3))
             .returning(|_, _| Ok(()));
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         let amount = wlt.reclaim_tx(tx_id).await.unwrap();
 
         assert_eq!(amount, Amount::from(7));
@@ -1770,7 +1687,7 @@ mod tests {
             .times(2)
             .returning(move |_, _| Ok(None));
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         wlt.edit_tx_memo(tx_id, Some("new_memo".to_owned()))
             .await
             .unwrap();
@@ -1794,7 +1711,7 @@ mod tests {
                 .times(1)
                 .returning(move || Ok(txs.clone()));
 
-            let wlt = wallet(ctx);
+            let wlt = wallet(ctx).await;
             let ListTransactionsResult {
                 txs, next_cursor, ..
             } = wlt
@@ -1818,7 +1735,7 @@ mod tests {
             .times(3)
             .returning(move || Ok(txs.clone()));
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
 
         let res1 = wlt
             .list_txs(
@@ -1918,7 +1835,7 @@ mod tests {
             .times(1)
             .returning(move || Ok(txs.clone()));
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         let ListTransactionsResult {
             txs, next_cursor, ..
         } = wlt
@@ -1942,7 +1859,7 @@ mod tests {
             .times(1)
             .returning(move || Ok(txs.clone()));
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
 
         let ListTransactionsResult {
             txs, next_cursor, ..
@@ -1998,7 +1915,7 @@ mod tests {
             .times(1)
             .returning(move || Ok(txs_without_cursor.clone()));
 
-        let wlt = wallet(ctx);
+        let wlt = wallet(ctx).await;
         let ListTransactionsResult { txs, .. } = wlt
             .list_txs(
                 TransactionFilters::default(),

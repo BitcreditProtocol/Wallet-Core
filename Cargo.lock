@@ -298,6 +298,7 @@ dependencies = [
  "bcr-common",
  "bcr-wallet-core",
  "bcr-wallet-persistence",
+ "bcr-wallet-transport",
  "bip39",
  "bitcoin",
  "borsh",
@@ -305,7 +306,7 @@ dependencies = [
  "futures",
  "mockall",
  "nostr",
- "nostr-sdk",
+ "nostr-relay-builder",
  "rand 0.9.4",
  "reqwest",
  "secp256k1",
@@ -332,7 +333,7 @@ dependencies = [
  "chrono",
  "clap",
  "config",
- "nostr-sdk",
+ "nostr",
  "serde",
  "tokio",
  "tokio-util",
@@ -351,7 +352,7 @@ dependencies = [
  "bip39",
  "bitcoin",
  "chrono",
- "nostr-sdk",
+ "nostr",
  "serde",
  "strum",
  "thiserror 2.0.18",
@@ -370,13 +371,29 @@ dependencies = [
  "chrono",
  "ciborium",
  "mockall",
- "nostr-sdk",
+ "nostr",
  "redb",
  "serde",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "url",
+ "uuid",
+]
+
+[[package]]
+name = "bcr-wallet-transport"
+version = "0.9.3"
+dependencies = [
+ "bcr-common",
+ "bcr-wallet-core",
+ "bip39",
+ "nostr",
+ "nostr-sdk",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -2020,6 +2037,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostr-relay-builder"
+version = "0.43.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "019df99035f53643078e4733b9559f6d5a2f666d576e26254aa3ab8a043eb86e"
+dependencies = [
+ "async-utility",
+ "async-wsocket",
+ "atomic-destructor",
+ "negentropy",
+ "nostr",
+ "nostr-database",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nostr-relay-pool"
 version = "0.43.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3578,7 +3611,7 @@ dependencies = [
  "env_logger",
  "flutter_rust_bridge",
  "log",
- "nostr-sdk",
+ "nostr",
  "once_cell",
  "tokio",
  "tokio-util",

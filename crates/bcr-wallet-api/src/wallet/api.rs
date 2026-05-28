@@ -6,7 +6,10 @@ use crate::{
         MintSummary, PAYMENT_TYPE_METADATA_KEY, PaymentSummary, TRANSACTION_STATUS_METADATA_KEY,
         WalletConfig,
     },
-    wallet::types::{PayReference, WalletPaymentType, WalletProtestResult},
+    wallet::{
+        api,
+        types::{PayReference, WalletPaymentType, WalletProtestResult},
+    },
 };
 use async_trait::async_trait;
 use bcr_common::{
@@ -17,14 +20,15 @@ use bcr_common::{
 };
 use bcr_wallet_core::{
     SendSync,
-    types::{BTC_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback, PaymentType, TransactionStatus},
-    util::to_mint_url,
+    types::{
+        BTC_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback,
+        PaymentType, TransactionStatus,
+    },
+    util::{from_mint_url, to_mint_url},
 };
 use bitcoin::secp256k1;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use nostr::nips::nip19::ToBech32;
-use nostr_sdk::RelayPoolNotification;
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -202,11 +206,7 @@ impl WalletApi for super::Wallet {
         unit: CurrencyUnit,
         description: Option<String>,
     ) -> Result<cdk18::PaymentRequest> {
-        let nostr_transport = cdk18::Transport {
-            _type: cdk18::TransportType::Nostr,
-            target: self.nostr_profile.to_bech32()?,
-            tags: Some(vec![vec![String::from("n"), String::from("17")]]),
-        };
+        let nostr_transport = self.nostr_cl.transport().await?;
         let mints = self
             .mint_urls()
             .into_iter()
@@ -243,10 +243,9 @@ impl WalletApi for super::Wallet {
         }
 
         let start = tokio::time::Instant::now();
-        let signer = self.nostr_cl.signer().await?;
 
         tracing::debug!("Subscribing to events from Nostr...");
-        let mut events = self.nostr_cl.notifications();
+        let mut events = self.nostr_cl.events_channel();
         let deadline = start + max_wait;
 
         loop {
@@ -267,24 +266,38 @@ impl WalletApi for super::Wallet {
                         result_callback(None);
                         return Ok(());
                     };
-                    if let RelayPoolNotification::Event { event, .. } = received_evt {
-                    match self
-                        .handle_event(*event, signer.clone(), p_id, req.amount.unwrap_or_default())
-                        .await
-                        {
-                            Ok(None) => {
-                                // do nothing
-                                continue;
-                            }
-                            Ok(Some(tx_id)) => {
-                                result_callback(Some(tx_id));
-                                return Ok(());
-                            }
-                            Err(e) => {
-                                tracing::error!("Error while handling Nostr event: {e}");
-                                continue;
-                            }
-                        };
+                    match self.nostr_cl.handle_event(received_evt, p_id, req.amount.unwrap_or_default()).await {
+                        Ok(None) => {
+                            // do nothing
+                            continue;
+                        }
+                        Ok(Some((payload, meta))) => {
+                            let response = <Self as api::WalletApi>::receive_proofs(
+                                self,
+                                payload.proofs,
+                                payload.unit,
+                                from_mint_url(&payload.mint),
+                                chrono::Utc::now().timestamp() as u64,
+                                payload.memo,
+                                meta,
+                            )
+                                .await;
+
+                            match response {
+                                Ok(txid) => {
+                                    result_callback(Some(txid));
+                                    return Ok(());
+                                },
+                                Err(e) => {
+                                    tracing::error!("Error while handling Nostr event: {e}");
+                                    continue;
+                                },
+                            };
+                        }
+                        Err(e) => {
+                            tracing::error!("Error while handling Nostr event: {e}");
+                            continue;
+                        }
                     }
                 }
             }

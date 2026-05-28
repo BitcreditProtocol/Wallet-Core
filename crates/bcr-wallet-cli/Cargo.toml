@@ -14,7 +14,7 @@ bitcoin.workspace = true
 chrono.workspace = true
 clap = {version = "4.0", features = ["derive"]}
 config = {version="0.15"}
-nostr-sdk = {workspace = true, features = ["nip06"]}
+nostr = {workspace = true}
 serde.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

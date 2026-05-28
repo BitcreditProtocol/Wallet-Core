@@ -5,7 +5,7 @@ use bcr_wallet_api::{
     AppState, config::AppStateConfig, generate_random_mnemonic, get_wallet_id, is_valid_token,
 };
 use clap::{Parser, Subcommand};
-use nostr_sdk::RelayUrl;
+use nostr::RelayUrl;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 use tracing_subscriber::{

@@ -4,7 +4,7 @@ use bcr_common::{
 };
 use bitcoin::{address::NetworkUnchecked, secp256k1};
 use chrono::{DateTime, Datelike, Utc};
-use nostr_sdk::RelayUrl;
+use nostr::RelayUrl;
 use std::{
     collections::{BTreeMap, HashMap},
     str::FromStr,

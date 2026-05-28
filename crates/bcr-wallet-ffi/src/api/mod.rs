@@ -2,7 +2,7 @@ use bcr_wallet_core::types::{
     ListTransactionsResult, PaymentResultCallback, get_btc_tx_id, get_payment_type,
     get_transaction_status,
 };
-use nostr_sdk::RelayUrl;
+use nostr::RelayUrl;
 use once_cell::sync::Lazy;
 use std::{collections::HashMap, panic, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -1550,9 +1550,6 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::CdkDhke(_) => WalletError::internal(value.to_string()),
             BcrWalletError::BtcBip32(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Uuid(_) => WalletError::internal(value.to_string()),
-            BcrWalletError::Nip19(_) => WalletError::internal(value.to_string()),
-            BcrWalletError::Nip06(_) => WalletError::internal(value.to_string()),
-            BcrWalletError::NostrClient(_) => WalletError::network(value.to_string()),
             BcrWalletError::SerdeJson(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Url(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::Url)
@@ -1652,6 +1649,7 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::InterMintButNoClowderPath => WalletError::internal(value.to_string()),
             BcrWalletError::SchnorrSignature(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Database(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Transport(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Swap(_) => WalletError::internal(value.to_string()),
             BcrWalletError::NoBetas => WalletError::internal(value.to_string()),
             BcrWalletError::NoDevMode => {
