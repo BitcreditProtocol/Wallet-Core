@@ -168,7 +168,7 @@ pub mod tests {
                 &self,
                 rid: Uuid,
                 client: Arc<dyn ClowderMintConnector>,
-            ) -> Result<(wire_melt::MeltTx, HashMap<cashu::PublicKey, cashu::Proof>)>;
+            ) -> Result<(bitcoin::Txid, HashMap<cashu::PublicKey, cashu::Proof>)>;
             async fn mint_onchain(
                 &self,
                 amount: bitcoin::Amount,

@@ -56,7 +56,7 @@ pub trait DebitPocketApi: super::PocketApi {
         &self,
         rid: Uuid,
         client: Arc<dyn ClowderMintConnector>,
-    ) -> Result<(wire_melt::MeltTx, HashMap<cashu::PublicKey, cashu::Proof>)>;
+    ) -> Result<(bitcoin::Txid, HashMap<cashu::PublicKey, cashu::Proof>)>;
     async fn mint_onchain(
         &self,
         amount: bitcoin::Amount,
@@ -98,7 +98,7 @@ pub struct ProtestResult {
 #[derive(Debug, Clone)]
 pub struct MeltProtestResult {
     pub base: ProtestResult,
-    pub txid: Option<wire_melt::MeltTx>,
+    pub txid: Option<bitcoin::Txid>,
 }
 
 #[derive(Debug, Clone)]
@@ -847,7 +847,7 @@ impl DebitPocketApi for Pocket {
         &self,
         rid: Uuid,
         client: Arc<dyn ClowderMintConnector>,
-    ) -> Result<(wire_melt::MeltTx, HashMap<cdk01::PublicKey, cdk00::Proof>)> {
+    ) -> Result<(bitcoin::Txid, HashMap<cdk01::PublicKey, cdk00::Proof>)> {
         let melt_ref = self.current_melt.lock().unwrap().take();
         let melt_ref = melt_ref.ok_or(Error::NoPrepareRef(rid))?;
         if melt_ref.rid != rid {
@@ -1572,10 +1572,6 @@ mod tests {
             "c66bdb3be47c2252cf60bf98da828c595592b91637e4bab88471a7eb76e81562",
         )
         .unwrap();
-        let melt_tx = wire_melt::MeltTx {
-            alpha_txid: Some(tx_id),
-            beta_txid: None,
-        };
 
         let mut mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
@@ -1615,11 +1611,7 @@ mod tests {
         connector
             .expect_post_melt_onchain()
             .times(1)
-            .returning(move |_| {
-                Ok(wire_melt::MeltOnchainResponse {
-                    txid: melt_tx.clone(),
-                })
-            });
+            .returning(move |_| Ok(wire_melt::MeltOnchainResponse { txid: tx_id }));
 
         mdb.expect_delete_melt_commitment()
             .times(1)
@@ -1633,7 +1625,7 @@ mod tests {
             .pay_onchain_melt(rid, Arc::new(connector))
             .await
             .expect("pay melt works");
-        assert_eq!(res.0.alpha_txid, Some(tx_id));
+        assert_eq!(res.0, tx_id);
     }
 
     fn mock_melt_commitment_body(quote_id: Uuid, amount: u64) -> String {
@@ -1659,10 +1651,6 @@ mod tests {
             "c66bdb3be47c2252cf60bf98da828c595592b91637e4bab88471a7eb76e81562",
         )
         .unwrap();
-        let melt_tx = wire_melt::MeltTx {
-            alpha_txid: Some(tx_id),
-            beta_txid: None,
-        };
 
         let mut mdb = MockMintMeltRepository::new();
         let pdb = MockPocketRepository::new();
@@ -1693,7 +1681,7 @@ mod tests {
             .returning(move |_| {
                 Ok(wire_melt::MeltProtestResponse {
                     status: wire_common::ProtestStatus::Resolved,
-                    txid: Some(melt_tx.clone()),
+                    txid: Some(tx_id),
                 })
             });
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
@@ -1714,7 +1702,7 @@ mod tests {
             result.base.status,
             wire_common::ProtestStatus::Resolved
         ));
-        assert_eq!(result.txid.and_then(|t| t.alpha_txid), Some(tx_id));
+        assert_eq!(result.txid, Some(tx_id));
         assert!(result.base.result.is_some());
     }
 
