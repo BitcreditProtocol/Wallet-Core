@@ -10,6 +10,7 @@ use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07};
 use bcr_common::cdk_common::wallet::{Transaction, TransactionId};
 use bcr_wallet_core::{SendSync, types::WalletConfig};
 use bitcoin::secp256k1;
+use nostr::types::Timestamp;
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -148,5 +149,22 @@ pub trait MintMeltRepository: SendSync {
     async fn load_melt_commitment(&self, quote_id: Uuid) -> Result<MeltCommitmentRecord>;
     async fn delete_melt_commitment(&self, quote_id: Uuid) -> Result<()>;
     async fn list_melt_commitments(&self) -> Result<Vec<MeltCommitmentRecord>>;
+    async fn delete_repo(&self) -> Result<()>;
+}
+
+//////////////////////////////////////////// Nostr
+#[derive(Debug, Clone)]
+pub struct NostrEventOffset {
+    pub event_id: String,
+    pub time: Timestamp,
+    pub success: bool,
+}
+
+#[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
+#[async_trait]
+pub trait NostrEventOffsetStoreApi: SendSync {
+    async fn current_offset(&self) -> Result<Timestamp>;
+    async fn is_processed(&self, event_id: &str) -> Result<bool>;
+    async fn add_event(&self, data: NostrEventOffset) -> Result<()>;
     async fn delete_repo(&self) -> Result<()>;
 }

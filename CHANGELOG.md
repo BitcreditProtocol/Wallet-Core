@@ -1,6 +1,7 @@
 # 0.9.4
 
 * Fix commitment for intermint exchange
+* Improve Nostr Setup
 
 # 0.9.3
 

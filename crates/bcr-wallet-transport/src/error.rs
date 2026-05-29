@@ -15,4 +15,8 @@ pub enum Error {
     SerdeJson(#[from] serde_json::Error),
     #[error("cashu::nut00: {0}")]
     Cdk00(#[from] cashu::nut00::Error),
+    #[error("Network error: {0}")]
+    Network(String),
+    #[error("Crypto error: {0}")]
+    Crypto(String),
 }

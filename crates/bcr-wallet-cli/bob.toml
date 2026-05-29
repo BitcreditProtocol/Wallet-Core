@@ -12,3 +12,4 @@ network = "testnet"
 nostr_relays = ["wss://relay.wildcat0.clowder-dev.minibill.tech", "wss://relay.wildcat1.clowder-dev.minibill.tech"]
 mint_url = "https://mint.wildcat0.clowder-dev.minibill.tech"
 mnemonic = "mechanic save web pigeon cricket unable abuse winner gallery slide blush polar"
+
