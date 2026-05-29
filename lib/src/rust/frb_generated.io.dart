@@ -217,9 +217,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_wallet_dev_mode_detailed_balance_entry(dynamic raw);
 
   @protected
-  MeltTx dco_decode_melt_tx(dynamic raw);
-
-  @protected
   MigrateRabidResponse dco_decode_migrate_rabid_response(dynamic raw);
 
   @protected
@@ -737,9 +734,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   sse_decode_list_wallet_dev_mode_detailed_balance_entry(
     SseDeserializer deserializer,
   );
-
-  @protected
-  MeltTx sse_decode_melt_tx(SseDeserializer deserializer);
 
   @protected
   MigrateRabidResponse sse_decode_migrate_rabid_response(
@@ -1367,9 +1361,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     List<WalletDevModeDetailedBalanceEntry> self,
     SseSerializer serializer,
   );
-
-  @protected
-  void sse_encode_melt_tx(MeltTx self, SseSerializer serializer);
 
   @protected
   void sse_encode_migrate_rabid_response(

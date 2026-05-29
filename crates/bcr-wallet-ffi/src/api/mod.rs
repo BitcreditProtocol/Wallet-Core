@@ -1,6 +1,6 @@
 use bcr_wallet_core::types::{
-    ListTransactionsResult, PaymentResultCallback, get_btc_alpha_tx_id, get_btc_beta_tx_id,
-    get_payment_type, get_transaction_status,
+    ListTransactionsResult, PaymentResultCallback, get_btc_tx_id, get_payment_type,
+    get_transaction_status,
 };
 use nostr_sdk::RelayUrl;
 use once_cell::sync::Lazy;
@@ -1024,7 +1024,7 @@ pub struct Transaction {
     pub memo: Option<String>,
     pub ptype: PaymentType,
     pub status: TransactionStatus,
-    pub melt_tx: MeltTx,
+    pub tx_id: Option<String>,
     pub quote_id: Option<String>,
 }
 
@@ -1185,18 +1185,11 @@ impl From<bcr_wallet_core::types::FeesByMonth> for FeesByMonth {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct MeltTx {
-    pub alpha_tx_id: Option<String>,
-    pub beta_tx_id: Option<String>,
-}
-
 impl std::convert::From<cdk_common::wallet::Transaction> for Transaction {
     fn from(tx: cdk_common::wallet::Transaction) -> Self {
         let status = get_transaction_status(&tx.metadata);
         let ptype = get_payment_type(&tx.metadata);
-        let alpha_btc_tx_id = get_btc_alpha_tx_id(&tx.metadata);
-        let beta_btc_tx_id = get_btc_beta_tx_id(&tx.metadata);
+        let tx_id = get_btc_tx_id(&tx.metadata).map(|txid| txid.to_string());
         Self {
             id: tx.id().to_string(),
             amount: u64::from(tx.amount),
@@ -1207,10 +1200,7 @@ impl std::convert::From<cdk_common::wallet::Transaction> for Transaction {
             memo: tx.memo,
             ptype: ptype.into(),
             status: status.into(),
-            melt_tx: MeltTx {
-                alpha_tx_id: alpha_btc_tx_id.map(|txid| txid.to_string()),
-                beta_tx_id: beta_btc_tx_id.map(|txid| txid.to_string()),
-            },
+            tx_id,
             quote_id: tx.quote_id,
         }
     }

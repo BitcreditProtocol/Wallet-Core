@@ -7,6 +7,9 @@
     * A `TransactionCursor` is returned per call, which can be passed into the next request to get the next page
         * if the `next_cursor` is empty, all results have been returned
 * Add a `fees_by_month` field to the result of `wallet_get_transactions`, which sums up the fees for the distinct months present in the returned transactions by UTC time, sorted descending
+* Switch melts to a single-leaf transaction id (breaking API change)
+    * Melt APIs now return a single `bitcoin::Txid` instead of a `MeltTx` struct with `alpha_txid`/`beta_txid`
+    * Transaction metadata uses a single `btc_tx_id` key, replacing `btc_alpha_tx_id` and `btc_beta_tx_id`
 
 # 0.9.2
 
