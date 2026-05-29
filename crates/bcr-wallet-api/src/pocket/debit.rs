@@ -198,6 +198,7 @@ impl Pocket {
                 &self.seed,
                 amount,
                 &SplitTarget::None,
+                &bcr_wallet_core::util::fee_and_amounts(amount),
             )?;
             let increment = premint.len() as u32;
             premints.insert(kid, premint);
@@ -538,9 +539,13 @@ impl super::PocketApi for Pocket {
         };
         let active_keyset = client.get_mint_keyset(active_info.id).await?;
         // calculate splits
-        let send_splits = send_amount.split();
+        let send_splits = send_amount
+            .split_targeted(&SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(send_amount))?;
         let send_splits_len = send_splits.len();
-        let change_splits = change_amount.split();
+        let change_splits = change_amount.split_targeted(
+            &SplitTarget::None,
+            &bcr_wallet_core::util::fee_and_amounts(change_amount),
+        )?;
         let mut splits: Vec<Amount> = Vec::with_capacity(send_splits.len() + change_splits.len());
         splits.extend(send_splits);
         splits.extend(change_splits);
@@ -550,6 +555,7 @@ impl super::PocketApi for Pocket {
             active_info.id,
             total_amount,
             &SplitTarget::Values(splits),
+            &bcr_wallet_core::util::fee_and_amounts(total_amount),
         )?;
         let mut premints = HashMap::from([(active_info.id, premint_secrets)]);
         let keysets = HashMap::from([(active_info.id, active_keyset)]);
@@ -894,6 +900,7 @@ impl DebitPocketApi for Pocket {
             &self.seed,
             cashu::Amount::from(amount.to_sat()),
             &SplitTarget::None,
+            &bcr_wallet_core::util::fee_and_amounts(cashu::Amount::from(amount.to_sat())),
         )?;
         self.pdb
             .increment_counter(kid, counter, premint.len() as u32)
@@ -1391,7 +1398,7 @@ mod tests {
             .expect_get_mint_keyset()
             .times(1)
             .with(eq(kid))
-            .returning(move |_| Ok(KeySet::from(cloned_keyset.clone())));
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&cloned_keyset, None)));
         pdb.expect_counter()
             .times(1)
             .with(eq(kid))
@@ -1440,7 +1447,7 @@ mod tests {
             .expect_get_mint_keyset()
             .times(1)
             .with(eq(kid))
-            .returning(move |_| Ok(KeySet::from(cloned_keyset.clone())));
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&cloned_keyset, None)));
         let proofs_clone = proofs.clone();
         let ys_clone = ys.clone();
         pdb.expect_load_proofs()
@@ -1502,7 +1509,7 @@ mod tests {
             .expect_get_mint_keyset()
             .times(1)
             .with(eq(kid))
-            .returning(move |_| Ok(KeySet::from(cloned_keyset.clone())));
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&cloned_keyset, None)));
         connector
             .expect_post_check_state()
             .times(1)
@@ -1852,9 +1859,10 @@ mod tests {
         let dummy_secret = secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap();
         mdb.expect_load_mint().times(1).returning(move |_| {
             let premint = cdk00::PreMintSecrets::random(
-                cashu::KeySet::from(keyset_clone.clone()).id,
+                bcr_wallet_core::util::to_keyset(&keyset_clone, None).id,
                 Amount::from(amount.to_sat()),
                 &SplitTarget::None,
+                &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())),
             )
             .unwrap();
             let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64])
@@ -1880,7 +1888,7 @@ mod tests {
         connector
             .expect_get_mint_keyset()
             .times(1)
-            .returning(move |_| Ok(KeySet::from(keyset_clone.clone())));
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
 
         connector
             .expect_post_mint_onchain()
@@ -1909,7 +1917,7 @@ mod tests {
         let kid = info.id;
         let k_infos = test_kinfos(info);
         let premint =
-            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None)
+            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())))
                 .unwrap();
 
         let blind_sigs: Vec<cdk00::BlindSignature> = premint
@@ -1962,7 +1970,7 @@ mod tests {
             .expect_get_mint_keyset()
             .times(2)
             .with(eq(kid))
-            .returning(move |_| Ok(KeySet::from(keyset_clone.clone())));
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
 
         pdb.expect_counter()
             .times(1)
@@ -2011,7 +2019,7 @@ mod tests {
         let k_infos = test_kinfos(info);
 
         let premint =
-            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None)
+            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())))
                 .unwrap();
 
         let mut mdb = MockMintMeltRepository::new();
@@ -2079,7 +2087,7 @@ mod tests {
             .collect();
 
         // Generate premint secrets and sign them — these are the ORIGINAL blinding factors
-        let premint = cdk00::PreMintSecrets::random(kid, amount, &SplitTarget::None).unwrap();
+        let premint = cdk00::PreMintSecrets::random(kid, amount, &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(amount)).unwrap();
         let blind_sigs: Vec<cdk00::BlindSignature> = premint
             .blinded_messages()
             .iter()
@@ -2143,7 +2151,7 @@ mod tests {
         let keyset_clone = mintkeyset.clone();
         alpha_connector
             .expect_get_mint_keyset()
-            .returning(move |_| Ok(KeySet::from(keyset_clone.clone())));
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
 
         // Mocks for digest_proofs swap (runs against alpha)
         pdb.expect_counter().with(eq(kid)).returning(|_| Ok(0));
@@ -2446,7 +2454,7 @@ mod tests {
         let k_infos = test_kinfos(info);
 
         let premint =
-            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None)
+            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())))
                 .unwrap();
 
         let blind_sigs: Vec<cdk00::BlindSignature> = premint
@@ -2492,7 +2500,7 @@ mod tests {
             .expect_get_mint_keyset()
             .times(2)
             .with(eq(kid))
-            .returning(move |_| Ok(KeySet::from(keyset_clone.clone())));
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
 
         pdb.expect_counter()
             .times(1)
@@ -2551,7 +2559,7 @@ mod tests {
         let k_infos = test_kinfos(info);
 
         let premint =
-            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None)
+            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())))
                 .unwrap();
 
         let mut mdb = MockMintMeltRepository::new();

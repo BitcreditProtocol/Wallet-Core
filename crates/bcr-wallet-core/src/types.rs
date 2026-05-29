@@ -339,6 +339,10 @@ mod tests {
             memo: None,
             metadata: HashMap::new(),
             quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
         }
     }
 

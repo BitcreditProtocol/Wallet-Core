@@ -1546,6 +1546,7 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::Cdk13(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Cdk11(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Cdk10(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Cdk14(_) => WalletError::internal(value.to_string()),
             BcrWalletError::CdkAmount(_) => WalletError::internal(value.to_string()),
             BcrWalletError::CdkDhke(_) => WalletError::internal(value.to_string()),
             BcrWalletError::BtcBip32(_) => WalletError::internal(value.to_string()),

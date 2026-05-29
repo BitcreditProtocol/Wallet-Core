@@ -270,8 +270,8 @@ impl Wallet {
         &self,
         req: &cashu::PaymentRequest,
     ) -> Result<(Amount, CurrencyUnit, cashu::Transport)> {
-        if let Some(mints) = &req.mints
-            && !mints.contains(&to_mint_url(self.client.mint_url()))
+        if !req.mints.is_empty()
+            && !req.mints.contains(&to_mint_url(self.client.mint_url()))
         {
             return Err(Error::InterMint);
         }
@@ -552,6 +552,10 @@ impl Wallet {
             unit,
             ys,
             quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
         };
         let txid = self.tx_repo.store_tx(tx).await?;
         Ok(txid)
@@ -622,8 +626,9 @@ impl Wallet {
                 .join(",")
         );
 
-        let preimage = format!("CLWDR {}", cashu::SecretKey::generate().to_secret_hex());
-        let hash_lock = Sha256::hash(preimage.as_bytes());
+        let preimage_key = cashu::SecretKey::generate();
+        let preimage = preimage_key.to_secret_hex();
+        let hash_lock = Sha256::hash(&preimage_key.to_secret_bytes());
 
         let alpha_betas = alpha_client.get_clowder_betas().await?;
         let alpha_beta_clients: Vec<_> = alpha_betas
@@ -904,6 +909,10 @@ mod tests {
             unit: CurrencyUnit::Sat,
             ys: vec![],
             quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
         }
     }
 
@@ -932,6 +941,10 @@ mod tests {
             unit: CurrencyUnit::Sat,
             ys: vec![test_cashu_pubkey(n)],
             quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
         }
     }
 

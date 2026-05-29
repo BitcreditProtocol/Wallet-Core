@@ -606,7 +606,7 @@ mod tests {
 
     use super::*;
     use bcr_common::{
-        cashu::{amount::SplitTarget, nut02 as cdk02},
+        cashu::amount::SplitTarget,
         core_tests,
     };
     use chrono::Utc;
@@ -662,9 +662,9 @@ mod tests {
         // create premint
         let amounts = [Amount::from(8u64)];
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let keyset = cdk02::KeySet::from(mintkeyset.clone());
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let premint =
-            cdk00::PreMintSecrets::random(keyset.id, amounts[0], &SplitTarget::None).unwrap();
+            cdk00::PreMintSecrets::random(keyset.id, amounts[0], &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(amounts[0])).unwrap();
 
         let stored_id = repo
             .store_melt(qid.clone(), Some(premint.clone()))
@@ -741,9 +741,9 @@ mod tests {
         let (content, commitment) = dummy_commitment();
 
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let keyset = cdk02::KeySet::from(mintkeyset.clone());
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let premint =
-            cdk00::PreMintSecrets::random(keyset.id, Amount::from(12345u64), &SplitTarget::None)
+            cdk00::PreMintSecrets::random(keyset.id, Amount::from(12345u64), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(12345u64)))
                 .unwrap();
 
         let stored = repo
@@ -780,12 +780,12 @@ mod tests {
         let (content, commitment) = dummy_commitment();
 
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let keyset = cdk02::KeySet::from(mintkeyset.clone());
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let premint1 =
-            cdk00::PreMintSecrets::random(keyset.id, Amount::from(1u64), &SplitTarget::None)
+            cdk00::PreMintSecrets::random(keyset.id, Amount::from(1u64), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(1u64)))
                 .unwrap();
         let premint2 =
-            cdk00::PreMintSecrets::random(keyset.id, Amount::from(2u64), &SplitTarget::None)
+            cdk00::PreMintSecrets::random(keyset.id, Amount::from(2u64), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(2u64)))
                 .unwrap();
 
         repo.store_mint(
@@ -829,9 +829,9 @@ mod tests {
         let qid = Uuid::new_v4();
         let (content, commitment) = dummy_commitment();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let keyset = cdk02::KeySet::from(mintkeyset.clone());
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let premint =
-            cdk00::PreMintSecrets::random(keyset.id, Amount::from(42u64), &SplitTarget::None)
+            cdk00::PreMintSecrets::random(keyset.id, Amount::from(42u64), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(42u64)))
                 .unwrap();
 
         repo.store_mint(

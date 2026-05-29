@@ -96,7 +96,13 @@ pub async fn htlc_lock(
     let htlc = cashu::SpendingConditions::new_htlc_hash(&hash_lock.to_string(), Some(p2pk))?;
     let split_target = cashu::amount::SplitTarget::None;
     let premints =
-        cashu::PreMintSecrets::with_conditions(active_keyset_id, amount, &split_target, &htlc)?;
+        cashu::PreMintSecrets::with_conditions(
+            active_keyset_id,
+            amount,
+            &split_target,
+            &htlc,
+            &bcr_wallet_core::util::fee_and_amounts(amount),
+        )?;
 
     let attestation = beta.attest(&proofs).await?;
     let signatures = crate::pocket::committed_swap(
