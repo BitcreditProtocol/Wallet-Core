@@ -1,7 +1,7 @@
 use crate::config::{AppStateConfig, CreateWalletConfig};
 use crate::external::mint::{ClowderMintConnector, HttpClientExt};
+use crate::wallet::api::WalletApi;
 use crate::wallet::types::{WalletBalance, WalletDetailedBalanceEntry, WalletProtestResult};
-use crate::{config::NostrConfig, wallet::api::WalletApi};
 use bcr_common::cdk_common::wallet::Transaction;
 use bcr_common::{
     cashu::{self, CurrencyUnit},
@@ -14,9 +14,8 @@ use bcr_wallet_core::types::{
 };
 use bcr_wallet_core::util::{build_wallet_id, keypair_from_mnemonic, seed_from_mnemonic};
 use bcr_wallet_persistence::redb::{Database, build_pursedb, build_wallet_dbs, create_db};
+use bcr_wallet_transport::NostrClient;
 use error::{Error, Result};
-use nostr::nips::nip19::Nip19Profile;
-use nostr::types::RelayUrl;
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -78,7 +77,7 @@ impl AppState {
             let seed = seed_from_mnemonic(mnemonic);
 
             let client = HttpClientExt::new(w_cfg.mint.clone());
-            let (nostr_cl, nprofile) = setup_nostr_client(mnemonic, &w_cfg.nostr_relays).await?;
+            let nostr_cl = NostrClient::new(mnemonic, &w_cfg.nostr_relays).await?;
 
             // Attempt to fetch clowder id/betas/keyset infos and fall back to saved ones
             match client.get_clowder_id().await {
@@ -127,7 +126,6 @@ impl AppState {
                 db.clone(),
                 seed,
                 nostr_cl,
-                nprofile,
             )
             .await?;
             purse.add_wallet(wallet).await?;
@@ -828,7 +826,7 @@ async fn create_new_wallet(
         }
     };
 
-    let (nostr_cl, nprofile) = setup_nostr_client(&cfg.mnemonic, &cfg.nostr_relays).await?;
+    let nostr_cl = NostrClient::new(&cfg.mnemonic, &cfg.nostr_relays).await?;
 
     let w_cfg = WalletConfig {
         wallet_id,
@@ -842,37 +840,7 @@ async fn create_new_wallet(
         betas,
         nostr_relays: cfg.nostr_relays,
     };
-    build_wallet(
-        w_cfg,
-        client,
-        db_version,
-        swap_expiry,
-        db,
-        seed,
-        nostr_cl,
-        nprofile,
-    )
-    .await
-}
-
-async fn setup_nostr_client(
-    mnemonic: &bip39::Mnemonic,
-    nostr_relays: &[RelayUrl],
-) -> Result<(Arc<nostr_sdk::Client>, Nip19Profile)> {
-    let nostr_cfg = NostrConfig::new(mnemonic.to_owned(), nostr_relays.to_owned())?;
-    let nostr_filter = nostr_sdk::Filter::new()
-        .kind(nostr_sdk::Kind::GiftWrap)
-        .pubkey(nostr_cfg.nostr_signer.public_key());
-    let nostr_cl = Arc::new(nostr_sdk::Client::new(nostr_cfg.nostr_signer));
-    for nostr_relay in &nostr_cfg.relays {
-        nostr_cl.add_relay(nostr_relay).await?;
-    }
-    nostr_cl.connect().await;
-
-    // create long-running subscription
-    nostr_cl.subscribe(nostr_filter, None).await?;
-
-    Ok((nostr_cl, nostr_cfg.nprofile))
+    build_wallet(w_cfg, client, db_version, swap_expiry, db, seed, nostr_cl).await
 }
 
 async fn build_wallet(
@@ -882,8 +850,7 @@ async fn build_wallet(
     swap_expiry: chrono::TimeDelta,
     db: Arc<Database>,
     seed: Seed,
-    nostr_cl: Arc<nostr_sdk::Client>,
-    nostr_profile: Nip19Profile,
+    nostr_cl: NostrClient,
 ) -> Result<wallet::Wallet> {
     // building wallet dbs
     let (tx_repo, (debitdb, mintmeltdb)) =
@@ -928,7 +895,6 @@ async fn build_wallet(
         swap_expiry,
         w_cfg.nostr_relays,
         nostr_cl,
-        nostr_profile,
     )
     .await?;
     Ok(new_wallet)

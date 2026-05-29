@@ -9,7 +9,6 @@ pub mod tests {
     use crate::wallet::types::SwapConfig;
     use async_trait::async_trait;
     use bcr_common::cdk_common::mint::MintKeySetInfo;
-    use bcr_common::wire::melt as wire_melt;
     use std::collections::HashMap;
     use std::sync::Arc;
     use uuid::Uuid;

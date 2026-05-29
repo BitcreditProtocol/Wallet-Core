@@ -1,0 +1,18 @@
+[package]
+name = "bcr-wallet-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bcr-common = {workspace = true}
+bcr-wallet-core = {workspace = true}
+bip39.workspace = true
+nostr = {workspace = true}
+nostr-sdk = {workspace = true, features = ["nip06", "nip59"]}
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = {workspace = true}
+tracing.workspace = true
+uuid = {workspace = true }
+
