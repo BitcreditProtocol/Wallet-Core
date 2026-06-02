@@ -8,7 +8,7 @@ use crate::{
     },
     wallet::{
         api,
-        types::{PayReference, WalletPaymentType, WalletProtestResult},
+        types::{PayReference, WalletInfo, WalletPaymentType, WalletProtestResult},
     },
 };
 use async_trait::async_trait;
@@ -20,10 +20,7 @@ use bcr_common::{
 };
 use bcr_wallet_core::{
     SendSync,
-    types::{
-        BTC_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback,
-        PaymentType, TransactionStatus,
-    },
+    types::{BTC_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback, PaymentType, TransactionStatus},
     util::{from_mint_url, to_mint_url},
 };
 use bitcoin::secp256k1;
@@ -37,6 +34,7 @@ use uuid::Uuid;
 #[async_trait]
 pub trait WalletApi: SendSync {
     fn config(&self) -> Result<WalletConfig>;
+    fn info(&self) -> WalletInfo;
     fn name(&self) -> String;
     fn id(&self) -> String;
     fn mint_url(&self) -> url::Url;
@@ -128,6 +126,15 @@ impl WalletApi for super::Wallet {
             betas: self.betas(),
             nostr_relays: self.nostr_relays.clone(),
         })
+    }
+
+    fn info(&self) -> WalletInfo {
+        WalletInfo {
+            name: self.name.clone(),
+            network: self.network,
+            default_mint_url: self.client.mint_url().to_owned(),
+            nostr_relays: self.nostr_relays.clone(),
+        }
     }
 
     fn name(&self) -> String {

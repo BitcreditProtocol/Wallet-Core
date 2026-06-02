@@ -10,6 +10,7 @@
 * Switch melts to a single-leaf transaction id (breaking API change)
     * Melt APIs now return a single `bitcoin::Txid` instead of a `MeltTx` struct with `alpha_txid`/`beta_txid`
     * Transaction metadata uses a single `btc_tx_id` key, replacing `btc_alpha_tx_id` and `btc_beta_tx_id`
+* Add endpoint `wallet_get_info` that returns the name, btc network, default mint URL and nostr relays of a wallet by id
 
 # 0.9.2
 

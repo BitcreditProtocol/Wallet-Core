@@ -360,6 +360,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_wallet_id_for_mnemonic_and_network_response(dynamic raw);
 
   @protected
+  WalletInfoResponse dco_decode_wallet_info_response(dynamic raw);
+
+  @protected
   WalletListTransactionsRequest dco_decode_wallet_list_transactions_request(
     dynamic raw,
   );
@@ -907,6 +910,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletIdForMnemonicAndNetworkResponse
   sse_decode_wallet_id_for_mnemonic_and_network_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletInfoResponse sse_decode_wallet_info_response(
     SseDeserializer deserializer,
   );
 
@@ -1583,6 +1591,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_id_for_mnemonic_and_network_response(
     WalletIdForMnemonicAndNetworkResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_info_response(
+    WalletInfoResponse self,
     SseSerializer serializer,
   );
 
