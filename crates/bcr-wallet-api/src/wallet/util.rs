@@ -83,6 +83,7 @@ pub async fn htlc_lock(
         .find(|info| info.active && info.unit == unit)
         .ok_or(Error::NoActiveKeyset)?
         .id;
+    let active_keyset = client.get_mint_keyset(active_keyset_id).await?;
 
     let n = key_locks.len() as u64;
     let p2pk = cashu::Conditions::new(
@@ -100,7 +101,7 @@ pub async fn htlc_lock(
         amount,
         &split_target,
         &htlc,
-        &bcr_wallet_core::util::fee_and_amounts(amount),
+        &bcr_wallet_core::util::to_fee_and_amounts(&active_keyset),
     )?;
 
     let attestation = beta.attest(&proofs).await?;

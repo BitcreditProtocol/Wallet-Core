@@ -664,7 +664,7 @@ mod tests {
             keyset.id,
             amounts[0],
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(amounts[0]),
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
         )
         .unwrap();
 
@@ -748,7 +748,7 @@ mod tests {
             keyset.id,
             Amount::from(12345u64),
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(Amount::from(12345u64)),
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
         )
         .unwrap();
 
@@ -791,14 +791,14 @@ mod tests {
             keyset.id,
             Amount::from(1u64),
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(Amount::from(1u64)),
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
         )
         .unwrap();
         let premint2 = cdk00::PreMintSecrets::random(
             keyset.id,
             Amount::from(2u64),
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(Amount::from(2u64)),
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
         )
         .unwrap();
 
@@ -848,7 +848,7 @@ mod tests {
             keyset.id,
             Amount::from(42u64),
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(Amount::from(42u64)),
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
         )
         .unwrap();
 

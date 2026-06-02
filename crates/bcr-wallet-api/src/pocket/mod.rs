@@ -383,7 +383,7 @@ async fn swap_proofs_to_target(
             seed,
             amount,
             &target,
-            &bcr_wallet_core::util::fee_and_amounts(amount),
+            &bcr_wallet_core::util::to_fee_and_amounts(&keysets[&kid]),
         )?;
         let increment = premint.len() as u32;
         premints.insert(kid, premint);
@@ -614,7 +614,7 @@ mod tests {
             keyset.id,
             amounts[0],
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(amounts[0]),
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
         )
         .unwrap();
         assert!(premint.blinded_messages().len() == 1);
@@ -633,7 +633,7 @@ mod tests {
             keyset.id,
             Amount::from(8),
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(Amount::from(8)),
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
         )
         .unwrap();
         assert_eq!(premint.blinded_messages().len(), 1);
@@ -653,7 +653,7 @@ mod tests {
             keyset.id,
             Amount::from(40),
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(Amount::from(40)),
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
         )
         .unwrap();
         assert_eq!(premint.blinded_messages().len(), 2);
@@ -674,7 +674,7 @@ mod tests {
             kid2,
             Amount::from(16),
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(Amount::from(16)),
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
         )
         .unwrap();
         assert_eq!(premint.blinded_messages().len(), 1);
@@ -785,7 +785,9 @@ mod tests {
                 info.id,
                 Amount::from(24),
                 &SplitTarget::None,
-                &bcr_wallet_core::util::fee_and_amounts(Amount::from(24)),
+                &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
+                    &keyset, None,
+                )),
             )
             .unwrap(),
         )]);

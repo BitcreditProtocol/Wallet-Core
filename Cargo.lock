@@ -291,7 +291,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 [[package]]
 name = "bcr-common"
 version = "0.8.0"
-source = "git+https://github.com/BitcreditProtocol/bcr-common.git?branch=stefan%2Fcashu016#bbe34dd3bcd7b8ba84eed702313e3da33bf7cd8d"
+source = "git+https://github.com/BitcreditProtocol/bcr-common.git?branch=stefan%2Fcashu016#146a220ba5e93554bef8a96dde2d10cc1cf919a5"
 dependencies = [
  "async-trait",
  "bdk_wallet",
@@ -2915,9 +2915,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-native-certs"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "612460d5f7bea540c490b2b6395d8e34a953e52b491accd6c86c8164c5932a63"
+checksum = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
 dependencies = [
  "openssl-probe",
  "rustls-pki-types",
@@ -3766,9 +3766,9 @@ dependencies = [
 
 [[package]]
 name = "unicode-segmentation"
-version = "1.13.2"
+version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9629274872b2bfaf8d66f5f15725007f635594914870f65218920345aa11aa8c"
+checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "unicode-xid"

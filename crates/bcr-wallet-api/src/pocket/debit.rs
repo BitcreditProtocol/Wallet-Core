@@ -198,7 +198,7 @@ impl Pocket {
                 &self.seed,
                 amount,
                 &SplitTarget::None,
-                &bcr_wallet_core::util::fee_and_amounts(amount),
+                &bcr_wallet_core::util::to_fee_and_amounts(&keysets[&kid]),
             )?;
             let increment = premint.len() as u32;
             premints.insert(kid, premint);
@@ -541,12 +541,12 @@ impl super::PocketApi for Pocket {
         // calculate splits
         let send_splits = send_amount.split_targeted(
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(send_amount),
+            &bcr_wallet_core::util::to_fee_and_amounts(&active_keyset),
         )?;
         let send_splits_len = send_splits.len();
         let change_splits = change_amount.split_targeted(
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(change_amount),
+            &bcr_wallet_core::util::to_fee_and_amounts(&active_keyset),
         )?;
         let mut splits: Vec<Amount> = Vec::with_capacity(send_splits.len() + change_splits.len());
         splits.extend(send_splits);
@@ -557,7 +557,7 @@ impl super::PocketApi for Pocket {
             active_info.id,
             total_amount,
             &SplitTarget::Values(splits),
-            &bcr_wallet_core::util::fee_and_amounts(total_amount),
+            &bcr_wallet_core::util::to_fee_and_amounts(&active_keyset),
         )?;
         let mut premints = HashMap::from([(active_info.id, premint_secrets)]);
         let keysets = HashMap::from([(active_info.id, active_keyset)]);
@@ -895,6 +895,7 @@ impl DebitPocketApi for Pocket {
             return Err(Error::NoActiveKeyset);
         };
         let kid = active_info.id;
+        let keyset = client.get_mint_keyset(kid).await?;
         let counter = self.pdb.counter(kid).await?;
         let premint = cdk00::PreMintSecrets::from_seed(
             kid,
@@ -902,7 +903,7 @@ impl DebitPocketApi for Pocket {
             &self.seed,
             cashu::Amount::from(amount.to_sat()),
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(cashu::Amount::from(amount.to_sat())),
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
         )?;
         self.pdb
             .increment_counter(kid, counter, premint.len() as u32)
@@ -1771,7 +1772,7 @@ mod tests {
 
     #[tokio::test]
     async fn mint_onchain() {
-        let (info, _keyset) = core_tests::generate_random_ecash_keyset();
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
         let k_infos = test_kinfos(info);
         let amount = bitcoin::Amount::from_sat(24);
@@ -1826,6 +1827,12 @@ mod tests {
                 })
             });
 
+        let keyset_clone = keyset.clone();
+        connector
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
+
         let mut beta_mock = MockClowderMintConnector::new();
         setup_attestation_mock(&mut beta_mock);
         let pocket = pocket_with_beta(
@@ -1864,7 +1871,10 @@ mod tests {
                 bcr_wallet_core::util::to_keyset(&keyset_clone, None).id,
                 Amount::from(amount.to_sat()),
                 &SplitTarget::None,
-                &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())),
+                &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
+                    &keyset_clone,
+                    None,
+                )),
             )
             .unwrap();
             let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64])
@@ -1922,7 +1932,10 @@ mod tests {
             kid,
             Amount::from(amount.to_sat()),
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())),
+            &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
+                &mintkeyset,
+                None,
+            )),
         )
         .unwrap();
 
@@ -2020,7 +2033,7 @@ mod tests {
     async fn protest_mint_rabid() {
         let uuid = Uuid::new_v4();
         let amount = bitcoin::Amount::from_sat(24);
-        let (info, _mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
         let k_infos = test_kinfos(info);
 
@@ -2028,7 +2041,10 @@ mod tests {
             kid,
             Amount::from(amount.to_sat()),
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())),
+            &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
+                &mintkeyset,
+                None,
+            )),
         )
         .unwrap();
 
@@ -2101,7 +2117,10 @@ mod tests {
             kid,
             amount,
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(amount),
+            &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
+                &mintkeyset,
+                None,
+            )),
         )
         .unwrap();
         let blind_sigs: Vec<cdk00::BlindSignature> = premint
@@ -2473,7 +2492,10 @@ mod tests {
             kid,
             Amount::from(amount.to_sat()),
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())),
+            &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
+                &mintkeyset,
+                None,
+            )),
         )
         .unwrap();
 
@@ -2574,7 +2596,7 @@ mod tests {
         let qid = Uuid::new_v4();
         let amount = bitcoin::Amount::from_sat(24);
 
-        let (info, _keyset) = core_tests::generate_random_ecash_keyset();
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
         let k_infos = test_kinfos(info);
 
@@ -2582,7 +2604,9 @@ mod tests {
             kid,
             Amount::from(amount.to_sat()),
             &SplitTarget::None,
-            &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())),
+            &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
+                &keyset, None,
+            )),
         )
         .unwrap();
 
