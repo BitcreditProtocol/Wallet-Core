@@ -65,7 +65,7 @@ impl NostrClient {
         Ok(cdk18::Transport {
             _type: cdk18::TransportType::Nostr,
             target: self.profile.to_bech32()?,
-            tags: Some(vec![vec![String::from("n"), String::from("17")]]),
+            tags: vec![vec![String::from("n"), String::from("17")]],
         })
     }
 

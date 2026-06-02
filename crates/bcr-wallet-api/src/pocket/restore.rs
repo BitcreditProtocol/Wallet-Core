@@ -42,8 +42,7 @@ async fn restore_batch(
     counter: u32,
     batch_size: u32,
 ) -> Result<usize> {
-    let premints =
-        cdk00::PreMintSecrets::restore_batch(kid, seed, counter, counter + batch_size - 1)?;
+    let premints = cdk00::PreMintSecrets::restore_batch(kid, seed, counter, counter + batch_size)?;
     let request = cdk09::RestoreRequest {
         outputs: premints.blinded_messages(),
     };
@@ -126,7 +125,7 @@ mod tests {
     use crate::external::mint::MockClowderMintConnector;
     use bcr_common::{core::signature, core_tests};
     use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
-    use cashu::{Amount, KeySet, nut07 as cdk07};
+    use cashu::{Amount, nut07 as cdk07};
     use mockall::predicate::eq;
     use rand::Rng;
 
@@ -134,7 +133,7 @@ mod tests {
     async fn restore_batch_empty_response() {
         let seed = zero_seed();
         let (_, keyset) = core_tests::generate_random_ecash_keyset();
-        let keyset = KeySet::from(keyset);
+        let keyset = bcr_wallet_core::util::to_keyset(&keyset, None);
         let mut client = MockClowderMintConnector::new();
         let db = MockPocketRepository::new();
         client
@@ -152,7 +151,7 @@ mod tests {
     async fn restore_batch_all_spent() {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let keyset = KeySet::from(mintkeyset.clone());
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let mut client = MockClowderMintConnector::new();
         let db = MockPocketRepository::new();
         let cloned = mintkeyset.clone();
@@ -181,7 +180,7 @@ mod tests {
         client
             .expect_get_mint_keyset()
             .times(1)
-            .returning(move |_| Ok(KeySet::from(mintkeyset.clone())));
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&mintkeyset, None)));
         client
             .expect_post_check_state()
             .times(1)
@@ -208,7 +207,7 @@ mod tests {
     async fn restore_batch_all_unspent() {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let keyset = KeySet::from(mintkeyset.clone());
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let mut client = MockClowderMintConnector::new();
         let mut db = MockPocketRepository::new();
         let cloned_mintkeyset = mintkeyset.clone();
@@ -237,7 +236,7 @@ mod tests {
         client
             .expect_get_mint_keyset()
             .times(1)
-            .returning(move |_| Ok(KeySet::from(mintkeyset.clone())));
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&mintkeyset, None)));
         client
             .expect_post_check_state()
             .times(1)
@@ -269,7 +268,7 @@ mod tests {
     async fn restore_batch_all_pending() {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let keyset = KeySet::from(mintkeyset.clone());
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let mut client = MockClowderMintConnector::new();
         let mut db = MockPocketRepository::new();
         let cloned_mintkeyset = mintkeyset.clone();
@@ -298,7 +297,7 @@ mod tests {
         client
             .expect_get_mint_keyset()
             .times(1)
-            .returning(move |_| Ok(KeySet::from(mintkeyset.clone())));
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&mintkeyset, None)));
         client
             .expect_post_check_state()
             .times(1)
@@ -330,7 +329,7 @@ mod tests {
     async fn restore_keysetid_1stbatch() {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let keyset = KeySet::from(mintkeyset.clone());
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let mut client = MockClowderMintConnector::new();
         client
             .expect_get_mint_keyset()
@@ -395,7 +394,7 @@ mod tests {
     async fn restore_keysetid_2ndbatch() {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let keyset = KeySet::from(mintkeyset.clone());
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let mut client = MockClowderMintConnector::new();
         client
             .expect_get_mint_keyset()
@@ -464,7 +463,7 @@ mod tests {
     async fn restore_keysetid_2ndpartial() {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let keyset = KeySet::from(mintkeyset.clone());
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let mut client = MockClowderMintConnector::new();
         client
             .expect_get_mint_keyset()

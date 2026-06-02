@@ -9,6 +9,8 @@ use bitcoin::{
 
 use crate::types::Seed;
 
+pub use bcr_common::core::keys::{to_fee_and_amounts, to_keyset};
+
 // Builds the wallet id, which is the hashed seed and bitcoin network, to ensure
 // uniqueness of a keypair per bitcoin network
 pub fn build_wallet_id(seed: &Seed, network: bitcoin::Network) -> String {

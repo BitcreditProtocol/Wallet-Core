@@ -31,6 +31,8 @@ pub enum Error {
     Cdk11(#[from] cashu::nut11::Error),
     #[error("cashu::nut10: {0}")]
     Cdk10(#[from] cashu::nut10::Error),
+    #[error("cashu::nut14: {0}")]
+    Cdk14(#[from] cashu::nut14::Error),
     #[error("cashu::amount: {0}")]
     CdkAmount(#[from] cashu::amount::Error),
     #[error("cashu::dhke: {0}")]

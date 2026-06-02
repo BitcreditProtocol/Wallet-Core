@@ -112,6 +112,7 @@ impl std::convert::From<ProofEntry> for cdk00::Proof {
             c: entry.c,
             witness: entry.witness,
             dleq: entry.dleq,
+            p2pk_e: None,
         }
     }
 }

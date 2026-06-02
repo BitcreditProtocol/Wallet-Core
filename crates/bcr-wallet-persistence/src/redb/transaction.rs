@@ -54,6 +54,10 @@ impl std::convert::From<TransactionEntry> for Transaction {
             memo: entry.memo,
             metadata: entry.metadata,
             quote_id: entry.quote_id,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
         }
     }
 }
@@ -397,6 +401,10 @@ mod tests {
             memo: Some("some memo".to_string()),
             metadata,
             quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
         }
     }
 

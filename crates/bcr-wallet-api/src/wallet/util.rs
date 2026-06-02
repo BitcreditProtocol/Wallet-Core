@@ -83,6 +83,7 @@ pub async fn htlc_lock(
         .find(|info| info.active && info.unit == unit)
         .ok_or(Error::NoActiveKeyset)?
         .id;
+    let active_keyset = client.get_mint_keyset(active_keyset_id).await?;
 
     let n = key_locks.len() as u64;
     let p2pk = cashu::Conditions::new(
@@ -95,8 +96,13 @@ pub async fn htlc_lock(
     )?;
     let htlc = cashu::SpendingConditions::new_htlc_hash(&hash_lock.to_string(), Some(p2pk))?;
     let split_target = cashu::amount::SplitTarget::None;
-    let premints =
-        cashu::PreMintSecrets::with_conditions(active_keyset_id, amount, &split_target, &htlc)?;
+    let premints = cashu::PreMintSecrets::with_conditions(
+        active_keyset_id,
+        amount,
+        &split_target,
+        &htlc,
+        &bcr_wallet_core::util::to_fee_and_amounts(&active_keyset),
+    )?;
 
     let attestation = beta.attest(&proofs).await?;
     let signatures = crate::pocket::committed_swap(

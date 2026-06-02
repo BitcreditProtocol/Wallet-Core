@@ -222,7 +222,7 @@ impl WalletApi for super::Wallet {
         let request = cdk18::PaymentRequest {
             payment_id: Some(Uuid::new_v4().to_string()),
             amount: Some(amount),
-            mints: Some(mints),
+            mints,
             unit: Some(unit),
             single_use: Some(true),
             description,
@@ -372,6 +372,10 @@ impl WalletApi for super::Wallet {
                     // payments might need to fill some extra metadata later
                     metadata,
                     quote_id: None,
+                    payment_request: None,
+                    payment_proof: None,
+                    payment_method: None,
+                    saga_id: None,
                 };
                 let tx_id = self
                     .pay_nut18(proofs, &self.nostr_cl, http_cl, transport, id, partial_tx)
@@ -434,6 +438,10 @@ impl WalletApi for super::Wallet {
                     amount,
                     metadata,
                     quote_id: None,
+                    payment_request: None,
+                    payment_proof: None,
+                    payment_method: None,
+                    saga_id: None,
                 };
                 let tx_id = self.tx_repo.store_tx(partial_tx).await?;
                 Ok((tx_id, Some(token)))
@@ -471,6 +479,10 @@ impl WalletApi for super::Wallet {
                     amount,
                     metadata,
                     quote_id: None,
+                    payment_request: None,
+                    payment_proof: None,
+                    payment_method: None,
+                    saga_id: None,
                 };
                 let tx_id = self.tx_repo.store_tx(partial_tx).await?;
                 Ok((tx_id, None))
@@ -523,6 +535,10 @@ impl WalletApi for super::Wallet {
                 amount: mint_result.amount,
                 metadata,
                 quote_id: Some(qid.to_string()),
+                payment_request: None,
+                payment_proof: None,
+                payment_method: None,
+                saga_id: None,
             };
             let tx_id = self.tx_repo.store_tx(tx).await?;
             res.push(tx_id);
@@ -570,6 +586,10 @@ impl WalletApi for super::Wallet {
                 amount,
                 metadata,
                 quote_id: Some(quote_id.to_string()),
+                payment_request: None,
+                payment_proof: None,
+                payment_method: None,
+                saga_id: None,
             };
             self.tx_repo.store_tx(tx).await?;
         }
@@ -617,6 +637,10 @@ impl WalletApi for super::Wallet {
                 amount,
                 metadata,
                 quote_id: None,
+                payment_request: None,
+                payment_proof: None,
+                payment_method: None,
+                saga_id: None,
             };
             self.tx_repo.store_tx(tx).await?;
         }
@@ -656,6 +680,10 @@ impl WalletApi for super::Wallet {
                 amount,
                 metadata,
                 quote_id: Some(quote_id.to_string()),
+                payment_request: None,
+                payment_proof: None,
+                payment_method: None,
+                saga_id: None,
             };
             self.tx_repo.store_tx(tx).await?;
         }
@@ -999,6 +1027,10 @@ impl WalletApi for super::Wallet {
                 amount,
                 metadata,
                 quote_id: None,
+                payment_request: None,
+                payment_proof: None,
+                payment_method: None,
+                saga_id: None,
             };
             let tx_id = self.tx_repo.store_tx(partial_tx).await?;
             Ok((tx_id, Some(token)))
