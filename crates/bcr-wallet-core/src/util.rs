@@ -9,28 +9,7 @@ use bitcoin::{
 
 use crate::types::Seed;
 
-pub fn fee_and_amounts(max: cashu::Amount) -> cashu::amount::FeeAndAmounts {
-    let max = max.to_u64();
-    let mut amounts = Vec::new();
-    let mut d = 1u64;
-    while d <= max {
-        amounts.push(d);
-        d <<= 1;
-    }
-    (0u64, amounts).into()
-}
-
-// Build a public KeySet from a MintKeySet, the From impl was removed in cashu
-pub fn to_keyset(keyset: &cashu::MintKeySet, active: Option<bool>) -> cashu::KeySet {
-    cashu::KeySet {
-        id: keyset.id,
-        unit: keyset.unit.clone(),
-        active,
-        keys: keyset.keys.clone().into(),
-        input_fee_ppk: keyset.input_fee_ppk,
-        final_expiry: keyset.final_expiry,
-    }
-}
+pub use bcr_common::core::keys::{fee_and_amounts, to_keyset};
 
 // Builds the wallet id, which is the hashed seed and bitcoin network, to ensure
 // uniqueness of a keypair per bitcoin network

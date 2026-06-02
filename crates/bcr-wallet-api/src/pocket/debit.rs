@@ -539,8 +539,10 @@ impl super::PocketApi for Pocket {
         };
         let active_keyset = client.get_mint_keyset(active_info.id).await?;
         // calculate splits
-        let send_splits = send_amount
-            .split_targeted(&SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(send_amount))?;
+        let send_splits = send_amount.split_targeted(
+            &SplitTarget::None,
+            &bcr_wallet_core::util::fee_and_amounts(send_amount),
+        )?;
         let send_splits_len = send_splits.len();
         let change_splits = change_amount.split_targeted(
             &SplitTarget::None,
@@ -1916,9 +1918,13 @@ mod tests {
         let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
         let k_infos = test_kinfos(info);
-        let premint =
-            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())))
-                .unwrap();
+        let premint = cdk00::PreMintSecrets::random(
+            kid,
+            Amount::from(amount.to_sat()),
+            &SplitTarget::None,
+            &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())),
+        )
+        .unwrap();
 
         let blind_sigs: Vec<cdk00::BlindSignature> = premint
             .blinded_messages()
@@ -2018,9 +2024,13 @@ mod tests {
         let kid = info.id;
         let k_infos = test_kinfos(info);
 
-        let premint =
-            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())))
-                .unwrap();
+        let premint = cdk00::PreMintSecrets::random(
+            kid,
+            Amount::from(amount.to_sat()),
+            &SplitTarget::None,
+            &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())),
+        )
+        .unwrap();
 
         let mut mdb = MockMintMeltRepository::new();
         let pdb = MockPocketRepository::new();
@@ -2087,7 +2097,13 @@ mod tests {
             .collect();
 
         // Generate premint secrets and sign them — these are the ORIGINAL blinding factors
-        let premint = cdk00::PreMintSecrets::random(kid, amount, &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(amount)).unwrap();
+        let premint = cdk00::PreMintSecrets::random(
+            kid,
+            amount,
+            &SplitTarget::None,
+            &bcr_wallet_core::util::fee_and_amounts(amount),
+        )
+        .unwrap();
         let blind_sigs: Vec<cdk00::BlindSignature> = premint
             .blinded_messages()
             .iter()
@@ -2453,9 +2469,13 @@ mod tests {
         let kid = info.id;
         let k_infos = test_kinfos(info);
 
-        let premint =
-            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())))
-                .unwrap();
+        let premint = cdk00::PreMintSecrets::random(
+            kid,
+            Amount::from(amount.to_sat()),
+            &SplitTarget::None,
+            &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())),
+        )
+        .unwrap();
 
         let blind_sigs: Vec<cdk00::BlindSignature> = premint
             .blinded_messages()
@@ -2558,9 +2578,13 @@ mod tests {
         let kid = info.id;
         let k_infos = test_kinfos(info);
 
-        let premint =
-            cdk00::PreMintSecrets::random(kid, Amount::from(amount.to_sat()), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())))
-                .unwrap();
+        let premint = cdk00::PreMintSecrets::random(
+            kid,
+            Amount::from(amount.to_sat()),
+            &SplitTarget::None,
+            &bcr_wallet_core::util::fee_and_amounts(Amount::from(amount.to_sat())),
+        )
+        .unwrap();
 
         let mut mdb = MockMintMeltRepository::new();
         let pdb = MockPocketRepository::new();

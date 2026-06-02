@@ -42,8 +42,7 @@ async fn restore_batch(
     counter: u32,
     batch_size: u32,
 ) -> Result<usize> {
-    let premints =
-        cdk00::PreMintSecrets::restore_batch(kid, seed, counter, counter + batch_size)?;
+    let premints = cdk00::PreMintSecrets::restore_batch(kid, seed, counter, counter + batch_size)?;
     let request = cdk09::RestoreRequest {
         outputs: premints.blinded_messages(),
     };

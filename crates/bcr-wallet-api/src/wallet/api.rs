@@ -20,10 +20,7 @@ use bcr_common::{
 };
 use bcr_wallet_core::{
     SendSync,
-    types::{
-        BTC_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback,
-        PaymentType, TransactionStatus,
-    },
+    types::{BTC_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback, PaymentType, TransactionStatus},
     util::{from_mint_url, to_mint_url},
 };
 use bitcoin::secp256k1;

@@ -610,8 +610,13 @@ mod tests {
         let amounts = [Amount::from(8)];
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
-        let premint =
-            cdk00::PreMintSecrets::random(keyset.id, amounts[0], &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(amounts[0])).unwrap();
+        let premint = cdk00::PreMintSecrets::random(
+            keyset.id,
+            amounts[0],
+            &SplitTarget::None,
+            &bcr_wallet_core::util::fee_and_amounts(amounts[0]),
+        )
+        .unwrap();
         assert!(premint.blinded_messages().len() == 1);
         let blind = premint.blinded_messages()[0].clone();
         let signature = signature::sign_ecash(&mintkeyset, &blind).unwrap();
@@ -624,8 +629,13 @@ mod tests {
     fn unblind_proofs_len_mismatch() {
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
-        let premint =
-            cdk00::PreMintSecrets::random(keyset.id, Amount::from(8), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(8))).unwrap();
+        let premint = cdk00::PreMintSecrets::random(
+            keyset.id,
+            Amount::from(8),
+            &SplitTarget::None,
+            &bcr_wallet_core::util::fee_and_amounts(Amount::from(8)),
+        )
+        .unwrap();
         assert_eq!(premint.blinded_messages().len(), 1);
         let signatures = core_tests::generate_ecash_signatures(
             &mintkeyset,
@@ -639,8 +649,13 @@ mod tests {
     fn unblind_proofs_amount_mismatch() {
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
-        let premint =
-            cdk00::PreMintSecrets::random(keyset.id, Amount::from(40), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(40))).unwrap();
+        let premint = cdk00::PreMintSecrets::random(
+            keyset.id,
+            Amount::from(40),
+            &SplitTarget::None,
+            &bcr_wallet_core::util::fee_and_amounts(Amount::from(40)),
+        )
+        .unwrap();
         assert_eq!(premint.blinded_messages().len(), 2);
         let signatures = core_tests::generate_ecash_signatures(
             &mintkeyset,
@@ -655,8 +670,13 @@ mod tests {
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let kid2 = core_tests::generate_random_ecash_keyset().0.id;
-        let premint =
-            cdk00::PreMintSecrets::random(kid2, Amount::from(16), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(16))).unwrap();
+        let premint = cdk00::PreMintSecrets::random(
+            kid2,
+            Amount::from(16),
+            &SplitTarget::None,
+            &bcr_wallet_core::util::fee_and_amounts(Amount::from(16)),
+        )
+        .unwrap();
         assert_eq!(premint.blinded_messages().len(), 1);
         let signatures = core_tests::generate_ecash_signatures(&mintkeyset, &[Amount::from(16)]);
         let proofs = super::unblind_proofs(&keyset, signatures, premint);
@@ -761,7 +781,13 @@ mod tests {
         let inputs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
         let premints = HashMap::from_iter([(
             info.id,
-            cdk00::PreMintSecrets::random(info.id, Amount::from(24), &SplitTarget::None, &bcr_wallet_core::util::fee_and_amounts(Amount::from(24))).unwrap(),
+            cdk00::PreMintSecrets::random(
+                info.id,
+                Amount::from(24),
+                &SplitTarget::None,
+                &bcr_wallet_core::util::fee_and_amounts(Amount::from(24)),
+            )
+            .unwrap(),
         )]);
         let keysets = HashMap::from([(info.id, bcr_wallet_core::util::to_keyset(&keyset, None))]);
         let mut mockclient = MockClowderMintConnector::new();
@@ -870,7 +896,12 @@ mod tests {
             .expect_get_mint_keyset()
             .times(1)
             .with(eq(info.id))
-            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&cloned_keyset_for_get, None)));
+            .returning(move |_| {
+                Ok(bcr_wallet_core::util::to_keyset(
+                    &cloned_keyset_for_get,
+                    None,
+                ))
+            });
 
         let cloned_keyset_for_sign = keyset.clone();
         mockclient
@@ -974,7 +1005,12 @@ mod tests {
             .expect_get_mint_keyset()
             .times(1)
             .with(eq(info.id))
-            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&cloned_keyset_for_get, None)));
+            .returning(move |_| {
+                Ok(bcr_wallet_core::util::to_keyset(
+                    &cloned_keyset_for_get,
+                    None,
+                ))
+            });
 
         let cloned_keyset_for_sign = keyset.clone();
         mockclient
@@ -1055,7 +1091,12 @@ mod tests {
             .expect_get_mint_keyset()
             .times(1)
             .with(eq(info.id))
-            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&cloned_keyset_for_get, None)));
+            .returning(move |_| {
+                Ok(bcr_wallet_core::util::to_keyset(
+                    &cloned_keyset_for_get,
+                    None,
+                ))
+            });
 
         let cloned_keyset_for_sign = keyset.clone();
         mockclient
@@ -1144,13 +1185,23 @@ mod tests {
             .expect_get_mint_keyset()
             .times(1)
             .with(eq(info.id))
-            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&cloned_keyset_for_get, None)));
+            .returning(move |_| {
+                Ok(bcr_wallet_core::util::to_keyset(
+                    &cloned_keyset_for_get,
+                    None,
+                ))
+            });
         let cloned_keyset_for_get_2 = keyset_2.clone();
         mockclient
             .expect_get_mint_keyset()
             .times(1)
             .with(eq(info_2.id))
-            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&cloned_keyset_for_get_2, None)));
+            .returning(move |_| {
+                Ok(bcr_wallet_core::util::to_keyset(
+                    &cloned_keyset_for_get_2,
+                    None,
+                ))
+            });
 
         let ks_clone = keyset.clone();
         let ks_2_clone = keyset_2.clone();

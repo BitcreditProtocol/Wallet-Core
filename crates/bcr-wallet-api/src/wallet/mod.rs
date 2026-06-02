@@ -270,9 +270,7 @@ impl Wallet {
         &self,
         req: &cashu::PaymentRequest,
     ) -> Result<(Amount, CurrencyUnit, cashu::Transport)> {
-        if !req.mints.is_empty()
-            && !req.mints.contains(&to_mint_url(self.client.mint_url()))
-        {
+        if !req.mints.is_empty() && !req.mints.contains(&to_mint_url(self.client.mint_url())) {
             return Err(Error::InterMint);
         }
         if req.nut10.is_some() {
