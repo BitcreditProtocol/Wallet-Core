@@ -3,6 +3,7 @@ use bcr_common::{
     wire::common as wire_common,
 };
 use bitcoin::secp256k1;
+use nostr::types::RelayUrl;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -46,4 +47,12 @@ pub struct WalletDetailedBalanceEntry {
 pub struct WalletProtestResult {
     pub status: wire_common::ProtestStatus,
     pub result: Option<(cashu::Amount, Vec<cashu::PublicKey>)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletInfo {
+    pub name: String,
+    pub network: bitcoin::Network,
+    pub default_mint_url: url::Url,
+    pub nostr_relays: Vec<RelayUrl>,
 }

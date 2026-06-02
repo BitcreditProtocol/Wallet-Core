@@ -283,6 +283,22 @@ pub async fn wallet_delete(req: WalletRequest) -> Result<(), WalletError> {
 }
 
 #[frb]
+pub async fn wallet_get_info(req: WalletRequest) -> Result<WalletInfoResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let info = app_state.wallet_info(req.wallet_id).await?;
+    Ok(WalletInfoResponse {
+        name: info.name,
+        network: info.network.to_string(),
+        default_mint_url: info.default_mint_url.to_string(),
+        nostr_relays: info
+            .nostr_relays
+            .into_iter()
+            .map(|r| r.to_string())
+            .collect(),
+    })
+}
+
+#[frb]
 pub async fn wallet_get_name(req: WalletRequest) -> Result<WalletNameResponse, WalletError> {
     let app_state = get_app_state().await;
     let name = app_state.wallet_name(req.wallet_id).await?;
@@ -827,6 +843,14 @@ pub struct WalletEditTransactionMemoRequest {
 #[derive(Debug, Clone)]
 pub struct WalletEditTransactionMemoResponse {
     pub updated: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletInfoResponse {
+    pub name: String,
+    pub network: String,
+    pub default_mint_url: String,
+    pub nostr_relays: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

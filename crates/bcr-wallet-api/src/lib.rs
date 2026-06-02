@@ -1,7 +1,9 @@
 use crate::config::{AppStateConfig, CreateWalletConfig};
 use crate::external::mint::{ClowderMintConnector, HttpClientExt};
 use crate::wallet::api::WalletApi;
-use crate::wallet::types::{WalletBalance, WalletDetailedBalanceEntry, WalletProtestResult};
+use crate::wallet::types::{
+    WalletBalance, WalletDetailedBalanceEntry, WalletInfo, WalletProtestResult,
+};
 use bcr_common::cdk_common::wallet::Transaction;
 use bcr_common::{
     cashu::{self, CurrencyUnit},
@@ -234,6 +236,13 @@ impl AppState {
     }
 
     ////////////////////////////////////////////////////  Wallet-Level API methods
+    pub async fn wallet_info(&self, id: String) -> Result<WalletInfo> {
+        tracing::debug!("info for wallet {id}");
+
+        let wallet = self.get_wallet(&id).await?;
+        Ok(wallet.read().await.info())
+    }
+
     pub async fn wallet_name(&self, id: String) -> Result<String> {
         tracing::debug!("name for wallet {id}");
 

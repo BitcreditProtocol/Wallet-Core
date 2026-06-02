@@ -24,8 +24,7 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
     push_line(&mut res);
 
     for id in wallet_ids.iter() {
-        let name = app_state.wallet_name(id.clone()).await?;
-        let mint_url = app_state.wallet_mint_url(id.clone()).await?;
+        let info = app_state.wallet_info(id.clone()).await?;
         let unit = app_state.wallet_currency_unit(id.clone()).await?.unit;
         let balance = app_state.wallet_balance(id.clone()).await?;
         let dev_mode_detailed_balance = app_state
@@ -56,9 +55,10 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
             cursor = res.next_cursor;
         }
 
-        res.push_str(&format!("Name: {name}\n"));
+        res.push_str(&format!("Name: {}\n", info.name));
         res.push_str(&format!("Wallet ID: {id}\n"));
-        res.push_str(&format!("Mint URL: {mint_url}\n"));
+        res.push_str(&format!("Mint URL: {}\n", info.default_mint_url));
+        res.push_str(&format!("Network: {}\n", info.network));
         res.push_str(&format!("Debit Balance: {} {}\n", balance.debit, unit));
         res.push_str(&format!("Credit Balance: {} {}\n", balance.credit, unit));
         res.push_str(&format!("Total Balance: {} {}\n", balance.total, unit));
