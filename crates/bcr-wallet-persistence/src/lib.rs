@@ -8,8 +8,16 @@ use crate::error::Result;
 use async_trait::async_trait;
 use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07};
 use bcr_common::cdk_common::wallet::{Transaction, TransactionId};
-use bcr_wallet_core::{SendSync, types::WalletConfig};
+use bcr_common::core::NodeId;
+use bcr_wallet_core::contact::Contact;
+use bcr_wallet_core::name::Name;
+use bcr_wallet_core::types::{PaymentRequestDirection, PaymentRequestState};
+use bcr_wallet_core::{
+    SendSync,
+    types::{PaymentRequest, WalletConfig},
+};
 use bitcoin::secp256k1;
+use nostr::{RelayUrl, types::Timestamp};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -151,5 +159,63 @@ pub trait MintMeltRepository: SendSync {
     async fn load_melt_commitment(&self, quote_id: Uuid) -> Result<MeltCommitmentRecord>;
     async fn delete_melt_commitment(&self, quote_id: Uuid) -> Result<()>;
     async fn list_melt_commitments(&self) -> Result<Vec<MeltCommitmentRecord>>;
+    async fn delete_repo(&self) -> Result<()>;
+}
+
+//////////////////////////////////////////// Nostr
+#[derive(Debug, Clone)]
+pub struct NostrEventOffset {
+    pub event_id: String,
+    pub time: Timestamp,
+    pub success: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct NostrQueuedMessage {
+    pub id: String,
+    /// `Some(target)` for private messages, `None` for public broadcast messages.
+    pub recipient: Option<String>,
+    pub payload: String,
+}
+
+#[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
+#[async_trait]
+pub trait NostrRepository: SendSync {
+    async fn current_offset(&self) -> Result<Timestamp>;
+    async fn is_processed(&self, event_id: &str) -> Result<bool>;
+    async fn add_event(&self, data: NostrEventOffset) -> Result<()>;
+    async fn add_retry_message(&self, message: NostrQueuedMessage, max_retries: i32) -> Result<()>;
+    async fn get_retry_messages(&self, limit: u64) -> Result<Vec<NostrQueuedMessage>>;
+    async fn fail_retry(&self, id: &str) -> Result<()>;
+    async fn succeed_retry(&self, id: &str) -> Result<()>;
+    async fn delete_repo(&self) -> Result<()>;
+}
+
+//////////////////////////////////////////// Contact
+#[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
+#[async_trait]
+pub trait ContactStoreApi: SendSync {
+    async fn add_contact(&self, contact: Contact) -> Result<()>;
+    async fn edit_contact(&self, node_id: NodeId, name: Name) -> Result<()>;
+    async fn edit_contact_relays(&self, node_id: NodeId, relays: Vec<RelayUrl>) -> Result<()>;
+    async fn delete_contact(&self, node_id: NodeId) -> Result<()>;
+    async fn get_contact(&self, node_id: NodeId) -> Result<Option<Contact>>;
+    async fn list_contacts(&self, search_term: Option<String>) -> Result<Vec<Contact>>;
+    async fn delete_repo(&self) -> Result<()>;
+}
+
+//////////////////////////////////////////// Pending Incoming and Outgoing Payment Requests
+#[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
+#[async_trait]
+pub trait PaymentRequestStoreApi: SendSync {
+    async fn add_payment_request(&self, payment_request: PaymentRequest) -> Result<()>;
+    async fn get_payment_request(&self, id: Uuid) -> Result<Option<PaymentRequest>>;
+    async fn list_payment_requests(
+        &self,
+        direction: PaymentRequestDirection,
+        states: &[PaymentRequestState],
+    ) -> Result<Vec<PaymentRequest>>;
+    async fn set_payment_request_state(&self, id: Uuid, state: PaymentRequestState) -> Result<()>;
+    // delete repo
     async fn delete_repo(&self) -> Result<()>;
 }

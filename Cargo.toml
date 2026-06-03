@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.9.4"
+version = "0.9.5"
 edition = "2024"
 license = "MIT"
 
@@ -43,4 +43,4 @@ tracing = {version = "0.1", features = ["log"]}
 tracing-log = {version = "0.2"}
 tracing-subscriber = {version = "0.3"}
 url = {version = "2.5"}
-uuid = {version = "1", features = ["v4", "serde"]}
+uuid = {version = "1", features = ["v4", "serde", "borsh"]}

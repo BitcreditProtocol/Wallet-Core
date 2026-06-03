@@ -26,10 +26,9 @@ tokio = {workspace = true}
 tokio-util = {workspace = true}
 tracing.workspace = true
 url = {workspace = true}
-uuid = {workspace = true }
+uuid = {workspace = true}
 
 [dev-dependencies]
 bcr-common = {workspace = true, features = ["test-utils"]}
 bcr-wallet-persistence = {workspace = true, features = ["test-utils", "db-redb"]}
 mockall = { workspace = true}
-nostr-relay-builder = "0.43"

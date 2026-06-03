@@ -1,6 +1,7 @@
 use bcr_common::{
     cashu::{self, Amount, CurrencyUnit, KeySetInfo},
     cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
+    core::NodeId,
 };
 use bitcoin::{address::NetworkUnchecked, secp256k1};
 use chrono::{DateTime, Datelike, Utc};
@@ -12,9 +13,12 @@ use std::{
 };
 use uuid::Uuid;
 
+use crate::event::ContactPaymentRequestPayload;
+
 pub type Seed = [u8; 64];
 
 pub type PaymentResultCallback = Arc<dyn Fn(Option<TransactionId>) + Send + Sync + 'static>;
+pub type PendingPaymentSubscriptionCallback = Arc<dyn Fn(Uuid) + Send + Sync + 'static>;
 
 #[derive(Default, Debug, Clone)]
 pub struct SendSummary {
@@ -75,6 +79,91 @@ pub struct MintSummary {
     pub expiry: u64,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum PaymentRequestState {
+    Pending,
+    Paid { tx_id: TransactionId },
+    Canceled,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum PaymentRequestDirection {
+    Incoming,
+    Outgoing,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PaymentRequest {
+    pub id: Uuid,
+    pub node_id: NodeId,
+    pub amount: Amount,
+    pub unit: CurrencyUnit,
+    pub description: Option<String>,
+    pub deadline: Option<u64>,
+    pub created_at: u64,
+    pub state: PaymentRequestState,
+    pub direction: PaymentRequestDirection,
+}
+
+impl PaymentRequest {
+    pub fn new_incoming(
+        node_id: NodeId,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+        deadline: Option<u64>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            node_id,
+            amount,
+            unit,
+            description,
+            deadline,
+            created_at: Utc::now().timestamp() as u64,
+            state: PaymentRequestState::Pending,
+            direction: PaymentRequestDirection::Incoming,
+        }
+    }
+
+    pub fn new_outgoing(
+        node_id: NodeId,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+        deadline: Option<u64>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            node_id,
+            amount,
+            unit,
+            description,
+            deadline,
+            created_at: Utc::now().timestamp() as u64,
+            state: PaymentRequestState::Pending,
+            direction: PaymentRequestDirection::Outgoing,
+        }
+    }
+}
+
+impl From<ContactPaymentRequestPayload> for PaymentRequest {
+    fn from(value: ContactPaymentRequestPayload) -> Self {
+        Self {
+            id: value.id,
+            node_id: value.sender,
+            amount: value.amount,
+            unit: value.unit,
+            description: value.memo,
+            deadline: value.deadline,
+            created_at: value.created_at,
+            state: PaymentRequestState::Pending,
+            direction: PaymentRequestDirection::Incoming,
+        }
+    }
+}
+
 #[derive(strum::EnumString, strum::Display, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PaymentType {
     #[default]
@@ -83,6 +172,7 @@ pub enum PaymentType {
     Cdk18,
     OnChain,
     Swap,
+    Contact,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +215,18 @@ pub const BTC_TX_ID_TYPE_METADATA_KEY: &str = "btc_tx_id";
 pub fn get_btc_tx_id(metas: &HashMap<String, String>) -> Option<bitcoin::Txid> {
     let tx_id = metas.get(BTC_TX_ID_TYPE_METADATA_KEY)?;
     bitcoin::Txid::from_str(tx_id).ok()
+}
+
+pub const CONTACT_NODE_ID_METADATA_KEY: &str = "contact_node_id";
+pub fn get_contact_node_id(metas: &HashMap<String, String>) -> Option<NodeId> {
+    let node_id = metas.get(CONTACT_NODE_ID_METADATA_KEY)?;
+    NodeId::from_str(node_id).ok()
+}
+
+pub const PAYMENT_REQUEST_ID_METADATA_KEY: &str = "payment_request_id";
+pub fn get_payment_request_id(metas: &HashMap<String, String>) -> Option<Uuid> {
+    let id = metas.get(PAYMENT_REQUEST_ID_METADATA_KEY)?;
+    Uuid::from_str(id).ok()
 }
 
 impl std::convert::From<SendSummary> for PaymentSummary {
