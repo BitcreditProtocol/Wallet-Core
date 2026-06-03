@@ -9,6 +9,8 @@ pub enum Error {
     Nip19(#[from] nostr_sdk::nips::nip19::Error),
     #[error("nostr::nip06 {0}")]
     Nip06(#[from] nostr_sdk::nips::nip06::Error),
+    #[error("nostr::nip59 {0}")]
+    Nip59(#[from] nostr_sdk::nips::nip59::Error),
     #[error("nostr-sdk::client {0}")]
     NostrClient(#[from] nostr_sdk::client::Error),
     #[error("nostr::event {0}")]

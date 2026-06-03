@@ -10,6 +10,7 @@ use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07};
 use bcr_common::cdk_common::wallet::{Transaction, TransactionId};
 use bcr_common::core::NodeId;
 use bcr_wallet_core::contact::Contact;
+use bcr_wallet_core::name::Name;
 use bcr_wallet_core::{SendSync, types::WalletConfig};
 use bitcoin::secp256k1;
 use nostr::types::Timestamp;
@@ -189,7 +190,7 @@ pub trait NostrRepository: SendSync {
 #[async_trait]
 pub trait ContactStoreApi: SendSync {
     async fn add_contact(&self, contact: Contact) -> Result<()>;
-    async fn edit_contact(&self, contact: Contact) -> Result<()>;
+    async fn edit_contact(&self, node_id: NodeId, name: Name) -> Result<()>;
     async fn delete_contact(&self, node_id: NodeId) -> Result<()>;
     async fn get_contact(&self, node_id: NodeId) -> Result<Option<Contact>>;
     async fn list_contacts(&self, search_term: Option<String>) -> Result<Vec<Contact>>;

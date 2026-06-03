@@ -46,6 +46,8 @@ enum Commands {
     Info,
     #[command(name = "status")]
     Status,
+    #[command(name = "wait")]
+    Wait,
     #[command(name = "add_wallet")]
     AddWallet { id: String },
     #[command(name = "delete_wallet")]
@@ -65,6 +67,13 @@ enum Commands {
     #[command(name = "pay_by_token")]
     PayByToken {
         id: String,
+        amount: u64,
+        description: Option<String>,
+    },
+    #[command(name = "pay_to_contact")]
+    PayToContact {
+        id: String,
+        node_id: String,
         amount: u64,
         description: Option<String>,
     },
@@ -189,6 +198,10 @@ async fn main() -> Result<()> {
                 command::cmd_status(&app_state).await?
             );
         }
+        Commands::Wait => {
+            info!("Wait for {} for 120 seconds", cli.wallet);
+            tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        }
         Commands::Receive { id, token } => {
             info!(
                 "Receiving for {}: {}",
@@ -255,6 +268,26 @@ async fn main() -> Result<()> {
                     &app_state,
                     &cli.wallet,
                     &id,
+                    amount,
+                    description.clone()
+                )
+                .await?
+            );
+        }
+        Commands::PayToContact {
+            id,
+            node_id,
+            amount,
+            description,
+        } => {
+            info!(
+                "Payment to Contact {node_id} for {}: {}, Amount: {amount}, Description: {description:?}",
+                cli.wallet,
+                command::cmd_pay_to_contact(
+                    &app_state,
+                    &cli.wallet,
+                    &id,
+                    &node_id,
                     amount,
                     description.clone()
                 )

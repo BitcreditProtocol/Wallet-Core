@@ -1,6 +1,7 @@
 use bcr_common::{
     cashu::{self, Amount, CurrencyUnit, KeySetInfo},
     cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
+    core::NodeId,
 };
 use bitcoin::{address::NetworkUnchecked, secp256k1};
 use chrono::{DateTime, Datelike, Utc};
@@ -83,6 +84,7 @@ pub enum PaymentType {
     Cdk18,
     OnChain,
     Swap,
+    Contact,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +127,12 @@ pub const BTC_TX_ID_TYPE_METADATA_KEY: &str = "btc_tx_id";
 pub fn get_btc_tx_id(metas: &HashMap<String, String>) -> Option<bitcoin::Txid> {
     let tx_id = metas.get(BTC_TX_ID_TYPE_METADATA_KEY)?;
     bitcoin::Txid::from_str(tx_id).ok()
+}
+
+pub const CONTACT_NODE_ID_METADATA_KEY: &str = "contact_node_id";
+pub fn get_contact_node_id(metas: &HashMap<String, String>) -> Option<NodeId> {
+    let node_id = metas.get(CONTACT_NODE_ID_METADATA_KEY)?;
+    NodeId::from_str(node_id).ok()
 }
 
 impl std::convert::From<SendSummary> for PaymentSummary {

@@ -8,6 +8,7 @@ use crate::{
     pocket::debit::DebitPocketApi,
     types::{PAYMENT_TYPE_METADATA_KEY, TRANSACTION_STATUS_METADATA_KEY},
     wallet::{
+        api::WalletApi,
         types::{PayReference, SwapConfig, WalletBalance, WalletDetailedBalanceEntry},
         util::tx_can_be_refreshed,
     },
@@ -19,20 +20,24 @@ use bcr_common::{
     wire::clowder::{ConnectedMintResponse, ConnectedMintsResponse},
 };
 use bcr_wallet_core::{
+    contact::Contact,
+    event::{ContactPaymentPayload, EventEnvelope},
     types::{
-        ListTransactionsResult, PaymentType, TransactionCursor, TransactionFilters,
-        TransactionSort, TransactionStatus, extract_fees_per_month,
+        CONTACT_NODE_ID_METADATA_KEY, ListTransactionsResult, PaymentType, TransactionCursor,
+        TransactionFilters, TransactionSort, TransactionStatus, extract_fees_per_month,
     },
     util::{from_mint_url, to_mint_url},
 };
 use bcr_wallet_persistence::{ContactStoreApi, NostrRepository, TransactionRepository};
 use bcr_wallet_transport::{NostrEventChannel, TransportApi, nostr};
 use bitcoin::{
+    base58,
     hashes::{Hash, sha256::Hash as Sha256},
     secp256k1,
 };
+use chrono::Utc;
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 
 pub struct Wallet {
@@ -77,9 +82,9 @@ impl Wallet {
         nostr_event_channel: NostrEventChannel,
         nostr_repo: Arc<dyn NostrRepository>,
         nostr_consumer: nostr::Consumer,
-    ) -> Self {
+    ) -> Arc<RwLock<Self>> {
         let cancel = CancellationToken::new();
-        let wallet = Self {
+        let wallet = Arc::new(RwLock::new(Self {
             network,
             client,
             mint_keyset_infos,
@@ -100,9 +105,13 @@ impl Wallet {
             nostr_repo,
             nostr_consumer_running: Arc::new(Mutex::new(false)),
             nostr_shutdown: cancel.clone(),
-        };
-        wallet.nostr_connect(nostr_consumer, cancel).await;
-        wallet.start_nostr_event_listener().await;
+        }));
+        wallet
+            .read()
+            .await
+            .nostr_connect(nostr_consumer, cancel)
+            .await;
+        Self::start_nostr_event_listener(wallet.clone()).await;
         wallet
     }
 
@@ -181,8 +190,8 @@ impl Wallet {
         });
     }
 
-    async fn start_nostr_event_listener(&self) {
-        let mut nostr_receiver = self.nostr_event_channel.subscribe();
+    async fn start_nostr_event_listener(wallet: Arc<RwLock<Self>>) {
+        let mut nostr_receiver = wallet.read().await.nostr_event_channel.subscribe();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -201,6 +210,45 @@ impl Wallet {
                         match received_evt {
                             bcr_wallet_transport::NostrWalletEvent::Cdk18Payment { .. } => {
                                 // ignore - cdk18 payments are handled by explicitly awaiting them
+                            },
+                            bcr_wallet_transport::NostrWalletEvent::ContactPayment { sender, payload, event_id } => {
+                                let meta = HashMap::from([
+                                    (String::from("sender"), sender.to_string()),
+                                    (String::from("nostr_event_id"), event_id.to_string()),
+                                    (
+                                        String::from(PAYMENT_TYPE_METADATA_KEY),
+                                        PaymentType::Contact.to_string(),
+                                    ),
+                                    (
+                                        String::from(TRANSACTION_STATUS_METADATA_KEY),
+                                        TransactionStatus::Settled.to_string(),
+                                    ),
+                                    (
+                                        String::from(CONTACT_NODE_ID_METADATA_KEY),
+                                        payload.sender.to_string()
+                                    ),
+                                ]);
+
+                                let amount = payload.proofs.total_amount().unwrap_or(Amount::ZERO);
+                                let wallet_guard = wallet.read().await;
+                                match <Self as api::WalletApi>::receive_proofs(
+                                    &*wallet_guard,
+                                    payload.proofs,
+                                    payload.unit,
+                                    from_mint_url(&payload.mint),
+                                    chrono::Utc::now().timestamp() as u64,
+                                    payload.memo,
+                                    meta,
+                                ).await {
+                                    Ok(tx_id) => {
+                                        tracing::info!("Received Contact Payment from {} for {} with Transaction ID: {}",
+                                            payload.sender, amount, tx_id)
+                                    },
+                                    Err(e) => {
+                                        tracing::error!("Error processing Contact Payment from {} for {}: {e}",
+                                            payload.sender, amount)
+                                    }
+                                };
                             },
                         };
                     }
@@ -347,7 +395,7 @@ impl Wallet {
                             id: keyset.id,
                             unit: keyset.unit.clone(),
                             active: true,
-                            input_fee_ppk: 1, // TODO: get fees from the clowder keyset
+                            input_fee_ppk: keyset.input_fee_ppk,
                             final_expiry: keyset.final_expiry,
                         },
                     )
@@ -862,6 +910,51 @@ impl Wallet {
         Ok(tx_id)
     }
 
+    async fn pay_to_contact(
+        &self,
+        proofs: Vec<cashu::Proof>,
+        nostr_cl: &Arc<dyn TransportApi>,
+        contact: Contact,
+        mut partial_tx: Transaction,
+    ) -> Result<TransactionId> {
+        let payload = ContactPaymentPayload {
+            sender: self.node_id(),
+            proofs,
+            memo: partial_tx.memo.clone(),
+            unit: partial_tx.unit.clone(),
+            mint: to_mint_url(self.client.mint_url()),
+            created_at: Utc::now().timestamp() as u64,
+        };
+        let event: EventEnvelope =
+            bcr_wallet_core::event::Event::new_contact_payment(payload).try_into()?;
+        let payload = base58::encode(&borsh::to_vec(&event)?);
+        let target = nostr_cl.nip19_for_contact(&contact).await?;
+
+        let event_id = match nostr_cl
+            .send_private_msg(target.clone(), payload.clone())
+            .await
+        {
+            Ok(event_id) => event_id,
+            Err(e) => {
+                tracing::error!("Failed to send contact payment, queuing for retry: {e}");
+                match e {
+                    bcr_wallet_transport::error::Error::NostrSendPrivateMsg(event_id) => {
+                        self.nostr_transport
+                            .queue_retry_message(Some(target), payload)
+                            .await?;
+                        event_id
+                    }
+                    e => return Err(e.into()),
+                }
+            }
+        };
+        partial_tx
+            .metadata
+            .insert(String::from("nostr::event_id"), event_id.to_string());
+        let txid = self.tx_repo.store_tx(partial_tx).await?;
+        Ok(txid)
+    }
+
     async fn pay_nut18(
         &self,
         proofs: Vec<cashu::Proof>,
@@ -1300,7 +1393,7 @@ mod tests {
         let wlt = wallet(ctx).await;
 
         let err = wlt
-            .prepare_pay("not-a-request".to_string())
+            .prepare_pay_cdk18("not-a-request".to_string())
             .await
             .unwrap_err();
 
@@ -1321,7 +1414,7 @@ mod tests {
 
         let wlt = wallet(ctx).await;
         let req = wlt
-            .prepare_payment_request(
+            .prepare_cdk18_payment_request(
                 cashu::Amount::from(123),
                 CurrencyUnit::Sat,
                 Some("hello".to_string()),

@@ -71,7 +71,6 @@ impl NostrQueuedMessageEntry {
         }
     }
 }
-
 ///////////////////////////////////////////// NostrDB
 pub struct NostrDB {
     db: Arc<Database>,

@@ -470,6 +470,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletNameResponse dco_decode_wallet_name_response(dynamic raw);
 
   @protected
+  WalletNodeIdResponse dco_decode_wallet_node_id_response(dynamic raw);
+
+  @protected
   WalletPayRequest dco_decode_wallet_pay_request(dynamic raw);
 
   @protected
@@ -1123,6 +1126,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletNameResponse sse_decode_wallet_name_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletNodeIdResponse sse_decode_wallet_node_id_response(
     SseDeserializer deserializer,
   );
 
@@ -1927,6 +1935,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_name_response(
     WalletNameResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_node_id_response(
+    WalletNodeIdResponse self,
     SseSerializer serializer,
   );
 

@@ -3,7 +3,11 @@ use crate::{
     error::{Error, Result},
 };
 use async_trait::async_trait;
-use bcr_common::cashu::nut18 as cdk18;
+use bcr_common::{cashu::nut18 as cdk18, cdk_common::bitcoin::base58};
+use bcr_wallet_core::{
+    contact::Contact,
+    event::{ContactPaymentPayload, EventEnvelope},
+};
 use bcr_wallet_persistence::{NostrEventOffset, NostrQueuedMessage, NostrRepository};
 use nostr::{
     PublicKey,
@@ -225,8 +229,7 @@ impl TransportApi for Transport {
 
         let signer = self.client.client.signer().await?;
         let event: Event =
-            EventBuilder::private_msg(&signer, receiver.public_key, payload, std::iter::empty())
-                .await?;
+            EventBuilder::private_msg(&signer, receiver.public_key, payload, []).await?;
         let _ = self
             .client
             .client
@@ -246,6 +249,12 @@ impl TransportApi for Transport {
                 .to_bech32()?,
             tags: vec![vec![String::from("n"), String::from("17")]],
         })
+    }
+
+    async fn nip19_for_contact(&self, contact: &Contact) -> Result<String> {
+        let target =
+            Nip19Profile::new(contact.node_id.npub(), contact.nostr_relays.clone()).to_bech32()?;
+        Ok(target)
     }
 
     async fn shutdown(&self) {
@@ -340,6 +349,14 @@ impl TransportApi for Transport {
             }
         }
         Ok(retried)
+    }
+
+    async fn fetch_relay_list(
+        &self,
+        npub: PublicKey,
+        relays: Vec<RelayUrl>,
+    ) -> Result<Vec<RelayUrl>> {
+        self.client.fetch_relay_list(npub, relays).await
     }
 }
 
@@ -461,38 +478,76 @@ async fn process_event(
     signer: Arc<dyn NostrSigner>,
     event_channel: NostrEventChannel,
 ) -> Result<(bool, Timestamp)> {
-    tracing::debug!("Processing Nostr event with id: {}", event.id);
-    let UnwrappedGift { rumor, .. } = match UnwrappedGift::from_gift_wrap(&signer, &event).await {
-        Ok(gift) => gift,
-        Err(e) => {
-            tracing::error!("Unwrapping gift wrap failed: {e}");
-            return Ok((false, Timestamp::zero()));
+    let (success, time) = match event.kind {
+        Kind::GiftWrap => {
+            tracing::debug!(
+                "Processing Nostr nip 17 direct message event with id: {}",
+                event.id
+            );
+            match handle_nip17_direct_message(event.clone(), &signer, event_channel).await {
+                Err(e) => {
+                    tracing::error!("Failed to handle nip 17 direct message: {e}");
+                    (false, Timestamp::zero())
+                }
+                Ok(_) => (true, event.created_at),
+            }
         }
+        _ => (true, Timestamp::zero()),
     };
 
-    let payload = if rumor.kind == nostr_sdk::Kind::PrivateDirectMessage {
-        match serde_json::from_str::<cdk18::PaymentRequestPayload>(&rumor.content) {
-            Ok(payload) => payload,
-            Err(e) => {
-                tracing::error!("Parsing Payment Request failed: {e}");
-                return Ok((false, Timestamp::zero()));
-            }
+    Ok((success, time))
+}
+
+async fn handle_nip17_direct_message<T: NostrSigner>(
+    event: Box<Event>,
+    signer: &T,
+    event_channel: NostrEventChannel,
+) -> Result<()> {
+    let UnwrappedGift { rumor, sender } = UnwrappedGift::from_gift_wrap(signer, &event).await?;
+    let sender_npub = sender.to_bech32();
+    let sender_pub_key = sender.to_hex();
+    if rumor.kind == nostr_sdk::Kind::PrivateDirectMessage {
+        if let Ok(data) = base58::decode(rumor.content.as_str())
+            && let Ok(envelope) = borsh::from_slice::<EventEnvelope>(&data)
+        {
+            tracing::debug!(
+                "Processing event: {} {} from {sender_npub:?} (hex: {sender_pub_key})",
+                envelope.event_type,
+                envelope.version
+            );
+            match envelope.event_type {
+                bcr_wallet_core::event::EventType::ContactPayment => {
+                    if let Ok(payload) = borsh::from_slice::<ContactPaymentPayload>(&envelope.data)
+                    {
+                        event_channel.publish(NostrWalletEvent::ContactPayment {
+                            event_id: event.id,
+                            payload,
+                            sender: event.pubkey,
+                        });
+                    }
+                }
+            };
+        } else if let Ok(cdk18_payload) =
+            serde_json::from_str::<cdk18::PaymentRequestPayload>(&rumor.content)
+        {
+            event_channel.publish(NostrWalletEvent::Cdk18Payment {
+                event_id: event.id,
+                payload: cdk18_payload,
+                sender: event.pubkey,
+            });
+        } else {
+            tracing::debug!(
+                "Nostr nip 17 message with id: {} wasn't of any type we handle - ignoring",
+                event.id
+            );
         }
     } else {
         tracing::debug!(
-            "handle event, but rumor no PrivateDirectMessage - {}",
-            rumor.kind
+            "Nostr nip 17 message with id: {} is not private direct message - ignoring",
+            event.id
         );
-        return Ok((false, Timestamp::zero()));
-    };
-
-    event_channel.publish(NostrWalletEvent::Cdk18Payment {
-        event_id: event.id,
-        payload,
-        sender: event.pubkey,
-    });
-
-    Ok((true, event.created_at))
+    }
+    Ok(())
 }
 
 async fn should_process(
