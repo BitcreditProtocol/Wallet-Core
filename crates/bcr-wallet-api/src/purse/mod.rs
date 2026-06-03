@@ -58,11 +58,11 @@ where
         res
     }
 
-    pub async fn add_wallet(&self, wallet: Wlt) -> Result<String> {
-        let wallet_id = wallet.id();
-        self.repo.store(wallet.config()?).await?;
+    pub async fn add_wallet(&self, wallet: Arc<RwLock<Wlt>>) -> Result<String> {
+        let wallet_id = wallet.read().await.id();
+        self.repo.store(wallet.read().await.config()?).await?;
         let mut wallets = self.wallets.write().await;
-        wallets.insert(wallet_id.clone(), Arc::new(RwLock::new(wallet)));
+        wallets.insert(wallet_id.clone(), wallet);
         Ok(wallet_id)
     }
 
@@ -109,6 +109,21 @@ where
         }
 
         Ok(res)
+    }
+
+    pub async fn wallets_nostr_connected(&self) -> HashMap<String, bool> {
+        let mut res = HashMap::new();
+        let wallets: HashMap<_, _> = {
+            let wlts = self.wallets.read().await;
+            wlts.clone()
+        };
+        for (wallet_id, wlt) in wallets.iter() {
+            res.insert(
+                wallet_id.to_owned(),
+                wlt.read().await.is_nostr_connected().await,
+            );
+        }
+        res
     }
 }
 
@@ -161,7 +176,8 @@ mod tests {
         wlt.expect_delete().times(1).returning(|| Ok(()));
 
         let new_wlt_id = wlt.id();
-        let wlt_id = purse.add_wallet(wlt).await.expect("can create wallet");
+        let wallet = Arc::new(RwLock::new(wlt));
+        let wlt_id = purse.add_wallet(wallet).await.expect("can create wallet");
         assert_eq!(wlt_id, "wlt-1".to_owned());
         let wallets = purse.list_wallets().await.expect("list wallets works");
         assert_eq!(wallets.len(), 1);
@@ -200,7 +216,8 @@ mod tests {
         wlt.expect_migrate_pockets_substitute()
             .returning(|_| Ok(url::Url::from_str("https://substitute.example.com").unwrap()));
 
-        let _wlt_id = purse.add_wallet(wlt).await.expect("can create wallet");
+        let wallet = Arc::new(RwLock::new(wlt));
+        let _wlt_id = purse.add_wallet(wallet).await.expect("can create wallet");
 
         let migrated = purse
             .migrate_rabid_wallets()
