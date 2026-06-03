@@ -48,4 +48,12 @@ pub enum Error {
     CounterNotFound(cdk02::Id),
     #[error("{0}")]
     Custom(String),
+    #[error("Contact already exists {0}")]
+    ContactAlreadyExists(String),
+    #[error("Contact not found {0}")]
+    ContactNotFound(String),
+    #[error("Payment Request already exists {0}")]
+    PaymentRequestAlreadyExists(String),
+    #[error("Payment Request not found {0}")]
+    PaymentRequestNotFound(String),
 }

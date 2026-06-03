@@ -1,6 +1,6 @@
 use bcr_wallet_core::types::{
-    ListTransactionsResult, PaymentResultCallback, get_btc_tx_id, get_payment_type,
-    get_transaction_status,
+    ListTransactionsResult, PaymentResultCallback, PendingPaymentSubscriptionCallback,
+    get_btc_tx_id, get_contact_node_id, get_payment_type, get_transaction_status,
 };
 use nostr::RelayUrl;
 use once_cell::sync::Lazy;
@@ -173,17 +173,16 @@ fn start_jobs(
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
+                let app_state = get_app_state().await;
 
-            let app_state = get_app_state().await;
-
-            info!("Running jobs");
-            if let Err(e) = app_state.run_jobs().await {
-                error!("Error running jobs: {e}");
-            } else {
-                info!("Jobs ran successfully");
-            }
-                },
-                _ = cancel.cancelled() => break,
+                info!("Running jobs");
+                if let Err(e) = app_state.run_jobs().await {
+                    error!("Error running jobs: {e}");
+                } else {
+                    info!("Jobs ran successfully");
+                }
+            },
+            _ = cancel.cancelled() => break,
             }
         }
     })
@@ -288,6 +287,7 @@ pub async fn wallet_get_info(req: WalletRequest) -> Result<WalletInfoResponse, W
     let info = app_state.wallet_info(req.wallet_id).await?;
     Ok(WalletInfoResponse {
         name: info.name,
+        node_id: info.node_id.to_string(),
         network: info.network.to_string(),
         default_mint_url: info.default_mint_url.to_string(),
         nostr_relays: info
@@ -295,6 +295,15 @@ pub async fn wallet_get_info(req: WalletRequest) -> Result<WalletInfoResponse, W
             .into_iter()
             .map(|r| r.to_string())
             .collect(),
+    })
+}
+
+#[frb]
+pub async fn wallet_get_node_id(req: WalletRequest) -> Result<WalletNodeIdResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let node_id = app_state.wallet_node_id(req.wallet_id).await?;
+    Ok(WalletNodeIdResponse {
+        node_id: node_id.to_string(),
     })
 }
 
@@ -467,7 +476,7 @@ pub async fn wallet_prepare_payment(
 ) -> Result<WalletPreparePaymentResponse, WalletError> {
     let app_state = get_app_state().await;
     let payment_summary = app_state
-        .wallet_prepare_payment(req.wallet_id, req.input)
+        .wallet_prepare_cdk18_payment(req.wallet_id, req.input)
         .await?;
     Ok(WalletPreparePaymentResponse {
         payment_summary: PaymentSummary {
@@ -539,7 +548,7 @@ pub async fn wallet_prepare_payment_request(
         .wallet_prepare_payment_request(req.wallet_id, req.amount, req.description)
         .await?;
     Ok(WalletPreparePaymentReqResponse {
-        payment_request: PaymentRequest {
+        payment_request: Cdk18PaymentRequest {
             request: payment_request.request,
             p_id: payment_request.p_id,
         },
@@ -687,6 +696,215 @@ pub async fn wallet_get_ids() -> Result<WalletsIdsResponse, WalletError> {
 }
 
 #[frb]
+pub async fn wallet_add_contact(
+    req: WalletAddContactRequest,
+) -> Result<WalletAddContactResponse, WalletError> {
+    let app_state = get_app_state().await;
+    app_state
+        .wallet_add_contact(req.wallet_id, req.node_id.clone(), req.name)
+        .await?;
+    Ok(WalletAddContactResponse {
+        node_id: req.node_id,
+    })
+}
+
+#[frb]
+pub async fn wallet_edit_contact(
+    req: WalletEditContactRequest,
+) -> Result<WalletEditContactResponse, WalletError> {
+    let app_state = get_app_state().await;
+    app_state
+        .wallet_edit_contact(req.wallet_id, req.node_id.clone(), req.name)
+        .await?;
+    Ok(WalletEditContactResponse {
+        node_id: req.node_id,
+    })
+}
+
+#[frb]
+pub async fn wallet_delete_contact(
+    req: WalletDeleteContactRequest,
+) -> Result<WalletDeleteContactResponse, WalletError> {
+    let app_state = get_app_state().await;
+    app_state
+        .wallet_delete_contact(req.wallet_id, req.node_id.clone())
+        .await?;
+    Ok(WalletDeleteContactResponse {
+        node_id: req.node_id,
+    })
+}
+
+#[frb]
+pub async fn wallet_get_contact(
+    req: WalletGetContactRequest,
+) -> Result<WalletGetContactResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let contact = app_state
+        .wallet_get_contact(req.wallet_id, req.node_id.clone())
+        .await?;
+    Ok(WalletGetContactResponse {
+        contact: contact.into(),
+    })
+}
+
+#[frb]
+pub async fn wallet_list_contacts(
+    req: WalletListContactsRequest,
+) -> Result<WalletListContactsResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let contacts = app_state
+        .wallet_list_contacts(req.wallet_id, req.search_term.clone())
+        .await?;
+    Ok(WalletListContactsResponse {
+        contacts: contacts.into_iter().map(|c| c.into()).collect(),
+    })
+}
+
+#[frb]
+pub async fn wallet_request_payment_from_contact(
+    req: WalletRequestPaymentFromContactRequest,
+) -> Result<WalletRequestPaymentFromContactResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let res = app_state
+        .wallet_request_payment_from_contact(
+            req.wallet_id,
+            req.node_id,
+            req.amount,
+            req.description,
+            req.deadline,
+        )
+        .await?;
+    Ok(WalletRequestPaymentFromContactResponse {
+        payment_request_id: res.to_string(),
+    })
+}
+
+#[frb]
+pub async fn wallet_list_payment_requests(
+    req: WalletListPaymentRequestsRequest,
+) -> Result<WalletListPaymentRequestsResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let res = app_state
+        .wallet_list_payment_requests(
+            req.wallet_id,
+            req.direction.into(),
+            req.states.into_iter().map(|s| s.into()).collect(),
+        )
+        .await?;
+    Ok(WalletListPaymentRequestsResponse {
+        payment_requests: res.into_iter().map(|p| p.into()).collect(),
+    })
+}
+
+#[frb]
+pub async fn wallet_get_payment_request(
+    req: WalletGetPaymentRequestRequest,
+) -> Result<WalletGetPaymentRequestResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let res = app_state
+        .wallet_get_payment_request(req.wallet_id, req.payment_request_id)
+        .await?;
+    Ok(WalletGetPaymentRequestResponse {
+        payment_request: res.into(),
+    })
+}
+
+#[frb]
+pub async fn wallet_prepare_pay_payment_request(
+    req: WalletPreparePayPaymentRequestRequest,
+) -> Result<WalletPreparePaymentResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let payment_summary = app_state
+        .wallet_prepare_pay_payment_request(req.wallet_id, req.payment_request_id)
+        .await?;
+    Ok(WalletPreparePaymentResponse {
+        payment_summary: PaymentSummary {
+            request_id: payment_summary.request_id.to_string(),
+            unit: payment_summary.unit.to_string(),
+            amount: u64::from(payment_summary.amount),
+            fees: u64::from(payment_summary.fees),
+            reserved_fees: u64::from(payment_summary.reserved_fees),
+            expiry: payment_summary.expiry,
+            ptype: PaymentType::from(bcr_wallet_core::types::PaymentType::from(
+                payment_summary.ptype,
+            )),
+        },
+    })
+}
+
+#[frb]
+pub async fn wallet_pay_payment_request(
+    req: WalletPayRequest,
+) -> Result<WalletTransactionIdResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let res = app_state
+        .wallet_pay_payment_request(req.wallet_id, req.rid)
+        .await?;
+    Ok(WalletTransactionIdResponse {
+        tx_id: res.to_string(),
+    })
+}
+
+#[frb]
+pub async fn wallet_reject_payment_request(
+    req: WalletRejectPaymentRequestRequest,
+) -> Result<WalletRejectPaymentRequestResponse, WalletError> {
+    let app_state = get_app_state().await;
+    app_state
+        .wallet_reject_payment_request(req.wallet_id, req.payment_request_id.clone())
+        .await?;
+    Ok(WalletRejectPaymentRequestResponse {
+        payment_request_id: req.payment_request_id.clone(),
+    })
+}
+
+#[frb]
+pub async fn wallet_cancel_payment_request(
+    req: WalletCancelPaymentRequestRequest,
+) -> Result<WalletCancelPaymentRequestResponse, WalletError> {
+    let app_state = get_app_state().await;
+    app_state
+        .wallet_cancel_payment_request(req.wallet_id, req.payment_request_id.clone())
+        .await?;
+    Ok(WalletCancelPaymentRequestResponse {
+        payment_request_id: req.payment_request_id.clone(),
+    })
+}
+
+#[frb]
+pub async fn wallet_subscribe_to_payment_requests(
+    req: WalletSubscribeToPaymentRequestsRequest,
+    result_callback: impl Fn(WalletPendingPaymentRequestResponse) -> DartFnFuture<()>
+    + Send
+    + Sync
+    + 'static,
+) -> Result<WalletPaymentCheckHandle, WalletError> {
+    let app_state = get_app_state().await;
+
+    let dart_callback = Arc::new(result_callback);
+    let callback: PendingPaymentSubscriptionCallback = Arc::new(move |id| {
+        let dart_callback = dart_callback.clone();
+        flutter_rust_bridge::spawn(async move {
+            let _ = dart_callback(WalletPendingPaymentRequestResponse { id: id.to_string() }).await;
+        });
+    });
+
+    let cancel_token = CancellationToken::new();
+    let handle = WalletPaymentCheckHandle {
+        cancel_token: cancel_token.clone(),
+    };
+    flutter_rust_bridge::spawn(async move {
+        if let Err(e) = app_state
+            .wallet_subscribe_to_payment_requests(req.wallet_id, cancel_token, callback.clone())
+            .await
+        {
+            error!("Error during wallet_subscribe_to_payment_requests: {e}");
+        }
+    });
+    Ok(handle)
+}
+
+#[frb]
 pub async fn wallet_dev_mode_get_detailed_balance(
     req: WalletRequest,
 ) -> Result<WalletDevModeDetailedBalanceResponse, WalletError> {
@@ -747,8 +965,12 @@ pub async fn is_valid_token(req: IsValidTokenRequest) -> Result<IsValidTokenResp
 
 #[frb]
 pub async fn wallet_get_status() -> Result<StatusResponse, WalletError> {
+    // nostr connection status for each wallet
+    let app_state = get_app_state().await;
+    let nostr_connected_map = app_state.purse_wallets_nostr_connected().await;
     Ok(StatusResponse {
         app_version: VERSION.to_owned(),
+        nostr_connected: nostr_connected_map,
     })
 }
 
@@ -848,6 +1070,7 @@ pub struct WalletEditTransactionMemoResponse {
 #[derive(Debug, Clone)]
 pub struct WalletInfoResponse {
     pub name: String,
+    pub node_id: String,
     pub network: String,
     pub default_mint_url: String,
     pub nostr_relays: Vec<String>,
@@ -856,6 +1079,11 @@ pub struct WalletInfoResponse {
 #[derive(Debug, Clone)]
 pub struct WalletNameResponse {
     pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletNodeIdResponse {
+    pub node_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -915,6 +1143,11 @@ pub struct WalletMaybeTransactionIdResponse {
     pub tx_id: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct WalletPendingPaymentRequestResponse {
+    pub id: String,
+}
+
 #[derive(Clone)]
 pub struct WalletPaymentCheckHandle {
     cancel_token: CancellationToken,
@@ -960,6 +1193,7 @@ pub enum PaymentType {
     Cdk18,
     OnChain,
     Swap,
+    Contact,
 }
 
 impl From<bcr_wallet_core::types::PaymentType> for PaymentType {
@@ -970,6 +1204,7 @@ impl From<bcr_wallet_core::types::PaymentType> for PaymentType {
             bcr_wallet_core::types::PaymentType::Cdk18 => PaymentType::Cdk18,
             bcr_wallet_core::types::PaymentType::OnChain => PaymentType::OnChain,
             bcr_wallet_core::types::PaymentType::Swap => PaymentType::Swap,
+            bcr_wallet_core::types::PaymentType::Contact => PaymentType::Contact,
         }
     }
 }
@@ -982,6 +1217,7 @@ impl From<PaymentType> for bcr_wallet_core::types::PaymentType {
             PaymentType::Cdk18 => bcr_wallet_core::types::PaymentType::Cdk18,
             PaymentType::OnChain => bcr_wallet_core::types::PaymentType::OnChain,
             PaymentType::Swap => bcr_wallet_core::types::PaymentType::Swap,
+            PaymentType::Contact => bcr_wallet_core::types::PaymentType::Contact,
         }
     }
 }
@@ -1037,6 +1273,139 @@ impl From<bcr_common::wire::common::ProtestStatus> for ProtestStatus {
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum PaymentRequestState {
+    Pending,
+    Paid { tx_id: TransactionId },
+    Canceled,
+    Rejected,
+}
+
+impl From<PaymentRequestState> for bcr_wallet_core::types::PaymentRequestState {
+    fn from(value: PaymentRequestState) -> Self {
+        match value {
+            PaymentRequestState::Pending => bcr_wallet_core::types::PaymentRequestState::Pending,
+            PaymentRequestState::Paid { tx_id } => {
+                bcr_wallet_core::types::PaymentRequestState::Paid { tx_id }
+            }
+            PaymentRequestState::Canceled => bcr_wallet_core::types::PaymentRequestState::Canceled,
+            PaymentRequestState::Rejected => bcr_wallet_core::types::PaymentRequestState::Rejected,
+        }
+    }
+}
+
+impl From<bcr_wallet_core::types::PaymentRequestState> for PaymentRequestState {
+    fn from(value: bcr_wallet_core::types::PaymentRequestState) -> Self {
+        match value {
+            bcr_wallet_core::types::PaymentRequestState::Pending => PaymentRequestState::Pending,
+            bcr_wallet_core::types::PaymentRequestState::Paid { tx_id } => {
+                PaymentRequestState::Paid { tx_id }
+            }
+            bcr_wallet_core::types::PaymentRequestState::Canceled => PaymentRequestState::Canceled,
+            bcr_wallet_core::types::PaymentRequestState::Rejected => PaymentRequestState::Rejected,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum PaymentRequestListState {
+    Pending,
+    Paid,
+    Canceled,
+    Rejected,
+}
+
+impl From<PaymentRequestListState> for bcr_wallet_core::types::PaymentRequestState {
+    fn from(value: PaymentRequestListState) -> Self {
+        match value {
+            PaymentRequestListState::Pending => {
+                bcr_wallet_core::types::PaymentRequestState::Pending
+            }
+            PaymentRequestListState::Paid => bcr_wallet_core::types::PaymentRequestState::Paid {
+                tx_id: TransactionId::new(vec![]), // use default transactionid, since we're only interested in the type for listing
+            },
+            PaymentRequestListState::Canceled => {
+                bcr_wallet_core::types::PaymentRequestState::Canceled
+            }
+            PaymentRequestListState::Rejected => {
+                bcr_wallet_core::types::PaymentRequestState::Rejected
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum PaymentRequestDirection {
+    Incoming,
+    Outgoing,
+}
+
+impl From<PaymentRequestDirection> for bcr_wallet_core::types::PaymentRequestDirection {
+    fn from(value: PaymentRequestDirection) -> Self {
+        match value {
+            PaymentRequestDirection::Incoming => {
+                bcr_wallet_core::types::PaymentRequestDirection::Incoming
+            }
+            PaymentRequestDirection::Outgoing => {
+                bcr_wallet_core::types::PaymentRequestDirection::Outgoing
+            }
+        }
+    }
+}
+
+impl From<bcr_wallet_core::types::PaymentRequestDirection> for PaymentRequestDirection {
+    fn from(value: bcr_wallet_core::types::PaymentRequestDirection) -> Self {
+        match value {
+            bcr_wallet_core::types::PaymentRequestDirection::Incoming => {
+                PaymentRequestDirection::Incoming
+            }
+            bcr_wallet_core::types::PaymentRequestDirection::Outgoing => {
+                PaymentRequestDirection::Outgoing
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PaymentRequest {
+    pub id: String,
+    pub node_id: String,
+    pub amount: u64,
+    pub unit: String,
+    pub description: Option<String>,
+    pub deadline: Option<u64>,
+    pub created_at: u64,
+}
+
+impl From<bcr_wallet_core::types::PaymentRequest> for PaymentRequest {
+    fn from(value: bcr_wallet_core::types::PaymentRequest) -> Self {
+        Self {
+            id: value.id.to_string(),
+            node_id: value.node_id.to_string(),
+            amount: value.amount.to_u64(),
+            unit: value.unit.to_string(),
+            description: value.description,
+            deadline: value.deadline,
+            created_at: value.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Contact {
+    pub node_id: String,
+    pub name: String,
+}
+
+impl From<bcr_wallet_core::contact::Contact> for Contact {
+    fn from(v: bcr_wallet_core::contact::Contact) -> Self {
+        Self {
+            node_id: v.node_id.to_string(),
+            name: v.name.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Transaction {
     pub id: String,
@@ -1050,6 +1419,7 @@ pub struct Transaction {
     pub status: TransactionStatus,
     pub tx_id: Option<String>,
     pub quote_id: Option<String>,
+    pub contact: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1214,6 +1584,7 @@ impl std::convert::From<cdk_common::wallet::Transaction> for Transaction {
         let status = get_transaction_status(&tx.metadata);
         let ptype = get_payment_type(&tx.metadata);
         let tx_id = get_btc_tx_id(&tx.metadata).map(|txid| txid.to_string());
+        let contact = get_contact_node_id(&tx.metadata).map(|node_id| node_id.to_string());
         Self {
             id: tx.id().to_string(),
             amount: u64::from(tx.amount),
@@ -1226,6 +1597,7 @@ impl std::convert::From<cdk_common::wallet::Transaction> for Transaction {
             status: status.into(),
             tx_id,
             quote_id: tx.quote_id,
+            contact,
         }
     }
 }
@@ -1310,7 +1682,7 @@ pub struct WalletPreparePaymentReqRequest {
 
 #[derive(Debug, Clone)]
 pub struct WalletPreparePaymentReqResponse {
-    pub payment_request: PaymentRequest,
+    pub payment_request: Cdk18PaymentRequest,
 }
 
 #[derive(Debug, Clone)]
@@ -1419,6 +1791,7 @@ pub struct MnemonicResponse {
 #[derive(Debug, Clone)]
 pub struct StatusResponse {
     pub app_version: String,
+    pub nostr_connected: HashMap<String, bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -1437,7 +1810,7 @@ pub struct MigrateRabidResponse {
 }
 
 #[derive(Debug, Clone)]
-pub struct PaymentRequest {
+pub struct Cdk18PaymentRequest {
     pub request: String,
     pub p_id: String,
 }
@@ -1465,6 +1838,133 @@ pub struct WalletPaymentByTokenRequest {
 pub struct WalletPaymentByTokenResponse {
     pub tx_id: String,
     pub token: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletAddContactRequest {
+    pub wallet_id: String,
+    pub node_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletAddContactResponse {
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletEditContactRequest {
+    pub wallet_id: String,
+    pub node_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletEditContactResponse {
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletDeleteContactRequest {
+    pub wallet_id: String,
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletDeleteContactResponse {
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletGetContactRequest {
+    pub wallet_id: String,
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletGetContactResponse {
+    pub contact: Contact,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletListContactsRequest {
+    pub wallet_id: String,
+    pub search_term: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletListContactsResponse {
+    pub contacts: Vec<Contact>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletRequestPaymentFromContactRequest {
+    pub wallet_id: String,
+    pub node_id: String,
+    pub amount: u64,
+    pub description: Option<String>,
+    pub deadline: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletRequestPaymentFromContactResponse {
+    pub payment_request_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletListPaymentRequestsRequest {
+    pub wallet_id: String,
+    pub direction: PaymentRequestDirection,
+    pub states: Vec<PaymentRequestListState>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletSubscribeToPaymentRequestsRequest {
+    pub wallet_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletListPaymentRequestsResponse {
+    pub payment_requests: Vec<PaymentRequest>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletGetPaymentRequestRequest {
+    pub wallet_id: String,
+    pub payment_request_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletGetPaymentRequestResponse {
+    pub payment_request: PaymentRequest,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletPreparePayPaymentRequestRequest {
+    pub wallet_id: String,
+    pub payment_request_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletRejectPaymentRequestRequest {
+    pub wallet_id: String,
+    pub payment_request_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletRejectPaymentRequestResponse {
+    pub payment_request_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletCancelPaymentRequestRequest {
+    pub wallet_id: String,
+    pub payment_request_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletCancelPaymentRequestResponse {
+    pub payment_request_id: String,
 }
 
 // -------------------------------------------------------------- Errors
@@ -1524,6 +2024,10 @@ pub enum WalletErrorCode {
     Internal,
     Network,
     WalletNotFound,
+    ContactNotFound,
+    PaymentRequestNotFound,
+    PaymentRequestInWrongState,
+    ContactAlreadyExists,
     EmptyToken,
     InvalidToken,
     CashuMintUrl,
@@ -1553,6 +2057,10 @@ pub enum WalletErrorCode {
     MnemonicNotFound,
     WalletUniqueName,
     WalletUniqueId,
+    InvalidNodeId,
+    InvalidBillId,
+    InvalidName,
+    EmptyName,
 }
 
 impl From<BcrWalletError> for WalletError {
@@ -1588,6 +2096,19 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::InvalidSplitTarget => WalletError::internal(value.to_string()),
             BcrWalletError::WalletNotFound(id) => {
                 WalletError::not_found(id.to_string(), WalletErrorCode::WalletNotFound)
+            }
+            BcrWalletError::ContactNotFound(id) => {
+                WalletError::not_found(id.to_string(), WalletErrorCode::ContactNotFound)
+            }
+            BcrWalletError::PaymentRequestNotFound(id) => {
+                WalletError::not_found(id.to_string(), WalletErrorCode::PaymentRequestNotFound)
+            }
+            BcrWalletError::PaymentRequestInWrongState(id) => WalletError::bad_request(
+                id.to_string(),
+                WalletErrorCode::PaymentRequestInWrongState,
+            ),
+            BcrWalletError::ContactAlreadyExists(_) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::ContactAlreadyExists)
             }
             BcrWalletError::WalletUniqueId(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::WalletUniqueId)
@@ -1649,6 +2170,18 @@ impl From<BcrWalletError> for WalletError {
             }
             BcrWalletError::InvalidTransactionId => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidTransactionId)
+            }
+            BcrWalletError::InvalidName => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidName)
+            }
+            BcrWalletError::EmptyName => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::EmptyName)
+            }
+            BcrWalletError::InvalidNodeId => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidNodeId)
+            }
+            BcrWalletError::InvalidBillId => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidBillId)
             }
             BcrWalletError::InvalidCursor => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidCursor)

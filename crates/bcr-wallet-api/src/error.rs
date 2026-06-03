@@ -1,8 +1,10 @@
 use bcr_common::{
     cashu::{self},
     cdk_common,
+    core::NodeId,
 };
 use thiserror::Error;
+use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Error)]
@@ -83,6 +85,14 @@ pub enum Error {
     NoDebitCurrencyInMint(Vec<cashu::CurrencyUnit>),
     #[error("network mismatch, ours: {0}, theirs: {1}")]
     InvalidNetwork(bitcoin::Network, bitcoin::Network),
+    #[error("invalid name")]
+    InvalidName,
+    #[error("empty name")]
+    EmptyName,
+    #[error("invalid node id")]
+    InvalidNodeId,
+    #[error("invalid bill id")]
+    InvalidBillId,
     #[error("invalid transaction id")]
     InvalidTransactionId,
     #[error("invalid cursor")]
@@ -111,6 +121,10 @@ pub enum Error {
     MaxExchangeAttempts,
     #[error("Invalid Clowder Path for foreign eCash")]
     InvalidClowderPath,
+    #[error("No contact found for {0}")]
+    ContactNotFound(NodeId),
+    #[error("Contact {0} already exists")]
+    ContactAlreadyExists(NodeId),
     #[error("Beta not found")]
     BetaNotFound(url::Url),
     #[error("No Substitute could be determined")]
@@ -137,6 +151,10 @@ pub enum Error {
     SwapCommitmentMismatch,
     #[error("attestation: {0}")]
     Attestation(#[from] bcr_common::wire::attestation::AttestationError),
+    #[error("No payment request found for {0}")]
+    PaymentRequestNotFound(Uuid),
+    #[error("Given Payment Request {0} was in the wrong state for this operation")]
+    PaymentRequestInWrongState(Uuid),
 }
 
 impl From<bcr_common::core::swap::wallet::Error> for Error {
@@ -146,6 +164,24 @@ impl From<bcr_common::core::swap::wallet::Error> for Error {
             bcr_common::core::swap::wallet::Error::InsufficientBalance(amount, other_amount) => {
                 Error::InsufficientBalance(amount, other_amount)
             }
+        }
+    }
+}
+
+impl From<bcr_common::core::Error> for Error {
+    fn from(err: bcr_common::core::Error) -> Self {
+        match err {
+            bcr_common::core::Error::InvalidNodeId => Error::InvalidNodeId,
+            bcr_common::core::Error::InvalidBillId => Error::InvalidBillId,
+        }
+    }
+}
+
+impl From<bcr_wallet_core::ValidationError> for Error {
+    fn from(err: bcr_wallet_core::ValidationError) -> Self {
+        match err {
+            bcr_wallet_core::ValidationError::EmptyName => Error::EmptyName,
+            bcr_wallet_core::ValidationError::InvalidName => Error::InvalidName,
         }
     }
 }
