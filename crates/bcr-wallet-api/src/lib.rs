@@ -14,9 +14,12 @@ use bcr_wallet_core::types::{
     self, ListTransactionsResult, MintSummary, PaymentResultCallback, PaymentSummary, Seed,
     TransactionCursor, TransactionFilters, TransactionSort, WalletConfig,
 };
-use bcr_wallet_core::util::{build_wallet_id, keypair_from_mnemonic, seed_from_mnemonic};
+use bcr_wallet_core::util::{
+    build_wallet_id, keypair_from_mnemonic, keypair_from_seed, seed_from_mnemonic,
+};
 use bcr_wallet_persistence::redb::{Database, build_pursedb, build_wallet_dbs, create_db};
-use bcr_wallet_transport::NostrClient;
+use bcr_wallet_transport::NostrEventChannel;
+use bcr_wallet_transport::nostr;
 use error::{Error, Result};
 use std::{
     collections::{HashMap, HashSet},
@@ -77,9 +80,11 @@ impl AppState {
                 return Err(Error::MnemonicNotFound(wid.to_owned()));
             };
             let seed = seed_from_mnemonic(mnemonic);
+            let keypair = keypair_from_seed(seed);
 
             let client = HttpClientExt::new(w_cfg.mint.clone());
-            let nostr_cl = NostrClient::new(mnemonic, &w_cfg.nostr_relays).await?;
+            let nostr_cl =
+                Arc::new(nostr::Client::new(&keypair, w_cfg.nostr_relays.clone()).await?);
 
             // Attempt to fetch clowder id/betas/keyset infos and fall back to saved ones
             match client.get_clowder_id().await {
@@ -835,7 +840,7 @@ async fn create_new_wallet(
         }
     };
 
-    let nostr_cl = NostrClient::new(&cfg.mnemonic, &cfg.nostr_relays).await?;
+    let nostr_cl = Arc::new(nostr::Client::new(&keypair, cfg.nostr_relays.clone()).await?);
 
     let w_cfg = WalletConfig {
         wallet_id,
@@ -859,11 +864,19 @@ async fn build_wallet(
     swap_expiry: chrono::TimeDelta,
     db: Arc<Database>,
     seed: Seed,
-    nostr_cl: NostrClient,
+    nostr_cl: Arc<nostr::Client>,
 ) -> Result<wallet::Wallet> {
     // building wallet dbs
-    let (tx_repo, (debitdb, mintmeltdb)) =
+    let (tx_repo, (debitdb, mintmeltdb), nostrdb) =
         build_wallet_dbs(db_version, &w_cfg.wallet_id, &w_cfg.debit, db).await?;
+
+    let nostr_repo = Arc::new(nostrdb);
+    let nostr_event_channel = NostrEventChannel::new();
+    let nostr_consumer = nostr::Consumer::new(
+        nostr_cl.clone(),
+        nostr_repo.clone(),
+        nostr_event_channel.clone(),
+    );
 
     // building the debit pocket
     let mut beta_clients = HashMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
@@ -889,6 +902,25 @@ async fn build_wallet(
         let cl = external::mint::SentinelClient::new(client);
         Arc::new(cl) as Arc<dyn ClowderMintConnector>
     };
+
+    let wallet_id = w_cfg.wallet_id.clone();
+    let nostr_handle = tokio::spawn(async move {
+        match nostr_consumer.start().await {
+            Ok(mut handle) => {
+                tracing::info!("Nostr transport connected for {}", wallet_id);
+                while let Some(result) = handle.join_next().await {
+                    match result {
+                        Ok(()) => tracing::info!("Nostr consumer task shutdown with success"),
+                        Err(e) => tracing::warn!("Nostr consumer task shutdown with error: {e}"),
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Could not start Nostr consumer: {e}");
+            }
+        };
+    });
+
     let new_wallet: wallet::Wallet = wallet::Wallet::new(
         w_cfg.network,
         client,
@@ -904,7 +936,10 @@ async fn build_wallet(
         swap_expiry,
         w_cfg.nostr_relays,
         nostr_cl,
-    )
-    .await?;
+        nostr_handle,
+        nostr_event_channel,
+        nostr_repo,
+    );
+
     Ok(new_wallet)
 }

@@ -29,6 +29,7 @@ pub fn seed_from_mnemonic(mnemonic: &bip39::Mnemonic) -> Seed {
 
 pub fn keypair_from_seed(seed: Seed) -> Keypair {
     let (key, _) = seed.split_at(secp256k1::constants::SECRET_KEY_SIZE);
+
     Keypair::from_seckey_slice(SECP256K1, key).expect("key to be correct size")
 }
 

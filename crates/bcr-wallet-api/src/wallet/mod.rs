@@ -25,15 +25,15 @@ use bcr_wallet_core::{
     },
     util::{from_mint_url, to_mint_url},
 };
-use bcr_wallet_persistence::TransactionRepository;
-use bcr_wallet_transport::NostrClient;
+use bcr_wallet_persistence::{NostrEventOffsetStoreApi, TransactionRepository};
+use bcr_wallet_transport::{NostrEventChannel, TransportClientApi};
 use bitcoin::{
     hashes::{Hash, sha256::Hash as Sha256},
     secp256k1,
 };
 use nostr::types::RelayUrl;
 use std::{collections::HashMap, str::FromStr, sync::Arc};
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, task::JoinHandle};
 
 pub struct Wallet {
     network: bitcoin::Network,
@@ -51,11 +51,14 @@ pub struct Wallet {
     client_factory: Box<dyn Fn(url::Url) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
     swap_expiry: chrono::TimeDelta,
     nostr_relays: Vec<RelayUrl>,
-    nostr_cl: NostrClient,
+    nostr_cl: Arc<dyn TransportClientApi>,
+    nostr_handle: JoinHandle<()>,
+    nostr_event_channel: NostrEventChannel,
+    nostr_repo: Arc<dyn NostrEventOffsetStoreApi>,
 }
 
 impl Wallet {
-    pub async fn new(
+    pub fn new(
         network: bitcoin::Network,
         client: Arc<dyn ClowderMintConnector>,
         mint_keyset_infos: HashMap<cashu::Id, KeySetInfo>,
@@ -69,9 +72,12 @@ impl Wallet {
         client_factory: Box<dyn Fn(url::Url) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
         swap_expiry: chrono::TimeDelta,
         nostr_relays: Vec<RelayUrl>,
-        nostr_cl: NostrClient,
-    ) -> Result<Self> {
-        Ok(Self {
+        nostr_cl: Arc<dyn TransportClientApi>,
+        nostr_handle: JoinHandle<()>,
+        nostr_event_channel: NostrEventChannel,
+        nostr_repo: Arc<dyn NostrEventOffsetStoreApi>,
+    ) -> Self {
+        Self {
             network,
             client,
             mint_keyset_infos,
@@ -88,7 +94,10 @@ impl Wallet {
             swap_expiry,
             nostr_relays,
             nostr_cl,
-        })
+            nostr_handle,
+            nostr_event_channel,
+            nostr_repo,
+        }
     }
 
     pub fn name(&self) -> String {
@@ -743,7 +752,7 @@ impl Wallet {
     async fn pay_nut18(
         &self,
         proofs: Vec<cashu::Proof>,
-        nostr_cl: &NostrClient,
+        nostr_cl: &Arc<dyn TransportClientApi>,
         http_cl: &reqwest::Client,
         transport: cashu::Transport,
         p_id: Option<String>,
@@ -806,9 +815,10 @@ mod tests {
         MintSummary, PaymentResultCallback, TimeRange, get_payment_type, get_transaction_status,
     };
     use bcr_wallet_persistence::{
-        MockTransactionRepository,
+        MockNostrEventOffsetStoreApi, MockTransactionRepository,
         test_utils::tests::{test_pub_key, valid_payment_address_testnet},
     };
+    use bcr_wallet_transport::{NostrEventChannel, nostr::Client};
     use secp256k1::SECP256K1;
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
@@ -825,6 +835,7 @@ mod tests {
         pub client: MockClowderMintConnector,
         pub tx_repo: MockTransactionRepository,
         pub debit: MockDebitPocket,
+        pub nostr_repo: MockNostrEventOffsetStoreApi,
     }
 
     fn wallet_ctx() -> MockWalletCtx {
@@ -833,6 +844,7 @@ mod tests {
             client,
             tx_repo: MockTransactionRepository::new(),
             debit: MockDebitPocket::new(),
+            nostr_repo: MockNostrEventOffsetStoreApi::new(),
         }
     }
 
@@ -857,6 +869,9 @@ mod tests {
         let mut beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>> = HashMap::new();
         beta_clients.insert(beta_url, Arc::new(beta_mock));
 
+        let nostr_event_channel = NostrEventChannel::new();
+        let keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+
         let relay = get_mock_relay().await;
         Wallet {
             network: bitcoin::Network::Testnet,
@@ -874,12 +889,14 @@ mod tests {
             client_factory: Box::new(|url| Arc::new(HttpClientExt::new(url))),
             swap_expiry: chrono::TimeDelta::seconds(60),
             nostr_relays: vec![],
-            nostr_cl: NostrClient::new(
-                &bip39::Mnemonic::generate(12).unwrap(),
-                &[RelayUrl::from_str(&relay.url()).unwrap()],
-            )
-            .await
-            .unwrap(),
+            nostr_cl: Arc::new(
+                Client::new(&keypair, vec![RelayUrl::from_str(&relay.url()).unwrap()])
+                    .await
+                    .unwrap(),
+            ),
+            nostr_handle: tokio::spawn(async move {}),
+            nostr_event_channel,
+            nostr_repo: Arc::new(ctx.nostr_repo),
         }
     }
 

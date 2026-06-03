@@ -23,10 +23,12 @@ use bcr_wallet_core::{
     types::{BTC_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback, PaymentType, TransactionStatus},
     util::{from_mint_url, to_mint_url},
 };
+use bcr_wallet_transport::NostrWalletEvent;
 use bitcoin::secp256k1;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::{collections::HashMap, str::FromStr, sync::Arc};
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -213,7 +215,7 @@ impl WalletApi for super::Wallet {
         unit: CurrencyUnit,
         description: Option<String>,
     ) -> Result<cdk18::PaymentRequest> {
-        let nostr_transport = self.nostr_cl.transport().await?;
+        let nostr_transport = self.nostr_cl.cdk18_transport().await?;
         let mints = self
             .mint_urls()
             .into_iter()
@@ -248,12 +250,13 @@ impl WalletApi for super::Wallet {
         if req.payment_id != Some(p_id.to_string()) {
             return Err(Error::NoPrepareRef(p_id));
         }
+        let expected = req.amount.unwrap_or_default();
 
         let start = tokio::time::Instant::now();
 
         tracing::debug!("Subscribing to events from Nostr...");
-        let mut events = self.nostr_cl.events_channel();
         let deadline = start + max_wait;
+        let mut nostr_receiver = self.nostr_event_channel.subscribe();
 
         loop {
             tokio::select! {
@@ -267,45 +270,71 @@ impl WalletApi for super::Wallet {
                     result_callback(None);
                     return Ok(());
                 },
-                evt = events.recv() => {
-                    let Ok(received_evt) = evt else {
-                        tracing::warn!("check_received_payment channel closed: {p_id}");
-                        result_callback(None);
-                        return Ok(());
-                    };
-                    match self.nostr_cl.handle_event(received_evt, p_id, req.amount.unwrap_or_default()).await {
-                        Ok(None) => {
-                            // do nothing
+                evt = nostr_receiver.recv() => {
+                    let received_evt = match evt {
+                        Ok(e) => e,
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            tracing::warn!("check_received_payment channel lagged behind: {p_id}");
                             continue;
-                        }
-                        Ok(Some((payload, meta))) => {
-                            let response = <Self as api::WalletApi>::receive_proofs(
-                                self,
-                                payload.proofs,
-                                payload.unit,
-                                from_mint_url(&payload.mint),
-                                chrono::Utc::now().timestamp() as u64,
-                                payload.memo,
-                                meta,
-                            )
-                                .await;
+                        },
+                        Err(broadcast::error::RecvError::Closed) => {
+                            tracing::warn!("check_received_payment channel closed: {p_id}");
+                            result_callback(None);
+                            return Ok(());
+                        },
+                    };
 
-                            match response {
-                                Ok(txid) => {
-                                    result_callback(Some(txid));
-                                    return Ok(());
-                                },
-                                Err(e) => {
-                                    tracing::error!("Error while handling Nostr event: {e}");
-                                    continue;
-                                },
-                            };
-                        }
+                    let NostrWalletEvent::Cdk18Payment { event_id, payload, sender } = received_evt;
+
+                    if payload.id != Some(p_id.to_string()) {
+                        tracing::debug!("handle event, payment id doesn't match");
+                        continue;
+                    }
+
+                    let amount = payload.proofs.total_amount()?;
+                    if amount < expected {
+                        tracing::warn!(
+                            "Received amount {} is less than expected {}",
+                            amount,
+                            expected
+                        );
+                        continue;
+                    }
+                    let meta = HashMap::from([
+                        (String::from("sender"), sender.to_string()),
+                        (String::from("payment_id"), p_id.to_string()),
+                        (String::from("nostr_event_id"), event_id.to_string()),
+                        (
+                            String::from(PAYMENT_TYPE_METADATA_KEY),
+                            PaymentType::Cdk18.to_string(),
+                        ),
+                        (
+                            String::from(TRANSACTION_STATUS_METADATA_KEY),
+                            TransactionStatus::Settled.to_string(),
+                        ),
+                    ]);
+
+                    let response = <Self as api::WalletApi>::receive_proofs(
+                        self,
+                        payload.proofs,
+                        payload.unit,
+                        from_mint_url(&payload.mint),
+                        chrono::Utc::now().timestamp() as u64,
+                        payload.memo,
+                        meta,
+                    )
+                        .await;
+
+                    match response {
+                        Ok(txid) => {
+                            result_callback(Some(txid));
+                            return Ok(());
+                        },
                         Err(e) => {
                             tracing::error!("Error while handling Nostr event: {e}");
                             continue;
-                        }
-                    }
+                        },
+                    };
                 }
             }
         }
@@ -1040,6 +1069,8 @@ impl WalletApi for super::Wallet {
     }
 
     async fn delete(&self) -> Result<()> {
+        // shut down nostr consumer
+        self.nostr_handle.abort();
         // shut down nostr client
         self.nostr_cl.shutdown().await;
         // delete debit pocket
@@ -1053,6 +1084,11 @@ impl WalletApi for super::Wallet {
                 "Error deleting transaction DB for wallet {}: {e}",
                 self.id()
             )
+        }
+
+        // delete nostr tables
+        if let Err(e) = self.nostr_repo.delete_repo().await {
+            tracing::error!("Error deleting nostr DB for wallet {}: {e}", self.id())
         }
 
         Ok(())
