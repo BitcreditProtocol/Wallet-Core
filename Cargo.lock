@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "bcr-wallet-api"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "async-trait",
  "bcr-common",
@@ -349,7 +349,7 @@ dependencies = [
 
 [[package]]
 name = "bcr-wallet-cli"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "anyhow",
  "bcr-common",
@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "bcr-wallet-core"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "bcr-common",
  "bip39",
@@ -389,7 +389,7 @@ dependencies = [
 
 [[package]]
 name = "bcr-wallet-persistence"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "async-trait",
  "bcr-common",
@@ -410,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "bcr-wallet-transport"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "bcr-common",
  "bcr-wallet-core",
@@ -3874,7 +3874,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "wallet_ffi"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "android_logger",
  "bcr-common",

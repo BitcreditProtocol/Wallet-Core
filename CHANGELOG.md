@@ -1,3 +1,7 @@
+# 0.9.4
+
+* Fix commitment for intermint exchange
+
 # 0.9.3
 
 * Adapt `wallet_get_transactions` to be filtered and paged - takes filters, sorting and a limit and can be progressed using a returned cursor
