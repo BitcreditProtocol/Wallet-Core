@@ -1,3 +1,33 @@
+# 0.9.5
+
+* Improve Nostr Setup
+    * Add a deduplication table
+    * Decouple Wallet code from Nostr code
+    * Fix nostr key derivation to match wallet's & E-Bill's
+    * Add a retry-mechanism
+    * Expose nostr connection status to frontend
+    * Synchronize with published relay-list
+    * Add a background-receiver for incoming nostr payments 
+* Add Contact CRUD API
+    * Contacts have a `node_id` and a `name`
+    * `add_contact`
+    * `edit_contact`
+    * `delete_contact`
+    * `get_contact`
+    * `list_contacts` with an optional, case-insensitive search-term
+* Add functionality to send a private, encrypted payment to an existing contact via Nostr
+    * `wallet_prepare_pay_to_contact` - taking a node_id, amount and description
+    * `wallet_pay_to_contact` - taking a payment request id
+* Add `node_id` to `WalletInfo`
+* Add endpoint to get `node_id`
+* Add API for remote payment requests via Nostr
+    * `wallet_request_payment_from_contact` - sends a payment request to a contact
+    * `wallet_list_pending_payment_requests` - returns a list of pending payment requests
+    * `wallet_subscribe_to_pending_payment_requests` - the caller can subscribe to incoming pending payment requests to react to them
+    * `wallet_get_pending_payment_request` - returns the details of a given pending payment request
+    * `wallet_pay_pending_payment_request` - pay a pending payment request
+    * `wallet_reject_pending_payment_request` - reject payment of a pending payment request
+
 # 0.9.4
 
 * Fetch the Beta attestation before swap/melt and bind it into the commitment instead of the execution request

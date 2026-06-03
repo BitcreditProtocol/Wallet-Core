@@ -18,18 +18,29 @@ use async_trait::async_trait;
 use bcr_common::{
     cashu::{self, Amount, CurrencyUnit, ProofsMethods, nut00 as cdk00, nut18 as cdk18},
     cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
+    core::NodeId,
     wallet::Token,
     wire::clowder::{self as wire_clowder},
 };
 use bcr_wallet_core::{
     SendSync,
-    types::{BTC_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback, PaymentType, TransactionStatus},
+    contact::Contact,
+    event::{ContactPaymentRequestPayload, EventEnvelope},
+    name::Name,
+    types::{
+        BTC_TX_ID_TYPE_METADATA_KEY, CONTACT_NODE_ID_METADATA_KEY, PAYMENT_REQUEST_ID_METADATA_KEY,
+        PaymentResultCallback, PaymentType, PendingPaymentRequest,
+        PendingPaymentSubscriptionCallback, TransactionStatus,
+    },
     util::{from_mint_url, to_mint_url},
 };
-use bitcoin::secp256k1;
+use bcr_wallet_transport::NostrWalletEvent;
+use bitcoin::{base58, secp256k1};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use nostr::RelayUrl;
 use std::{collections::HashMap, str::FromStr, sync::Arc};
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -39,8 +50,10 @@ pub trait WalletApi: SendSync {
     fn config(&self) -> Result<WalletConfig>;
     fn info(&self) -> WalletInfo;
     fn name(&self) -> String;
+    fn node_id(&self) -> NodeId;
     fn id(&self) -> String;
     fn mint_url(&self) -> url::Url;
+    fn nostr_relays(&self) -> Vec<RelayUrl>;
     fn betas(&self) -> Vec<url::Url>;
     #[allow(dead_code)]
     fn clowder_id(&self) -> secp256k1::PublicKey;
@@ -51,8 +64,8 @@ pub trait WalletApi: SendSync {
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         description: Option<String>,
     ) -> Result<PaymentSummary>;
-    async fn prepare_pay(&self, input: String) -> Result<PaymentSummary>;
-    async fn prepare_payment_request(
+    async fn prepare_pay_cdk18(&self, input: String) -> Result<PaymentSummary>;
+    async fn prepare_cdk18_payment_request(
         &self,
         amount: Amount,
         unit: CurrencyUnit,
@@ -103,6 +116,13 @@ pub trait WalletApi: SendSync {
         unit: CurrencyUnit,
         description: Option<String>,
     ) -> Result<PaymentSummary>;
+    async fn prepare_pay_to_contact(
+        &self,
+        node_id: NodeId,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+    ) -> Result<PaymentSummary>;
     async fn offline_pay_by_token(
         &self,
         request_id: Uuid,
@@ -111,7 +131,42 @@ pub trait WalletApi: SendSync {
         memo: Option<String>,
         now: u64,
     ) -> Result<(TransactionId, Option<Token>)>;
+    async fn is_nostr_connected(&self) -> bool;
     async fn delete(&self) -> Result<()>;
+    // contacts
+    async fn add_contact(&self, node_id: NodeId, name: Name) -> Result<()>;
+    async fn edit_contact(&self, node_id: NodeId, name: Name) -> Result<()>;
+    async fn delete_contact(&self, node_id: NodeId) -> Result<()>;
+    async fn get_contact(&self, node_id: NodeId) -> Result<Option<Contact>>;
+    async fn list_contacts(&self, search_term: Option<String>) -> Result<Vec<Contact>>;
+    // pending payment requests
+    async fn request_payment_from_contact(
+        &self,
+        node_id: NodeId,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+        deadline: Option<u64>,
+    ) -> Result<Uuid>;
+    async fn subscribe_to_pending_payment_requests(
+        &self,
+        cancel_token: CancellationToken,
+        item_callback: PendingPaymentSubscriptionCallback,
+    ) -> Result<()>;
+    async fn list_pending_payment_requests(&self) -> Result<Vec<PendingPaymentRequest>>;
+    async fn get_pending_payment_request(
+        &self,
+        pending_payment_request_id: Uuid,
+    ) -> Result<Option<PendingPaymentRequest>>;
+    async fn add_pending_payment_request(
+        &self,
+        pending_payment_request: PendingPaymentRequest,
+    ) -> Result<()>;
+    async fn prepare_pay_pending_payment_request(
+        &self,
+        pending_payment_request_id: Uuid,
+    ) -> Result<PaymentSummary>;
+    async fn reject_pending_payment_request(&self, pending_payment_request_id: Uuid) -> Result<()>;
 }
 
 #[async_trait]
@@ -127,17 +182,22 @@ impl WalletApi for super::Wallet {
             clowder_id: self.clowder_id,
             pub_key: self.pub_key,
             betas: self.betas(),
-            nostr_relays: self.nostr_relays.clone(),
+            nostr_relays: self.nostr_transport.relays().to_owned(),
         })
     }
 
     fn info(&self) -> WalletInfo {
         WalletInfo {
             name: self.name.clone(),
+            node_id: self.node_id(),
             network: self.network,
             default_mint_url: self.client.mint_url().to_owned(),
-            nostr_relays: self.nostr_relays.clone(),
+            nostr_relays: self.nostr_transport.relays().to_owned(),
         }
+    }
+
+    fn node_id(&self) -> NodeId {
+        NodeId::new(self.pub_key, self.network)
     }
 
     fn name(&self) -> String {
@@ -150,6 +210,10 @@ impl WalletApi for super::Wallet {
 
     fn mint_url(&self) -> url::Url {
         self.client.mint_url().to_owned()
+    }
+
+    fn nostr_relays(&self) -> Vec<RelayUrl> {
+        self.nostr_transport.relays().to_owned()
     }
 
     async fn prepare_melt(
@@ -182,7 +246,7 @@ impl WalletApi for super::Wallet {
         Ok(summary)
     }
 
-    async fn prepare_pay(&self, input: String) -> Result<PaymentSummary> {
+    async fn prepare_pay_cdk18(&self, input: String) -> Result<PaymentSummary> {
         let infos = self.get_wallet_mint_keyset_infos().await?;
 
         if let Ok(request) = cashu::PaymentRequest::from_str(&input) {
@@ -210,13 +274,13 @@ impl WalletApi for super::Wallet {
         }
     }
 
-    async fn prepare_payment_request(
+    async fn prepare_cdk18_payment_request(
         &self,
         amount: Amount,
         unit: CurrencyUnit,
         description: Option<String>,
     ) -> Result<cdk18::PaymentRequest> {
-        let nostr_transport = self.nostr_cl.transport().await?;
+        let nostr_transport = self.nostr_transport.cdk18_transport().await?;
         let mints = self
             .mint_urls()
             .into_iter()
@@ -251,12 +315,13 @@ impl WalletApi for super::Wallet {
         if req.payment_id != Some(p_id.to_string()) {
             return Err(Error::NoPrepareRef(p_id));
         }
+        let expected = req.amount.unwrap_or_default();
 
         let start = tokio::time::Instant::now();
 
         tracing::debug!("Subscribing to events from Nostr...");
-        let mut events = self.nostr_cl.events_channel();
         let deadline = start + max_wait;
+        let mut nostr_receiver = self.nostr_event_channel.subscribe();
 
         loop {
             tokio::select! {
@@ -270,45 +335,74 @@ impl WalletApi for super::Wallet {
                     result_callback(None);
                     return Ok(());
                 },
-                evt = events.recv() => {
-                    let Ok(received_evt) = evt else {
-                        tracing::warn!("check_received_payment channel closed: {p_id}");
-                        result_callback(None);
-                        return Ok(());
-                    };
-                    match self.nostr_cl.handle_event(received_evt, p_id, req.amount.unwrap_or_default()).await {
-                        Ok(None) => {
-                            // do nothing
+                evt = nostr_receiver.recv() => {
+                    let received_evt = match evt {
+                        Ok(e) => e,
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            tracing::warn!("check_received_payment channel lagged behind: {p_id}");
                             continue;
-                        }
-                        Ok(Some((payload, meta))) => {
-                            let response = <Self as api::WalletApi>::receive_proofs(
-                                self,
-                                payload.proofs,
-                                payload.unit,
-                                from_mint_url(&payload.mint),
-                                chrono::Utc::now().timestamp() as u64,
-                                payload.memo,
-                                meta,
-                            )
-                                .await;
+                        },
+                        Err(broadcast::error::RecvError::Closed) => {
+                            tracing::warn!("check_received_payment channel closed: {p_id}");
+                            result_callback(None);
+                            return Ok(());
+                        },
+                    };
 
-                            match response {
-                                Ok(txid) => {
-                                    result_callback(Some(txid));
-                                    return Ok(());
-                                },
-                                Err(e) => {
-                                    tracing::error!("Error while handling Nostr event: {e}");
-                                    continue;
-                                },
-                            };
-                        }
+                    let NostrWalletEvent::Cdk18Payment { event_id, payload, sender } = received_evt else {
+                        continue;
+                    };
+
+                    if payload.id != Some(p_id.to_string()) {
+                        tracing::debug!("handle event, payment id doesn't match");
+                        continue;
+                    }
+
+                    let amount = payload.proofs.total_amount()?;
+                    if amount < expected {
+                        tracing::warn!(
+                            "Received amount {} is less than expected {}",
+                            amount,
+                            expected
+                        );
+                        continue;
+                    }
+                    let meta = HashMap::from([
+                        (String::from("sender"), sender.to_string()),
+                        (String::from("payment_id"), p_id.to_string()),
+                        (String::from("nostr_event_id"), event_id.to_string()),
+                        (
+                            String::from(PAYMENT_TYPE_METADATA_KEY),
+                            PaymentType::Cdk18.to_string(),
+                        ),
+                        (
+                            String::from(TRANSACTION_STATUS_METADATA_KEY),
+                            TransactionStatus::Settled.to_string(),
+                        ),
+                    ]);
+
+                    let response = <Self as api::WalletApi>::receive_proofs(
+                        self,
+                        payload.proofs,
+                        payload.unit,
+                        from_mint_url(&payload.mint),
+                        chrono::Utc::now().timestamp() as u64,
+                        payload.memo,
+                        meta,
+                    )
+                        .await;
+
+                    match response {
+                        Ok(txid) => {
+                            result_callback(Some(txid));
+                            return Ok(());
+                        },
                         Err(e) => {
                             tracing::error!("Error while handling Nostr event: {e}");
                             continue;
-                        }
-                    }
+                        },
+                    };
+
                 }
             }
         }
@@ -381,7 +475,14 @@ impl WalletApi for super::Wallet {
                     saga_id: None,
                 };
                 let tx_id = self
-                    .pay_nut18(proofs, &self.nostr_cl, http_cl, transport, id, partial_tx)
+                    .pay_nut18(
+                        proofs,
+                        &self.nostr_transport,
+                        http_cl,
+                        transport,
+                        id,
+                        partial_tx,
+                    )
                     .await?;
                 Ok((tx_id, None))
             }
@@ -488,6 +589,78 @@ impl WalletApi for super::Wallet {
                     saga_id: None,
                 };
                 let tx_id = self.tx_repo.store_tx(partial_tx).await?;
+                Ok((tx_id, None))
+            }
+            WalletPaymentType::Contact {
+                node_id,
+                payment_request_id,
+            } => {
+                let Ok(Some(contact)) = self.contact_repo.get_contact(node_id.clone()).await else {
+                    return Err(Error::ContactNotFound(node_id));
+                };
+
+                let proofs = self
+                    .debit
+                    .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
+                    .await?;
+                let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
+                    proofs.into_iter().unzip();
+                let amount = proofs.total_amount()?;
+                let mut metadata = HashMap::default();
+                metadata.insert(
+                    PAYMENT_TYPE_METADATA_KEY.to_owned(),
+                    PaymentType::Contact.to_string(),
+                );
+                metadata.insert(
+                    TRANSACTION_STATUS_METADATA_KEY.to_owned(),
+                    TransactionStatus::Pending.to_string(),
+                );
+                metadata.insert(CONTACT_NODE_ID_METADATA_KEY.to_owned(), node_id.to_string());
+                // if there is a payment request id, set it
+                if let Some(p_req_id) = payment_request_id {
+                    metadata.insert(
+                        PAYMENT_REQUEST_ID_METADATA_KEY.to_owned(),
+                        p_req_id.to_string(),
+                    );
+                }
+
+                let partial_tx = Transaction {
+                    mint_url: to_mint_url(self.client.mint_url()),
+                    fee: fees,
+                    direction: TransactionDirection::Outgoing,
+                    memo,
+                    timestamp: now,
+                    unit: unit.clone(),
+                    ys,
+                    amount,
+                    // payments might need to fill some extra metadata later
+                    metadata,
+                    quote_id: None,
+                    payment_request: None,
+                    payment_proof: None,
+                    payment_method: None,
+                    saga_id: None,
+                };
+                let tx_id = self
+                    .pay_to_contact(
+                        proofs,
+                        &self.nostr_transport,
+                        contact,
+                        payment_request_id,
+                        partial_tx,
+                    )
+                    .await?;
+                // if it was a payment request - delete the pending payment request afterwards
+                if let Some(p_req_id) = payment_request_id
+                    && let Err(e) = self
+                        .pending_payment_request_repo
+                        .delete_pending_payment_request(p_req_id)
+                        .await
+                {
+                    tracing::warn!(
+                        "Could not delete pending payment request {p_req_id} after successful payment: {e}"
+                    );
+                }
                 Ok((tx_id, None))
             }
         }
@@ -927,10 +1100,10 @@ impl WalletApi for super::Wallet {
         unit: CurrencyUnit,
         description: Option<String>,
     ) -> Result<PaymentSummary> {
-        let infos = self.get_wallet_mint_keyset_infos().await?;
         if unit != self.debit.unit() {
             return Err(Error::InvalidCurrencyUnit(unit.to_string()));
         }
+        let infos = self.get_wallet_mint_keyset_infos().await?;
 
         let s_summary = self.debit.prepare_send(amount, &infos).await?;
         let summary = PaymentSummary::from(s_summary);
@@ -939,6 +1112,45 @@ impl WalletApi for super::Wallet {
             unit: summary.unit.clone(),
             fees: summary.fees,
             ptype: WalletPaymentType::Token,
+            memo: description,
+        };
+        *self.current_payment.lock().await = Some(pref);
+        Ok(summary)
+    }
+
+    async fn prepare_pay_to_contact(
+        &self,
+        node_id: NodeId,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+    ) -> Result<PaymentSummary> {
+        if unit != self.debit.unit() {
+            return Err(Error::InvalidCurrencyUnit(unit.to_string()));
+        }
+
+        if self
+            .contact_repo
+            .get_contact(node_id.clone())
+            .await?
+            .is_none()
+        {
+            return Err(Error::ContactNotFound(node_id));
+        }
+
+        let infos = self.get_wallet_mint_keyset_infos().await?;
+
+        let s_summary = self.debit.prepare_send(amount, &infos).await?;
+        let mut summary = PaymentSummary::from(s_summary);
+        summary.ptype = PaymentType::Contact;
+        let pref = PayReference {
+            request_id: summary.request_id,
+            unit: summary.unit.clone(),
+            fees: summary.fees,
+            ptype: WalletPaymentType::Contact {
+                node_id,
+                payment_request_id: None,
+            },
             memo: description,
         };
         *self.current_payment.lock().await = Some(pref);
@@ -1062,9 +1274,16 @@ impl WalletApi for super::Wallet {
         }
     }
 
+    async fn is_nostr_connected(&self) -> bool {
+        self.nostr_transport.has_connected_relays().await
+            && *self.nostr_consumer_running.lock().await
+    }
+
     async fn delete(&self) -> Result<()> {
         // shut down nostr client
-        self.nostr_cl.shutdown().await;
+        self.nostr_transport.shutdown().await;
+        // shut down nostr consumer
+        self.nostr_shutdown.cancel();
         // delete debit pocket
         if let Err(e) = self.debit.delete().await {
             tracing::error!("Error deleting pocket for wallet {}: {e}", self.id())
@@ -1078,6 +1297,261 @@ impl WalletApi for super::Wallet {
             )
         }
 
+        // delete nostr tables
+        if let Err(e) = self.nostr_repo.delete_repo().await {
+            tracing::error!("Error deleting nostr DB for wallet {}: {e}", self.id())
+        }
+
+        // delete contact tables
+        if let Err(e) = self.contact_repo.delete_repo().await {
+            tracing::error!("Error deleting contact DB for wallet {}: {e}", self.id())
+        }
+
+        // delete pending payment request tables
+        if let Err(e) = self.pending_payment_request_repo.delete_repo().await {
+            tracing::error!(
+                "Error deleting pending payment request DB for wallet {}: {e}",
+                self.id()
+            )
+        }
+
+        Ok(())
+    }
+
+    async fn add_contact(&self, node_id: NodeId, name: Name) -> Result<()> {
+        let my_relays = self.nostr_relays();
+        // fetch relay list for the contact from nostr, falling back to our relays
+        let mut fetched_relay_list = self
+            .nostr_transport
+            .fetch_relay_list(node_id.npub(), my_relays.clone())
+            .await
+            .unwrap_or(my_relays.clone());
+
+        if fetched_relay_list.is_empty() {
+            fetched_relay_list = my_relays;
+        }
+
+        let contact = Contact {
+            node_id: node_id.clone(),
+            name,
+            nostr_relays: fetched_relay_list,
+        };
+        match self.contact_repo.add_contact(contact).await {
+            Ok(()) => Ok(()),
+            Err(bcr_wallet_persistence::error::Error::ContactAlreadyExists(_)) => {
+                Err(Error::ContactAlreadyExists(node_id))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn edit_contact(&self, node_id: NodeId, name: Name) -> Result<()> {
+        match self.contact_repo.edit_contact(node_id.clone(), name).await {
+            Ok(()) => Ok(()),
+            Err(bcr_wallet_persistence::error::Error::ContactNotFound(_)) => {
+                Err(Error::ContactNotFound(node_id))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn delete_contact(&self, node_id: NodeId) -> Result<()> {
+        if self
+            .contact_repo
+            .get_contact(node_id.clone())
+            .await?
+            .is_some()
+        {
+            self.contact_repo.delete_contact(node_id).await?;
+        } else {
+            return Err(Error::ContactNotFound(node_id));
+        }
+        Ok(())
+    }
+
+    async fn get_contact(&self, node_id: NodeId) -> Result<Option<Contact>> {
+        let contact = self.contact_repo.get_contact(node_id).await?;
+        Ok(contact)
+    }
+
+    async fn list_contacts(&self, search_term: Option<String>) -> Result<Vec<Contact>> {
+        let contacts = self.contact_repo.list_contacts(search_term).await?;
+        Ok(contacts)
+    }
+
+    async fn request_payment_from_contact(
+        &self,
+        node_id: NodeId,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+        deadline: Option<u64>,
+    ) -> Result<Uuid> {
+        let Ok(Some(contact)) = self.contact_repo.get_contact(node_id.clone()).await else {
+            return Err(Error::ContactNotFound(node_id));
+        };
+        let payload = ContactPaymentRequestPayload::new(
+            self.node_id(),
+            amount,
+            unit,
+            description,
+            deadline,
+            to_mint_url(self.client.mint_url()),
+        );
+        let payment_req_id = payload.id;
+        let event: EventEnvelope =
+            bcr_wallet_core::event::Event::new_contact_payment_request(payload).try_into()?;
+        let payload = base58::encode(&borsh::to_vec(&event)?);
+        let target = self.nostr_transport.nip19_for_contact(&contact).await?;
+        match self
+            .nostr_transport
+            .send_private_msg(target.clone(), payload.clone())
+            .await
+        {
+            Ok(event_id) => {
+                tracing::info!(
+                    "Sent contact payment request {} with nostr event_id {event_id}",
+                    payment_req_id
+                );
+            }
+            Err(e) => {
+                tracing::error!("Failed to send contact payment request, queuing for retry: {e}");
+                match e {
+                    bcr_wallet_transport::error::Error::NostrSendPrivateMsg(_) => {
+                        self.nostr_transport
+                            .queue_retry_message(Some(target), payload)
+                            .await?;
+                    }
+                    e => return Err(e.into()),
+                }
+            }
+        };
+        Ok(payment_req_id)
+    }
+
+    async fn subscribe_to_pending_payment_requests(
+        &self,
+        cancel_token: CancellationToken,
+        item_callback: PendingPaymentSubscriptionCallback,
+    ) -> Result<()> {
+        tracing::debug!("Subscribing to payment requests from Nostr...");
+        let mut nostr_receiver = self.nostr_event_channel.subscribe();
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    tracing::info!("subscribe_to_pending_payment_requests cancelled");
+                    return Ok(());
+                },
+                evt = nostr_receiver.recv() => {
+                    let received_evt = match evt {
+                        Ok(e) => e,
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            tracing::warn!("subscribe_to_pending_payment_requests channel lagged behind");
+                            continue;
+                        },
+                        Err(broadcast::error::RecvError::Closed) => {
+                            tracing::warn!("subscribe_to_pending_payment_requests channel closed");
+                            return Ok(());
+                        },
+                    };
+
+                    let NostrWalletEvent::ContactPaymentRequest { event_id, payload, sender } = received_evt else {
+                        continue;
+                    };
+                    tracing::info!("Received contact payment request {} from {sender}, event_id: {event_id}", payload.id);
+                    let pending_payment_request: PendingPaymentRequest = payload.into();
+                    let payment_request_id = pending_payment_request.id;
+                    match self.pending_payment_request_repo.add_pending_payment_request(pending_payment_request).await {
+                        Ok(_) => {
+                            item_callback(payment_request_id);
+                        },
+                        Err(bcr_wallet_persistence::error::Error::PendingPaymentRequestAlreadyExists(_)) => {
+                            // already had it - either sent again, or already processed - sending it either way and the caller can choose to ignore it
+                            item_callback(payment_request_id);
+                        },
+                        Err(e) => {
+                            tracing::error!("Could not store payment request: {e}");
+                        }
+                    };
+                }
+            }
+        }
+    }
+
+    async fn list_pending_payment_requests(&self) -> Result<Vec<PendingPaymentRequest>> {
+        let res = self
+            .pending_payment_request_repo
+            .list_pending_payment_requests()
+            .await?;
+        Ok(res)
+    }
+
+    async fn get_pending_payment_request(
+        &self,
+        pending_payment_request_id: Uuid,
+    ) -> Result<Option<PendingPaymentRequest>> {
+        let res = self
+            .pending_payment_request_repo
+            .get_pending_payment_request(pending_payment_request_id)
+            .await?;
+        Ok(res)
+    }
+
+    async fn add_pending_payment_request(
+        &self,
+        pending_payment_request: PendingPaymentRequest,
+    ) -> Result<()> {
+        self.pending_payment_request_repo
+            .add_pending_payment_request(pending_payment_request)
+            .await?;
+        Ok(())
+    }
+
+    async fn prepare_pay_pending_payment_request(
+        &self,
+        pending_payment_request_id: Uuid,
+    ) -> Result<PaymentSummary> {
+        let Some(req) = self
+            .pending_payment_request_repo
+            .get_pending_payment_request(pending_payment_request_id)
+            .await?
+        else {
+            return Err(Error::PendingPaymentRequestNotFound(
+                pending_payment_request_id,
+            ));
+        };
+        // has to be added to contacts to pay the payment request
+        if self
+            .contact_repo
+            .get_contact(req.node_id.clone())
+            .await?
+            .is_none()
+        {
+            return Err(Error::ContactNotFound(req.node_id));
+        }
+        let infos = self.get_wallet_mint_keyset_infos().await?;
+
+        let s_summary = self.debit.prepare_send(req.amount, &infos).await?;
+        let mut summary = PaymentSummary::from(s_summary);
+        summary.ptype = PaymentType::Contact;
+        let pref = PayReference {
+            request_id: summary.request_id,
+            unit: summary.unit.clone(),
+            fees: summary.fees,
+            ptype: WalletPaymentType::Contact {
+                node_id: req.node_id,
+                payment_request_id: Some(req.id),
+            },
+            memo: req.description,
+        };
+        *self.current_payment.lock().await = Some(pref);
+        Ok(summary)
+    }
+
+    async fn reject_pending_payment_request(&self, pending_payment_request_id: Uuid) -> Result<()> {
+        self.pending_payment_request_repo
+            .delete_pending_payment_request(pending_payment_request_id)
+            .await?;
         Ok(())
     }
 }

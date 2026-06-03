@@ -8,6 +8,7 @@ use crate::{
     pocket::debit::DebitPocketApi,
     types::{PAYMENT_TYPE_METADATA_KEY, TRANSACTION_STATUS_METADATA_KEY},
     wallet::{
+        api::WalletApi,
         types::{PayReference, SwapConfig, WalletBalance, WalletDetailedBalanceEntry},
         util::tx_can_be_refreshed,
     },
@@ -19,21 +20,29 @@ use bcr_common::{
     wire::clowder::{ConnectedMintResponse, ConnectedMintsResponse},
 };
 use bcr_wallet_core::{
+    contact::Contact,
+    event::{ContactPaymentPayload, EventEnvelope},
     types::{
-        ListTransactionsResult, PaymentType, TransactionCursor, TransactionFilters,
-        TransactionSort, TransactionStatus, extract_fees_per_month,
+        CONTACT_NODE_ID_METADATA_KEY, ListTransactionsResult, PaymentType, PendingPaymentRequest,
+        TransactionCursor, TransactionFilters, TransactionSort, TransactionStatus,
+        extract_fees_per_month,
     },
     util::{from_mint_url, to_mint_url},
 };
-use bcr_wallet_persistence::TransactionRepository;
-use bcr_wallet_transport::NostrClient;
+use bcr_wallet_persistence::{
+    ContactStoreApi, NostrRepository, PendingPaymentRequestStoreApi, TransactionRepository,
+};
+use bcr_wallet_transport::{NostrEventChannel, TransportApi, nostr};
 use bitcoin::{
+    base58,
     hashes::{Hash, sha256::Hash as Sha256},
     secp256k1,
 };
-use nostr::types::RelayUrl;
-use std::{collections::HashMap, str::FromStr, sync::Arc};
-use tokio::sync::Mutex;
+use chrono::Utc;
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
+use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 pub struct Wallet {
     network: bitcoin::Network,
@@ -41,6 +50,8 @@ pub struct Wallet {
     mint_keyset_infos: HashMap<cashu::Id, KeySetInfo>,
     beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>>,
     tx_repo: Box<dyn TransactionRepository>,
+    contact_repo: Box<dyn ContactStoreApi>,
+    pending_payment_request_repo: Box<dyn PendingPaymentRequestStoreApi>,
     debit: Box<dyn DebitPocketApi>,
     name: String,
     id: String,
@@ -50,8 +61,11 @@ pub struct Wallet {
     clowder_id: secp256k1::PublicKey,
     client_factory: Box<dyn Fn(url::Url) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
     swap_expiry: chrono::TimeDelta,
-    nostr_relays: Vec<RelayUrl>,
-    nostr_cl: NostrClient,
+    nostr_transport: Arc<dyn TransportApi>,
+    nostr_event_channel: NostrEventChannel,
+    nostr_repo: Arc<dyn NostrRepository>,
+    nostr_consumer_running: Arc<Mutex<bool>>,
+    nostr_shutdown: CancellationToken,
 }
 
 impl Wallet {
@@ -60,6 +74,8 @@ impl Wallet {
         client: Arc<dyn ClowderMintConnector>,
         mint_keyset_infos: HashMap<cashu::Id, KeySetInfo>,
         tx_repo: Box<dyn TransactionRepository>,
+        contact_repo: Box<dyn ContactStoreApi>,
+        pending_payment_request_repo: Box<dyn PendingPaymentRequestStoreApi>,
         debit: Box<dyn DebitPocketApi>,
         name: String,
         id: String,
@@ -68,14 +84,19 @@ impl Wallet {
         beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>>,
         client_factory: Box<dyn Fn(url::Url) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
         swap_expiry: chrono::TimeDelta,
-        nostr_relays: Vec<RelayUrl>,
-        nostr_cl: NostrClient,
-    ) -> Result<Self> {
-        Ok(Self {
+        nostr_transport: Arc<dyn TransportApi>,
+        nostr_event_channel: NostrEventChannel,
+        nostr_repo: Arc<dyn NostrRepository>,
+        nostr_consumer: nostr::Consumer,
+    ) -> Arc<RwLock<Self>> {
+        let cancel = CancellationToken::new();
+        let wallet = Arc::new(RwLock::new(Self {
             network,
             client,
             mint_keyset_infos,
             tx_repo,
+            contact_repo,
+            pending_payment_request_repo,
             debit,
             name,
             id,
@@ -86,9 +107,174 @@ impl Wallet {
             clowder_id,
             client_factory,
             swap_expiry,
-            nostr_relays,
-            nostr_cl,
-        })
+            nostr_transport,
+            nostr_event_channel,
+            nostr_repo,
+            nostr_consumer_running: Arc::new(Mutex::new(false)),
+            nostr_shutdown: cancel.clone(),
+        }));
+        wallet
+            .read()
+            .await
+            .nostr_connect(nostr_consumer, cancel)
+            .await;
+        Self::start_nostr_event_listener(wallet.clone()).await;
+        wallet
+    }
+
+    async fn nostr_connect(&self, nostr_consumer: nostr::Consumer, cancel: CancellationToken) {
+        let wallet_id = self.id.clone();
+        let nostr_consumer_running = self.nostr_consumer_running.clone();
+        tokio::spawn(async move {
+            *nostr_consumer_running.lock().await = false;
+            // attempt to start nostr consumer
+            loop {
+                let mut handle = tokio::select! {
+                    _ = cancel.cancelled() => {
+                        tracing::info!("Nostr consumer cancelled for {}", wallet_id);
+                        break;
+                    }
+
+                    result = nostr_consumer.start() => match result {
+                        Ok(handle) => handle,
+                        Err(e) => {
+                            tracing::warn!("Could not start Nostr consumer: {e}");
+
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                            }
+
+                            continue;
+                        }
+                    },
+                };
+
+                *nostr_consumer_running.lock().await = true;
+                tracing::info!("Nostr transport connected for {}", wallet_id);
+
+                // wait for nostr consumer to fail and restart, or cancel the whole process
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        tracing::info!("Nostr consumer cancelled for {}", wallet_id);
+                        handle.abort_all();
+                        *nostr_consumer_running.lock().await = false;
+                        break;
+                    }
+
+                    _ = async {
+                        while let Some(result) = handle.join_next().await {
+                            match result {
+                                Ok(()) => {
+                                    tracing::info!("Nostr consumer task shutdown with success");
+                                }
+                                Err(e) if e.is_cancelled() => {
+                                    tracing::info!("Nostr consumer task was cancelled");
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Nostr consumer task shutdown with error: {e}");
+                                }
+                            }
+                        }
+                    } => {
+                        *nostr_consumer_running.lock().await = false;
+                        tracing::warn!("Nostr consumer stopped, reconnecting in 5 seconds...");
+                    }
+                }
+
+                // reconnect or cancel
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        tracing::info!("Nostr reconnect cancelled for {}", wallet_id);
+                        break;
+                    }
+
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                }
+            }
+
+            *nostr_consumer_running.lock().await = false;
+        });
+    }
+
+    async fn start_nostr_event_listener(wallet: Arc<RwLock<Self>>) {
+        let mut nostr_receiver = wallet.read().await.nostr_event_channel.subscribe();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    evt = nostr_receiver.recv() => {
+                        let received_evt = match evt {
+                            Ok(e) => e,
+                            Err(broadcast::error::RecvError::Lagged(_)) => {
+                                tracing::warn!("start_nostr_event_listener channel lagged behind");
+                                continue;
+                            },
+                            Err(broadcast::error::RecvError::Closed) => {
+                                tracing::warn!("start_nostr_event_listener channel closed");
+                                return;
+                            },
+                        };
+                        match received_evt {
+                            bcr_wallet_transport::NostrWalletEvent::ContactPaymentRequest { sender, payload, event_id } => {
+                                let pending_payment_request: PendingPaymentRequest = payload.into();
+                                let payment_request_id = pending_payment_request.id;
+                                let wallet_guard = wallet.read().await;
+                                match <Self as api::WalletApi>::add_pending_payment_request(&*wallet_guard, pending_payment_request).await {
+                                    Ok(_) => {
+                                        tracing::info!("Received contact payment request {payment_request_id} from {sender}, event_id: {event_id}");
+                                    },
+                                    Err(e) => {
+                                        tracing::error!("Could not store payment request {payment_request_id}: {e}");
+                                    }
+                                };
+                            },
+                            bcr_wallet_transport::NostrWalletEvent::Cdk18Payment { .. } => {
+                                // ignore - cdk18 payments are handled by explicitly awaiting them
+                            },
+                            bcr_wallet_transport::NostrWalletEvent::ContactPayment { sender, payload, event_id } => {
+                                let meta = HashMap::from([
+                                    (String::from("sender"), sender.to_string()),
+                                    (String::from("nostr_event_id"), event_id.to_string()),
+                                    (
+                                        String::from(PAYMENT_TYPE_METADATA_KEY),
+                                        PaymentType::Contact.to_string(),
+                                    ),
+                                    (
+                                        String::from(TRANSACTION_STATUS_METADATA_KEY),
+                                        TransactionStatus::Settled.to_string(),
+                                    ),
+                                    (
+                                        String::from(CONTACT_NODE_ID_METADATA_KEY),
+                                        payload.sender.to_string()
+                                    ),
+                                ]);
+
+                                let amount = payload.proofs.total_amount().unwrap_or(Amount::ZERO);
+                                let wallet_guard = wallet.read().await;
+                                match <Self as api::WalletApi>::receive_proofs(
+                                    &*wallet_guard,
+                                    payload.proofs,
+                                    payload.unit,
+                                    from_mint_url(&payload.mint),
+                                    chrono::Utc::now().timestamp() as u64,
+                                    payload.memo,
+                                    meta,
+                                ).await {
+                                    Ok(tx_id) => {
+                                        tracing::info!("Received Contact Payment from {} for {} with Transaction ID: {}",
+                                            payload.sender, amount, tx_id)
+                                    },
+                                    Err(e) => {
+                                        tracing::error!("Error processing Contact Payment from {} for {}: {e}",
+                                            payload.sender, amount)
+                                    }
+                                };
+                            },
+                        };
+                    }
+                }
+            }
+        });
     }
 
     pub fn name(&self) -> String {
@@ -229,7 +415,7 @@ impl Wallet {
                             id: keyset.id,
                             unit: keyset.unit.clone(),
                             active: true,
-                            input_fee_ppk: 1, // TODO: get fees from the clowder keyset
+                            input_fee_ppk: keyset.input_fee_ppk,
                             final_expiry: keyset.final_expiry,
                         },
                     )
@@ -392,6 +578,11 @@ impl Wallet {
             )
             .await?;
         Ok(recovered)
+    }
+
+    pub async fn retry_nostr_messages(&self) -> Result<usize> {
+        let retried = self.nostr_transport.retry_messages().await?;
+        Ok(retried)
     }
 
     pub async fn clean_up_spent_proofs(&self) -> Result<usize> {
@@ -751,10 +942,57 @@ impl Wallet {
         Ok(tx_id)
     }
 
+    async fn pay_to_contact(
+        &self,
+        proofs: Vec<cashu::Proof>,
+        nostr_cl: &Arc<dyn TransportApi>,
+        contact: Contact,
+        payment_request_id: Option<Uuid>,
+        mut partial_tx: Transaction,
+    ) -> Result<TransactionId> {
+        let payload = ContactPaymentPayload {
+            payment_request_id,
+            sender: self.node_id(),
+            proofs,
+            memo: partial_tx.memo.clone(),
+            unit: partial_tx.unit.clone(),
+            mint: to_mint_url(self.client.mint_url()),
+            created_at: Utc::now().timestamp() as u64,
+        };
+        let event: EventEnvelope =
+            bcr_wallet_core::event::Event::new_contact_payment(payload).try_into()?;
+        let payload = base58::encode(&borsh::to_vec(&event)?);
+        let target = nostr_cl.nip19_for_contact(&contact).await?;
+
+        let event_id = match nostr_cl
+            .send_private_msg(target.clone(), payload.clone())
+            .await
+        {
+            Ok(event_id) => event_id,
+            Err(e) => {
+                tracing::error!("Failed to send contact payment, queuing for retry: {e}");
+                match e {
+                    bcr_wallet_transport::error::Error::NostrSendPrivateMsg(event_id) => {
+                        self.nostr_transport
+                            .queue_retry_message(Some(target), payload)
+                            .await?;
+                        event_id
+                    }
+                    e => return Err(e.into()),
+                }
+            }
+        };
+        partial_tx
+            .metadata
+            .insert(String::from("nostr::event_id"), event_id.to_string());
+        let txid = self.tx_repo.store_tx(partial_tx).await?;
+        Ok(txid)
+    }
+
     async fn pay_nut18(
         &self,
         proofs: Vec<cashu::Proof>,
-        nostr_cl: &NostrClient,
+        nostr_cl: &Arc<dyn TransportApi>,
         http_cl: &reqwest::Client,
         transport: cashu::Transport,
         p_id: Option<String>,
@@ -775,7 +1013,24 @@ impl Wallet {
             }
             cashu::TransportType::Nostr => {
                 let payload = serde_json::to_string(&payload)?;
-                let event_id = nostr_cl.send_private_msg(transport.target, payload).await?;
+                let event_id = match nostr_cl
+                    .send_private_msg(transport.target.clone(), payload.clone())
+                    .await
+                {
+                    Ok(event_id) => event_id,
+                    Err(e) => {
+                        tracing::error!("Failed to send nut18 payment, queuing for retry: {e}");
+                        match e {
+                            bcr_wallet_transport::error::Error::NostrSendPrivateMsg(event_id) => {
+                                self.nostr_transport
+                                    .queue_retry_message(Some(transport.target), payload)
+                                    .await?;
+                                event_id
+                            }
+                            e => return Err(e.into()),
+                        }
+                    }
+                };
                 partial_tx
                     .metadata
                     .insert(String::from("nostr::event_id"), event_id.to_string());
@@ -812,13 +1067,19 @@ impl Wallet {
 
 #[cfg(test)]
 mod tests {
+    use ::nostr::types::RelayUrl;
     use bcr_common::wire::clowder as wire_clowder;
     use bcr_wallet_core::types::{
         MintSummary, PaymentResultCallback, TimeRange, get_payment_type, get_transaction_status,
     };
     use bcr_wallet_persistence::{
+        MockContactStoreApi, MockNostrRepository, MockPendingPaymentRequestStoreApi,
         MockTransactionRepository,
         test_utils::tests::{test_pub_key, valid_payment_address_testnet},
+    };
+    use bcr_wallet_transport::{
+        NostrEventChannel,
+        nostr::{Client, Transport},
     };
     use secp256k1::SECP256K1;
     use tokio_util::sync::CancellationToken;
@@ -836,6 +1097,9 @@ mod tests {
         pub client: MockClowderMintConnector,
         pub tx_repo: MockTransactionRepository,
         pub debit: MockDebitPocket,
+        pub nostr_repo: MockNostrRepository,
+        pub contact_repo: MockContactStoreApi,
+        pub pending_payment_request_repo: MockPendingPaymentRequestStoreApi,
     }
 
     fn wallet_ctx() -> MockWalletCtx {
@@ -844,6 +1108,9 @@ mod tests {
             client,
             tx_repo: MockTransactionRepository::new(),
             debit: MockDebitPocket::new(),
+            nostr_repo: MockNostrRepository::new(),
+            contact_repo: MockContactStoreApi::new(),
+            pending_payment_request_repo: MockPendingPaymentRequestStoreApi::new(),
         }
     }
 
@@ -868,6 +1135,9 @@ mod tests {
         let mut beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>> = HashMap::new();
         beta_clients.insert(beta_url, Arc::new(beta_mock));
 
+        let nostr_event_channel = NostrEventChannel::new();
+        let keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+
         let relay = get_mock_relay().await;
         Wallet {
             network: bitcoin::Network::Testnet,
@@ -875,6 +1145,8 @@ mod tests {
             mint_keyset_infos: HashMap::new(),
             beta_clients,
             tx_repo: Box::new(ctx.tx_repo),
+            contact_repo: Box::new(ctx.contact_repo),
+            pending_payment_request_repo: Box::new(ctx.pending_payment_request_repo),
             debit: Box::new(ctx.debit),
             name: "wallet-1".to_owned(),
             id: "w-1".to_owned(),
@@ -884,13 +1156,18 @@ mod tests {
             clowder_id: test_pub_key(),
             client_factory: Box::new(|url| Arc::new(HttpClientExt::new(url))),
             swap_expiry: chrono::TimeDelta::seconds(60),
-            nostr_relays: vec![],
-            nostr_cl: NostrClient::new(
-                &bip39::Mnemonic::generate(12).unwrap(),
-                &[RelayUrl::from_str(&relay.url()).unwrap()],
-            )
-            .await
-            .unwrap(),
+            nostr_transport: Arc::new(Transport::new(
+                Arc::new(
+                    Client::new(&keypair, vec![RelayUrl::from_str(&relay.url()).unwrap()])
+                        .await
+                        .unwrap(),
+                ),
+                Arc::new(MockNostrRepository::new()),
+            )),
+            nostr_event_channel,
+            nostr_repo: Arc::new(ctx.nostr_repo),
+            nostr_consumer_running: Arc::new(Mutex::new(true)),
+            nostr_shutdown: CancellationToken::new(),
         }
     }
 
@@ -1154,7 +1431,7 @@ mod tests {
         let wlt = wallet(ctx).await;
 
         let err = wlt
-            .prepare_pay("not-a-request".to_string())
+            .prepare_pay_cdk18("not-a-request".to_string())
             .await
             .unwrap_err();
 
@@ -1175,7 +1452,7 @@ mod tests {
 
         let wlt = wallet(ctx).await;
         let req = wlt
-            .prepare_payment_request(
+            .prepare_cdk18_payment_request(
                 cashu::Amount::from(123),
                 CurrencyUnit::Sat,
                 Some("hello".to_string()),
