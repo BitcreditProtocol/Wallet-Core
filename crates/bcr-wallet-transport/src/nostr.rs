@@ -1,10 +1,10 @@
 use crate::{
-    NostrEventChannel, NostrWalletEvent, SortOrder, TransportClientApi,
+    ClientApi, NostrEventChannel, NostrWalletEvent, SortOrder, TransportApi,
     error::{Error, Result},
 };
 use async_trait::async_trait;
 use bcr_common::cashu::nut18 as cdk18;
-use bcr_wallet_persistence::{NostrEventOffset, NostrEventOffsetStoreApi};
+use bcr_wallet_persistence::{NostrEventOffset, NostrQueuedMessage, NostrRepository};
 use nostr::{
     PublicKey,
     event::{Event, EventBuilder, EventId, Kind, TagKind, TagStandard},
@@ -18,8 +18,11 @@ use nostr::{
     signer::NostrSigner,
     types::{RelayUrl, Timestamp},
 };
-use nostr_sdk::{Client as NostrClient, ClientOptions, Keys, RelayPoolNotification, pool::Output};
+use nostr_sdk::{
+    Client as NostrClient, ClientOptions, Keys, RelayPoolNotification, RelayStatus, pool::Output,
+};
 use std::{
+    collections::HashSet,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -28,7 +31,7 @@ use std::{
 };
 use tokio::task::JoinSet;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Client {
     client: NostrClient,
     relays: Vec<RelayUrl>,
@@ -41,7 +44,7 @@ impl Client {
     pub async fn new(keypair: &Keypair, relays: Vec<RelayUrl>) -> Result<Self> {
         let signer = Keys::new(keypair.secret_key().into());
 
-        let default_timeout = Duration::from_secs(20);
+        let default_timeout = Duration::from_secs(1);
         let options = ClientOptions::new();
         let client = NostrClient::builder()
             .signer(signer.clone())
@@ -71,10 +74,7 @@ impl Client {
         }
         Ok(&self.client)
     }
-}
 
-#[async_trait]
-impl TransportClientApi for Client {
     async fn subscribe(&self, subscription: Filter) -> Result<()> {
         self.client()
             .await?
@@ -87,56 +87,9 @@ impl TransportClientApi for Client {
         Ok(())
     }
 
-    async fn send_private_msg(&self, target: String, payload: String) -> Result<EventId> {
-        let receiver = Nip19Profile::from_bech32(&target)?;
-
-        let output = self
-            .client
-            .send_private_msg_to(
-                receiver.relays,
-                receiver.public_key,
-                payload,
-                std::iter::empty(),
-            )
-            .await?;
-        Ok(output.id().to_owned())
-    }
-
-    async fn cdk18_transport(&self) -> Result<cdk18::Transport> {
-        Ok(cdk18::Transport {
-            _type: cdk18::TransportType::Nostr,
-            target: Nip19Profile::new(self.signer.public_key, self.relays.clone()).to_bech32()?,
-            tags: vec![vec![String::from("n"), String::from("17")]],
-        })
-    }
-
     async fn signer(&self) -> Result<Arc<dyn NostrSigner>> {
         let signer = self.client.signer().await?;
         Ok(signer)
-    }
-
-    async fn shutdown(&self) {
-        self.client.shutdown().await;
-    }
-
-    async fn connect(&self) -> Result<()> {
-        if self
-            .connected
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            self.client.connect().await;
-
-            if let Err(e) = self.publish_relay_list(self.relays.clone()).await {
-                tracing::error!(
-                    "Failed to publish relay list for {}: {}",
-                    self.signer.public_key,
-                    e
-                );
-            }
-        }
-
-        Ok(())
     }
 
     async fn fetch_events(
@@ -208,24 +161,201 @@ impl TransportClientApi for Client {
         })?;
         check_send_output(output, "publish_relay_list")
     }
+
+    async fn sync_relay_list(&self, relays: Vec<RelayUrl>) -> Result<()> {
+        let signer = self.signer.clone();
+        let fetched_relays = self
+            .fetch_relay_list(signer.public_key(), relays.clone())
+            .await?;
+        let mut merged: HashSet<RelayUrl> = relays.into_iter().collect();
+        merged.extend(fetched_relays);
+
+        self.publish_relay_list(merged.into_iter().collect())
+            .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ClientApi for Client {
+    async fn connect(&self) -> Result<()> {
+        if self
+            .connected
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            self.client.connect().await;
+
+            let self_clone = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = self_clone.sync_relay_list(self_clone.relays.clone()).await {
+                    tracing::error!(
+                        "Failed to publish relay list for {}: {}",
+                        self_clone.signer.public_key,
+                        e
+                    );
+                }
+            });
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct Transport {
+    client: Arc<Client>,
+    nostr_store: Arc<dyn NostrRepository>,
+}
+
+impl Transport {
+    pub fn new(client: Arc<Client>, nostr_store: Arc<dyn NostrRepository>) -> Self {
+        Self {
+            client,
+            nostr_store,
+        }
+    }
+}
+
+#[async_trait]
+impl TransportApi for Transport {
+    async fn send_private_msg(&self, target: String, payload: String) -> Result<EventId> {
+        let receiver = Nip19Profile::from_bech32(&target)?;
+
+        let signer = self.client.client.signer().await?;
+        let event: Event =
+            EventBuilder::private_msg(&signer, receiver.public_key, payload, std::iter::empty())
+                .await?;
+        let _ = self
+            .client
+            .client
+            .send_event_to(receiver.relays, &event)
+            .await
+            .map_err(|e| {
+                tracing::error!("send_private_msg failed: {e}");
+                Error::NostrSendPrivateMsg(event.id)
+            })?;
+        Ok(event.id)
+    }
+
+    async fn cdk18_transport(&self) -> Result<cdk18::Transport> {
+        Ok(cdk18::Transport {
+            _type: cdk18::TransportType::Nostr,
+            target: Nip19Profile::new(self.client.signer.public_key, self.client.relays.clone())
+                .to_bech32()?,
+            tags: vec![vec![String::from("n"), String::from("17")]],
+        })
+    }
+
+    async fn shutdown(&self) {
+        self.client.client.shutdown().await;
+    }
+
+    fn relays(&self) -> &[RelayUrl] {
+        &self.client.relays
+    }
+
+    async fn has_connected_relays(&self) -> bool {
+        self.client
+            .client
+            .relays()
+            .await
+            .values()
+            .any(|relay| relay.status() == RelayStatus::Connected)
+    }
+
+    async fn queue_retry_message(&self, recipient: Option<String>, payload: String) -> Result<()> {
+        let receiver = match recipient {
+            Some(ref r) => Nip19Profile::from_bech32(r)?.public_key.to_string(),
+            None => "public broadcast".to_string(),
+        };
+        let queue_msg = NostrQueuedMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            recipient,
+            payload,
+        };
+        self.nostr_store.add_retry_message(queue_msg, 3).await?;
+        tracing::debug!("Queued Nostr retry message; triggering immediate retry for {receiver}");
+
+        let self_clone = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = self_clone.retry_messages().await {
+                tracing::error!("Failed to process Nostr retry queue after enqueue: {e}");
+            }
+        });
+        Ok(())
+    }
+
+    async fn retry_messages(&self) -> Result<usize> {
+        let mut failed_ids: Vec<String> = vec![];
+        let mut retried = 0;
+        while let Ok(Some(queued_message)) = self
+            .nostr_store
+            .get_retry_messages(1)
+            .await
+            .map(|r| r.first().cloned())
+        {
+            let result: Result<()> = match &queued_message.recipient {
+                Some(target) => {
+                    if let Err(e) = serde_json::from_str::<cdk18::PaymentRequestPayload>(
+                        &queued_message.payload,
+                    ) {
+                        tracing::error!("Failed to parse private retry payload: {e}");
+                        failed_ids.push(queued_message.id.clone());
+                        continue;
+                    };
+
+                    match self
+                        .send_private_msg(target.to_owned(), queued_message.payload)
+                        .await
+                    {
+                        Ok(_) => Ok(()),
+                        Err(e) => Err(e),
+                    }
+                }
+                None => Ok(()), // currently, we only send private events
+            };
+
+            match result {
+                Ok(()) => {
+                    tracing::info!("Successfully sent retry message {}", queued_message.id);
+                    if let Err(e) = self.nostr_store.succeed_retry(&queued_message.id).await {
+                        tracing::error!("Failed to mark retry message as sent: {e}");
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to send retry message: {e}");
+                    failed_ids.push(queued_message.id.clone());
+                }
+            }
+            retried += 1;
+        }
+
+        for failed in failed_ids {
+            if let Err(e) = self.nostr_store.fail_retry(&failed).await {
+                tracing::error!("Failed to store failed retry attempt: {e}");
+            }
+        }
+        Ok(retried)
+    }
 }
 
 #[derive(Clone)]
 pub struct Consumer {
     client: Arc<Client>,
-    offset_store: Arc<dyn NostrEventOffsetStoreApi>,
+    nostr_store: Arc<dyn NostrRepository>,
     event_channel: NostrEventChannel,
 }
 
 impl Consumer {
     pub fn new(
         client: Arc<Client>,
-        offset_store: Arc<dyn NostrEventOffsetStoreApi>,
+        nostr_store: Arc<dyn NostrRepository>,
         event_channel: NostrEventChannel,
     ) -> Self {
         Self {
             client,
-            offset_store,
+            nostr_store,
             event_channel,
         }
     }
@@ -241,7 +371,7 @@ impl Consumer {
         }
 
         let mut earliest_offset = Timestamp::now();
-        let offset = get_offset(&self.offset_store).await;
+        let offset = get_offset(&self.nostr_store).await;
         if offset != Timestamp::zero() && offset < earliest_offset {
             earliest_offset = offset;
         }
@@ -255,7 +385,7 @@ impl Consumer {
             Error::Network("Failed to subscribe to Nostr public events".to_string())
         })?;
 
-        let offset_store_clone = self.offset_store.clone();
+        let offset_store_clone = self.nostr_store.clone();
         let signer = self.client.signer().await?;
         let event_channel = self.event_channel.clone();
         tasks.spawn(async move {
@@ -288,7 +418,7 @@ impl Consumer {
 }
 
 async fn add_offset(
-    db: &Arc<dyn NostrEventOffsetStoreApi>,
+    db: &Arc<dyn NostrRepository>,
     event_id: EventId,
     time: Timestamp,
     success: bool,
@@ -303,7 +433,7 @@ async fn add_offset(
     .ok();
 }
 
-async fn get_offset(db: &Arc<dyn NostrEventOffsetStoreApi>) -> Timestamp {
+async fn get_offset(db: &Arc<dyn NostrRepository>) -> Timestamp {
     db.current_offset().await.unwrap_or_else(|e| {
         tracing::error!("Could not get event offset: {e}");
         Timestamp::zero()
@@ -364,7 +494,7 @@ async fn process_event(
 
 async fn should_process(
     event: Box<Event>,
-    offset_store: &Arc<dyn NostrEventOffsetStoreApi>,
+    offset_store: &Arc<dyn NostrRepository>,
     since: Timestamp,
 ) -> bool {
     valid_time(event.kind, event.created_at, since)

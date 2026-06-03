@@ -157,6 +157,12 @@ impl AppState {
     }
 
     //////////////////////////////////////////////////// Purse-Level API methods
+    pub async fn purse_wallets_nostr_connected(&self) -> HashMap<String, bool> {
+        tracing::debug!("purse_wallets_nostr_connected");
+        let purse = self.get_purse();
+        purse.wallets_nostr_connected().await
+    }
+
     pub async fn purse_wallets_ids(&self) -> Result<Vec<String>> {
         tracing::debug!("get_wallet_ids");
         let purse = self.get_purse();
@@ -603,6 +609,15 @@ impl AppState {
         Ok(cleaned_up)
     }
 
+    // Retry Nostr Messages
+    pub async fn wallet_retry_nostr_messages(&self, id: String) -> Result<usize> {
+        tracing::debug!("wallet_retry_nostr_messages({id})");
+        let wallet = self.get_wallet(&id).await?;
+        let wlt = wallet.read().await;
+        let retried = wlt.retry_nostr_messages().await?;
+        Ok(retried)
+    }
+
     // Refreshes the state of all pending transactions of the given wallet
     pub async fn wallet_refresh_txs(&self, id: String) -> Result<usize> {
         tracing::debug!("wallet_refresh_txs({id})");
@@ -743,6 +758,17 @@ impl AppState {
                     );
                 }
             }
+            match self.wallet_retry_nostr_messages(wallet_id.to_owned()).await {
+                Ok(retried) => {
+                    tracing::info!("Retried {retried} nostr messages for wallet {wallet_id}");
+                }
+                Err(e) => {
+                    job_failed = true;
+                    tracing::error!(
+                        "Error running wallet_refresh_txs job for wallet {wallet_id}: {e}"
+                    );
+                }
+            };
         }
 
         // successful = true
@@ -867,7 +893,7 @@ async fn build_wallet(
     nostr_cl: Arc<nostr::Client>,
 ) -> Result<wallet::Wallet> {
     // building wallet dbs
-    let (tx_repo, (debitdb, mintmeltdb), nostrdb) =
+    let (tx_repo, debitdb, mintmeltdb, nostrdb) =
         build_wallet_dbs(db_version, &w_cfg.wallet_id, &w_cfg.debit, db).await?;
 
     let nostr_repo = Arc::new(nostrdb);
@@ -877,6 +903,7 @@ async fn build_wallet(
         nostr_repo.clone(),
         nostr_event_channel.clone(),
     );
+    let nostr_transport = nostr::Transport::new(nostr_cl, nostr_repo.clone());
 
     // building the debit pocket
     let mut beta_clients = HashMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
@@ -903,24 +930,6 @@ async fn build_wallet(
         Arc::new(cl) as Arc<dyn ClowderMintConnector>
     };
 
-    let wallet_id = w_cfg.wallet_id.clone();
-    let nostr_handle = tokio::spawn(async move {
-        match nostr_consumer.start().await {
-            Ok(mut handle) => {
-                tracing::info!("Nostr transport connected for {}", wallet_id);
-                while let Some(result) = handle.join_next().await {
-                    match result {
-                        Ok(()) => tracing::info!("Nostr consumer task shutdown with success"),
-                        Err(e) => tracing::warn!("Nostr consumer task shutdown with error: {e}"),
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Could not start Nostr consumer: {e}");
-            }
-        };
-    });
-
     let new_wallet: wallet::Wallet = wallet::Wallet::new(
         w_cfg.network,
         client,
@@ -934,12 +943,12 @@ async fn build_wallet(
         beta_clients,
         Box::new(|url| Arc::new(external::mint::HttpClientExt::new(url))),
         swap_expiry,
-        w_cfg.nostr_relays,
-        nostr_cl,
-        nostr_handle,
+        Arc::new(nostr_transport),
         nostr_event_channel,
         nostr_repo,
-    );
+        nostr_consumer,
+    )
+    .await;
 
     Ok(new_wallet)
 }

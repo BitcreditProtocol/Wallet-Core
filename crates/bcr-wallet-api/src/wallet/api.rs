@@ -110,6 +110,7 @@ pub trait WalletApi: SendSync {
         memo: Option<String>,
         now: u64,
     ) -> Result<(TransactionId, Option<Token>)>;
+    async fn is_nostr_connected(&self) -> bool;
     async fn delete(&self) -> Result<()>;
 }
 
@@ -126,7 +127,7 @@ impl WalletApi for super::Wallet {
             clowder_id: self.clowder_id,
             pub_key: self.pub_key,
             betas: self.betas(),
-            nostr_relays: self.nostr_relays.clone(),
+            nostr_relays: self.nostr_transport.relays().to_owned(),
         })
     }
 
@@ -135,7 +136,7 @@ impl WalletApi for super::Wallet {
             name: self.name.clone(),
             network: self.network,
             default_mint_url: self.client.mint_url().to_owned(),
-            nostr_relays: self.nostr_relays.clone(),
+            nostr_relays: self.nostr_transport.relays().to_owned(),
         }
     }
 
@@ -215,7 +216,7 @@ impl WalletApi for super::Wallet {
         unit: CurrencyUnit,
         description: Option<String>,
     ) -> Result<cdk18::PaymentRequest> {
-        let nostr_transport = self.nostr_cl.cdk18_transport().await?;
+        let nostr_transport = self.nostr_transport.cdk18_transport().await?;
         let mints = self
             .mint_urls()
             .into_iter()
@@ -407,7 +408,14 @@ impl WalletApi for super::Wallet {
                     saga_id: None,
                 };
                 let tx_id = self
-                    .pay_nut18(proofs, &self.nostr_cl, http_cl, transport, id, partial_tx)
+                    .pay_nut18(
+                        proofs,
+                        &self.nostr_transport,
+                        http_cl,
+                        transport,
+                        id,
+                        partial_tx,
+                    )
                     .await?;
                 Ok((tx_id, None))
             }
@@ -1068,11 +1076,18 @@ impl WalletApi for super::Wallet {
         }
     }
 
+    async fn is_nostr_connected(&self) -> bool {
+        self.nostr_transport.has_connected_relays().await
+            && *self.nostr_consumer_running.lock().await
+    }
+
     async fn delete(&self) -> Result<()> {
-        // shut down nostr consumer
-        self.nostr_handle.abort();
         // shut down nostr client
-        self.nostr_cl.shutdown().await;
+        self.nostr_transport.shutdown().await;
+        // shut down nostr handle
+        if let Some(ref handle) = self.nostr_handle {
+            handle.abort();
+        }
         // delete debit pocket
         if let Err(e) = self.debit.delete().await {
             tracing::error!("Error deleting pocket for wallet {}: {e}", self.id())

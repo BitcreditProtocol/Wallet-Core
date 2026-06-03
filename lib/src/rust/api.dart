@@ -465,18 +465,23 @@ class RestoreWalletResponse {
 
 class StatusResponse {
   final String appVersion;
+  final Map<String, bool> nostrConnected;
 
-  const StatusResponse({required this.appVersion});
+  const StatusResponse({
+    required this.appVersion,
+    required this.nostrConnected,
+  });
 
   @override
-  int get hashCode => appVersion.hashCode;
+  int get hashCode => appVersion.hashCode ^ nostrConnected.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is StatusResponse &&
           runtimeType == other.runtimeType &&
-          appVersion == other.appVersion;
+          appVersion == other.appVersion &&
+          nostrConnected == other.nostrConnected;
 }
 
 class TimeRange {

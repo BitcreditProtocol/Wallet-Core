@@ -11,6 +11,10 @@ pub enum Error {
     Nip06(#[from] nostr_sdk::nips::nip06::Error),
     #[error("nostr-sdk::client {0}")]
     NostrClient(#[from] nostr_sdk::client::Error),
+    #[error("nostr::event {0}")]
+    NostrEvent(#[from] ::nostr::event::builder::Error),
+    #[error("nostr::send_private_msg {0}")]
+    NostrSendPrivateMsg(nostr::event::EventId),
     #[error("serde_json: {0}")]
     SerdeJson(#[from] serde_json::Error),
     #[error("cashu::nut00: {0}")]
@@ -19,4 +23,6 @@ pub enum Error {
     Network(String),
     #[error("Crypto error: {0}")]
     Crypto(String),
+    #[error("Persistence error: {0}")]
+    Persistence(#[from] bcr_wallet_persistence::error::Error),
 }

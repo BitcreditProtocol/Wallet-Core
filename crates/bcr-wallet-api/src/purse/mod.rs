@@ -110,6 +110,21 @@ where
 
         Ok(res)
     }
+
+    pub async fn wallets_nostr_connected(&self) -> HashMap<String, bool> {
+        let mut res = HashMap::new();
+        let wallets: HashMap<_, _> = {
+            let wlts = self.wallets.read().await;
+            wlts.clone()
+        };
+        for (wallet_id, wlt) in wallets.iter() {
+            res.insert(
+                wallet_id.to_owned(),
+                wlt.read().await.is_nostr_connected().await,
+            );
+        }
+        res
+    }
 }
 
 #[cfg(test)]

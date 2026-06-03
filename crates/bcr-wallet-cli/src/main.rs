@@ -44,6 +44,8 @@ struct Cli {
 enum Commands {
     #[command(name = "info")]
     Info,
+    #[command(name = "status")]
+    Status,
     #[command(name = "add_wallet")]
     AddWallet { id: String },
     #[command(name = "delete_wallet")]
@@ -157,6 +159,13 @@ async fn main() -> Result<()> {
                 "Info for {}: {}",
                 cli.wallet,
                 command::cmd_info(&app_state).await?
+            );
+        }
+        Commands::Status => {
+            info!(
+                "Status for {}: {}",
+                cli.wallet,
+                command::cmd_status(&app_state).await?
             );
         }
         Commands::Receive { id, token } => {
