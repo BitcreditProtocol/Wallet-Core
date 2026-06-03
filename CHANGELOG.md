@@ -4,6 +4,7 @@
 * Fix keysets for online intermint exchange
 * Update bcr-common and remove support for cashuB tokens
 * Fix intermint exchange fees
+* Improve Nostr Setup
 
 # 0.9.3
 

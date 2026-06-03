@@ -130,6 +130,7 @@ async fn main() -> Result<()> {
             md.target().starts_with("bcr_wallet_cli")
                 || md.target().starts_with("bcr_wallet_core")
                 || md.target().starts_with("bcr_wallet_persistence")
+                || md.target().starts_with("bcr_wallet_transport")
                 || md.target().starts_with("bcr_wallet_api")
         }));
     let subscriber = tracing_subscriber::registry().with(stdout_log);
