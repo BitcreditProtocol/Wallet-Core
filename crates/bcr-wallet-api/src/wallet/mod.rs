@@ -643,7 +643,10 @@ impl Wallet {
             hash_lock,
             key_locks,
             *wallet_pk.public_key(),
-            self.swap_config(),
+            SwapConfig {
+                alpha_pk: path[0].node_id,
+                ..self.swap_config()
+            },
             &alpha_beta,
         )
         .await?;
