@@ -5,11 +5,14 @@ use crate::wallet::types::{
     WalletBalance, WalletDetailedBalanceEntry, WalletInfo, WalletProtestResult,
 };
 use bcr_common::cdk_common::wallet::Transaction;
+use bcr_common::core::NodeId;
 use bcr_common::{
     cashu::{self, CurrencyUnit},
     cdk_common::wallet::TransactionId,
     wallet::Token,
 };
+use bcr_wallet_core::contact::Contact;
+use bcr_wallet_core::name::Name;
 use bcr_wallet_core::types::{
     self, ListTransactionsResult, MintSummary, PaymentResultCallback, PaymentSummary, Seed,
     TransactionCursor, TransactionFilters, TransactionSort, WalletConfig,
@@ -590,6 +593,58 @@ impl AppState {
         Ok(amount)
     }
 
+    pub async fn wallet_add_contact(
+        &self,
+        id: String,
+        node_id: String,
+        name: String,
+    ) -> Result<()> {
+        let node_id = NodeId::from_str(&node_id)?;
+        let name = Name::from_str(&name)?;
+        let wallet = self.get_wallet(&id).await?;
+        wallet.read().await.add_contact(node_id, name).await?;
+        Ok(())
+    }
+
+    pub async fn wallet_edit_contact(
+        &self,
+        id: String,
+        node_id: String,
+        name: String,
+    ) -> Result<()> {
+        let node_id = NodeId::from_str(&node_id)?;
+        let name = Name::from_str(&name)?;
+        let wallet = self.get_wallet(&id).await?;
+        wallet.read().await.edit_contact(node_id, name).await?;
+        Ok(())
+    }
+
+    pub async fn wallet_delete_contact(&self, id: String, node_id: String) -> Result<()> {
+        let node_id = NodeId::from_str(&node_id)?;
+        let wallet = self.get_wallet(&id).await?;
+        wallet.read().await.delete_contact(node_id).await?;
+        Ok(())
+    }
+
+    pub async fn wallet_get_contact(&self, id: String, node_id: String) -> Result<Contact> {
+        let node_id = NodeId::from_str(&node_id)?;
+        let wallet = self.get_wallet(&id).await?;
+        match wallet.read().await.get_contact(node_id.clone()).await? {
+            Some(c) => Ok(c),
+            None => Err(Error::ContactNotFound(node_id)),
+        }
+    }
+
+    pub async fn wallet_list_contacts(
+        &self,
+        id: String,
+        search_term: Option<String>,
+    ) -> Result<Vec<Contact>> {
+        let wallet = self.get_wallet(&id).await?;
+        let contacts = wallet.read().await.list_contacts(search_term).await?;
+        Ok(contacts)
+    }
+
     // Recover pending stale proofs
     pub async fn wallet_recover_pending_stale_proofs(&self, id: String) -> Result<cashu::Amount> {
         tracing::debug!("wallet_recover_pending_stale_proofs({id})");
@@ -893,7 +948,7 @@ async fn build_wallet(
     nostr_cl: Arc<nostr::Client>,
 ) -> Result<wallet::Wallet> {
     // building wallet dbs
-    let (tx_repo, debitdb, mintmeltdb, nostrdb) =
+    let (tx_repo, debitdb, mintmeltdb, nostrdb, contactdb) =
         build_wallet_dbs(db_version, &w_cfg.wallet_id, &w_cfg.debit, db).await?;
 
     let nostr_repo = Arc::new(nostrdb);
@@ -935,6 +990,7 @@ async fn build_wallet(
         client,
         w_cfg.mint_keyset_infos,
         Box::new(tx_repo),
+        Box::new(contactdb),
         debit_pocket,
         w_cfg.name,
         w_cfg.wallet_id,

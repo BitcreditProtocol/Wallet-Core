@@ -686,6 +686,71 @@ pub async fn wallet_get_ids() -> Result<WalletsIdsResponse, WalletError> {
 }
 
 #[frb]
+pub async fn wallet_add_contact(
+    req: WalletAddContactRequest,
+) -> Result<WalletAddContactResponse, WalletError> {
+    let app_state = get_app_state().await;
+    app_state
+        .wallet_add_contact(req.wallet_id, req.node_id.clone(), req.name)
+        .await?;
+    Ok(WalletAddContactResponse {
+        node_id: req.node_id,
+    })
+}
+
+#[frb]
+pub async fn wallet_edit_contact(
+    req: WalletEditContactRequest,
+) -> Result<WalletEditContactResponse, WalletError> {
+    let app_state = get_app_state().await;
+    app_state
+        .wallet_edit_contact(req.wallet_id, req.node_id.clone(), req.name)
+        .await?;
+    Ok(WalletEditContactResponse {
+        node_id: req.node_id,
+    })
+}
+
+#[frb]
+pub async fn wallet_delete_contact(
+    req: WalletDeleteContactRequest,
+) -> Result<WalletDeleteContactResponse, WalletError> {
+    let app_state = get_app_state().await;
+    app_state
+        .wallet_delete_contact(req.wallet_id, req.node_id.clone())
+        .await?;
+    Ok(WalletDeleteContactResponse {
+        node_id: req.node_id,
+    })
+}
+
+#[frb]
+pub async fn wallet_get_contact(
+    req: WalletGetContactRequest,
+) -> Result<WalletGetContactResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let contact = app_state
+        .wallet_get_contact(req.wallet_id, req.node_id.clone())
+        .await?;
+    Ok(WalletGetContactResponse {
+        contact: contact.into(),
+    })
+}
+
+#[frb]
+pub async fn wallet_list_contacts(
+    req: WalletListContactsRequest,
+) -> Result<WalletListContactsResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let contacts = app_state
+        .wallet_list_contacts(req.wallet_id, req.search_term.clone())
+        .await?;
+    Ok(WalletListContactsResponse {
+        contacts: contacts.into_iter().map(|c| c.into()).collect(),
+    })
+}
+
+#[frb]
 pub async fn wallet_dev_mode_get_detailed_balance(
     req: WalletRequest,
 ) -> Result<WalletDevModeDetailedBalanceResponse, WalletError> {
@@ -1036,6 +1101,21 @@ impl From<bcr_common::wire::common::ProtestStatus> for ProtestStatus {
         match s {
             bcr_common::wire::common::ProtestStatus::Resolved => ProtestStatus::Resolved,
             bcr_common::wire::common::ProtestStatus::Rabid => ProtestStatus::Rabid,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Contact {
+    pub node_id: String,
+    pub name: String,
+}
+
+impl From<bcr_wallet_core::contact::Contact> for Contact {
+    fn from(v: bcr_wallet_core::contact::Contact) -> Self {
+        Self {
+            node_id: v.node_id.to_string(),
+            name: v.name.to_string(),
         }
     }
 }
@@ -1471,6 +1551,63 @@ pub struct WalletPaymentByTokenResponse {
     pub token: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct WalletAddContactRequest {
+    pub wallet_id: String,
+    pub node_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletAddContactResponse {
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletEditContactRequest {
+    pub wallet_id: String,
+    pub node_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletEditContactResponse {
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletDeleteContactRequest {
+    pub wallet_id: String,
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletDeleteContactResponse {
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletGetContactRequest {
+    pub wallet_id: String,
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletGetContactResponse {
+    pub contact: Contact,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletListContactsRequest {
+    pub wallet_id: String,
+    pub search_term: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletListContactsResponse {
+    pub contacts: Vec<Contact>,
+}
+
 // -------------------------------------------------------------- Errors
 #[derive(Debug, Clone)]
 pub struct WalletError {
@@ -1528,6 +1665,8 @@ pub enum WalletErrorCode {
     Internal,
     Network,
     WalletNotFound,
+    ContactNotFound,
+    ContactAlreadyExists,
     EmptyToken,
     InvalidToken,
     CashuMintUrl,
@@ -1555,6 +1694,10 @@ pub enum WalletErrorCode {
     MnemonicNotFound,
     WalletUniqueName,
     WalletUniqueId,
+    InvalidNodeId,
+    InvalidBillId,
+    InvalidName,
+    EmptyName,
 }
 
 impl From<BcrWalletError> for WalletError {
@@ -1590,6 +1733,12 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::InvalidSplitTarget => WalletError::internal(value.to_string()),
             BcrWalletError::WalletNotFound(id) => {
                 WalletError::not_found(id.to_string(), WalletErrorCode::WalletNotFound)
+            }
+            BcrWalletError::ContactNotFound(id) => {
+                WalletError::not_found(id.to_string(), WalletErrorCode::ContactNotFound)
+            }
+            BcrWalletError::ContactAlreadyExists(_) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::ContactNotFound)
             }
             BcrWalletError::WalletUniqueId(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::WalletUniqueId)
@@ -1651,6 +1800,18 @@ impl From<BcrWalletError> for WalletError {
             }
             BcrWalletError::InvalidTransactionId => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidTransactionId)
+            }
+            BcrWalletError::InvalidName => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidName)
+            }
+            BcrWalletError::EmptyName => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::EmptyName)
+            }
+            BcrWalletError::InvalidNodeId => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidNodeId)
+            }
+            BcrWalletError::InvalidBillId => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidBillId)
             }
             BcrWalletError::InvalidCursor => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidCursor)

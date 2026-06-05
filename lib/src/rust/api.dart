@@ -8,7 +8,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `get_app_state`, `init_logging`, `init_panic_hook`, `new`, `reset_runtime`, `start_jobs`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `WalletCleanLocalDbResponse`, `WalletRuntime`, `WalletsNamesResponse`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `try_from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `try_from`
 
 Future<void> initWalletFfi({required WalletFfiConfig conf}) =>
     RustLib.instance.api.crateApiInitWalletFfi(conf: conf);
@@ -135,6 +135,26 @@ Future<WalletListTransactionsResponse> walletGetTransactions({
 Future<WalletsIdsResponse> walletGetIds() =>
     RustLib.instance.api.crateApiWalletGetIds();
 
+Future<WalletAddContactResponse> walletAddContact({
+  required WalletAddContactRequest req,
+}) => RustLib.instance.api.crateApiWalletAddContact(req: req);
+
+Future<WalletEditContactResponse> walletEditContact({
+  required WalletEditContactRequest req,
+}) => RustLib.instance.api.crateApiWalletEditContact(req: req);
+
+Future<WalletDeleteContactResponse> walletDeleteContact({
+  required WalletDeleteContactRequest req,
+}) => RustLib.instance.api.crateApiWalletDeleteContact(req: req);
+
+Future<WalletGetContactResponse> walletGetContact({
+  required WalletGetContactRequest req,
+}) => RustLib.instance.api.crateApiWalletGetContact(req: req);
+
+Future<WalletListContactsResponse> walletListContacts({
+  required WalletListContactsRequest req,
+}) => RustLib.instance.api.crateApiWalletListContacts(req: req);
+
 Future<WalletDevModeDetailedBalanceResponse> walletDevModeGetDetailedBalance({
   required WalletRequest req,
 }) => RustLib.instance.api.crateApiWalletDevModeGetDetailedBalance(req: req);
@@ -182,6 +202,24 @@ class AddWalletResponse {
       other is AddWalletResponse &&
           runtimeType == other.runtimeType &&
           walletId == other.walletId;
+}
+
+class Contact {
+  final String nodeId;
+  final String name;
+
+  const Contact({required this.nodeId, required this.name});
+
+  @override
+  int get hashCode => nodeId.hashCode ^ name.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Contact &&
+          runtimeType == other.runtimeType &&
+          nodeId == other.nodeId &&
+          name == other.name;
 }
 
 class CreateWalletRequest {
@@ -661,6 +699,46 @@ enum TransactionStatus {
       RustLib.instance.api.crateApiTransactionStatusDefault();
 }
 
+class WalletAddContactRequest {
+  final String walletId;
+  final String nodeId;
+  final String name;
+
+  const WalletAddContactRequest({
+    required this.walletId,
+    required this.nodeId,
+    required this.name,
+  });
+
+  @override
+  int get hashCode => walletId.hashCode ^ nodeId.hashCode ^ name.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletAddContactRequest &&
+          runtimeType == other.runtimeType &&
+          walletId == other.walletId &&
+          nodeId == other.nodeId &&
+          name == other.name;
+}
+
+class WalletAddContactResponse {
+  final String nodeId;
+
+  const WalletAddContactResponse({required this.nodeId});
+
+  @override
+  int get hashCode => nodeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletAddContactResponse &&
+          runtimeType == other.runtimeType &&
+          nodeId == other.nodeId;
+}
+
 class WalletBalanceResponse {
   final BigInt debit;
   final BigInt credit;
@@ -741,6 +819,43 @@ class WalletCurrencyUnitResponse {
           unit == other.unit;
 }
 
+class WalletDeleteContactRequest {
+  final String walletId;
+  final String nodeId;
+
+  const WalletDeleteContactRequest({
+    required this.walletId,
+    required this.nodeId,
+  });
+
+  @override
+  int get hashCode => walletId.hashCode ^ nodeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletDeleteContactRequest &&
+          runtimeType == other.runtimeType &&
+          walletId == other.walletId &&
+          nodeId == other.nodeId;
+}
+
+class WalletDeleteContactResponse {
+  final String nodeId;
+
+  const WalletDeleteContactResponse({required this.nodeId});
+
+  @override
+  int get hashCode => nodeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletDeleteContactResponse &&
+          runtimeType == other.runtimeType &&
+          nodeId == other.nodeId;
+}
+
 class WalletDevModeDetailedBalanceEntry {
   final String kid;
   final BigInt? finalExpiry;
@@ -779,6 +894,46 @@ class WalletDevModeDetailedBalanceResponse {
       other is WalletDevModeDetailedBalanceResponse &&
           runtimeType == other.runtimeType &&
           entries == other.entries;
+}
+
+class WalletEditContactRequest {
+  final String walletId;
+  final String nodeId;
+  final String name;
+
+  const WalletEditContactRequest({
+    required this.walletId,
+    required this.nodeId,
+    required this.name,
+  });
+
+  @override
+  int get hashCode => walletId.hashCode ^ nodeId.hashCode ^ name.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletEditContactRequest &&
+          runtimeType == other.runtimeType &&
+          walletId == other.walletId &&
+          nodeId == other.nodeId &&
+          name == other.name;
+}
+
+class WalletEditContactResponse {
+  final String nodeId;
+
+  const WalletEditContactResponse({required this.nodeId});
+
+  @override
+  int get hashCode => nodeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletEditContactResponse &&
+          runtimeType == other.runtimeType &&
+          nodeId == other.nodeId;
 }
 
 class WalletEditTransactionMemoRequest {
@@ -866,6 +1021,8 @@ enum WalletErrorCode {
   internal,
   network,
   walletNotFound,
+  contactNotFound,
+  contactAlreadyExists,
   emptyToken,
   invalidToken,
   cashuMintUrl,
@@ -893,6 +1050,10 @@ enum WalletErrorCode {
   mnemonicNotFound,
   walletUniqueName,
   walletUniqueId,
+  invalidNodeId,
+  invalidBillId,
+  invalidName,
+  emptyName,
 }
 
 enum WalletErrorKind {
@@ -945,6 +1106,40 @@ class WalletFfiConfig {
           mnemonics == other.mnemonics &&
           swapExpiryMinutes == other.swapExpiryMinutes &&
           devMode == other.devMode;
+}
+
+class WalletGetContactRequest {
+  final String walletId;
+  final String nodeId;
+
+  const WalletGetContactRequest({required this.walletId, required this.nodeId});
+
+  @override
+  int get hashCode => walletId.hashCode ^ nodeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletGetContactRequest &&
+          runtimeType == other.runtimeType &&
+          walletId == other.walletId &&
+          nodeId == other.nodeId;
+}
+
+class WalletGetContactResponse {
+  final Contact contact;
+
+  const WalletGetContactResponse({required this.contact});
+
+  @override
+  int get hashCode => contact.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletGetContactResponse &&
+          runtimeType == other.runtimeType &&
+          contact == other.contact;
 }
 
 class WalletIdForMnemonicAndNetworkRequest {
@@ -1013,6 +1208,40 @@ class WalletInfoResponse {
           network == other.network &&
           defaultMintUrl == other.defaultMintUrl &&
           nostrRelays == other.nostrRelays;
+}
+
+class WalletListContactsRequest {
+  final String walletId;
+  final String? searchTerm;
+
+  const WalletListContactsRequest({required this.walletId, this.searchTerm});
+
+  @override
+  int get hashCode => walletId.hashCode ^ searchTerm.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletListContactsRequest &&
+          runtimeType == other.runtimeType &&
+          walletId == other.walletId &&
+          searchTerm == other.searchTerm;
+}
+
+class WalletListContactsResponse {
+  final List<Contact> contacts;
+
+  const WalletListContactsResponse({required this.contacts});
+
+  @override
+  int get hashCode => contacts.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WalletListContactsResponse &&
+          runtimeType == other.runtimeType &&
+          contacts == other.contacts;
 }
 
 class WalletListTransactionsRequest {

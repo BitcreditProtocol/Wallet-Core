@@ -583,4 +583,178 @@ mod tests {
             Timestamp::zero()
         );
     }
+
+    // Retry Queue Tests
+    fn queued_message(id: &str, recipient: Option<&str>, payload: &str) -> NostrQueuedMessage {
+        NostrQueuedMessage {
+            id: id.to_string(),
+            recipient: recipient.map(|s| s.to_string()),
+            payload: payload.to_string(),
+        }
+    }
+
+    fn read_queued_entry(repo: &NostrDB, id: &str) -> Option<NostrQueuedMessageEntry> {
+        let read_txn = repo.db.begin_read().expect("can begin read txn");
+        let table = read_txn
+            .open_table(repo.queued_message_table)
+            .expect("queued message table exists");
+
+        table
+            .get(id.as_bytes())
+            .expect("can read queued message")
+            .map(|value| {
+                ciborium::from_reader(value.value().as_slice())
+                    .expect("can deserialize queued message")
+            })
+    }
+
+    fn read_dead_letter_entry(repo: &NostrDB, id: &str) -> Option<NostrQueuedMessageEntry> {
+        let read_txn = repo.db.begin_read().expect("can begin read txn");
+        let table = read_txn
+            .open_table(repo.dead_letter_table)
+            .expect("dead letter table exists");
+
+        table
+            .get(id.as_bytes())
+            .expect("can read dead letter message")
+            .map(|value| {
+                ciborium::from_reader(value.value().as_slice())
+                    .expect("can deserialize dead letter message")
+            })
+    }
+
+    #[tokio::test]
+    async fn test_add_retry_message_can_be_retrieved() {
+        let repo = get_db("wallet-retry-add");
+
+        repo.add_retry_message(queued_message("msg-1", Some("recipient-1"), "payload-1"), 3)
+            .await
+            .expect("add_retry_message works");
+
+        let messages = repo
+            .get_retry_messages(10)
+            .await
+            .expect("get_retry_messages works");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, "msg-1");
+        assert_eq!(messages[0].recipient.as_deref(), Some("recipient-1"));
+        assert_eq!(messages[0].payload, "payload-1");
+    }
+
+    #[tokio::test]
+    async fn test_get_retry_messages_respects_limit() {
+        let repo = get_db("wallet-retry-limit");
+
+        repo.add_retry_message(queued_message("msg-1", None, "payload-1"), 3)
+            .await
+            .expect("add msg-1 works");
+        repo.add_retry_message(queued_message("msg-2", None, "payload-2"), 3)
+            .await
+            .expect("add msg-2 works");
+
+        let messages = repo
+            .get_retry_messages(1)
+            .await
+            .expect("get_retry_messages works");
+
+        assert_eq!(messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_retry_messages_locks_messages_until_timeout() {
+        let repo = get_db("wallet-retry-lock");
+
+        repo.add_retry_message(queued_message("msg-1", None, "payload-1"), 3)
+            .await
+            .expect("add_retry_message works");
+
+        let first = repo
+            .get_retry_messages(10)
+            .await
+            .expect("first get_retry_messages works");
+        let second = repo
+            .get_retry_messages(10)
+            .await
+            .expect("second get_retry_messages works");
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].id, "msg-1");
+        assert!(second.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fail_retry_keeps_message_before_max_retries() {
+        let repo = get_db("wallet-retry-fail-keeps");
+
+        repo.add_retry_message(queued_message("msg-1", None, "payload-1"), 3)
+            .await
+            .expect("add_retry_message works");
+
+        let _ = repo
+            .get_retry_messages(10)
+            .await
+            .expect("get_retry_messages works");
+
+        repo.fail_retry("msg-1").await.expect("fail_retry works");
+
+        let entry = read_queued_entry(&repo, "msg-1").expect("message remains queued");
+        assert_eq!(entry.num_retries, 1);
+        assert_eq!(entry.max_retries, 3);
+        assert!(entry.last_try > DateTime::from_timestamp(0, 0).expect("valid"));
+        assert_eq!(
+            entry.processing_started_at,
+            DateTime::from_timestamp(0, 0).expect("valid")
+        );
+
+        let messages = repo
+            .get_retry_messages(10)
+            .await
+            .expect("get_retry_messages works after fail");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, "msg-1");
+    }
+
+    #[tokio::test]
+    async fn test_fail_retry_moves_message_to_dead_letter_at_max_retries() {
+        let repo = get_db("wallet-retry-dead-letter");
+
+        repo.add_retry_message(queued_message("msg-1", None, "payload-1"), 1)
+            .await
+            .expect("add_retry_message works");
+
+        repo.fail_retry("msg-1").await.expect("fail_retry works");
+
+        assert!(read_queued_entry(&repo, "msg-1").is_none());
+
+        let dead_letter =
+            read_dead_letter_entry(&repo, "msg-1").expect("message moved to dead letter table");
+
+        assert_eq!(dead_letter.id, "msg-1");
+        assert_eq!(dead_letter.payload, "payload-1");
+        assert_eq!(dead_letter.num_retries, 1);
+        assert_eq!(dead_letter.max_retries, 1);
+    }
+
+    #[tokio::test]
+    async fn test_succeed_retry_removes_message_from_queue() {
+        let repo = get_db("wallet-retry-success");
+
+        repo.add_retry_message(queued_message("msg-1", None, "payload-1"), 3)
+            .await
+            .expect("add_retry_message works");
+
+        repo.succeed_retry("msg-1")
+            .await
+            .expect("succeed_retry works");
+
+        let messages = repo
+            .get_retry_messages(10)
+            .await
+            .expect("get_retry_messages works");
+
+        assert!(messages.is_empty());
+        assert!(read_queued_entry(&repo, "msg-1").is_none());
+    }
 }

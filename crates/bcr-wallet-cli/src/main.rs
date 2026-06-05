@@ -109,6 +109,27 @@ enum Commands {
         tx_id: String,
         new_memo: Option<String>,
     },
+    #[command(name = "add_contact")]
+    AddContact {
+        id: String,
+        node_id: String,
+        name: String,
+    },
+    #[command(name = "edit_contact")]
+    EditContact {
+        id: String,
+        node_id: String,
+        name: String,
+    },
+    #[command(name = "delete_contact")]
+    DeleteContact { id: String, node_id: String },
+    #[command(name = "get_contact")]
+    GetContact { id: String, node_id: String },
+    #[command(name = "list_contacts")]
+    ListContacts {
+        id: String,
+        search_term: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -339,6 +360,41 @@ async fn main() -> Result<()> {
                 "Edit Tx Memo for {}: {}",
                 cli.wallet,
                 command::cmd_edit_tx_memo(&app_state, &cli.wallet, &id, &tx_id, &new_memo).await?
+            );
+        }
+        Commands::AddContact { id, node_id, name } => {
+            info!(
+                "Add Contact for {}: {}",
+                cli.wallet,
+                command::cmd_add_contact(&app_state, &cli.wallet, &id, &node_id, &name).await?
+            );
+        }
+        Commands::EditContact { id, node_id, name } => {
+            info!(
+                "Edit Contact for {}: {}",
+                cli.wallet,
+                command::cmd_edit_contact(&app_state, &cli.wallet, &id, &node_id, &name).await?
+            );
+        }
+        Commands::DeleteContact { id, node_id } => {
+            info!(
+                "Delete Contact for {}: {}",
+                cli.wallet,
+                command::cmd_delete_contact(&app_state, &cli.wallet, &id, &node_id).await?
+            );
+        }
+        Commands::GetContact { id, node_id } => {
+            info!(
+                "Get Contact for {}: {}",
+                cli.wallet,
+                command::cmd_get_contact(&app_state, &cli.wallet, &id, &node_id).await?
+            );
+        }
+        Commands::ListContacts { id, search_term } => {
+            info!(
+                "List Contacts for {}: {}",
+                cli.wallet,
+                command::cmd_list_contacts(&app_state, &cli.wallet, &id, &search_term).await?
             );
         }
     }

@@ -1,3 +1,4 @@
+pub mod contact;
 pub mod mintmelt;
 pub mod nostr;
 pub mod pocket;
@@ -29,10 +30,12 @@ pub async fn build_wallet_dbs(
     pocket::PocketDB,
     mintmelt::MintMeltDB,
     nostr::NostrDB,
+    contact::ContactDB,
 )> {
     let txdb = transaction::TransactionDB::new(db.clone(), wallet_id)?;
     let debitdb = pocket::PocketDB::new(db.clone(), wallet_id, debit)?;
     let mintmeltdb = mintmelt::MintMeltDB::new(db.clone(), wallet_id, debit)?;
     let nostrdb = nostr::NostrDB::new(db.clone(), wallet_id)?;
-    Ok((txdb, debitdb, mintmeltdb, nostrdb))
+    let contactdb = contact::ContactDB::new(db.clone(), wallet_id)?;
+    Ok((txdb, debitdb, mintmeltdb, nostrdb, contactdb))
 }

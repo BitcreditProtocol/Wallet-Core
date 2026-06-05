@@ -552,6 +552,104 @@ pub async fn cmd_edit_tx_memo(
     Ok(res)
 }
 
+pub async fn cmd_add_contact(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    node_id: &str,
+    contact_name: &str,
+) -> Result<String> {
+    let mut res = String::new();
+    app_state
+        .wallet_add_contact(id.to_owned(), node_id.to_owned(), contact_name.to_owned())
+        .await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!("Added Contact for {node_id} for {name}:\n"));
+    push_break(&mut res);
+    Ok(res)
+}
+
+pub async fn cmd_edit_contact(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    node_id: &str,
+    contact_name: &str,
+) -> Result<String> {
+    let mut res = String::new();
+    app_state
+        .wallet_edit_contact(id.to_owned(), node_id.to_owned(), contact_name.to_owned())
+        .await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!("Edited Contact for {node_id} for {name}:\n"));
+    push_break(&mut res);
+    Ok(res)
+}
+
+pub async fn cmd_delete_contact(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    node_id: &str,
+) -> Result<String> {
+    let mut res = String::new();
+    app_state
+        .wallet_delete_contact(id.to_owned(), node_id.to_owned())
+        .await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!("Deleted Contact for {node_id} for {name}:\n"));
+    push_break(&mut res);
+    Ok(res)
+}
+
+pub async fn cmd_get_contact(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    node_id: &str,
+) -> Result<String> {
+    let mut res = String::new();
+    let contact = app_state
+        .wallet_get_contact(id.to_owned(), node_id.to_owned())
+        .await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!("Contact for node_id: {node_id} for {name}:\n"));
+    res.push_str(&format!(
+        "NodeId: {} Name: {}\n",
+        contact.node_id, contact.name
+    ));
+    push_break(&mut res);
+    Ok(res)
+}
+
+pub async fn cmd_list_contacts(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    search_term: &Option<String>,
+) -> Result<String> {
+    let mut res = String::new();
+    let contacts = app_state
+        .wallet_list_contacts(id.to_owned(), search_term.to_owned())
+        .await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Contacts for search_term: {search_term:?} for {name}:\n"
+    ));
+    push_break(&mut res);
+    for c in contacts {
+        res.push_str(&format!("NodeId: {} Name: {}\n", c.node_id, c.name));
+        push_break(&mut res);
+    }
+    push_break(&mut res);
+    Ok(res)
+}
+
 fn push_line(res: &mut String) {
     res.push_str("-----------------------\n");
 }
