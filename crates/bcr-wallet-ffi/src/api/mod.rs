@@ -173,17 +173,16 @@ fn start_jobs(
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
+                let app_state = get_app_state().await;
 
-            let app_state = get_app_state().await;
-
-            info!("Running jobs");
-            if let Err(e) = app_state.run_jobs().await {
-                error!("Error running jobs: {e}");
-            } else {
-                info!("Jobs ran successfully");
-            }
-                },
-                _ = cancel.cancelled() => break,
+                info!("Running jobs");
+                if let Err(e) = app_state.run_jobs().await {
+                    error!("Error running jobs: {e}");
+                } else {
+                    info!("Jobs ran successfully");
+                }
+            },
+            _ = cancel.cancelled() => break,
             }
         }
     })
@@ -747,8 +746,12 @@ pub async fn is_valid_token(req: IsValidTokenRequest) -> Result<IsValidTokenResp
 
 #[frb]
 pub async fn wallet_get_status() -> Result<StatusResponse, WalletError> {
+    // nostr connection status for each wallet
+    let app_state = get_app_state().await;
+    let nostr_connected_map = app_state.purse_wallets_nostr_connected().await;
     Ok(StatusResponse {
         app_version: VERSION.to_owned(),
+        nostr_connected: nostr_connected_map,
     })
 }
 
@@ -1419,6 +1422,7 @@ pub struct MnemonicResponse {
 #[derive(Debug, Clone)]
 pub struct StatusResponse {
     pub app_version: String,
+    pub nostr_connected: HashMap<String, bool>,
 }
 
 #[derive(Debug, Clone)]

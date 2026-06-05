@@ -160,11 +160,23 @@ pub struct NostrEventOffset {
     pub success: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct NostrQueuedMessage {
+    pub id: String,
+    /// `Some(target)` for private messages, `None` for public broadcast messages.
+    pub recipient: Option<String>,
+    pub payload: String,
+}
+
 #[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
 #[async_trait]
-pub trait NostrEventOffsetStoreApi: SendSync {
+pub trait NostrRepository: SendSync {
     async fn current_offset(&self) -> Result<Timestamp>;
     async fn is_processed(&self, event_id: &str) -> Result<bool>;
     async fn add_event(&self, data: NostrEventOffset) -> Result<()>;
+    async fn add_retry_message(&self, message: NostrQueuedMessage, max_retries: i32) -> Result<()>;
+    async fn get_retry_messages(&self, limit: u64) -> Result<Vec<NostrQueuedMessage>>;
+    async fn fail_retry(&self, id: &str) -> Result<()>;
+    async fn succeed_retry(&self, id: &str) -> Result<()>;
     async fn delete_repo(&self) -> Result<()>;
 }
