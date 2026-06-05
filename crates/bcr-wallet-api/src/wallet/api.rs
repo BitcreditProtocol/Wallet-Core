@@ -1084,10 +1084,8 @@ impl WalletApi for super::Wallet {
     async fn delete(&self) -> Result<()> {
         // shut down nostr client
         self.nostr_transport.shutdown().await;
-        // shut down nostr handle
-        if let Some(ref handle) = self.nostr_handle {
-            handle.abort();
-        }
+        // shut down nostr consumer
+        self.nostr_shutdown.cancel();
         // delete debit pocket
         if let Err(e) = self.debit.delete().await {
             tracing::error!("Error deleting pocket for wallet {}: {e}", self.id())

@@ -209,6 +209,7 @@ pub struct Transport {
 }
 
 impl Transport {
+    const MAX_RETRIES: i32 = 5;
     pub fn new(client: Arc<Client>, nostr_store: Arc<dyn NostrRepository>) -> Self {
         Self {
             client,
@@ -274,7 +275,9 @@ impl TransportApi for Transport {
             recipient,
             payload,
         };
-        self.nostr_store.add_retry_message(queue_msg, 3).await?;
+        self.nostr_store
+            .add_retry_message(queue_msg, Self::MAX_RETRIES)
+            .await?;
         tracing::debug!("Queued Nostr retry message; triggering immediate retry for {receiver}");
 
         let self_clone = self.clone();

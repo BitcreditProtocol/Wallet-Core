@@ -78,12 +78,14 @@ pub struct NostrDB {
     last_offset_table: TableDefinition<'static, &'static [u8], u64>,
     offset_entry_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    dead_letter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
 }
 
 impl NostrDB {
     const OFFSET_ENTRY_DB_NAME: &'static str = "offset_entry";
     const LAST_OFFSET_DB_NAME: &'static str = "last_offset";
     const QUEUED_MESSAGE_DB_NAME: &'static str = "queued_message";
+    const DEAD_LETTER_DB_NAME: &'static str = "dead_letter";
     const CURRENT_OFFSET_UNIQUE_ID: &'static str = "current_offset";
     const NOSTR_QUEUE_PROCESSING_TIMEOUT_SECS: i64 = 60;
 
@@ -97,16 +99,21 @@ impl NostrDB {
         // Leak once to get static string, because of dynamically generated table names
         let queued_message_name: &'static str =
             Box::leak(format!("{wallet_id}_{}", Self::QUEUED_MESSAGE_DB_NAME).into_boxed_str());
+        // Leak once to get static string, because of dynamically generated table names
+        let dead_letter_name: &'static str =
+            Box::leak(format!("{wallet_id}_{}", Self::DEAD_LETTER_DB_NAME).into_boxed_str());
 
         let offset_entry_table = TableDefinition::new(offset_entry_name);
         let last_offset_table = TableDefinition::new(last_offset_name);
         let queued_message_table = TableDefinition::new(queued_message_name);
+        let dead_letter_table = TableDefinition::new(dead_letter_name);
 
         Ok(Self {
             db,
             offset_entry_table,
             last_offset_table,
             queued_message_table,
+            dead_letter_table,
         })
     }
 
@@ -249,6 +256,7 @@ impl NostrDB {
     fn fail_retry_sync(
         db: Arc<Database>,
         queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        dead_letter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         id: String,
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
@@ -263,7 +271,15 @@ impl NostrDB {
 
                 entry.num_retries += 1;
                 if entry.num_retries >= entry.max_retries {
+                    // remove from retry entries
                     table.remove(id.as_bytes())?;
+
+                    // add to dead letter table for book keeping
+                    let mut table = write_txn.open_table(dead_letter_table)?;
+
+                    let mut serialized = Vec::new();
+                    ciborium::into_writer(&entry, &mut serialized)?;
+                    table.insert(id.as_bytes(), serialized)?;
                 } else {
                     entry.last_try = Utc::now();
                     entry.processing_started_at = DateTime::from_timestamp(0, 0).expect("valid");
@@ -301,6 +317,7 @@ impl NostrDB {
         offset_entry_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         last_offset_table: TableDefinition<'static, &'static [u8], u64>,
         queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        dead_letter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
 
@@ -315,6 +332,10 @@ impl NostrDB {
 
             if write_txn.open_table(queued_message_table).is_ok() {
                 write_txn.delete_table(queued_message_table)?;
+            }
+
+            if write_txn.open_table(dead_letter_table).is_ok() {
+                write_txn.delete_table(dead_letter_table)?;
             }
         }
 
@@ -357,12 +378,14 @@ impl NostrRepository for NostrDB {
         let last_offset_table = self.last_offset_table;
         let offset_entry_table = self.offset_entry_table;
         let queued_message_table = self.queued_message_table;
+        let dead_letter_table = self.dead_letter_table;
         spawn_blocking(move || {
             Self::delete_repo_sync(
                 db_clone,
                 offset_entry_table,
                 last_offset_table,
                 queued_message_table,
+                dead_letter_table,
             )
         })
         .await?
@@ -393,9 +416,12 @@ impl NostrRepository for NostrDB {
     async fn fail_retry(&self, id: &str) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.queued_message_table;
+        let dead_letter_table = self.dead_letter_table;
         let id_clone = id.to_owned();
-        let res =
-            spawn_blocking(move || Self::fail_retry_sync(db_clone, table, id_clone)).await??;
+        let res = spawn_blocking(move || {
+            Self::fail_retry_sync(db_clone, table, dead_letter_table, id_clone)
+        })
+        .await??;
         Ok(res)
     }
 

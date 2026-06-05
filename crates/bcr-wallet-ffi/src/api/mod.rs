@@ -173,17 +173,16 @@ fn start_jobs(
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
+                let app_state = get_app_state().await;
 
-            let app_state = get_app_state().await;
-
-            info!("Running jobs");
-            if let Err(e) = app_state.run_jobs().await {
-                error!("Error running jobs: {e}");
-            } else {
-                info!("Jobs ran successfully");
-            }
-                },
-                _ = cancel.cancelled() => break,
+                info!("Running jobs");
+                if let Err(e) = app_state.run_jobs().await {
+                    error!("Error running jobs: {e}");
+                } else {
+                    info!("Jobs ran successfully");
+                }
+            },
+            _ = cancel.cancelled() => break,
             }
         }
     })

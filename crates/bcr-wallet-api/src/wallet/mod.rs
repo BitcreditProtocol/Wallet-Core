@@ -32,10 +32,8 @@ use bitcoin::{
     secp256k1,
 };
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
-use tokio::{
-    sync::{Mutex, broadcast},
-    task::JoinHandle,
-};
+use tokio::sync::{Mutex, broadcast};
+use tokio_util::sync::CancellationToken;
 
 pub struct Wallet {
     network: bitcoin::Network,
@@ -56,7 +54,7 @@ pub struct Wallet {
     nostr_event_channel: NostrEventChannel,
     nostr_repo: Arc<dyn NostrRepository>,
     nostr_consumer_running: Arc<Mutex<bool>>,
-    nostr_handle: Option<JoinHandle<()>>,
+    nostr_shutdown: CancellationToken,
 }
 
 impl Wallet {
@@ -78,7 +76,8 @@ impl Wallet {
         nostr_repo: Arc<dyn NostrRepository>,
         nostr_consumer: nostr::Consumer,
     ) -> Self {
-        let mut wallet = Self {
+        let cancel = CancellationToken::new();
+        let wallet = Self {
             network,
             client,
             mint_keyset_infos,
@@ -97,44 +96,86 @@ impl Wallet {
             nostr_event_channel,
             nostr_repo,
             nostr_consumer_running: Arc::new(Mutex::new(false)),
-            nostr_handle: None,
+            nostr_shutdown: cancel.clone(),
         };
-        wallet.nostr_connect(nostr_consumer).await;
+        wallet.nostr_connect(nostr_consumer, cancel).await;
         wallet.start_nostr_event_listener().await;
         wallet
     }
 
-    async fn nostr_connect(&mut self, nostr_consumer: nostr::Consumer) {
+    async fn nostr_connect(&self, nostr_consumer: nostr::Consumer, cancel: CancellationToken) {
         let wallet_id = self.id.clone();
         let nostr_consumer_running = self.nostr_consumer_running.clone();
-        let nostr_handle = tokio::spawn(async move {
+        tokio::spawn(async move {
             *nostr_consumer_running.lock().await = false;
+            // attempt to start nostr consumer
             loop {
-                match nostr_consumer.start().await {
-                    Ok(mut handle) => {
-                        *nostr_consumer_running.lock().await = true;
-                        tracing::info!("Nostr transport connected for {}", wallet_id);
+                let mut handle = tokio::select! {
+                    _ = cancel.cancelled() => {
+                        tracing::info!("Nostr consumer cancelled for {}", wallet_id);
+                        break;
+                    }
+
+                    result = nostr_consumer.start() => match result {
+                        Ok(handle) => handle,
+                        Err(e) => {
+                            tracing::warn!("Could not start Nostr consumer: {e}");
+
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                            }
+
+                            continue;
+                        }
+                    },
+                };
+
+                *nostr_consumer_running.lock().await = true;
+                tracing::info!("Nostr transport connected for {}", wallet_id);
+
+                // wait for nostr consumer to fail and restart, or cancel the whole process
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        tracing::info!("Nostr consumer cancelled for {}", wallet_id);
+                        handle.abort_all();
+                        *nostr_consumer_running.lock().await = false;
+                        break;
+                    }
+
+                    _ = async {
                         while let Some(result) = handle.join_next().await {
                             match result {
                                 Ok(()) => {
-                                    tracing::info!("Nostr consumer task shutdown with success")
+                                    tracing::info!("Nostr consumer task shutdown with success");
+                                }
+                                Err(e) if e.is_cancelled() => {
+                                    tracing::info!("Nostr consumer task was cancelled");
                                 }
                                 Err(e) => {
-                                    tracing::warn!("Nostr consumer task shutdown with error: {e}")
+                                    tracing::warn!("Nostr consumer task shutdown with error: {e}");
                                 }
                             }
                         }
-                        tracing::warn!("Nostr consumer stopped, reconnecting in 10 seconds...");
+                    } => {
+                        *nostr_consumer_running.lock().await = false;
+                        tracing::warn!("Nostr consumer stopped, reconnecting in 5 seconds...");
                     }
-                    Err(e) => {
-                        tracing::warn!("Could not start Nostr consumer: {e}");
+                }
+
+                // reconnect or cancel
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        tracing::info!("Nostr reconnect cancelled for {}", wallet_id);
+                        break;
                     }
-                };
-                *nostr_consumer_running.lock().await = false;
-                tokio::time::sleep(Duration::from_secs(10)).await;
+
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                }
             }
+
+            *nostr_consumer_running.lock().await = false;
         });
-        self.nostr_handle = Some(nostr_handle);
     }
 
     async fn start_nostr_event_listener(&self) {
@@ -990,7 +1031,7 @@ mod tests {
             nostr_event_channel,
             nostr_repo: Arc::new(ctx.nostr_repo),
             nostr_consumer_running: Arc::new(Mutex::new(true)),
-            nostr_handle: None,
+            nostr_shutdown: CancellationToken::new(),
         }
     }
 
