@@ -106,6 +106,19 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
     Ok(res)
 }
 
+pub async fn cmd_status(app_state: &AppState) -> Result<String> {
+    let mut res = String::new();
+    // wait until nostr is connected
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let nostr_connected = app_state.purse_wallets_nostr_connected().await;
+    push_break(&mut res);
+    for (wid, connected) in nostr_connected {
+        res.push_str(&format!("Wallet {} connected: {}", wid, connected));
+        push_break(&mut res);
+    }
+    Ok(res)
+}
+
 pub async fn cmd_add_wallet(
     app_state: &AppState,
     name: &str,

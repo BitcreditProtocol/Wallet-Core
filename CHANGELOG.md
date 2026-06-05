@@ -1,3 +1,14 @@
+# 0.9.5
+
+* Improve Nostr Setup
+    * Add a deduplication table
+    * Decouple Wallet code from Nostr code
+    * Fix nostr key derivation to match wallet's & E-Bill's
+    * Add a retry-mechanism
+    * Expose nostr connection status to frontend
+    * Synchronize with published relay-list
+    * Add a background-receiver for incoming nostr payments 
+
 # 0.9.4
 
 * Fix commitment for intermint exchange

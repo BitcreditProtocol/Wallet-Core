@@ -1,5 +1,6 @@
-use crate::{NostrEventOffset, NostrEventOffsetStoreApi, error::Result};
+use crate::{NostrEventOffset, NostrQueuedMessage, NostrRepository, error::Result};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use nostr::types::Timestamp;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
 use std::sync::Arc;
@@ -33,17 +34,60 @@ impl From<NostrEventOffset> for NostrEventOffsetEntry {
     }
 }
 
+///////////////////////////////////////////// NostrQueuedMessageEntry
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct NostrQueuedMessageEntry {
+    pub id: String,
+    pub recipient: Option<String>,
+    pub payload: String,
+    pub created: DateTime<Utc>,
+    pub last_try: DateTime<Utc>,
+    pub num_retries: i32,
+    pub max_retries: i32,
+    pub processing_started_at: DateTime<Utc>,
+}
+
+impl From<NostrQueuedMessageEntry> for NostrQueuedMessage {
+    fn from(value: NostrQueuedMessageEntry) -> Self {
+        Self {
+            id: value.id,
+            recipient: value.recipient,
+            payload: value.payload,
+        }
+    }
+}
+
+impl NostrQueuedMessageEntry {
+    fn from(value: NostrQueuedMessage, max_retries: i32) -> Self {
+        Self {
+            id: value.id,
+            recipient: value.recipient,
+            payload: value.payload,
+            created: Utc::now(),
+            last_try: DateTime::from_timestamp(0, 0).expect("valid"),
+            num_retries: 0,
+            max_retries,
+            processing_started_at: DateTime::from_timestamp(0, 0).expect("valid"),
+        }
+    }
+}
+
 ///////////////////////////////////////////// NostrDB
 pub struct NostrDB {
     db: Arc<Database>,
     last_offset_table: TableDefinition<'static, &'static [u8], u64>,
     offset_entry_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    dead_letter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
 }
 
 impl NostrDB {
     const OFFSET_ENTRY_DB_NAME: &'static str = "offset_entry";
     const LAST_OFFSET_DB_NAME: &'static str = "last_offset";
+    const QUEUED_MESSAGE_DB_NAME: &'static str = "queued_message";
+    const DEAD_LETTER_DB_NAME: &'static str = "dead_letter";
     const CURRENT_OFFSET_UNIQUE_ID: &'static str = "current_offset";
+    const NOSTR_QUEUE_PROCESSING_TIMEOUT_SECS: i64 = 60;
 
     pub fn new(db: Arc<Database>, wallet_id: &str) -> Result<Self> {
         // Leak once to get static string, because of dynamically generated table names
@@ -52,17 +96,28 @@ impl NostrDB {
         // Leak once to get static string, because of dynamically generated table names
         let last_offset_name: &'static str =
             Box::leak(format!("{wallet_id}_{}", Self::LAST_OFFSET_DB_NAME).into_boxed_str());
+        // Leak once to get static string, because of dynamically generated table names
+        let queued_message_name: &'static str =
+            Box::leak(format!("{wallet_id}_{}", Self::QUEUED_MESSAGE_DB_NAME).into_boxed_str());
+        // Leak once to get static string, because of dynamically generated table names
+        let dead_letter_name: &'static str =
+            Box::leak(format!("{wallet_id}_{}", Self::DEAD_LETTER_DB_NAME).into_boxed_str());
 
         let offset_entry_table = TableDefinition::new(offset_entry_name);
         let last_offset_table = TableDefinition::new(last_offset_name);
+        let queued_message_table = TableDefinition::new(queued_message_name);
+        let dead_letter_table = TableDefinition::new(dead_letter_name);
 
         Ok(Self {
             db,
             offset_entry_table,
             last_offset_table,
+            queued_message_table,
+            dead_letter_table,
         })
     }
 
+    ///////////////////////////////////////////// Event Offset
     fn current_offset_sync(
         db: Arc<Database>,
         last_offset_table: TableDefinition<'static, &'static [u8], u64>,
@@ -137,10 +192,132 @@ impl NostrDB {
         Ok(())
     }
 
-    fn delete_repo(
+    ///////////////////////////////////////////// Event Offset
+    fn add_retry_message_sync(
+        db: Arc<Database>,
+        queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        entry: NostrQueuedMessageEntry,
+    ) -> Result<()> {
+        let id = entry.id.clone();
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(queued_message_table)?;
+
+            let mut serialized = Vec::new();
+            ciborium::into_writer(&entry, &mut serialized)?;
+            table.insert(id.as_bytes(), serialized)?;
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    fn get_retry_messages_sync(
+        db: Arc<Database>,
+        queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        limit: u64,
+    ) -> Result<Vec<NostrQueuedMessageEntry>> {
+        let now = Utc::now();
+        let retry_before =
+            now - chrono::Duration::seconds(Self::NOSTR_QUEUE_PROCESSING_TIMEOUT_SECS);
+
+        let write_txn = db.begin_write()?;
+
+        let res = {
+            let mut table = write_txn.open_table(queued_message_table)?;
+            let mut res = Vec::new();
+            for (_, v) in table.range::<&[u8]>(..)?.flatten() {
+                let entry: NostrQueuedMessageEntry = ciborium::from_reader(v.value().as_slice())?;
+                if entry.processing_started_at < retry_before {
+                    res.push(entry);
+                }
+            }
+
+            res.sort_by_key(|msg| msg.last_try);
+            res.truncate(limit as usize);
+
+            // set processing_started_at to avoid retrying before the backoff time
+            for to_update in res.iter_mut() {
+                to_update.processing_started_at = Utc::now();
+                let mut serialized = Vec::new();
+                ciborium::into_writer(&to_update, &mut serialized)?;
+                table.insert(to_update.id.as_bytes(), serialized)?;
+            }
+
+            res
+        };
+
+        write_txn.commit()?;
+
+        Ok(res)
+    }
+
+    fn fail_retry_sync(
+        db: Arc<Database>,
+        queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        dead_letter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        id: String,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(queued_message_table)?;
+            let old_value = table.get(id.as_bytes())?.map(|v| v.value());
+
+            if let Some(old_value) = old_value {
+                let mut entry: NostrQueuedMessageEntry =
+                    ciborium::from_reader(old_value.as_slice())?;
+
+                entry.num_retries += 1;
+                if entry.num_retries >= entry.max_retries {
+                    // remove from retry entries
+                    table.remove(id.as_bytes())?;
+
+                    // add to dead letter table for book keeping
+                    let mut table = write_txn.open_table(dead_letter_table)?;
+
+                    let mut serialized = Vec::new();
+                    ciborium::into_writer(&entry, &mut serialized)?;
+                    table.insert(id.as_bytes(), serialized)?;
+                } else {
+                    entry.last_try = Utc::now();
+                    entry.processing_started_at = DateTime::from_timestamp(0, 0).expect("valid");
+
+                    let mut serialized = Vec::new();
+                    ciborium::into_writer(&entry, &mut serialized)?;
+                    table.insert(id.as_bytes(), serialized)?;
+                }
+            }
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    fn succeed_retry_sync(
+        db: Arc<Database>,
+        queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        id: String,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(queued_message_table)?;
+            table.remove(id.as_bytes())?;
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    ///////////////////////////////////////////// Delete Repo
+    fn delete_repo_sync(
         db: Arc<Database>,
         offset_entry_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         last_offset_table: TableDefinition<'static, &'static [u8], u64>,
+        queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        dead_letter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
 
@@ -152,6 +329,14 @@ impl NostrDB {
             if write_txn.open_table(last_offset_table).is_ok() {
                 write_txn.delete_table(last_offset_table)?;
             }
+
+            if write_txn.open_table(queued_message_table).is_ok() {
+                write_txn.delete_table(queued_message_table)?;
+            }
+
+            if write_txn.open_table(dead_letter_table).is_ok() {
+                write_txn.delete_table(dead_letter_table)?;
+            }
         }
 
         write_txn.commit()?;
@@ -160,7 +345,7 @@ impl NostrDB {
 }
 
 #[async_trait]
-impl NostrEventOffsetStoreApi for NostrDB {
+impl NostrRepository for NostrDB {
     async fn current_offset(&self) -> Result<Timestamp> {
         let db_clone = self.db.clone();
         let table = self.last_offset_table;
@@ -192,8 +377,61 @@ impl NostrEventOffsetStoreApi for NostrDB {
         let db_clone = self.db.clone();
         let last_offset_table = self.last_offset_table;
         let offset_entry_table = self.offset_entry_table;
-        spawn_blocking(move || Self::delete_repo(db_clone, offset_entry_table, last_offset_table))
-            .await?
+        let queued_message_table = self.queued_message_table;
+        let dead_letter_table = self.dead_letter_table;
+        spawn_blocking(move || {
+            Self::delete_repo_sync(
+                db_clone,
+                offset_entry_table,
+                last_offset_table,
+                queued_message_table,
+                dead_letter_table,
+            )
+        })
+        .await?
+    }
+
+    async fn add_retry_message(&self, message: NostrQueuedMessage, max_retries: i32) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.queued_message_table;
+        let res = spawn_blocking(move || {
+            Self::add_retry_message_sync(
+                db_clone,
+                table,
+                NostrQueuedMessageEntry::from(message, max_retries),
+            )
+        })
+        .await??;
+        Ok(res)
+    }
+
+    async fn get_retry_messages(&self, limit: u64) -> Result<Vec<NostrQueuedMessage>> {
+        let db_clone = self.db.clone();
+        let table = self.queued_message_table;
+        let res =
+            spawn_blocking(move || Self::get_retry_messages_sync(db_clone, table, limit)).await??;
+        Ok(res.into_iter().map(|entry| entry.into()).collect())
+    }
+
+    async fn fail_retry(&self, id: &str) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.queued_message_table;
+        let dead_letter_table = self.dead_letter_table;
+        let id_clone = id.to_owned();
+        let res = spawn_blocking(move || {
+            Self::fail_retry_sync(db_clone, table, dead_letter_table, id_clone)
+        })
+        .await??;
+        Ok(res)
+    }
+
+    async fn succeed_retry(&self, id: &str) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.queued_message_table;
+        let id_clone = id.to_owned();
+        let res =
+            spawn_blocking(move || Self::succeed_retry_sync(db_clone, table, id_clone)).await??;
+        Ok(res)
     }
 }
 
