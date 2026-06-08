@@ -15,11 +15,14 @@ use async_trait::async_trait;
 use bcr_common::{
     cashu::{self, Amount, CurrencyUnit, ProofsMethods, nut00 as cdk00, nut18 as cdk18},
     cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
+    core::NodeId,
     wallet::Token,
     wire::clowder::{self as wire_clowder},
 };
 use bcr_wallet_core::{
     SendSync,
+    contact::Contact,
+    name::Name,
     types::{BTC_TX_ID_TYPE_METADATA_KEY, PaymentResultCallback, PaymentType, TransactionStatus},
     util::{from_mint_url, to_mint_url},
 };
@@ -112,6 +115,12 @@ pub trait WalletApi: SendSync {
     ) -> Result<(TransactionId, Option<Token>)>;
     async fn is_nostr_connected(&self) -> bool;
     async fn delete(&self) -> Result<()>;
+    // contacts
+    async fn add_contact(&self, node_id: NodeId, name: Name) -> Result<()>;
+    async fn edit_contact(&self, node_id: NodeId, name: Name) -> Result<()>;
+    async fn delete_contact(&self, node_id: NodeId) -> Result<()>;
+    async fn get_contact(&self, node_id: NodeId) -> Result<Option<Contact>>;
+    async fn list_contacts(&self, search_term: Option<String>) -> Result<Vec<Contact>>;
 }
 
 #[async_trait]
@@ -1105,5 +1114,57 @@ impl WalletApi for super::Wallet {
         }
 
         Ok(())
+    }
+
+    async fn add_contact(&self, node_id: NodeId, name: Name) -> Result<()> {
+        let contact = Contact {
+            node_id: node_id.clone(),
+            name,
+        };
+        match self.contact_repo.add_contact(contact).await {
+            Ok(()) => Ok(()),
+            Err(bcr_wallet_persistence::error::Error::ContactAlreadyExists(_)) => {
+                Err(Error::ContactAlreadyExists(node_id))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn edit_contact(&self, node_id: NodeId, name: Name) -> Result<()> {
+        let contact = Contact {
+            node_id: node_id.clone(),
+            name,
+        };
+        match self.contact_repo.edit_contact(contact).await {
+            Ok(()) => Ok(()),
+            Err(bcr_wallet_persistence::error::Error::ContactNotFound(_)) => {
+                Err(Error::ContactNotFound(node_id))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn delete_contact(&self, node_id: NodeId) -> Result<()> {
+        if self
+            .contact_repo
+            .get_contact(node_id.clone())
+            .await?
+            .is_some()
+        {
+            self.contact_repo.delete_contact(node_id).await?;
+        } else {
+            return Err(Error::ContactNotFound(node_id));
+        }
+        Ok(())
+    }
+
+    async fn get_contact(&self, node_id: NodeId) -> Result<Option<Contact>> {
+        let contact = self.contact_repo.get_contact(node_id).await?;
+        Ok(contact)
+    }
+
+    async fn list_contacts(&self, search_term: Option<String>) -> Result<Vec<Contact>> {
+        let contacts = self.contact_repo.list_contacts(search_term).await?;
+        Ok(contacts)
     }
 }

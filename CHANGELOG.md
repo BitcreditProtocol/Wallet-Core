@@ -8,6 +8,14 @@
     * Expose nostr connection status to frontend
     * Synchronize with published relay-list
     * Add a background-receiver for incoming nostr payments 
+* Add Contact CRUD API
+    * Contacts have a `node_id` and a `name`
+    * `add_contact`
+    * `edit_contact`
+    * `delete_contact`
+    * `get_contact`
+    * `list_contacts` with an optional, case-insensitive search-term
+
 
 # 0.9.4
 

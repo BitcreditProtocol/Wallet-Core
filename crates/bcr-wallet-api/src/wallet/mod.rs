@@ -25,7 +25,7 @@ use bcr_wallet_core::{
     },
     util::{from_mint_url, to_mint_url},
 };
-use bcr_wallet_persistence::{NostrRepository, TransactionRepository};
+use bcr_wallet_persistence::{ContactStoreApi, NostrRepository, TransactionRepository};
 use bcr_wallet_transport::{NostrEventChannel, TransportApi, nostr};
 use bitcoin::{
     hashes::{Hash, sha256::Hash as Sha256},
@@ -41,6 +41,7 @@ pub struct Wallet {
     mint_keyset_infos: HashMap<cashu::Id, KeySetInfo>,
     beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>>,
     tx_repo: Box<dyn TransactionRepository>,
+    contact_repo: Box<dyn ContactStoreApi>,
     debit: Box<dyn DebitPocketApi>,
     name: String,
     id: String,
@@ -63,6 +64,7 @@ impl Wallet {
         client: Arc<dyn ClowderMintConnector>,
         mint_keyset_infos: HashMap<cashu::Id, KeySetInfo>,
         tx_repo: Box<dyn TransactionRepository>,
+        contact_repo: Box<dyn ContactStoreApi>,
         debit: Box<dyn DebitPocketApi>,
         name: String,
         id: String,
@@ -82,6 +84,7 @@ impl Wallet {
             client,
             mint_keyset_infos,
             tx_repo,
+            contact_repo,
             debit,
             name,
             id,
@@ -943,7 +946,7 @@ mod tests {
         MintSummary, PaymentResultCallback, TimeRange, get_payment_type, get_transaction_status,
     };
     use bcr_wallet_persistence::{
-        MockNostrRepository, MockTransactionRepository,
+        MockContactStoreApi, MockNostrRepository, MockTransactionRepository,
         test_utils::tests::{test_pub_key, valid_payment_address_testnet},
     };
     use bcr_wallet_transport::{
@@ -967,6 +970,7 @@ mod tests {
         pub tx_repo: MockTransactionRepository,
         pub debit: MockDebitPocket,
         pub nostr_repo: MockNostrRepository,
+        pub contact_repo: MockContactStoreApi,
     }
 
     fn wallet_ctx() -> MockWalletCtx {
@@ -976,6 +980,7 @@ mod tests {
             tx_repo: MockTransactionRepository::new(),
             debit: MockDebitPocket::new(),
             nostr_repo: MockNostrRepository::new(),
+            contact_repo: MockContactStoreApi::new(),
         }
     }
 
@@ -1010,6 +1015,7 @@ mod tests {
             mint_keyset_infos: HashMap::new(),
             beta_clients,
             tx_repo: Box::new(ctx.tx_repo),
+            contact_repo: Box::new(ctx.contact_repo),
             debit: Box::new(ctx.debit),
             name: "wallet-1".to_owned(),
             id: "w-1".to_owned(),
