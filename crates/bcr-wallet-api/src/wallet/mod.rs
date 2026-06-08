@@ -496,7 +496,6 @@ impl Wallet {
                             mint,
                             alpha_client.as_ref(),
                             clowder_path.mints,
-                            unit.clone(),
                             tstamp,
                         )
                         .await?;
@@ -516,7 +515,6 @@ impl Wallet {
                             substitute_beta_mint,
                             substitute_client.as_ref(),
                             path,
-                            unit.clone(),
                             tstamp,
                         )
                         .await?;
@@ -592,7 +590,6 @@ impl Wallet {
         alpha_url: url::Url,
         alpha_client: &dyn ClowderMintConnector,
         path: Vec<ConnectedMintResponse>,
-        unit: CurrencyUnit,
         tstamp: u64,
     ) -> Result<Vec<Proof>> {
         tracing::debug!(alpha_url=?alpha_url, "intermint exchange from ");
@@ -636,7 +633,6 @@ impl Wallet {
         let alpha_beta =
             crate::pocket::RandomBetaProvider::new(alpha_beta_clients, path[0].node_id)?;
         let locked_alpha_proofs = util::htlc_lock(
-            unit,
             tstamp,
             alpha_client,
             alpha_proofs,

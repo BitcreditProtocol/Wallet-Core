@@ -28,18 +28,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ahash"
-version = "0.8.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
-dependencies = [
- "cfg-if",
- "once_cell",
- "version_check",
- "zerocopy",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -291,10 +279,8 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 [[package]]
 name = "bcr-common"
 version = "0.8.0"
-source = "git+https://github.com/BitcreditProtocol/bcr-common.git?rev=b8c8fd0ff9de3b9fbe1bc5d7650af3f8f635591e#b8c8fd0ff9de3b9fbe1bc5d7650af3f8f635591e"
+source = "git+https://github.com/BitcreditProtocol/bcr-common.git?rev=f367727e6c46c4782cc43db62ddb2ff0e01752df#f367727e6c46c4782cc43db62ddb2ff0e01752df"
 dependencies = [
- "async-trait",
- "bdk_wallet",
  "bip39",
  "bitcoin",
  "borsh",
@@ -303,7 +289,6 @@ dependencies = [
  "chrono",
  "ciborium",
  "infer",
- "mockall",
  "nostr",
  "rand 0.8.6",
  "reqwest",
@@ -422,43 +407,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "bdk_chain"
-version = "0.23.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c290eff038799a8ac0c5a82b6160a9ca456baa299a6f22b262c771342d2846c0"
-dependencies = [
- "bdk_core",
- "bitcoin",
- "miniscript",
- "serde",
-]
-
-[[package]]
-name = "bdk_core"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb3028782f6bf14a6df987244333d34e6b272b5a40a53e4879ec2dfd82275a3a"
-dependencies = [
- "bitcoin",
- "hashbrown 0.14.5",
- "serde",
-]
-
-[[package]]
-name = "bdk_wallet"
-version = "2.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c99821af39c7df004bd411ece2ef22d9fba5a631b4489f3d9a0ac0d19637e2d0"
-dependencies = [
- "bdk_chain",
- "bitcoin",
- "miniscript",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -1506,10 +1454,6 @@ name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
-dependencies = [
- "ahash",
- "serde",
-]
 
 [[package]]
 name = "hashbrown"
@@ -2095,17 +2039,6 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
-
-[[package]]
-name = "miniscript"
-version = "12.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8343cc1ef1408bd9bdbf69f7aef47017dfab7e6349ec26fddf62e0e9fb5a4cf"
-dependencies = [
- "bech32",
- "bitcoin",
- "serde",
-]
 
 [[package]]
 name = "miniz_oxide"
