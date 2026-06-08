@@ -1112,8 +1112,8 @@ impl DebitPocketApi for Pocket {
                 for signature in signatures {
                     sigs_by_kid
                         .entry(signature.keyset_id)
-                        .and_modify(|v| v.push(signature.clone()))
-                        .or_insert_with(|| vec![signature]);
+                        .or_default()
+                        .push(signature);
                 }
 
                 let mut keysets: HashMap<cashu::Id, KeySet> = HashMap::new();

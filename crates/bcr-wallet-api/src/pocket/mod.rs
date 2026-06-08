@@ -318,8 +318,8 @@ async fn swap(
     for signature in signatures {
         sigs_by_kid
             .entry(signature.keyset_id)
-            .and_modify(|v| v.push(signature.clone()))
-            .or_insert_with(|| vec![signature]);
+            .or_default()
+            .push(signature);
     }
     let mut total_cashed_in = Amount::ZERO;
     for (kid, sigs) in sigs_by_kid.into_iter() {
