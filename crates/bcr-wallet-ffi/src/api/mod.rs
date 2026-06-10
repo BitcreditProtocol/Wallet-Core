@@ -1,6 +1,6 @@
 use bcr_wallet_core::types::{
-    ListTransactionsResult, PaymentResultCallback, get_btc_tx_id, get_payment_type,
-    get_transaction_status,
+    ListTransactionsResult, PaymentResultCallback, get_btc_tx_id, get_contact_node_id,
+    get_payment_type, get_transaction_status,
 };
 use nostr::RelayUrl;
 use once_cell::sync::Lazy;
@@ -287,6 +287,7 @@ pub async fn wallet_get_info(req: WalletRequest) -> Result<WalletInfoResponse, W
     let info = app_state.wallet_info(req.wallet_id).await?;
     Ok(WalletInfoResponse {
         name: info.name,
+        node_id: info.node_id.to_string(),
         network: info.network.to_string(),
         default_mint_url: info.default_mint_url.to_string(),
         nostr_relays: info
@@ -294,6 +295,15 @@ pub async fn wallet_get_info(req: WalletRequest) -> Result<WalletInfoResponse, W
             .into_iter()
             .map(|r| r.to_string())
             .collect(),
+    })
+}
+
+#[frb]
+pub async fn wallet_get_node_id(req: WalletRequest) -> Result<WalletNodeIdResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let node_id = app_state.wallet_node_id(req.wallet_id).await?;
+    Ok(WalletNodeIdResponse {
+        node_id: node_id.to_string(),
     })
 }
 
@@ -466,7 +476,7 @@ pub async fn wallet_prepare_payment(
 ) -> Result<WalletPreparePaymentResponse, WalletError> {
     let app_state = get_app_state().await;
     let payment_summary = app_state
-        .wallet_prepare_payment(req.wallet_id, req.input)
+        .wallet_prepare_cdk18_payment(req.wallet_id, req.input)
         .await?;
     Ok(WalletPreparePaymentResponse {
         payment_summary: PaymentSummary {
@@ -916,6 +926,7 @@ pub struct WalletEditTransactionMemoResponse {
 #[derive(Debug, Clone)]
 pub struct WalletInfoResponse {
     pub name: String,
+    pub node_id: String,
     pub network: String,
     pub default_mint_url: String,
     pub nostr_relays: Vec<String>,
@@ -924,6 +935,11 @@ pub struct WalletInfoResponse {
 #[derive(Debug, Clone)]
 pub struct WalletNameResponse {
     pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletNodeIdResponse {
+    pub node_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1028,6 +1044,7 @@ pub enum PaymentType {
     Cdk18,
     OnChain,
     Swap,
+    Contact,
 }
 
 impl From<bcr_wallet_core::types::PaymentType> for PaymentType {
@@ -1038,6 +1055,7 @@ impl From<bcr_wallet_core::types::PaymentType> for PaymentType {
             bcr_wallet_core::types::PaymentType::Cdk18 => PaymentType::Cdk18,
             bcr_wallet_core::types::PaymentType::OnChain => PaymentType::OnChain,
             bcr_wallet_core::types::PaymentType::Swap => PaymentType::Swap,
+            bcr_wallet_core::types::PaymentType::Contact => PaymentType::Contact,
         }
     }
 }
@@ -1050,6 +1068,7 @@ impl From<PaymentType> for bcr_wallet_core::types::PaymentType {
             PaymentType::Cdk18 => bcr_wallet_core::types::PaymentType::Cdk18,
             PaymentType::OnChain => bcr_wallet_core::types::PaymentType::OnChain,
             PaymentType::Swap => bcr_wallet_core::types::PaymentType::Swap,
+            PaymentType::Contact => bcr_wallet_core::types::PaymentType::Contact,
         }
     }
 }
@@ -1133,6 +1152,7 @@ pub struct Transaction {
     pub status: TransactionStatus,
     pub tx_id: Option<String>,
     pub quote_id: Option<String>,
+    pub contact: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1297,6 +1317,7 @@ impl std::convert::From<cdk_common::wallet::Transaction> for Transaction {
         let status = get_transaction_status(&tx.metadata);
         let ptype = get_payment_type(&tx.metadata);
         let tx_id = get_btc_tx_id(&tx.metadata).map(|txid| txid.to_string());
+        let contact = get_contact_node_id(&tx.metadata).map(|node_id| node_id.to_string());
         Self {
             id: tx.id().to_string(),
             amount: u64::from(tx.amount),
@@ -1309,6 +1330,7 @@ impl std::convert::From<cdk_common::wallet::Transaction> for Transaction {
             status: status.into(),
             tx_id,
             quote_id: tx.quote_id,
+            contact,
         }
     }
 }

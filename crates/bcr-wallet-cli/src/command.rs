@@ -4,8 +4,8 @@ use anyhow::Result;
 use bcr_common::cdk_common::wallet::TransactionId;
 use bcr_wallet_api::{AppState, config::CreateWalletConfig};
 use bcr_wallet_core::types::{
-    PaymentResultCallback, TransactionFilters, TransactionSort, get_btc_tx_id, get_payment_type,
-    get_transaction_status,
+    PaymentResultCallback, TransactionFilters, TransactionSort, get_btc_tx_id, get_contact_node_id,
+    get_payment_type, get_transaction_status,
 };
 use chrono::{DateTime, Utc};
 use tokio::sync::oneshot;
@@ -56,6 +56,7 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
         }
 
         res.push_str(&format!("Name: {}\n", info.name));
+        res.push_str(&format!("NodeId: {}\n", info.node_id));
         res.push_str(&format!("Wallet ID: {id}\n"));
         res.push_str(&format!("Mint URL: {}\n", info.default_mint_url));
         res.push_str(&format!("Network: {}\n", info.network));
@@ -89,14 +90,15 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
                 let status = get_transaction_status(&tx.metadata);
                 let ptype = get_payment_type(&tx.metadata);
                 let btc_tx_id = get_btc_tx_id(&tx.metadata);
+                let contact = get_contact_node_id(&tx.metadata);
                 let quote_or_btc_tx_id = match (btc_tx_id, &tx.quote_id) {
                     (Some(txid), _) => txid.to_string(),
                     (None, Some(quote_id)) => quote_id.to_string(),
                     (None, None) => String::default(),
                 };
                 res.push_str(&format!(
-                    "\t\tId: {} \t Amount: {} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {} \t BTC TxID/Quote ID: {}",
-                    tx.id(), tx.amount, tx.unit, tx.fee,  status, format_timestamp(tx.timestamp), &format!("{:?}", ptype), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id
+                    "\t\tId: {} \t Amount: {:8} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {} \t BTC TxID/Quote ID: {} \t Contact: {}",
+                    tx.id(), tx.amount, tx.unit, tx.fee,  status, format_timestamp(tx.timestamp), &format!("{:?}", ptype), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id, contact.map(|n| n.to_string()).unwrap_or_default()
                 ));
                 push_break(&mut res);
             }
@@ -282,6 +284,44 @@ pub async fn cmd_pay_by_token(
     Ok(res)
 }
 
+pub async fn cmd_pay_to_contact(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    node_id: &str,
+    amount: u64,
+    description: Option<String>,
+) -> Result<String> {
+    let mut res = String::new();
+    let payment_summary = app_state
+        .wallet_prepare_pay_to_contact(id.to_owned(), node_id.to_owned(), amount, description)
+        .await?;
+
+    info!(
+        "Payment Summary: Amount: {}, Unit: {}, Fees: {}",
+        &payment_summary.amount, &payment_summary.unit, &payment_summary.fees,
+    );
+    let result = app_state
+        .wallet_pay_to_contact(id.to_owned(), payment_summary.request_id.to_string())
+        .await?;
+
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Pay to Contact {node_id} for {name}, Wallet ID: {id}.\n"
+    ));
+    push_break(&mut res);
+    res.push_str(&format!("Payment Summary: {}", &payment_summary.request_id));
+    res.push_str(&format!(
+        "Unit: {}, Amount: {}, Fees: {}",
+        &payment_summary.unit, &payment_summary.amount, &payment_summary.fees
+    ));
+    push_break(&mut res);
+    res.push_str(&format!("Transaction ID: {}", result));
+
+    Ok(res)
+}
+
 pub async fn cmd_send_payment(
     app_state: &AppState,
     name: &str,
@@ -290,7 +330,7 @@ pub async fn cmd_send_payment(
 ) -> Result<String> {
     let mut res = String::new();
     let payment_summary = app_state
-        .wallet_prepare_payment(id.to_owned(), input.to_owned())
+        .wallet_prepare_cdk18_payment(id.to_owned(), input.to_owned())
         .await?;
 
     info!(

@@ -1,5 +1,6 @@
 use bcr_common::{
     cashu::{self, Amount, CurrencyUnit},
+    core::NodeId,
     wire::common as wire_common,
 };
 use bitcoin::secp256k1;
@@ -19,6 +20,9 @@ pub enum WalletPaymentType {
     },
     OnChain,
     Token,
+    Contact {
+        node_id: NodeId,
+    },
 }
 
 pub struct PayReference {
@@ -52,6 +56,7 @@ pub struct WalletProtestResult {
 #[derive(Debug, Clone)]
 pub struct WalletInfo {
     pub name: String,
+    pub node_id: NodeId,
     pub network: bitcoin::Network,
     pub default_mint_url: url::Url,
     pub nostr_relays: Vec<RelayUrl>,

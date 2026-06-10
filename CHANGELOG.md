@@ -15,7 +15,11 @@
     * `delete_contact`
     * `get_contact`
     * `list_contacts` with an optional, case-insensitive search-term
-
+* Add functionality to send a private, encrypted payment to an existing contact via Nostr
+    * `wallet_prepare_pay_to_contact` - taking a node_id, amount and description
+    * `wallet_pay_to_contact` - taking a payment request id
+* Add `node_id` to `WalletInfo`
+* Add endpoint to get `node_id`
 
 # 0.9.4
 

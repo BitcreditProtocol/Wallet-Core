@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 pub mod contact;
+pub mod event;
 pub mod name;
 pub mod types;
 pub mod util;

@@ -9,6 +9,7 @@ async-trait.workspace = true
 bcr-common = {workspace = true}
 bcr-wallet-core = {workspace = true}
 bcr-wallet-persistence = {workspace = true, features = ["db-redb"]}
+borsh = {workspace = true}
 nostr = {workspace = true}
 nostr-sdk = {workspace = true, features = ["nip06", "nip59"]}
 serde_json.workspace = true
