@@ -45,6 +45,7 @@ async fn post_swap_commitment_inner(
     outputs: Vec<cashu::BlindedMessage>,
     expiry_seconds: chrono::TimeDelta,
     alpha_pk: secp256k1::PublicKey,
+    attestation: wire_attestation::IssuanceAttestation,
 ) -> Result<SwapCommitmentResult> {
     let ephemeral_keypair = core::generate_random_keypair();
     let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
@@ -58,7 +59,14 @@ async fn post_swap_commitment_inner(
     let inputs_ys = fingerprints.iter().map(|fp| fp.y).collect::<Vec<_>>();
     let expiry = (chrono::Utc::now() + expiry_seconds).timestamp() as u64;
     let (committed_content, commitment) = client
-        .commit_swap(fingerprints, outputs.clone(), expiry, wallet_pk, alpha_pk)
+        .commit_swap(
+            fingerprints,
+            outputs.clone(),
+            expiry,
+            wallet_pk,
+            alpha_pk,
+            attestation,
+        )
         .await?;
     Ok(SwapCommitmentResult {
         inputs_ys,
@@ -76,6 +84,7 @@ async fn post_melt_quote_onchain_inner(
     inputs: Vec<cashu::Proof>,
     address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
     alpha_pk: secp256k1::PublicKey,
+    attestation: wire_attestation::IssuanceAttestation,
 ) -> Result<MeltQuoteResult> {
     let ephemeral_keypair = core::generate_random_keypair();
     let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
@@ -86,7 +95,7 @@ async fn post_melt_quote_onchain_inner(
         .map(wire_keys::ProofFingerprint::try_from)
         .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
     let (content, commitment) = client
-        .onchain_melt_quote(fingerprints, address, wallet_key, alpha_pk)
+        .onchain_melt_quote(fingerprints, address, wallet_key, alpha_pk, attestation)
         .await?;
     let response_body: wire_melt::MeltQuoteOnchainResponseBody =
         bcr_common::core::signature::deserialize_borsh_msg(&content)?;
@@ -150,13 +159,13 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
         outputs: Vec<cashu::BlindedMessage>,
         expiry_seconds: chrono::TimeDelta,
         alpha_pk: secp256k1::PublicKey,
+        attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<SwapCommitmentResult>;
     async fn post_swap_committed(
         &self,
         inputs: Vec<cashu::Proof>,
         outputs: Vec<cashu::BlindedMessage>,
         commitment: secp256k1::schnorr::Signature,
-        attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<Vec<cashu::BlindSignature>>;
     async fn post_protest_swap(
         &self,
@@ -167,6 +176,7 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
         inputs: Vec<cashu::Proof>,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         alpha_pk: secp256k1::PublicKey,
+        attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<MeltQuoteResult>;
     async fn post_melt_onchain(
         &self,
@@ -347,8 +357,17 @@ impl ClowderMintConnector for HttpClientExt {
         outputs: Vec<cashu::BlindedMessage>,
         expiry_seconds: chrono::TimeDelta,
         alpha_pk: secp256k1::PublicKey,
+        attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<SwapCommitmentResult> {
-        post_swap_commitment_inner(&self.main, inputs, outputs, expiry_seconds, alpha_pk).await
+        post_swap_commitment_inner(
+            &self.main,
+            inputs,
+            outputs,
+            expiry_seconds,
+            alpha_pk,
+            attestation,
+        )
+        .await
     }
 
     async fn post_swap_committed(
@@ -356,12 +375,8 @@ impl ClowderMintConnector for HttpClientExt {
         inputs: Vec<cashu::Proof>,
         outputs: Vec<cashu::BlindedMessage>,
         commitment: secp256k1::schnorr::Signature,
-        attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<Vec<cashu::BlindSignature>> {
-        let signatures = self
-            .main
-            .swap(inputs, outputs, commitment, attestation)
-            .await?;
+        let signatures = self.main.swap(inputs, outputs, commitment).await?;
         Ok(signatures)
     }
 
@@ -400,8 +415,9 @@ impl ClowderMintConnector for HttpClientExt {
         inputs: Vec<cashu::Proof>,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         alpha_pk: secp256k1::PublicKey,
+        attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<MeltQuoteResult> {
-        post_melt_quote_onchain_inner(&self.main, inputs, address, alpha_pk).await
+        post_melt_quote_onchain_inner(&self.main, inputs, address, alpha_pk, attestation).await
     }
 
     async fn post_melt_onchain(
@@ -716,8 +732,17 @@ impl ClowderMintConnector for SentinelClient {
         outputs: Vec<cashu::BlindedMessage>,
         expiry_seconds: chrono::TimeDelta,
         alpha_pk: secp256k1::PublicKey,
+        attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<SwapCommitmentResult> {
-        post_swap_commitment_inner(&self.main, inputs, outputs, expiry_seconds, alpha_pk).await
+        post_swap_commitment_inner(
+            &self.main,
+            inputs,
+            outputs,
+            expiry_seconds,
+            alpha_pk,
+            attestation,
+        )
+        .await
     }
 
     async fn post_swap_committed(
@@ -725,12 +750,8 @@ impl ClowderMintConnector for SentinelClient {
         inputs: Vec<cashu::Proof>,
         outputs: Vec<cashu::BlindedMessage>,
         commitment: secp256k1::schnorr::Signature,
-        attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<Vec<cashu::BlindSignature>> {
-        let signatures = self
-            .main
-            .swap(inputs, outputs, commitment, attestation)
-            .await?;
+        let signatures = self.main.swap(inputs, outputs, commitment).await?;
         Ok(signatures)
     }
 
@@ -770,8 +791,9 @@ impl ClowderMintConnector for SentinelClient {
         inputs: Vec<cashu::Proof>,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         alpha_pk: secp256k1::PublicKey,
+        attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<MeltQuoteResult> {
-        post_melt_quote_onchain_inner(&self.main, inputs, address, alpha_pk).await
+        post_melt_quote_onchain_inner(&self.main, inputs, address, alpha_pk, attestation).await
     }
 
     async fn post_melt_onchain(

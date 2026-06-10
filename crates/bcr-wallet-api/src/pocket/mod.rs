@@ -246,6 +246,7 @@ pub(crate) async fn committed_swap(
             outputs.clone(),
             swap_config.expiry,
             swap_config.alpha_pk,
+            attestation,
         )
         .await?;
     let commitment_sig = commit_result.commitment;
@@ -265,7 +266,7 @@ pub(crate) async fn committed_swap(
     }
 
     let signatures = client
-        .post_swap_committed(inputs, outputs, commitment_sig, attestation)
+        .post_swap_committed(inputs, outputs, commitment_sig)
         .await?;
 
     if let Some(db) = db
@@ -739,7 +740,7 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let mock_signatures =
                     core_tests::generate_ecash_signatures(&cloned_keyset, &amounts);
@@ -798,7 +799,7 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
                 Ok(signatures)
@@ -909,7 +910,7 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures =
                     core_tests::generate_ecash_signatures(&cloned_keyset_for_sign, &amounts);
@@ -1018,7 +1019,7 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures =
                     core_tests::generate_ecash_signatures(&cloned_keyset_for_sign, &amounts);
@@ -1104,7 +1105,7 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures =
                     core_tests::generate_ecash_signatures(&cloned_keyset_for_sign, &amounts);
@@ -1210,7 +1211,7 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let mut signatures = vec![];
                 for o in outp {
                     let ks = if o.keyset_id == keyset.id {
