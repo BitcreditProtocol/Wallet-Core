@@ -469,6 +469,7 @@ impl Wallet {
         if unit != self.debit.unit() {
             return Err(Error::InvalidCurrencyUnit(unit.to_string()));
         }
+        let initial_amount = proofs.total_amount()?;
         let mut proofs = proofs;
         if &mint != self.client.mint_url() {
             if let Some((clowder_path, _)) = intermint_infos {
@@ -525,7 +526,6 @@ impl Wallet {
             };
         }
 
-        let received_amount = proofs.total_amount()?;
         let (stored_amount, ys) = self
             .debit
             .receive_proofs(
@@ -535,13 +535,16 @@ impl Wallet {
                 self.swap_config(),
             )
             .await?;
+        let fee = if initial_amount > stored_amount {
+            initial_amount - stored_amount
+        } else {
+            Amount::ZERO
+        };
         let tx = Transaction {
             mint_url: to_mint_url(self.client.mint_url()),
             direction: TransactionDirection::Incoming,
-            fee: received_amount
-                .checked_sub(stored_amount)
-                .expect("fee cannot be negative"),
-            amount: received_amount,
+            fee,
+            amount: initial_amount,
             memo,
             metadata,
             timestamp: tstamp,
