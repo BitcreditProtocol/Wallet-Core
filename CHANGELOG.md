@@ -3,6 +3,7 @@
 * Fix commitment for intermint exchange
 * Fix keysets for online intermint exchange
 * Update bcr-common and remove support for cashuB tokens
+* Fix intermint exchange fees
 
 # 0.9.3
 
