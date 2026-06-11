@@ -279,7 +279,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 [[package]]
 name = "bcr-common"
 version = "0.8.0"
-source = "git+https://github.com/BitcreditProtocol/bcr-common.git?branch=stefan%2Fattest_protest#027d7ed66610c3fcb60e4aecebe59032475f1508"
+source = "git+https://github.com/BitcreditProtocol/bcr-common.git?rev=4e83b2643abdc3d2fe61c4e728a8c2e0f502686e#4e83b2643abdc3d2fe61c4e728a8c2e0f502686e"
 dependencies = [
  "bip39",
  "bitcoin",
