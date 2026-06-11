@@ -172,6 +172,22 @@ impl ContactDB {
             Err(e) => Err(e.into()),
         }
     }
+
+    fn delete_repo_sync(
+        db: Arc<Database>,
+        contact_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+
+        {
+            if write_txn.open_table(contact_table).is_ok() {
+                write_txn.delete_table(contact_table)?;
+            }
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -209,6 +225,12 @@ impl ContactStoreApi for ContactDB {
         let res = spawn_blocking(move || Self::list_contacts_sync(db_clone, table, search_term))
             .await??;
         Ok(res.into_iter().map(|entry| entry.into()).collect())
+    }
+
+    async fn delete_repo(&self) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.contact_table;
+        spawn_blocking(move || Self::delete_repo_sync(db_clone, table)).await?
     }
 }
 

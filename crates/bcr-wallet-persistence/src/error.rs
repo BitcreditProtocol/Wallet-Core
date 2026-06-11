@@ -52,4 +52,6 @@ pub enum Error {
     ContactAlreadyExists(String),
     #[error("Contact not found {0}")]
     ContactNotFound(String),
+    #[error("Pending Payment Request already exists {0}")]
+    PendingPaymentRequestAlreadyExists(String),
 }

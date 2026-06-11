@@ -4,13 +4,15 @@ use anyhow::Result;
 use bcr_common::cdk_common::wallet::TransactionId;
 use bcr_wallet_api::{AppState, config::CreateWalletConfig};
 use bcr_wallet_core::types::{
-    PaymentResultCallback, TransactionFilters, TransactionSort, get_btc_tx_id, get_contact_node_id,
-    get_payment_type, get_transaction_status,
+    PaymentResultCallback, PendingPaymentSubscriptionCallback, TransactionFilters, TransactionSort,
+    get_btc_tx_id, get_contact_node_id, get_payment_request_id, get_payment_type,
+    get_transaction_status,
 };
 use chrono::{DateTime, Utc};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
+use uuid::Uuid;
 
 use crate::WalletSettings;
 
@@ -91,14 +93,15 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
                 let ptype = get_payment_type(&tx.metadata);
                 let btc_tx_id = get_btc_tx_id(&tx.metadata);
                 let contact = get_contact_node_id(&tx.metadata);
+                let payment_req_id = get_payment_request_id(&tx.metadata);
                 let quote_or_btc_tx_id = match (btc_tx_id, &tx.quote_id) {
                     (Some(txid), _) => txid.to_string(),
                     (None, Some(quote_id)) => quote_id.to_string(),
                     (None, None) => String::default(),
                 };
                 res.push_str(&format!(
-                    "\t\tId: {} \t Amount: {:8} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {} \t BTC TxID/Quote ID: {} \t Contact: {}",
-                    tx.id(), tx.amount, tx.unit, tx.fee,  status, format_timestamp(tx.timestamp), &format!("{:?}", ptype), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id, contact.map(|n| n.to_string()).unwrap_or_default()
+                    "\t\tId: {} \t Amount: {:8} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {} \t BTC TxID/Quote ID: {} \t Contact: {} \t Payment Request ID: {}",
+                    tx.id(), tx.amount, tx.unit, tx.fee,  status, format_timestamp(tx.timestamp), &format!("{:?}", ptype), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id, contact.map(|n| n.to_string()).unwrap_or_default(), payment_req_id.map(|id| id.to_string()).unwrap_or_default()
                 ));
                 push_break(&mut res);
             }
@@ -686,6 +689,158 @@ pub async fn cmd_list_contacts(
         res.push_str(&format!("NodeId: {} Name: {}\n", c.node_id, c.name));
         push_break(&mut res);
     }
+    push_break(&mut res);
+    Ok(res)
+}
+
+pub async fn cmd_request_payment_from_contact(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    node_id: &str,
+    amount: u64,
+) -> Result<String> {
+    let mut res = String::new();
+    app_state
+        .wallet_request_payment_from_contact(id.to_owned(), node_id.to_owned(), amount, None, None)
+        .await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Request Payment over {amount} from Contact {node_id} for {name}:\n"
+    ));
+    push_break(&mut res);
+    Ok(res)
+}
+
+pub async fn cmd_subscribe_to_pprs(app_state: &AppState, _name: &str, id: &str) -> Result<String> {
+    let mut res = String::new();
+    let cancel_token = CancellationToken::new();
+    let cancel_token_clone = cancel_token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+        cancel_token_clone.cancel();
+    });
+
+    let (tx, rx) = oneshot::channel::<Uuid>();
+
+    let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
+
+    let res_cb: PendingPaymentSubscriptionCallback = Arc::new(move |id| {
+        if let Some(sender) = tx.lock().unwrap().take() {
+            let _ = sender.send(id);
+        }
+    });
+
+    app_state
+        .wallet_subscribe_to_pending_payment_requests(id.to_owned(), cancel_token, res_cb)
+        .await?;
+
+    let Ok(id) = rx.await else {
+        return Ok("Cancelled".to_string());
+    };
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!("ID: {id}"));
+    push_break(&mut res);
+    Ok(res)
+}
+
+pub async fn cmd_list_pprs(app_state: &AppState, name: &str, id: &str) -> Result<String> {
+    let mut res = String::new();
+    let pprs = app_state
+        .wallet_list_pending_payment_requests(id.to_owned())
+        .await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!("Pending Payment Requests for {name}:\n"));
+    push_break(&mut res);
+    for ppr in pprs {
+        res.push_str(&format!(
+            "Id: {} NodeId: {} Amount: {}\n",
+            ppr.id, ppr.node_id, ppr.amount
+        ));
+        push_break(&mut res);
+    }
+    push_break(&mut res);
+    Ok(res)
+}
+
+pub async fn cmd_get_ppr(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    pending_payment_req_id: &str,
+) -> Result<String> {
+    let mut res = String::new();
+    let ppr = app_state
+        .wallet_get_pending_payment_request(id.to_owned(), pending_payment_req_id.to_owned())
+        .await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Pending Payment Request for {pending_payment_req_id} for {name}:\n"
+    ));
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Id: {} NodeId: {} Amount: {}\n",
+        ppr.id, ppr.node_id, ppr.amount
+    ));
+    push_break(&mut res);
+    push_break(&mut res);
+    Ok(res)
+}
+
+pub async fn cmd_pay_ppr(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    pending_payment_req_id: &str,
+) -> Result<String> {
+    let mut res = String::new();
+    let payment_summary = app_state
+        .wallet_prepare_pay_pending_payment_request(
+            id.to_owned(),
+            pending_payment_req_id.to_owned(),
+        )
+        .await?;
+    info!(
+        "Payment Summary: Amount: {}, Unit: {}, Fees: {}",
+        &payment_summary.amount, &payment_summary.unit, &payment_summary.fees,
+    );
+    let result = app_state
+        .wallet_pay_pending_payment_request(id.to_owned(), payment_summary.request_id.to_string())
+        .await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Pay Payment Request {pending_payment_req_id} for {name}, Wallet ID: {id}.\n"
+    ));
+    res.push_str(&format!(
+        "Unit: {}, Amount: {}, Fees: {}",
+        &payment_summary.unit, &payment_summary.amount, &payment_summary.fees
+    ));
+    push_break(&mut res);
+    res.push_str(&format!("Transaction ID: {}", result));
+    push_break(&mut res);
+    Ok(res)
+}
+
+pub async fn cmd_reject_ppr(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    pending_payment_req_id: &str,
+) -> Result<String> {
+    let mut res = String::new();
+    app_state
+        .wallet_reject_pending_payment_request(id.to_owned(), pending_payment_req_id.to_owned())
+        .await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Reject Pending Payment Request for {pending_payment_req_id} for {name}:\n"
+    ));
     push_break(&mut res);
     Ok(res)
 }

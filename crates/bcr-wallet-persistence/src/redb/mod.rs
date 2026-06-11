@@ -1,6 +1,7 @@
 pub mod contact;
 pub mod mintmelt;
 pub mod nostr;
+pub mod pending_payment_requests;
 pub mod pocket;
 pub mod purse;
 pub mod transaction;
@@ -31,11 +32,21 @@ pub async fn build_wallet_dbs(
     mintmelt::MintMeltDB,
     nostr::NostrDB,
     contact::ContactDB,
+    pending_payment_requests::PendingPaymentRequestDB,
 )> {
     let txdb = transaction::TransactionDB::new(db.clone(), wallet_id)?;
     let debitdb = pocket::PocketDB::new(db.clone(), wallet_id, debit)?;
     let mintmeltdb = mintmelt::MintMeltDB::new(db.clone(), wallet_id, debit)?;
     let nostrdb = nostr::NostrDB::new(db.clone(), wallet_id)?;
     let contactdb = contact::ContactDB::new(db.clone(), wallet_id)?;
-    Ok((txdb, debitdb, mintmeltdb, nostrdb, contactdb))
+    let pending_payment_requests_db =
+        pending_payment_requests::PendingPaymentRequestDB::new(db.clone(), wallet_id)?;
+    Ok((
+        txdb,
+        debitdb,
+        mintmeltdb,
+        nostrdb,
+        contactdb,
+        pending_payment_requests_db,
+    ))
 }

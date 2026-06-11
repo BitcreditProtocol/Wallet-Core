@@ -2,7 +2,11 @@ use crate::error::Result;
 use ::nostr::{PublicKey, event::EventId, types::RelayUrl};
 use async_trait::async_trait;
 use bcr_common::cashu::nut18 as cdk18;
-use bcr_wallet_core::{SendSync, contact::Contact, event::ContactPaymentPayload};
+use bcr_wallet_core::{
+    SendSync,
+    contact::Contact,
+    event::{ContactPaymentPayload, ContactPaymentRequestPayload},
+};
 use tokio::sync::broadcast;
 
 pub mod error;
@@ -46,6 +50,11 @@ pub enum NostrWalletEvent {
     ContactPayment {
         event_id: EventId,
         payload: ContactPaymentPayload,
+        sender: PublicKey,
+    },
+    ContactPaymentRequest {
+        event_id: EventId,
+        payload: ContactPaymentRequestPayload,
         sender: PublicKey,
     },
 }

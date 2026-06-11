@@ -4,6 +4,7 @@ use bcr_common::{
     core::NodeId,
 };
 use thiserror::Error;
+use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Error)]
@@ -144,6 +145,8 @@ pub enum Error {
     External(#[from] crate::external::Error),
     #[error("Dev Mode is disabled")]
     NoDevMode,
+    #[error("No pending payment request found for {0}")]
+    PendingPaymentRequestNotFound(Uuid),
 }
 
 impl From<bcr_common::core::swap::wallet::Error> for Error {

@@ -20,6 +20,13 @@
     * `wallet_pay_to_contact` - taking a payment request id
 * Add `node_id` to `WalletInfo`
 * Add endpoint to get `node_id`
+* Add API for remote payment requests via Nostr
+    * `wallet_request_payment_from_contact` - sends a payment request to a contact
+    * `wallet_list_pending_payment_requests` - returns a list of pending payment requests
+    * `wallet_subscribe_to_pending_payment_requests` - the caller can subscribe to incoming pending payment requests to react to them
+    * `wallet_get_pending_payment_request` - returns the details of a given pending payment request
+    * `wallet_pay_pending_payment_request` - pay a pending payment request
+    * `wallet_reject_pending_payment_request` - reject payment of a pending payment request
 
 # 0.9.4
 

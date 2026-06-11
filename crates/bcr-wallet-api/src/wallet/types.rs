@@ -22,6 +22,7 @@ pub enum WalletPaymentType {
     Token,
     Contact {
         node_id: NodeId,
+        payment_request_id: Option<Uuid>,
     },
 }
 

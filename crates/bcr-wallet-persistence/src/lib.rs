@@ -11,7 +11,10 @@ use bcr_common::cdk_common::wallet::{Transaction, TransactionId};
 use bcr_common::core::NodeId;
 use bcr_wallet_core::contact::Contact;
 use bcr_wallet_core::name::Name;
-use bcr_wallet_core::{SendSync, types::WalletConfig};
+use bcr_wallet_core::{
+    SendSync,
+    types::{PendingPaymentRequest, WalletConfig},
+};
 use bitcoin::secp256k1;
 use nostr::types::Timestamp;
 use std::collections::HashMap;
@@ -185,7 +188,6 @@ pub trait NostrRepository: SendSync {
 }
 
 //////////////////////////////////////////// Contact
-
 #[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
 #[async_trait]
 pub trait ContactStoreApi: SendSync {
@@ -194,4 +196,19 @@ pub trait ContactStoreApi: SendSync {
     async fn delete_contact(&self, node_id: NodeId) -> Result<()>;
     async fn get_contact(&self, node_id: NodeId) -> Result<Option<Contact>>;
     async fn list_contacts(&self, search_term: Option<String>) -> Result<Vec<Contact>>;
+    async fn delete_repo(&self) -> Result<()>;
+}
+
+//////////////////////////////////////////// Pending Payment Requests
+#[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
+#[async_trait]
+pub trait PendingPaymentRequestStoreApi: SendSync {
+    async fn add_pending_payment_request(
+        &self,
+        pending_payment_request: PendingPaymentRequest,
+    ) -> Result<()>;
+    async fn get_pending_payment_request(&self, id: Uuid) -> Result<Option<PendingPaymentRequest>>;
+    async fn list_pending_payment_requests(&self) -> Result<Vec<PendingPaymentRequest>>;
+    async fn delete_pending_payment_request(&self, id: Uuid) -> Result<()>;
+    async fn delete_repo(&self) -> Result<()>;
 }

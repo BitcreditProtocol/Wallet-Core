@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use bcr_common::{cashu::nut18 as cdk18, cdk_common::bitcoin::base58};
 use bcr_wallet_core::{
     contact::Contact,
-    event::{ContactPaymentPayload, EventEnvelope},
+    event::{ContactPaymentPayload, ContactPaymentRequestPayload, EventEnvelope},
 };
 use bcr_wallet_persistence::{NostrEventOffset, NostrQueuedMessage, NostrRepository};
 use nostr::{
@@ -520,6 +520,17 @@ async fn handle_nip17_direct_message<T: NostrSigner>(
                     if let Ok(payload) = borsh::from_slice::<ContactPaymentPayload>(&envelope.data)
                     {
                         event_channel.publish(NostrWalletEvent::ContactPayment {
+                            event_id: event.id,
+                            payload,
+                            sender: event.pubkey,
+                        });
+                    }
+                }
+                bcr_wallet_core::event::EventType::ContactPaymentRequest => {
+                    if let Ok(payload) =
+                        borsh::from_slice::<ContactPaymentRequestPayload>(&envelope.data)
+                    {
+                        event_channel.publish(NostrWalletEvent::ContactPaymentRequest {
                             event_id: event.id,
                             payload,
                             sender: event.pubkey,

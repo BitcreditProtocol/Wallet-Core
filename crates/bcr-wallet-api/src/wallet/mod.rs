@@ -23,12 +23,15 @@ use bcr_wallet_core::{
     contact::Contact,
     event::{ContactPaymentPayload, EventEnvelope},
     types::{
-        CONTACT_NODE_ID_METADATA_KEY, ListTransactionsResult, PaymentType, TransactionCursor,
-        TransactionFilters, TransactionSort, TransactionStatus, extract_fees_per_month,
+        CONTACT_NODE_ID_METADATA_KEY, ListTransactionsResult, PaymentType, PendingPaymentRequest,
+        TransactionCursor, TransactionFilters, TransactionSort, TransactionStatus,
+        extract_fees_per_month,
     },
     util::{from_mint_url, to_mint_url},
 };
-use bcr_wallet_persistence::{ContactStoreApi, NostrRepository, TransactionRepository};
+use bcr_wallet_persistence::{
+    ContactStoreApi, NostrRepository, PendingPaymentRequestStoreApi, TransactionRepository,
+};
 use bcr_wallet_transport::{NostrEventChannel, TransportApi, nostr};
 use bitcoin::{
     base58,
@@ -39,6 +42,7 @@ use chrono::Utc;
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 pub struct Wallet {
     network: bitcoin::Network,
@@ -47,6 +51,7 @@ pub struct Wallet {
     beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>>,
     tx_repo: Box<dyn TransactionRepository>,
     contact_repo: Box<dyn ContactStoreApi>,
+    pending_payment_request_repo: Box<dyn PendingPaymentRequestStoreApi>,
     debit: Box<dyn DebitPocketApi>,
     name: String,
     id: String,
@@ -70,6 +75,7 @@ impl Wallet {
         mint_keyset_infos: HashMap<cashu::Id, KeySetInfo>,
         tx_repo: Box<dyn TransactionRepository>,
         contact_repo: Box<dyn ContactStoreApi>,
+        pending_payment_request_repo: Box<dyn PendingPaymentRequestStoreApi>,
         debit: Box<dyn DebitPocketApi>,
         name: String,
         id: String,
@@ -90,6 +96,7 @@ impl Wallet {
             mint_keyset_infos,
             tx_repo,
             contact_repo,
+            pending_payment_request_repo,
             debit,
             name,
             id,
@@ -208,6 +215,19 @@ impl Wallet {
                             },
                         };
                         match received_evt {
+                            bcr_wallet_transport::NostrWalletEvent::ContactPaymentRequest { sender, payload, event_id } => {
+                                let pending_payment_request: PendingPaymentRequest = payload.into();
+                                let payment_request_id = pending_payment_request.id;
+                                let wallet_guard = wallet.read().await;
+                                match <Self as api::WalletApi>::add_pending_payment_request(&*wallet_guard, pending_payment_request).await {
+                                    Ok(_) => {
+                                        tracing::info!("Received contact payment request {payment_request_id} from {sender}, event_id: {event_id}");
+                                    },
+                                    Err(e) => {
+                                        tracing::error!("Could not store payment request {payment_request_id}: {e}");
+                                    }
+                                };
+                            },
                             bcr_wallet_transport::NostrWalletEvent::Cdk18Payment { .. } => {
                                 // ignore - cdk18 payments are handled by explicitly awaiting them
                             },
@@ -915,9 +935,11 @@ impl Wallet {
         proofs: Vec<cashu::Proof>,
         nostr_cl: &Arc<dyn TransportApi>,
         contact: Contact,
+        payment_request_id: Option<Uuid>,
         mut partial_tx: Transaction,
     ) -> Result<TransactionId> {
         let payload = ContactPaymentPayload {
+            payment_request_id,
             sender: self.node_id(),
             proofs,
             memo: partial_tx.memo.clone(),
@@ -1039,7 +1061,8 @@ mod tests {
         MintSummary, PaymentResultCallback, TimeRange, get_payment_type, get_transaction_status,
     };
     use bcr_wallet_persistence::{
-        MockContactStoreApi, MockNostrRepository, MockTransactionRepository,
+        MockContactStoreApi, MockNostrRepository, MockPendingPaymentRequestStoreApi,
+        MockTransactionRepository,
         test_utils::tests::{test_pub_key, valid_payment_address_testnet},
     };
     use bcr_wallet_transport::{
@@ -1064,6 +1087,7 @@ mod tests {
         pub debit: MockDebitPocket,
         pub nostr_repo: MockNostrRepository,
         pub contact_repo: MockContactStoreApi,
+        pub pending_payment_request_repo: MockPendingPaymentRequestStoreApi,
     }
 
     fn wallet_ctx() -> MockWalletCtx {
@@ -1074,6 +1098,7 @@ mod tests {
             debit: MockDebitPocket::new(),
             nostr_repo: MockNostrRepository::new(),
             contact_repo: MockContactStoreApi::new(),
+            pending_payment_request_repo: MockPendingPaymentRequestStoreApi::new(),
         }
     }
 
@@ -1109,6 +1134,7 @@ mod tests {
             beta_clients,
             tx_repo: Box::new(ctx.tx_repo),
             contact_repo: Box::new(ctx.contact_repo),
+            pending_payment_request_repo: Box::new(ctx.pending_payment_request_repo),
             debit: Box::new(ctx.debit),
             name: "wallet-1".to_owned(),
             id: "w-1".to_owned(),

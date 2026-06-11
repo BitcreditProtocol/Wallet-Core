@@ -13,9 +13,12 @@ use std::{
 };
 use uuid::Uuid;
 
+use crate::event::ContactPaymentRequestPayload;
+
 pub type Seed = [u8; 64];
 
 pub type PaymentResultCallback = Arc<dyn Fn(Option<TransactionId>) + Send + Sync + 'static>;
+pub type PendingPaymentSubscriptionCallback = Arc<dyn Fn(Uuid) + Send + Sync + 'static>;
 
 #[derive(Default, Debug, Clone)]
 pub struct SendSummary {
@@ -76,6 +79,51 @@ pub struct MintSummary {
     pub expiry: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingPaymentRequest {
+    pub id: Uuid,
+    pub node_id: NodeId,
+    pub amount: Amount,
+    pub unit: CurrencyUnit,
+    pub description: Option<String>,
+    pub deadline: Option<u64>,
+    pub created_at: u64,
+}
+
+impl PendingPaymentRequest {
+    pub fn new(
+        node_id: NodeId,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+        deadline: Option<u64>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            node_id,
+            amount,
+            unit,
+            description,
+            deadline,
+            created_at: Utc::now().timestamp() as u64,
+        }
+    }
+}
+
+impl From<ContactPaymentRequestPayload> for PendingPaymentRequest {
+    fn from(value: ContactPaymentRequestPayload) -> Self {
+        Self {
+            id: value.id,
+            node_id: value.sender,
+            amount: value.amount,
+            unit: value.unit,
+            description: value.memo,
+            deadline: value.deadline,
+            created_at: value.created_at,
+        }
+    }
+}
+
 #[derive(strum::EnumString, strum::Display, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PaymentType {
     #[default]
@@ -133,6 +181,12 @@ pub const CONTACT_NODE_ID_METADATA_KEY: &str = "contact_node_id";
 pub fn get_contact_node_id(metas: &HashMap<String, String>) -> Option<NodeId> {
     let node_id = metas.get(CONTACT_NODE_ID_METADATA_KEY)?;
     NodeId::from_str(node_id).ok()
+}
+
+pub const PAYMENT_REQUEST_ID_METADATA_KEY: &str = "payment_request_id";
+pub fn get_payment_request_id(metas: &HashMap<String, String>) -> Option<Uuid> {
+    let id = metas.get(PAYMENT_REQUEST_ID_METADATA_KEY)?;
+    Uuid::from_str(id).ok()
 }
 
 impl std::convert::From<SendSummary> for PaymentSummary {
