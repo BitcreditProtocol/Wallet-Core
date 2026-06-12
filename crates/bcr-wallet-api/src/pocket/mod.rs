@@ -130,10 +130,24 @@ impl BetaProvider for RandomBetaProvider {
             .choose_multiple(&mut rand::rng(), max)
             .cloned()
             .collect();
+        let fingerprints = wire_attestation::project_to_fingerprints(proofs)?;
         let mut last_err = None;
         for beta in &selected {
             match fetch_attestation(beta.as_ref(), self.alpha_id, proofs).await {
-                Ok(att) => return Ok(att),
+                Ok(att) => {
+                    match wire_attestation::authenticate_attestation_fingerprints(
+                        &self.alpha_id,
+                        &fingerprints,
+                        &att,
+                        |_| true,
+                    ) {
+                        Ok(()) => return Ok(att),
+                        Err(e) => {
+                            tracing::warn!("Beta returned invalid attestation: {e}");
+                            last_err = Some(e.into());
+                        }
+                    }
+                }
                 Err(e) => {
                     tracing::warn!("Beta attestation attempt failed: {e}");
                     last_err = Some(e);

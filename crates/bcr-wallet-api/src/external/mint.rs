@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
 use async_trait::async_trait;
 use bcr_common::{
     cashu::{self, Proof},
@@ -57,6 +57,7 @@ async fn post_swap_commitment_inner(
         .map(wire_keys::ProofFingerprint::try_from)
         .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
     let inputs_ys = fingerprints.iter().map(|fp| fp.y).collect::<Vec<_>>();
+    let sent_digest = wire_attestation::fp_digest(&fingerprints);
     let expiry = (chrono::Utc::now() + expiry_seconds).timestamp() as u64;
     let (committed_content, commitment) = client
         .commit_swap(
@@ -65,9 +66,16 @@ async fn post_swap_commitment_inner(
             expiry,
             wallet_pk,
             alpha_pk,
-            attestation,
+            attestation.clone(),
         )
         .await?;
+    let committed_body: wire_swap::SwapCommitmentRequest =
+        bcr_common::core::signature::deserialize_borsh_msg(&committed_content)?;
+    if committed_body.inputs.attestation != attestation
+        || wire_attestation::fp_digest(&committed_body.inputs.inputs) != sent_digest
+    {
+        return Err(Error::SwapCommitmentMismatch);
+    }
     Ok(SwapCommitmentResult {
         inputs_ys,
         outputs,
@@ -94,11 +102,25 @@ async fn post_melt_quote_onchain_inner(
         .into_iter()
         .map(wire_keys::ProofFingerprint::try_from)
         .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
+    let sent_digest = wire_attestation::fp_digest(&fingerprints);
     let (content, commitment) = client
-        .onchain_melt_quote(fingerprints, address, wallet_key, alpha_pk, attestation)
+        .onchain_melt_quote(
+            fingerprints,
+            address.clone(),
+            wallet_key,
+            alpha_pk,
+            attestation.clone(),
+        )
         .await?;
     let response_body: wire_melt::MeltQuoteOnchainResponseBody =
         bcr_common::core::signature::deserialize_borsh_msg(&content)?;
+    let echoed = wire_attestation::fp_digest(&response_body.inputs.inputs) == sent_digest
+        && response_body.inputs.attestation == attestation
+        && response_body.address == address
+        && response_body.wallet_key == wallet_key;
+    if !echoed {
+        return Err(Error::MeltQuoteMismatch);
+    }
     Ok(MeltQuoteResult {
         quote_id: response_body.quote,
         expiry: response_body.expiry,

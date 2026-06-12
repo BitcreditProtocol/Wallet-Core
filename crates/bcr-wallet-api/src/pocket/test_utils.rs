@@ -68,10 +68,28 @@ pub mod tests {
         db.expect_delete_commitment().times(1).returning(|_| Ok(()));
     }
 
+    pub fn valid_attestation_for(
+        req: &bcr_common::wire::attestation::IssuanceAttestationRequest,
+    ) -> bcr_common::wire::attestation::IssuanceAttestation {
+        use bcr_common::wire::attestation as wire_attestation;
+        let keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let fp_digest = wire_attestation::fp_digest(&req.inputs);
+        let coords_mac = [2u8; 32];
+        let msg_hash = wire_attestation::attest_message(&req.alpha_id, &fp_digest, &coords_mac);
+        let msg = secp256k1::Message::from_digest(*msg_hash.as_ref());
+        let signature = secp256k1::global::SECP256K1.sign_schnorr(&msg, &keypair);
+        wire_attestation::IssuanceAttestation {
+            beta_id: keypair.public_key(),
+            fp_digest,
+            coords_mac,
+            signature,
+        }
+    }
+
     pub fn setup_attestation_mock(connector: &mut crate::external::mint::MockClowderMintConnector) {
         connector
             .expect_post_attest_issuance()
-            .returning(|_| Ok(mock_attestation()));
+            .returning(|req| Ok(valid_attestation_for(&req)));
     }
 
     pub fn test_beta_provider() -> crate::pocket::RandomBetaProvider {
