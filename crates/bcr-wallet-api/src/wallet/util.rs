@@ -32,7 +32,6 @@ pub fn proofs_to_fingerprints(
             c: p.c,
             dleq: Some(dleq),
             y: p.y()?,
-            witness: None,
         });
     }
 

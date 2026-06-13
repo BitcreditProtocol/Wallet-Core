@@ -131,6 +131,12 @@ pub enum Error {
     External(#[from] crate::external::Error),
     #[error("Dev Mode is disabled")]
     NoDevMode,
+    #[error("melt quote commitment does not match request")]
+    MeltQuoteMismatch,
+    #[error("swap commitment does not match request")]
+    SwapCommitmentMismatch,
+    #[error("attestation: {0}")]
+    Attestation(#[from] bcr_common::wire::attestation::AttestationError),
 }
 
 impl From<bcr_common::core::swap::wallet::Error> for Error {

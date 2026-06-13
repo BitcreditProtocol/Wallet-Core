@@ -130,10 +130,24 @@ impl BetaProvider for RandomBetaProvider {
             .choose_multiple(&mut rand::rng(), max)
             .cloned()
             .collect();
+        let fingerprints = wire_attestation::project_to_fingerprints(proofs)?;
         let mut last_err = None;
         for beta in &selected {
             match fetch_attestation(beta.as_ref(), self.alpha_id, proofs).await {
-                Ok(att) => return Ok(att),
+                Ok(att) => {
+                    match wire_attestation::authenticate_attestation_fingerprints(
+                        &self.alpha_id,
+                        &fingerprints,
+                        &att,
+                        |_| true,
+                    ) {
+                        Ok(()) => return Ok(att),
+                        Err(e) => {
+                            tracing::warn!("Beta returned invalid attestation: {e}");
+                            last_err = Some(e.into());
+                        }
+                    }
+                }
                 Err(e) => {
                     tracing::warn!("Beta attestation attempt failed: {e}");
                     last_err = Some(e);
@@ -246,6 +260,7 @@ pub(crate) async fn committed_swap(
             outputs.clone(),
             swap_config.expiry,
             swap_config.alpha_pk,
+            attestation,
         )
         .await?;
     let commitment_sig = commit_result.commitment;
@@ -265,7 +280,7 @@ pub(crate) async fn committed_swap(
     }
 
     let signatures = client
-        .post_swap_committed(inputs, outputs, commitment_sig, attestation)
+        .post_swap_committed(inputs, outputs, commitment_sig)
         .await?;
 
     if let Some(db) = db
@@ -739,7 +754,7 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let mock_signatures =
                     core_tests::generate_ecash_signatures(&cloned_keyset, &amounts);
@@ -798,7 +813,7 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
                 Ok(signatures)
@@ -909,7 +924,7 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures =
                     core_tests::generate_ecash_signatures(&cloned_keyset_for_sign, &amounts);
@@ -1018,7 +1033,7 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures =
                     core_tests::generate_ecash_signatures(&cloned_keyset_for_sign, &amounts);
@@ -1104,7 +1119,7 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures =
                     core_tests::generate_ecash_signatures(&cloned_keyset_for_sign, &amounts);
@@ -1210,7 +1225,7 @@ mod tests {
         mockclient
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let mut signatures = vec![];
                 for o in outp {
                     let ks = if o.keyset_id == keyset.id {

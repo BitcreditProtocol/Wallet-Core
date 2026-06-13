@@ -1,5 +1,6 @@
 # 0.9.4
 
+* Fetch the Beta attestation before swap/melt and bind it into the commitment instead of the execution request
 * Fix commitment for intermint exchange
 * Fix keysets for online intermint exchange
 * Update bcr-common and remove support for cashuB tokens

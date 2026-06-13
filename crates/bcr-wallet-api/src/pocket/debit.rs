@@ -802,8 +802,9 @@ impl DebitPocketApi for Pocket {
 
         let quote_record_amount = async {
             let proofs: Vec<cashu::Proof> = sending_proofs.values().cloned().collect();
+            let attestation = self.beta.attest(&proofs).await?;
             let quote_result = client
-                .post_melt_quote_onchain(proofs, parsed_address, swap_config.alpha_pk)
+                .post_melt_quote_onchain(proofs, parsed_address, swap_config.alpha_pk, attestation)
                 .await?;
             let quote_id = quote_result.quote_id;
             let expiry = quote_result.expiry;
@@ -865,15 +866,13 @@ impl DebitPocketApi for Pocket {
         let record = self.mdb.load_melt_commitment(melt_ref.quote_id).await?;
         let body: wire_melt::MeltQuoteOnchainResponseBody =
             bcr_common::core::signature::deserialize_borsh_msg(&record.body_content)?;
-        let input_ys: Vec<cashu::PublicKey> = body.inputs.iter().map(|fp| fp.y).collect();
+        let input_ys: Vec<cashu::PublicKey> = body.inputs.inputs.iter().map(|fp| fp.y).collect();
         let sending_proofs = self.pdb.load_proofs(&input_ys).await?;
 
         let inputs: Vec<cdk00::Proof> = sending_proofs.values().cloned().collect();
-        let attestation = self.beta.attest(&inputs).await?;
         let request = wire_melt::MeltOnchainRequest {
             quote: melt_ref.quote_id,
             inputs,
-            attestation,
         };
         let response = client.post_melt_onchain(request).await?;
 
@@ -1180,7 +1179,7 @@ impl DebitPocketApi for Pocket {
             wire_common::ProtestStatus::Resolved => {
                 let body: wire_melt::MeltQuoteOnchainResponseBody =
                     bcr_common::core::signature::deserialize_borsh_msg(&record.body_content)?;
-                let ys: Vec<cashu::PublicKey> = body.inputs.iter().map(|fp| fp.y).collect();
+                let ys: Vec<cashu::PublicKey> = body.inputs.inputs.iter().map(|fp| fp.y).collect();
                 self.mdb.delete_melt_commitment(quote_id).await?;
                 tracing::info!("Melt protest resolved for {quote_id}");
                 Ok(MeltProtestResult {
@@ -1414,7 +1413,7 @@ mod tests {
         connector
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
                 Ok(signatures)
@@ -1474,7 +1473,7 @@ mod tests {
         connector
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
                 Ok(signatures)
@@ -1551,7 +1550,7 @@ mod tests {
         connector
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
                 let signatures = core_tests::generate_ecash_signatures(&keyset, &amounts);
                 Ok(signatures)
@@ -1593,7 +1592,10 @@ mod tests {
         let wallet_key = cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral));
         let body = wire_melt::MeltQuoteOnchainResponseBody {
             quote: quote_id,
-            inputs: vec![],
+            inputs: bcr_common::wire::attestation::AttestedFingerprints {
+                inputs: vec![],
+                attestation: crate::pocket::test_utils::tests::mock_attestation(),
+            },
             address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
                 .expect("valid address"),
             amount: bitcoin::Amount::from_sat(100),
@@ -1643,7 +1645,10 @@ mod tests {
         let wallet_key = cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral));
         let body = wire_melt::MeltQuoteOnchainResponseBody {
             quote: quote_id,
-            inputs: vec![],
+            inputs: bcr_common::wire::attestation::AttestedFingerprints {
+                inputs: vec![],
+                attestation: crate::pocket::test_utils::tests::mock_attestation(),
+            },
             address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
                 .expect("valid address"),
             amount: bitcoin::Amount::from_sat(amount),
@@ -2004,7 +2009,7 @@ mod tests {
         connector
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts: Vec<_> = outp.iter().map(|b| b.amount).collect();
                 let signatures = core_tests::generate_ecash_signatures(&swap_keyset, &amounts);
                 Ok(signatures)
@@ -2196,7 +2201,7 @@ mod tests {
         alpha_connector
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, outp, _, _| {
+            .returning(move |_, outp, _| {
                 let amounts: Vec<_> = outp.iter().map(|b| b.amount).collect();
                 let signatures = core_tests::generate_ecash_signatures(&swap_keyset, &amounts);
                 Ok(signatures)
@@ -2559,7 +2564,7 @@ mod tests {
         connector
             .expect_post_swap_committed()
             .times(1)
-            .returning(move |_, out, _, _| {
+            .returning(move |_, out, _| {
                 let amounts: Vec<_> = out.iter().map(|b| b.amount).collect();
                 let signatures = core_tests::generate_ecash_signatures(&swap_keyset, &amounts);
                 Ok(signatures)
@@ -2690,7 +2695,7 @@ mod tests {
         connector
             .expect_post_melt_quote_onchain()
             .times(1)
-            .returning(move |_, _, _| {
+            .returning(move |_, _, _, _| {
                 Ok(MeltQuoteResult {
                     quote_id,
                     expiry,
