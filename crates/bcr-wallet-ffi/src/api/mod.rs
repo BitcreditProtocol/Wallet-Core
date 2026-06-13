@@ -1543,6 +1543,8 @@ pub enum WalletErrorCode {
     InsufficientOnChainMeltAmount,
     InsufficientOnChainMintAmount,
     NoDevMode,
+    MeltQuoteMismatch,
+    SwapCommitmentMismatch,
     InvalidBitcoinAddress,
     InvalidMnemonic,
     InvalidTransactionId,
@@ -1680,6 +1682,13 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::NoDevMode => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::NoDevMode)
             }
+            BcrWalletError::MeltQuoteMismatch => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::MeltQuoteMismatch)
+            }
+            BcrWalletError::SwapCommitmentMismatch => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::SwapCommitmentMismatch)
+            }
+            BcrWalletError::Attestation(_) => WalletError::internal(value.to_string()),
         }
     }
 }
