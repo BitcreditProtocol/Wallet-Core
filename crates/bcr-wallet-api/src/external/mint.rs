@@ -10,13 +10,11 @@ use bcr_common::{
     wire::{
         attestation as wire_attestation,
         clowder::{self as wire_clowder, ConnectedMintsResponse},
-        exchange as wire_exchange,
         keys::{self as wire_keys, KeysetInfoFilters},
         melt as wire_melt, mint as wire_mint, swap as wire_swap,
     },
 };
 use bcr_wallet_core::SendSync;
-use bitcoin::base64::prelude::*;
 use bitcoin::secp256k1;
 use tracing::debug;
 
@@ -174,6 +172,7 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
         proofs: Vec<wire_keys::ProofFingerprint>,
         locks: Vec<bitcoin::hashes::sha256::Hash>,
         wallet_pubkey: secp256k1::PublicKey,
+        mint_pk: secp256k1::PublicKey,
     ) -> MintResult<Vec<Proof>>;
     async fn post_swap_commitment(
         &self,
@@ -327,22 +326,16 @@ impl ClowderMintConnector for HttpClientExt {
         proofs: Vec<wire_keys::ProofFingerprint>,
         locks: Vec<bitcoin::hashes::sha256::Hash>,
         wallet_pubkey: secp256k1::PublicKey,
+        mint_pk: secp256k1::PublicKey,
     ) -> MintResult<Vec<Proof>> {
         debug!("Clowder client call to post_offline_exchange");
         let wallet_pk = cashu::PublicKey::from_slice(&wallet_pubkey.serialize())
             .map_err(|e| MintError::Internal(e.to_string()))?;
-        let request = wire_exchange::OfflineExchangeRequest {
-            fingerprints: proofs,
-            hashes: locks,
-            wallet_pk,
-        };
-        let response = self.main.post_offline_exchange(request).await?;
-        let serialized = BASE64_STANDARD
-            .decode(&response.content)
-            .map_err(|e| MintError::Internal(e.to_string()))?;
-        let payload: wire_exchange::OfflineExchangePayload =
-            borsh::from_slice(&serialized).map_err(|e| MintError::Internal(e.to_string()))?;
-        Ok(payload.proofs)
+        let response = self
+            .main
+            .exchange_offline(proofs, locks, wallet_pk, mint_pk)
+            .await?;
+        Ok(response.0)
     }
 
     async fn post_online_exchange(
@@ -351,12 +344,11 @@ impl ClowderMintConnector for HttpClientExt {
         exchange_path: Vec<secp256k1::PublicKey>,
     ) -> MintResult<Vec<Proof>> {
         debug!("Clowder client call to post_online_exchange");
-        let request = wire_exchange::OnlineExchangeRequest {
-            proofs: alpha_proofs,
-            exchange_path,
-        };
-        let response = self.main.post_online_exchange(request).await?;
-        Ok(response.proofs)
+        let proofs = self
+            .main
+            .exchange_online(alpha_proofs, exchange_path)
+            .await?;
+        Ok(proofs)
     }
 
     async fn get_clowder_id(&self) -> MintResult<secp256k1::PublicKey> {
@@ -700,22 +692,16 @@ impl ClowderMintConnector for SentinelClient {
         proofs: Vec<wire_keys::ProofFingerprint>,
         locks: Vec<bitcoin::hashes::sha256::Hash>,
         wallet_pubkey: secp256k1::PublicKey,
+        mint_pk: secp256k1::PublicKey,
     ) -> MintResult<Vec<Proof>> {
         debug!("Clowder client call to post_offline_exchange on sentinel");
         let wallet_pk = cashu::PublicKey::from_slice(&wallet_pubkey.serialize())
             .map_err(|e| MintError::Internal(e.to_string()))?;
-        let request = wire_exchange::OfflineExchangeRequest {
-            fingerprints: proofs,
-            hashes: locks,
-            wallet_pk,
-        };
-        let response = self.main.post_offline_exchange(request).await?;
-        let serialized = BASE64_STANDARD
-            .decode(&response.content)
-            .map_err(|e| MintError::Internal(e.to_string()))?;
-        let payload: wire_exchange::OfflineExchangePayload =
-            borsh::from_slice(&serialized).map_err(|e| MintError::Internal(e.to_string()))?;
-        Ok(payload.proofs)
+        let response = self
+            .main
+            .exchange_offline(proofs, locks, wallet_pk, mint_pk)
+            .await?;
+        Ok(response.0)
     }
 
     async fn post_online_exchange(
@@ -724,12 +710,11 @@ impl ClowderMintConnector for SentinelClient {
         exchange_path: Vec<secp256k1::PublicKey>,
     ) -> MintResult<Vec<Proof>> {
         debug!("Clowder client call to post_online_exchange on sentinel");
-        let request = wire_exchange::OnlineExchangeRequest {
-            proofs: alpha_proofs,
-            exchange_path,
-        };
-        let response = self.main.post_online_exchange(request).await?;
-        Ok(response.proofs)
+        let proofs = self
+            .main
+            .exchange_online(alpha_proofs, exchange_path)
+            .await?;
+        Ok(proofs)
     }
 
     async fn get_clowder_id(&self) -> MintResult<secp256k1::PublicKey> {

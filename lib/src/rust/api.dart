@@ -880,6 +880,8 @@ enum WalletErrorCode {
   insufficientOnChainMeltAmount,
   insufficientOnChainMintAmount,
   noDevMode,
+  meltQuoteMismatch,
+  swapCommitmentMismatch,
   invalidBitcoinAddress,
   invalidMnemonic,
   invalidTransactionId,

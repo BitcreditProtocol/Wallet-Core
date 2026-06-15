@@ -502,8 +502,9 @@ impl Wallet {
                         .await?;
                 } else {
                     tracing::debug!("Offline exchange from {}", mint.to_string());
+                    let substitute_clowder_id = substitute_client.get_clowder_id().await?;
                     let substitute_proofs = self
-                        .offline_exchange(substitute_client.as_ref(), proofs)
+                        .offline_exchange(substitute_client.as_ref(), proofs, substitute_clowder_id)
                         .await?;
 
                     // Alpha proofs -> Substitute Beta proofs is done, so we only need the path from
@@ -564,6 +565,7 @@ impl Wallet {
         &self,
         substitute_client: &dyn ClowderMintConnector,
         proofs: Vec<Proof>,
+        substitute_clowder_id: secp256k1::PublicKey,
     ) -> Result<Vec<Proof>> {
         // Ephemeral P2PK secret
         let wallet_pk = cashu::SecretKey::generate();
@@ -579,6 +581,7 @@ impl Wallet {
                 fingerprints.clone(),
                 hash_locks.clone(),
                 *wallet_pk.public_key(),
+                substitute_clowder_id,
             )
             .await?;
         for (p, s) in beta_proofs.iter_mut().zip(secrets) {
