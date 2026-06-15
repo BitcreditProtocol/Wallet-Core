@@ -79,8 +79,22 @@ pub struct MintSummary {
     pub expiry: u64,
 }
 
-#[derive(Debug, Clone)]
-pub struct PendingPaymentRequest {
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum PaymentRequestState {
+    Pending,
+    Paid { tx_id: TransactionId },
+    Canceled,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum PaymentRequestDirection {
+    Incoming,
+    Outgoing,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PaymentRequest {
     pub id: Uuid,
     pub node_id: NodeId,
     pub amount: Amount,
@@ -88,10 +102,12 @@ pub struct PendingPaymentRequest {
     pub description: Option<String>,
     pub deadline: Option<u64>,
     pub created_at: u64,
+    pub state: PaymentRequestState,
+    pub direction: PaymentRequestDirection,
 }
 
-impl PendingPaymentRequest {
-    pub fn new(
+impl PaymentRequest {
+    pub fn new_incoming(
         node_id: NodeId,
         amount: Amount,
         unit: CurrencyUnit,
@@ -106,11 +122,33 @@ impl PendingPaymentRequest {
             description,
             deadline,
             created_at: Utc::now().timestamp() as u64,
+            state: PaymentRequestState::Pending,
+            direction: PaymentRequestDirection::Incoming,
+        }
+    }
+
+    pub fn new_outgoing(
+        node_id: NodeId,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+        deadline: Option<u64>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            node_id,
+            amount,
+            unit,
+            description,
+            deadline,
+            created_at: Utc::now().timestamp() as u64,
+            state: PaymentRequestState::Pending,
+            direction: PaymentRequestDirection::Outgoing,
         }
     }
 }
 
-impl From<ContactPaymentRequestPayload> for PendingPaymentRequest {
+impl From<ContactPaymentRequestPayload> for PaymentRequest {
     fn from(value: ContactPaymentRequestPayload) -> Self {
         Self {
             id: value.id,
@@ -120,6 +158,8 @@ impl From<ContactPaymentRequestPayload> for PendingPaymentRequest {
             description: value.memo,
             deadline: value.deadline,
             created_at: value.created_at,
+            state: PaymentRequestState::Pending,
+            direction: PaymentRequestDirection::Incoming,
         }
     }
 }

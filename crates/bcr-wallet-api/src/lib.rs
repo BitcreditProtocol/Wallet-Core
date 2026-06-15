@@ -14,9 +14,9 @@ use bcr_common::{
 use bcr_wallet_core::contact::Contact;
 use bcr_wallet_core::name::Name;
 use bcr_wallet_core::types::{
-    self, ListTransactionsResult, MintSummary, PaymentResultCallback, PaymentSummary,
-    PendingPaymentRequest, PendingPaymentSubscriptionCallback, Seed, TransactionCursor,
-    TransactionFilters, TransactionSort, WalletConfig,
+    self, ListTransactionsResult, MintSummary, PaymentRequest, PaymentRequestDirection,
+    PaymentRequestState, PaymentResultCallback, PaymentSummary, PendingPaymentSubscriptionCallback,
+    Seed, TransactionCursor, TransactionFilters, TransactionSort, WalletConfig,
 };
 use bcr_wallet_core::util::{
     build_wallet_id, keypair_from_mnemonic, keypair_from_seed, seed_from_mnemonic,
@@ -421,77 +421,79 @@ impl AppState {
         Ok(payment_req_id)
     }
 
-    pub async fn wallet_subscribe_to_pending_payment_requests(
+    pub async fn wallet_subscribe_to_payment_requests(
         &self,
         wallet_id: String,
         cancel_token: CancellationToken,
         item_callback: PendingPaymentSubscriptionCallback,
     ) -> Result<()> {
-        tracing::debug!("wallet_subscribe_to_pending_payment_requests({wallet_id})");
+        tracing::debug!("wallet_subscribe_to_payment_requests({wallet_id})");
         let wallet = self.get_wallet(&wallet_id).await?;
         wallet
             .read()
             .await
-            .subscribe_to_pending_payment_requests(cancel_token, item_callback)
+            .subscribe_to_payment_requests(cancel_token, item_callback)
             .await?;
         Ok(())
     }
 
-    pub async fn wallet_list_pending_payment_requests(
+    pub async fn wallet_list_payment_requests(
         &self,
         wallet_id: String,
-    ) -> Result<Vec<PendingPaymentRequest>> {
-        tracing::debug!("wallet_list_pending_payment_requests({wallet_id})");
+        direction: PaymentRequestDirection,
+        states: Vec<PaymentRequestState>,
+    ) -> Result<Vec<PaymentRequest>> {
+        tracing::debug!("wallet_list_payment_requests({wallet_id})");
         let wallet = self.get_wallet(&wallet_id).await?;
-        let res = wallet.read().await.list_pending_payment_requests().await?;
+        let res = wallet
+            .read()
+            .await
+            .list_payment_requests(direction, states)
+            .await?;
         Ok(res)
     }
 
-    pub async fn wallet_get_pending_payment_request(
+    pub async fn wallet_get_payment_request(
         &self,
         wallet_id: String,
-        pending_payment_req_id: String,
-    ) -> Result<PendingPaymentRequest> {
-        tracing::debug!(
-            "wallet_get_pending_payment_request({wallet_id}, {pending_payment_req_id})"
-        );
-        let pending_payment_req_id = Uuid::from_str(&pending_payment_req_id)?;
+        payment_req_id: String,
+    ) -> Result<PaymentRequest> {
+        tracing::debug!("wallet_get_payment_request({wallet_id}, {payment_req_id})");
+        let payment_req_id = Uuid::from_str(&payment_req_id)?;
         let wallet = self.get_wallet(&wallet_id).await?;
         match wallet
             .read()
             .await
-            .get_pending_payment_request(pending_payment_req_id)
+            .get_payment_request(payment_req_id)
             .await?
         {
             Some(p) => Ok(p),
-            None => Err(Error::PendingPaymentRequestNotFound(pending_payment_req_id)),
+            None => Err(Error::PaymentRequestNotFound(payment_req_id)),
         }
     }
 
-    pub async fn wallet_prepare_pay_pending_payment_request(
+    pub async fn wallet_prepare_pay_payment_request(
         &self,
         wallet_id: String,
-        pending_payment_req_id: String,
+        payment_req_id: String,
     ) -> Result<PaymentSummary> {
-        tracing::debug!(
-            "wallet_prepare_pay_pending_payment_request({wallet_id}, {pending_payment_req_id})"
-        );
-        let pending_payment_req_id = Uuid::from_str(&pending_payment_req_id)?;
+        tracing::debug!("wallet_prepare_pay_payment_request({wallet_id}, {payment_req_id})");
+        let payment_req_id = Uuid::from_str(&payment_req_id)?;
         let wallet = self.get_wallet(&wallet_id).await?;
         let tx_id = wallet
             .read()
             .await
-            .prepare_pay_pending_payment_request(pending_payment_req_id)
+            .prepare_pay_payment_request(payment_req_id)
             .await?;
         Ok(tx_id)
     }
 
-    pub async fn wallet_pay_pending_payment_request(
+    pub async fn wallet_pay_payment_request(
         &self,
         wallet_id: String,
         rid: String,
     ) -> Result<TransactionId> {
-        tracing::debug!("wallet_pay_pending_payment_request({wallet_id}, {rid})");
+        tracing::debug!("wallet_pay_payment_request({wallet_id}, {rid})");
         let tstamp = chrono::Utc::now().timestamp() as u64;
         let p_id = Uuid::from_str(&rid)?;
         let wallet = self.get_wallet(&wallet_id).await?;
@@ -499,20 +501,34 @@ impl AppState {
         Ok(tx_id)
     }
 
-    pub async fn wallet_reject_pending_payment_request(
+    pub async fn wallet_reject_payment_request(
         &self,
         wallet_id: String,
-        pending_payment_req_id: String,
+        payment_req_id: String,
     ) -> Result<()> {
-        tracing::debug!(
-            "wallet_reject_pending_payment_request({wallet_id}, {pending_payment_req_id})"
-        );
-        let pending_payment_req_id = Uuid::from_str(&pending_payment_req_id)?;
+        tracing::debug!("wallet_reject_payment_request({wallet_id}, {payment_req_id})");
+        let payment_req_id = Uuid::from_str(&payment_req_id)?;
         let wallet = self.get_wallet(&wallet_id).await?;
         wallet
             .read()
             .await
-            .reject_pending_payment_request(pending_payment_req_id)
+            .reject_payment_request(payment_req_id)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn wallet_cancel_payment_request(
+        &self,
+        wallet_id: String,
+        payment_req_id: String,
+    ) -> Result<()> {
+        tracing::debug!("wallet_cancel_payment_request({wallet_id}, {payment_req_id})");
+        let payment_req_id = Uuid::from_str(&payment_req_id)?;
+        let wallet = self.get_wallet(&wallet_id).await?;
+        wallet
+            .read()
+            .await
+            .cancel_payment_request(payment_req_id)
             .await?;
         Ok(())
     }
@@ -672,7 +688,7 @@ impl AppState {
         wallet_id: String,
         amount: u64,
         description: Option<String>,
-    ) -> Result<PaymentRequest> {
+    ) -> Result<Cdk18PaymentRequest> {
         tracing::debug!("wallet_prepare_pay_request({wallet_id}, {amount}, {description:?})");
 
         let amount = cashu::Amount::from(amount);
@@ -684,7 +700,7 @@ impl AppState {
             .await
             .prepare_cdk18_payment_request(amount, unit, description)
             .await?;
-        Ok(PaymentRequest {
+        Ok(Cdk18PaymentRequest {
             p_id: request.payment_id.clone().unwrap_or_default(),
             request: request.to_string(),
         })
@@ -1046,7 +1062,7 @@ pub fn is_valid_token(token: &str) -> Result<Token> {
 // FFI types
 
 #[derive(Default, Clone, Debug)]
-pub struct PaymentRequest {
+pub struct Cdk18PaymentRequest {
     pub request: String,
     pub p_id: String,
 }
@@ -1128,7 +1144,7 @@ async fn build_wallet(
     nostr_cl: Arc<nostr::Client>,
 ) -> Result<Arc<RwLock<wallet::Wallet>>> {
     // building wallet dbs
-    let (tx_repo, debitdb, mintmeltdb, nostrdb, contactdb, pending_payment_request_db) =
+    let (tx_repo, debitdb, mintmeltdb, nostrdb, contactdb, pending_incoming_payment_request_db) =
         build_wallet_dbs(db_version, &w_cfg.wallet_id, &w_cfg.debit, db).await?;
 
     let nostr_repo = Arc::new(nostrdb);
@@ -1171,7 +1187,7 @@ async fn build_wallet(
         w_cfg.mint_keyset_infos,
         Box::new(tx_repo),
         Box::new(contactdb),
-        Box::new(pending_payment_request_db),
+        Box::new(pending_incoming_payment_request_db),
         debit_pocket,
         w_cfg.name,
         w_cfg.wallet_id,

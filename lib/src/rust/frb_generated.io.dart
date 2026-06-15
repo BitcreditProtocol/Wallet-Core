@@ -104,6 +104,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletCancelPaymentRequestRequest
+  dco_decode_box_autoadd_wallet_cancel_payment_request_request(dynamic raw);
+
+  @protected
   WalletCheckReceivedPaymentRequest
   dco_decode_box_autoadd_wallet_check_received_payment_request(dynamic raw);
 
@@ -129,10 +133,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletGetPendingPaymentRequestRequest
-  dco_decode_box_autoadd_wallet_get_pending_payment_request_request(
-    dynamic raw,
-  );
+  WalletGetPaymentRequestRequest
+  dco_decode_box_autoadd_wallet_get_payment_request_request(dynamic raw);
 
   @protected
   WalletIdForMnemonicAndNetworkRequest
@@ -146,10 +148,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletListPendingPaymentRequestsRequest
-  dco_decode_box_autoadd_wallet_list_pending_payment_requests_request(
-    dynamic raw,
-  );
+  WalletListPaymentRequestsRequest
+  dco_decode_box_autoadd_wallet_list_payment_requests_request(dynamic raw);
 
   @protected
   WalletListTransactionsRequest
@@ -171,8 +171,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletPreparePayPendingPaymentRequestRequest
-  dco_decode_box_autoadd_wallet_prepare_pay_pending_payment_request_request(
+  WalletPreparePayPaymentRequestRequest
+  dco_decode_box_autoadd_wallet_prepare_pay_payment_request_request(
     dynamic raw,
   );
 
@@ -217,10 +217,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_wallet_refresh_transaction_request(dynamic raw);
 
   @protected
-  WalletRejectPendingPaymentRequestRequest
-  dco_decode_box_autoadd_wallet_reject_pending_payment_request_request(
-    dynamic raw,
-  );
+  WalletRejectPaymentRequestRequest
+  dco_decode_box_autoadd_wallet_reject_payment_request_request(dynamic raw);
 
   @protected
   WalletRequest dco_decode_box_autoadd_wallet_request(dynamic raw);
@@ -232,8 +230,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletSubscribeToPendingPaymentRequestsRequest
-  dco_decode_box_autoadd_wallet_subscribe_to_pending_payment_requests_request(
+  WalletSubscribeToPaymentRequestsRequest
+  dco_decode_box_autoadd_wallet_subscribe_to_payment_requests_request(
     dynamic raw,
   );
 
@@ -241,6 +239,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletTransactionRequest dco_decode_box_autoadd_wallet_transaction_request(
     dynamic raw,
   );
+
+  @protected
+  Cdk18PaymentRequest dco_decode_cdk_18_payment_request(dynamic raw);
 
   @protected
   Contact dco_decode_contact(dynamic raw);
@@ -273,12 +274,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<FeesByMonth> dco_decode_list_fees_by_month(dynamic raw);
 
   @protected
-  List<PaymentType> dco_decode_list_payment_type(dynamic raw);
+  List<PaymentRequest> dco_decode_list_payment_request(dynamic raw);
 
   @protected
-  List<PendingPaymentRequest> dco_decode_list_pending_payment_request(
+  List<PaymentRequestListState> dco_decode_list_payment_request_list_state(
     dynamic raw,
   );
+
+  @protected
+  List<PaymentType> dco_decode_list_payment_type(dynamic raw);
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
@@ -335,13 +339,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PaymentRequest dco_decode_payment_request(dynamic raw);
 
   @protected
+  PaymentRequestDirection dco_decode_payment_request_direction(dynamic raw);
+
+  @protected
+  PaymentRequestListState dco_decode_payment_request_list_state(dynamic raw);
+
+  @protected
   PaymentSummary dco_decode_payment_summary(dynamic raw);
 
   @protected
   PaymentType dco_decode_payment_type(dynamic raw);
-
-  @protected
-  PendingPaymentRequest dco_decode_pending_payment_request(dynamic raw);
 
   @protected
   ProtestStatus dco_decode_protest_status(dynamic raw);
@@ -402,6 +409,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletBalanceResponse dco_decode_wallet_balance_response(dynamic raw);
+
+  @protected
+  WalletCancelPaymentRequestRequest
+  dco_decode_wallet_cancel_payment_request_request(dynamic raw);
+
+  @protected
+  WalletCancelPaymentRequestResponse
+  dco_decode_wallet_cancel_payment_request_response(dynamic raw);
 
   @protected
   WalletCheckPendingMintsResponse
@@ -469,12 +484,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletGetContactResponse dco_decode_wallet_get_contact_response(dynamic raw);
 
   @protected
-  WalletGetPendingPaymentRequestRequest
-  dco_decode_wallet_get_pending_payment_request_request(dynamic raw);
+  WalletGetPaymentRequestRequest dco_decode_wallet_get_payment_request_request(
+    dynamic raw,
+  );
 
   @protected
-  WalletGetPendingPaymentRequestResponse
-  dco_decode_wallet_get_pending_payment_request_response(dynamic raw);
+  WalletGetPaymentRequestResponse
+  dco_decode_wallet_get_payment_request_response(dynamic raw);
 
   @protected
   WalletIdForMnemonicAndNetworkRequest
@@ -498,12 +514,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletListPendingPaymentRequestsRequest
-  dco_decode_wallet_list_pending_payment_requests_request(dynamic raw);
+  WalletListPaymentRequestsRequest
+  dco_decode_wallet_list_payment_requests_request(dynamic raw);
 
   @protected
-  WalletListPendingPaymentRequestsResponse
-  dco_decode_wallet_list_pending_payment_requests_response(dynamic raw);
+  WalletListPaymentRequestsResponse
+  dco_decode_wallet_list_payment_requests_response(dynamic raw);
 
   @protected
   WalletListTransactionsRequest dco_decode_wallet_list_transactions_request(
@@ -557,8 +573,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletPrepareMeltRequest dco_decode_wallet_prepare_melt_request(dynamic raw);
 
   @protected
-  WalletPreparePayPendingPaymentRequestRequest
-  dco_decode_wallet_prepare_pay_pending_payment_request_request(dynamic raw);
+  WalletPreparePayPaymentRequestRequest
+  dco_decode_wallet_prepare_pay_payment_request_request(dynamic raw);
 
   @protected
   WalletPreparePaymentByTokenRequest
@@ -637,12 +653,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_wallet_refresh_transactions_response(dynamic raw);
 
   @protected
-  WalletRejectPendingPaymentRequestRequest
-  dco_decode_wallet_reject_pending_payment_request_request(dynamic raw);
+  WalletRejectPaymentRequestRequest
+  dco_decode_wallet_reject_payment_request_request(dynamic raw);
 
   @protected
-  WalletRejectPendingPaymentRequestResponse
-  dco_decode_wallet_reject_pending_payment_request_response(dynamic raw);
+  WalletRejectPaymentRequestResponse
+  dco_decode_wallet_reject_payment_request_response(dynamic raw);
 
   @protected
   WalletRequest dco_decode_wallet_request(dynamic raw);
@@ -656,8 +672,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_wallet_request_payment_from_contact_response(dynamic raw);
 
   @protected
-  WalletSubscribeToPendingPaymentRequestsRequest
-  dco_decode_wallet_subscribe_to_pending_payment_requests_request(dynamic raw);
+  WalletSubscribeToPaymentRequestsRequest
+  dco_decode_wallet_subscribe_to_payment_requests_request(dynamic raw);
 
   @protected
   WalletTransactionIdResponse dco_decode_wallet_transaction_id_response(
@@ -760,6 +776,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletCancelPaymentRequestRequest
+  sse_decode_box_autoadd_wallet_cancel_payment_request_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   WalletCheckReceivedPaymentRequest
   sse_decode_box_autoadd_wallet_check_received_payment_request(
     SseDeserializer deserializer,
@@ -793,8 +815,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletGetPendingPaymentRequestRequest
-  sse_decode_box_autoadd_wallet_get_pending_payment_request_request(
+  WalletGetPaymentRequestRequest
+  sse_decode_box_autoadd_wallet_get_payment_request_request(
     SseDeserializer deserializer,
   );
 
@@ -810,8 +832,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletListPendingPaymentRequestsRequest
-  sse_decode_box_autoadd_wallet_list_pending_payment_requests_request(
+  WalletListPaymentRequestsRequest
+  sse_decode_box_autoadd_wallet_list_payment_requests_request(
     SseDeserializer deserializer,
   );
 
@@ -843,8 +865,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletPreparePayPendingPaymentRequestRequest
-  sse_decode_box_autoadd_wallet_prepare_pay_pending_payment_request_request(
+  WalletPreparePayPaymentRequestRequest
+  sse_decode_box_autoadd_wallet_prepare_pay_payment_request_request(
     SseDeserializer deserializer,
   );
 
@@ -899,8 +921,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletRejectPendingPaymentRequestRequest
-  sse_decode_box_autoadd_wallet_reject_pending_payment_request_request(
+  WalletRejectPaymentRequestRequest
+  sse_decode_box_autoadd_wallet_reject_payment_request_request(
     SseDeserializer deserializer,
   );
 
@@ -916,13 +938,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletSubscribeToPendingPaymentRequestsRequest
-  sse_decode_box_autoadd_wallet_subscribe_to_pending_payment_requests_request(
+  WalletSubscribeToPaymentRequestsRequest
+  sse_decode_box_autoadd_wallet_subscribe_to_payment_requests_request(
     SseDeserializer deserializer,
   );
 
   @protected
   WalletTransactionRequest sse_decode_box_autoadd_wallet_transaction_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  Cdk18PaymentRequest sse_decode_cdk_18_payment_request(
     SseDeserializer deserializer,
   );
 
@@ -963,12 +990,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<FeesByMonth> sse_decode_list_fees_by_month(SseDeserializer deserializer);
 
   @protected
-  List<PaymentType> sse_decode_list_payment_type(SseDeserializer deserializer);
-
-  @protected
-  List<PendingPaymentRequest> sse_decode_list_pending_payment_request(
+  List<PaymentRequest> sse_decode_list_payment_request(
     SseDeserializer deserializer,
   );
+
+  @protected
+  List<PaymentRequestListState> sse_decode_list_payment_request_list_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<PaymentType> sse_decode_list_payment_type(SseDeserializer deserializer);
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
@@ -1043,15 +1075,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PaymentRequest sse_decode_payment_request(SseDeserializer deserializer);
 
   @protected
+  PaymentRequestDirection sse_decode_payment_request_direction(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  PaymentRequestListState sse_decode_payment_request_list_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   PaymentSummary sse_decode_payment_summary(SseDeserializer deserializer);
 
   @protected
   PaymentType sse_decode_payment_type(SseDeserializer deserializer);
-
-  @protected
-  PendingPaymentRequest sse_decode_pending_payment_request(
-    SseDeserializer deserializer,
-  );
 
   @protected
   ProtestStatus sse_decode_protest_status(SseDeserializer deserializer);
@@ -1124,6 +1161,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletBalanceResponse sse_decode_wallet_balance_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletCancelPaymentRequestRequest
+  sse_decode_wallet_cancel_payment_request_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletCancelPaymentRequestResponse
+  sse_decode_wallet_cancel_payment_request_response(
     SseDeserializer deserializer,
   );
 
@@ -1207,16 +1256,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletGetPendingPaymentRequestRequest
-  sse_decode_wallet_get_pending_payment_request_request(
+  WalletGetPaymentRequestRequest sse_decode_wallet_get_payment_request_request(
     SseDeserializer deserializer,
   );
 
   @protected
-  WalletGetPendingPaymentRequestResponse
-  sse_decode_wallet_get_pending_payment_request_response(
-    SseDeserializer deserializer,
-  );
+  WalletGetPaymentRequestResponse
+  sse_decode_wallet_get_payment_request_response(SseDeserializer deserializer);
 
   @protected
   WalletIdForMnemonicAndNetworkRequest
@@ -1246,14 +1292,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletListPendingPaymentRequestsRequest
-  sse_decode_wallet_list_pending_payment_requests_request(
-    SseDeserializer deserializer,
-  );
+  WalletListPaymentRequestsRequest
+  sse_decode_wallet_list_payment_requests_request(SseDeserializer deserializer);
 
   @protected
-  WalletListPendingPaymentRequestsResponse
-  sse_decode_wallet_list_pending_payment_requests_response(
+  WalletListPaymentRequestsResponse
+  sse_decode_wallet_list_payment_requests_response(
     SseDeserializer deserializer,
   );
 
@@ -1321,8 +1365,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletPreparePayPendingPaymentRequestRequest
-  sse_decode_wallet_prepare_pay_pending_payment_request_request(
+  WalletPreparePayPaymentRequestRequest
+  sse_decode_wallet_prepare_pay_payment_request_request(
     SseDeserializer deserializer,
   );
 
@@ -1415,14 +1459,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   sse_decode_wallet_refresh_transactions_response(SseDeserializer deserializer);
 
   @protected
-  WalletRejectPendingPaymentRequestRequest
-  sse_decode_wallet_reject_pending_payment_request_request(
+  WalletRejectPaymentRequestRequest
+  sse_decode_wallet_reject_payment_request_request(
     SseDeserializer deserializer,
   );
 
   @protected
-  WalletRejectPendingPaymentRequestResponse
-  sse_decode_wallet_reject_pending_payment_request_response(
+  WalletRejectPaymentRequestResponse
+  sse_decode_wallet_reject_payment_request_response(
     SseDeserializer deserializer,
   );
 
@@ -1442,8 +1486,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletSubscribeToPendingPaymentRequestsRequest
-  sse_decode_wallet_subscribe_to_pending_payment_requests_request(
+  WalletSubscribeToPaymentRequestsRequest
+  sse_decode_wallet_subscribe_to_payment_requests_request(
     SseDeserializer deserializer,
   );
 
@@ -1586,6 +1630,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_wallet_cancel_payment_request_request(
+    WalletCancelPaymentRequestRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_wallet_check_received_payment_request(
     WalletCheckReceivedPaymentRequest self,
     SseSerializer serializer,
@@ -1622,8 +1672,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_wallet_get_pending_payment_request_request(
-    WalletGetPendingPaymentRequestRequest self,
+  void sse_encode_box_autoadd_wallet_get_payment_request_request(
+    WalletGetPaymentRequestRequest self,
     SseSerializer serializer,
   );
 
@@ -1640,8 +1690,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_wallet_list_pending_payment_requests_request(
-    WalletListPendingPaymentRequestsRequest self,
+  void sse_encode_box_autoadd_wallet_list_payment_requests_request(
+    WalletListPaymentRequestsRequest self,
     SseSerializer serializer,
   );
 
@@ -1676,9 +1726,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void
-  sse_encode_box_autoadd_wallet_prepare_pay_pending_payment_request_request(
-    WalletPreparePayPendingPaymentRequestRequest self,
+  void sse_encode_box_autoadd_wallet_prepare_pay_payment_request_request(
+    WalletPreparePayPaymentRequestRequest self,
     SseSerializer serializer,
   );
 
@@ -1737,8 +1786,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_wallet_reject_pending_payment_request_request(
-    WalletRejectPendingPaymentRequestRequest self,
+  void sse_encode_box_autoadd_wallet_reject_payment_request_request(
+    WalletRejectPaymentRequestRequest self,
     SseSerializer serializer,
   );
 
@@ -1755,15 +1804,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void
-  sse_encode_box_autoadd_wallet_subscribe_to_pending_payment_requests_request(
-    WalletSubscribeToPendingPaymentRequestsRequest self,
+  void sse_encode_box_autoadd_wallet_subscribe_to_payment_requests_request(
+    WalletSubscribeToPaymentRequestsRequest self,
     SseSerializer serializer,
   );
 
   @protected
   void sse_encode_box_autoadd_wallet_transaction_request(
     WalletTransactionRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_cdk_18_payment_request(
+    Cdk18PaymentRequest self,
     SseSerializer serializer,
   );
 
@@ -1810,14 +1864,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_list_payment_type(
-    List<PaymentType> self,
+  void sse_encode_list_payment_request(
+    List<PaymentRequest> self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_list_pending_payment_request(
-    List<PendingPaymentRequest> self,
+  void sse_encode_list_payment_request_list_state(
+    List<PaymentRequestListState> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_payment_type(
+    List<PaymentType> self,
     SseSerializer serializer,
   );
 
@@ -1918,6 +1978,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_payment_request_direction(
+    PaymentRequestDirection self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_payment_request_list_state(
+    PaymentRequestListState self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_payment_summary(
     PaymentSummary self,
     SseSerializer serializer,
@@ -1925,12 +1997,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_payment_type(PaymentType self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_pending_payment_request(
-    PendingPaymentRequest self,
-    SseSerializer serializer,
-  );
 
   @protected
   void sse_encode_protest_status(ProtestStatus self, SseSerializer serializer);
@@ -2025,6 +2091,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_balance_response(
     WalletBalanceResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_cancel_payment_request_request(
+    WalletCancelPaymentRequestRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_cancel_payment_request_response(
+    WalletCancelPaymentRequestResponse self,
     SseSerializer serializer,
   );
 
@@ -2128,14 +2206,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_wallet_get_pending_payment_request_request(
-    WalletGetPendingPaymentRequestRequest self,
+  void sse_encode_wallet_get_payment_request_request(
+    WalletGetPaymentRequestRequest self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_wallet_get_pending_payment_request_response(
-    WalletGetPendingPaymentRequestResponse self,
+  void sse_encode_wallet_get_payment_request_response(
+    WalletGetPaymentRequestResponse self,
     SseSerializer serializer,
   );
 
@@ -2170,14 +2248,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_wallet_list_pending_payment_requests_request(
-    WalletListPendingPaymentRequestsRequest self,
+  void sse_encode_wallet_list_payment_requests_request(
+    WalletListPaymentRequestsRequest self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_wallet_list_pending_payment_requests_response(
-    WalletListPendingPaymentRequestsResponse self,
+  void sse_encode_wallet_list_payment_requests_response(
+    WalletListPaymentRequestsResponse self,
     SseSerializer serializer,
   );
 
@@ -2260,8 +2338,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_wallet_prepare_pay_pending_payment_request_request(
-    WalletPreparePayPendingPaymentRequestRequest self,
+  void sse_encode_wallet_prepare_pay_payment_request_request(
+    WalletPreparePayPaymentRequestRequest self,
     SseSerializer serializer,
   );
 
@@ -2374,14 +2452,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_wallet_reject_pending_payment_request_request(
-    WalletRejectPendingPaymentRequestRequest self,
+  void sse_encode_wallet_reject_payment_request_request(
+    WalletRejectPaymentRequestRequest self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_wallet_reject_pending_payment_request_response(
-    WalletRejectPendingPaymentRequestResponse self,
+  void sse_encode_wallet_reject_payment_request_response(
+    WalletRejectPaymentRequestResponse self,
     SseSerializer serializer,
   );
 
@@ -2401,8 +2479,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_wallet_subscribe_to_pending_payment_requests_request(
-    WalletSubscribeToPendingPaymentRequestsRequest self,
+  void sse_encode_wallet_subscribe_to_payment_requests_request(
+    WalletSubscribeToPaymentRequestsRequest self,
     SseSerializer serializer,
   );
 

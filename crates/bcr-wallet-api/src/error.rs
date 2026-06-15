@@ -151,8 +151,10 @@ pub enum Error {
     SwapCommitmentMismatch,
     #[error("attestation: {0}")]
     Attestation(#[from] bcr_common::wire::attestation::AttestationError),
-    #[error("No pending payment request found for {0}")]
-    PendingPaymentRequestNotFound(Uuid),
+    #[error("No payment request found for {0}")]
+    PaymentRequestNotFound(Uuid),
+    #[error("Given Payment Request {0} was in the wrong state for this operation")]
+    PaymentRequestInWrongState(Uuid),
 }
 
 impl From<bcr_common::core::swap::wallet::Error> for Error {

@@ -14,7 +14,7 @@ use crate::{
     },
 };
 use bcr_common::{
-    cashu::{self, Amount, CurrencyUnit, KeySetInfo, PaymentRequest, Proof, ProofsMethods},
+    cashu::{self, Amount, CurrencyUnit, KeySetInfo, Proof, ProofsMethods},
     cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
     wallet::Token,
     wire::clowder::{ConnectedMintResponse, ConnectedMintsResponse},
@@ -23,14 +23,14 @@ use bcr_wallet_core::{
     contact::Contact,
     event::{ContactPaymentPayload, EventEnvelope},
     types::{
-        CONTACT_NODE_ID_METADATA_KEY, ListTransactionsResult, PaymentType, PendingPaymentRequest,
-        TransactionCursor, TransactionFilters, TransactionSort, TransactionStatus,
-        extract_fees_per_month,
+        CONTACT_NODE_ID_METADATA_KEY, ListTransactionsResult, PAYMENT_REQUEST_ID_METADATA_KEY,
+        PaymentRequest, PaymentType, TransactionCursor, TransactionFilters, TransactionSort,
+        TransactionStatus, extract_fees_per_month,
     },
     util::{from_mint_url, to_mint_url},
 };
 use bcr_wallet_persistence::{
-    ContactStoreApi, NostrRepository, PendingPaymentRequestStoreApi, TransactionRepository,
+    ContactStoreApi, NostrRepository, PaymentRequestStoreApi, TransactionRepository,
 };
 use bcr_wallet_transport::{NostrEventChannel, TransportApi, nostr};
 use bitcoin::{
@@ -51,13 +51,13 @@ pub struct Wallet {
     beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>>,
     tx_repo: Box<dyn TransactionRepository>,
     contact_repo: Box<dyn ContactStoreApi>,
-    pending_payment_request_repo: Box<dyn PendingPaymentRequestStoreApi>,
+    payment_request_repo: Box<dyn PaymentRequestStoreApi>,
     debit: Box<dyn DebitPocketApi>,
     name: String,
     id: String,
     pub_key: secp256k1::PublicKey,
     current_payment: Mutex<Option<PayReference>>,
-    current_payment_request: Mutex<Option<PaymentRequest>>,
+    current_payment_request: Mutex<Option<cashu::PaymentRequest>>,
     clowder_id: secp256k1::PublicKey,
     client_factory: Box<dyn Fn(url::Url) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
     swap_expiry: chrono::TimeDelta,
@@ -75,7 +75,7 @@ impl Wallet {
         mint_keyset_infos: HashMap<cashu::Id, KeySetInfo>,
         tx_repo: Box<dyn TransactionRepository>,
         contact_repo: Box<dyn ContactStoreApi>,
-        pending_payment_request_repo: Box<dyn PendingPaymentRequestStoreApi>,
+        payment_request_repo: Box<dyn PaymentRequestStoreApi>,
         debit: Box<dyn DebitPocketApi>,
         name: String,
         id: String,
@@ -96,7 +96,7 @@ impl Wallet {
             mint_keyset_infos,
             tx_repo,
             contact_repo,
-            pending_payment_request_repo,
+            payment_request_repo,
             debit,
             name,
             id,
@@ -216,10 +216,10 @@ impl Wallet {
                         };
                         match received_evt {
                             bcr_wallet_transport::NostrWalletEvent::ContactPaymentRequest { sender, payload, event_id } => {
-                                let pending_payment_request: PendingPaymentRequest = payload.into();
-                                let payment_request_id = pending_payment_request.id;
+                                let pending_incoming_payment_request: PaymentRequest = payload.into();
+                                let payment_request_id = pending_incoming_payment_request.id;
                                 let wallet_guard = wallet.read().await;
-                                match <Self as api::WalletApi>::add_pending_payment_request(&*wallet_guard, pending_payment_request).await {
+                                match <Self as api::WalletApi>::add_payment_request(&*wallet_guard, pending_incoming_payment_request).await {
                                     Ok(_) => {
                                         tracing::info!("Received contact payment request {payment_request_id} from {sender}, event_id: {event_id}");
                                     },
@@ -232,7 +232,7 @@ impl Wallet {
                                 // ignore - cdk18 payments are handled by explicitly awaiting them
                             },
                             bcr_wallet_transport::NostrWalletEvent::ContactPayment { sender, payload, event_id } => {
-                                let meta = HashMap::from([
+                                let mut meta = HashMap::from([
                                     (String::from("sender"), sender.to_string()),
                                     (String::from("nostr_event_id"), event_id.to_string()),
                                     (
@@ -248,6 +248,12 @@ impl Wallet {
                                         payload.sender.to_string()
                                     ),
                                 ]);
+                                if let Some(p_req_id) = payload.payment_request_id {
+                                    meta.insert(
+                                        PAYMENT_REQUEST_ID_METADATA_KEY.to_owned(),
+                                        p_req_id.to_string(),
+                                    );
+                                }
 
                                 let amount = payload.proofs.total_amount().unwrap_or(Amount::ZERO);
                                 let wallet_guard = wallet.read().await;
@@ -261,6 +267,11 @@ impl Wallet {
                                     meta,
                                 ).await {
                                     Ok(tx_id) => {
+                                        // if it's from a payment request - attempt to set it to paid
+                                        if let Some(p_req_id) = payload.payment_request_id &&
+                                            let Err(e) = <Self as api::WalletApi>::mark_payment_request_as_paid(&*wallet_guard, p_req_id, tx_id).await {
+                                                tracing::error!("Could not set Payment Request {p_req_id} to paid: {e}");
+                                        }
                                         tracing::info!("Received Contact Payment from {} for {} with Transaction ID: {}",
                                             payload.sender, amount, tx_id)
                                     },
@@ -1073,7 +1084,7 @@ mod tests {
         MintSummary, PaymentResultCallback, TimeRange, get_payment_type, get_transaction_status,
     };
     use bcr_wallet_persistence::{
-        MockContactStoreApi, MockNostrRepository, MockPendingPaymentRequestStoreApi,
+        MockContactStoreApi, MockNostrRepository, MockPaymentRequestStoreApi,
         MockTransactionRepository,
         test_utils::tests::{test_pub_key, valid_payment_address_testnet},
     };
@@ -1099,7 +1110,7 @@ mod tests {
         pub debit: MockDebitPocket,
         pub nostr_repo: MockNostrRepository,
         pub contact_repo: MockContactStoreApi,
-        pub pending_payment_request_repo: MockPendingPaymentRequestStoreApi,
+        pub payment_request_repo: MockPaymentRequestStoreApi,
     }
 
     fn wallet_ctx() -> MockWalletCtx {
@@ -1110,7 +1121,7 @@ mod tests {
             debit: MockDebitPocket::new(),
             nostr_repo: MockNostrRepository::new(),
             contact_repo: MockContactStoreApi::new(),
-            pending_payment_request_repo: MockPendingPaymentRequestStoreApi::new(),
+            payment_request_repo: MockPaymentRequestStoreApi::new(),
         }
     }
 
@@ -1146,7 +1157,7 @@ mod tests {
             beta_clients,
             tx_repo: Box::new(ctx.tx_repo),
             contact_repo: Box::new(ctx.contact_repo),
-            pending_payment_request_repo: Box::new(ctx.pending_payment_request_repo),
+            payment_request_repo: Box::new(ctx.payment_request_repo),
             debit: Box::new(ctx.debit),
             name: "wallet-1".to_owned(),
             id: "w-1".to_owned(),

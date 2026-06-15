@@ -29,8 +29,8 @@ use bcr_wallet_core::{
     name::Name,
     types::{
         BTC_TX_ID_TYPE_METADATA_KEY, CONTACT_NODE_ID_METADATA_KEY, PAYMENT_REQUEST_ID_METADATA_KEY,
-        PaymentResultCallback, PaymentType, PendingPaymentRequest,
-        PendingPaymentSubscriptionCallback, TransactionStatus,
+        PaymentRequest, PaymentRequestDirection, PaymentRequestState, PaymentResultCallback,
+        PaymentType, PendingPaymentSubscriptionCallback, TransactionStatus,
     },
     util::{from_mint_url, to_mint_url},
 };
@@ -148,25 +148,29 @@ pub trait WalletApi: SendSync {
         description: Option<String>,
         deadline: Option<u64>,
     ) -> Result<Uuid>;
-    async fn subscribe_to_pending_payment_requests(
+    async fn subscribe_to_payment_requests(
         &self,
         cancel_token: CancellationToken,
         item_callback: PendingPaymentSubscriptionCallback,
     ) -> Result<()>;
-    async fn list_pending_payment_requests(&self) -> Result<Vec<PendingPaymentRequest>>;
-    async fn get_pending_payment_request(
+    async fn list_payment_requests(
         &self,
-        pending_payment_request_id: Uuid,
-    ) -> Result<Option<PendingPaymentRequest>>;
-    async fn add_pending_payment_request(
+        direction: PaymentRequestDirection,
+        states: Vec<PaymentRequestState>,
+    ) -> Result<Vec<PaymentRequest>>;
+    async fn get_payment_request(&self, payment_req_id: Uuid) -> Result<Option<PaymentRequest>>;
+    async fn add_payment_request(
         &self,
-        pending_payment_request: PendingPaymentRequest,
+        pending_incoming_payment_request: PaymentRequest,
     ) -> Result<()>;
-    async fn prepare_pay_pending_payment_request(
+    async fn prepare_pay_payment_request(&self, payment_req_id: Uuid) -> Result<PaymentSummary>;
+    async fn reject_payment_request(&self, payment_req_id: Uuid) -> Result<()>;
+    async fn cancel_payment_request(&self, payment_req_id: Uuid) -> Result<()>;
+    async fn mark_payment_request_as_paid(
         &self,
-        pending_payment_request_id: Uuid,
-    ) -> Result<PaymentSummary>;
-    async fn reject_pending_payment_request(&self, pending_payment_request_id: Uuid) -> Result<()>;
+        payment_req_id: Uuid,
+        tx_id: TransactionId,
+    ) -> Result<()>;
 }
 
 #[async_trait]
@@ -650,15 +654,12 @@ impl WalletApi for super::Wallet {
                         partial_tx,
                     )
                     .await?;
-                // if it was a payment request - delete the pending payment request afterwards
+                // if it was a payment request - mark as paid
                 if let Some(p_req_id) = payment_request_id
-                    && let Err(e) = self
-                        .pending_payment_request_repo
-                        .delete_pending_payment_request(p_req_id)
-                        .await
+                    && let Err(e) = self.mark_payment_request_as_paid(p_req_id, tx_id).await
                 {
                     tracing::warn!(
-                        "Could not delete pending payment request {p_req_id} after successful payment: {e}"
+                        "Could not mark payment request {p_req_id} as paid after successful payment: {e}"
                     );
                 }
                 Ok((tx_id, None))
@@ -1308,7 +1309,7 @@ impl WalletApi for super::Wallet {
         }
 
         // delete pending payment request tables
-        if let Err(e) = self.pending_payment_request_repo.delete_repo().await {
+        if let Err(e) = self.payment_request_repo.delete_repo().await {
             tracing::error!(
                 "Error deleting pending payment request DB for wallet {}: {e}",
                 self.id()
@@ -1393,11 +1394,12 @@ impl WalletApi for super::Wallet {
         let payload = ContactPaymentRequestPayload::new(
             self.node_id(),
             amount,
-            unit,
-            description,
+            unit.clone(),
+            description.clone(),
             deadline,
             to_mint_url(self.client.mint_url()),
         );
+        let created_at = payload.created_at;
         let payment_req_id = payload.id;
         let event: EventEnvelope =
             bcr_wallet_core::event::Event::new_contact_payment_request(payload).try_into()?;
@@ -1426,10 +1428,25 @@ impl WalletApi for super::Wallet {
                 }
             }
         };
+        let outgoing_payment_request = PaymentRequest {
+            id: payment_req_id,
+            node_id,
+            amount,
+            unit,
+            description,
+            deadline,
+            created_at,
+            state: PaymentRequestState::Pending,
+            direction: PaymentRequestDirection::Outgoing,
+        };
+
+        self.payment_request_repo
+            .add_payment_request(outgoing_payment_request)
+            .await?;
         Ok(payment_req_id)
     }
 
-    async fn subscribe_to_pending_payment_requests(
+    async fn subscribe_to_payment_requests(
         &self,
         cancel_token: CancellationToken,
         item_callback: PendingPaymentSubscriptionCallback,
@@ -1439,18 +1456,18 @@ impl WalletApi for super::Wallet {
         loop {
             tokio::select! {
                 _ = cancel_token.cancelled() => {
-                    tracing::info!("subscribe_to_pending_payment_requests cancelled");
+                    tracing::info!("subscribe_to_payment_requests cancelled");
                     return Ok(());
                 },
                 evt = nostr_receiver.recv() => {
                     let received_evt = match evt {
                         Ok(e) => e,
                         Err(broadcast::error::RecvError::Lagged(_)) => {
-                            tracing::warn!("subscribe_to_pending_payment_requests channel lagged behind");
+                            tracing::warn!("subscribe_to_payment_requests channel lagged behind");
                             continue;
                         },
                         Err(broadcast::error::RecvError::Closed) => {
-                            tracing::warn!("subscribe_to_pending_payment_requests channel closed");
+                            tracing::warn!("subscribe_to_payment_requests channel closed");
                             return Ok(());
                         },
                     };
@@ -1459,13 +1476,13 @@ impl WalletApi for super::Wallet {
                         continue;
                     };
                     tracing::info!("Received contact payment request {} from {sender}, event_id: {event_id}", payload.id);
-                    let pending_payment_request: PendingPaymentRequest = payload.into();
-                    let payment_request_id = pending_payment_request.id;
-                    match self.pending_payment_request_repo.add_pending_payment_request(pending_payment_request).await {
+                    let pending_incoming_payment_request: PaymentRequest = payload.into();
+                    let payment_request_id = pending_incoming_payment_request.id;
+                    match self.payment_request_repo.add_payment_request(pending_incoming_payment_request).await {
                         Ok(_) => {
                             item_callback(payment_request_id);
                         },
-                        Err(bcr_wallet_persistence::error::Error::PendingPaymentRequestAlreadyExists(_)) => {
+                        Err(bcr_wallet_persistence::error::Error::PaymentRequestAlreadyExists(_)) => {
                             // already had it - either sent again, or already processed - sending it either way and the caller can choose to ignore it
                             item_callback(payment_request_id);
                         },
@@ -1478,48 +1495,48 @@ impl WalletApi for super::Wallet {
         }
     }
 
-    async fn list_pending_payment_requests(&self) -> Result<Vec<PendingPaymentRequest>> {
+    async fn list_payment_requests(
+        &self,
+        direction: PaymentRequestDirection,
+        states: Vec<PaymentRequestState>,
+    ) -> Result<Vec<PaymentRequest>> {
         let res = self
-            .pending_payment_request_repo
-            .list_pending_payment_requests()
+            .payment_request_repo
+            .list_payment_requests(direction, &states)
             .await?;
         Ok(res)
     }
 
-    async fn get_pending_payment_request(
-        &self,
-        pending_payment_request_id: Uuid,
-    ) -> Result<Option<PendingPaymentRequest>> {
+    async fn get_payment_request(&self, payment_req_id: Uuid) -> Result<Option<PaymentRequest>> {
         let res = self
-            .pending_payment_request_repo
-            .get_pending_payment_request(pending_payment_request_id)
+            .payment_request_repo
+            .get_payment_request(payment_req_id)
             .await?;
         Ok(res)
     }
 
-    async fn add_pending_payment_request(
+    async fn add_payment_request(
         &self,
-        pending_payment_request: PendingPaymentRequest,
+        pending_incoming_payment_request: PaymentRequest,
     ) -> Result<()> {
-        self.pending_payment_request_repo
-            .add_pending_payment_request(pending_payment_request)
+        self.payment_request_repo
+            .add_payment_request(pending_incoming_payment_request)
             .await?;
         Ok(())
     }
 
-    async fn prepare_pay_pending_payment_request(
-        &self,
-        pending_payment_request_id: Uuid,
-    ) -> Result<PaymentSummary> {
+    async fn prepare_pay_payment_request(&self, payment_req_id: Uuid) -> Result<PaymentSummary> {
         let Some(req) = self
-            .pending_payment_request_repo
-            .get_pending_payment_request(pending_payment_request_id)
+            .payment_request_repo
+            .get_payment_request(payment_req_id)
             .await?
         else {
-            return Err(Error::PendingPaymentRequestNotFound(
-                pending_payment_request_id,
-            ));
+            return Err(Error::PaymentRequestNotFound(payment_req_id));
         };
+        // can only pay incoming payment requests
+        if req.direction == PaymentRequestDirection::Outgoing {
+            return Err(Error::PaymentRequestInWrongState(payment_req_id));
+        }
         // has to be added to contacts to pay the payment request
         if self
             .contact_repo
@@ -1548,9 +1565,62 @@ impl WalletApi for super::Wallet {
         Ok(summary)
     }
 
-    async fn reject_pending_payment_request(&self, pending_payment_request_id: Uuid) -> Result<()> {
-        self.pending_payment_request_repo
-            .delete_pending_payment_request(pending_payment_request_id)
+    async fn reject_payment_request(&self, payment_req_id: Uuid) -> Result<()> {
+        let Some(req) = self
+            .payment_request_repo
+            .get_payment_request(payment_req_id)
+            .await?
+        else {
+            return Err(Error::PaymentRequestNotFound(payment_req_id));
+        };
+        if req.direction != PaymentRequestDirection::Incoming {
+            return Err(Error::PaymentRequestInWrongState(payment_req_id));
+        }
+        if req.state != PaymentRequestState::Pending {
+            return Err(Error::PaymentRequestInWrongState(payment_req_id));
+        }
+        self.payment_request_repo
+            .set_payment_request_state(payment_req_id, PaymentRequestState::Rejected)
+            .await?;
+        Ok(())
+    }
+
+    async fn cancel_payment_request(&self, payment_req_id: Uuid) -> Result<()> {
+        let Some(req) = self
+            .payment_request_repo
+            .get_payment_request(payment_req_id)
+            .await?
+        else {
+            return Err(Error::PaymentRequestNotFound(payment_req_id));
+        };
+        if req.direction != PaymentRequestDirection::Outgoing {
+            return Err(Error::PaymentRequestInWrongState(payment_req_id));
+        }
+        if req.state != PaymentRequestState::Pending {
+            return Err(Error::PaymentRequestInWrongState(payment_req_id));
+        }
+        self.payment_request_repo
+            .set_payment_request_state(payment_req_id, PaymentRequestState::Canceled)
+            .await?;
+        Ok(())
+    }
+
+    async fn mark_payment_request_as_paid(
+        &self,
+        payment_req_id: Uuid,
+        tx_id: TransactionId,
+    ) -> Result<()> {
+        if self
+            .payment_request_repo
+            .get_payment_request(payment_req_id)
+            .await?
+            .is_none()
+        {
+            return Err(Error::PaymentRequestNotFound(payment_req_id));
+        }
+        // paid overrides rejected/cancelled, if it's set
+        self.payment_request_repo
+            .set_payment_request_state(payment_req_id, PaymentRequestState::Paid { tx_id })
             .await?;
         Ok(())
     }

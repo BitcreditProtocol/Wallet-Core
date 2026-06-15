@@ -145,25 +145,18 @@ enum Commands {
         node_id: String,
         amount: u64,
     },
-    #[command(name = "subscribe_to_pprs")]
-    SubscribeToPendingPaymentRequests { id: String },
-    #[command(name = "list_pprs")]
-    ListPendingPaymentRequests { id: String },
-    #[command(name = "get_ppr")]
-    GetPendingPaymentRequest {
-        id: String,
-        pending_payment_req_id: String,
-    },
-    #[command(name = "pay_ppr")]
-    PayPendingPaymentRequest {
-        id: String,
-        pending_payment_req_id: String,
-    },
-    #[command(name = "reject_ppr")]
-    RejectPendingPaymentRequest {
-        id: String,
-        pending_payment_req_id: String,
-    },
+    #[command(name = "subscribe_to_prs")]
+    SubscribeToPaymentRequests { id: String },
+    #[command(name = "list_prs")]
+    ListPaymentRequests { id: String },
+    #[command(name = "get_pr")]
+    GetPaymentRequest { id: String, payment_req_id: String },
+    #[command(name = "pay_pr")]
+    PayPaymentRequest { id: String, payment_req_id: String },
+    #[command(name = "reject_pr")]
+    RejectPaymentRequest { id: String, payment_req_id: String },
+    #[command(name = "cancel_pr")]
+    CancelPaymentRequest { id: String, payment_req_id: String },
 }
 
 #[tokio::main]
@@ -473,49 +466,46 @@ async fn main() -> Result<()> {
                 .await?
             );
         }
-        Commands::SubscribeToPendingPaymentRequests { id } => {
+        Commands::SubscribeToPaymentRequests { id } => {
             info!(
                 "Subscribe to Payment Requests for {}: {}",
                 cli.wallet,
-                command::cmd_subscribe_to_pprs(&app_state, &cli.wallet, &id).await?
+                command::cmd_subscribe_to_prs(&app_state, &cli.wallet, &id).await?
             );
         }
-        Commands::ListPendingPaymentRequests { id } => {
+        Commands::ListPaymentRequests { id } => {
             info!(
                 "List Pending Payment Requests for {}: {}",
                 cli.wallet,
-                command::cmd_list_pprs(&app_state, &cli.wallet, &id).await?
+                command::cmd_list_prs(&app_state, &cli.wallet, &id).await?
             );
         }
-        Commands::GetPendingPaymentRequest {
-            id,
-            pending_payment_req_id,
-        } => {
+        Commands::GetPaymentRequest { id, payment_req_id } => {
             info!(
                 "Get Pending Payment Request for {}: {}",
                 cli.wallet,
-                command::cmd_get_ppr(&app_state, &cli.wallet, &id, &pending_payment_req_id).await?
+                command::cmd_get_pr(&app_state, &cli.wallet, &id, &payment_req_id).await?
             );
         }
-        Commands::PayPendingPaymentRequest {
-            id,
-            pending_payment_req_id,
-        } => {
+        Commands::PayPaymentRequest { id, payment_req_id } => {
             info!(
                 "Pay Pending Payment Request for {}: {}",
                 cli.wallet,
-                command::cmd_pay_ppr(&app_state, &cli.wallet, &id, &pending_payment_req_id).await?
+                command::cmd_pay_pr(&app_state, &cli.wallet, &id, &payment_req_id).await?
             );
         }
-        Commands::RejectPendingPaymentRequest {
-            id,
-            pending_payment_req_id,
-        } => {
+        Commands::RejectPaymentRequest { id, payment_req_id } => {
             info!(
                 "Reject Pending Payment Request for {}: {}",
                 cli.wallet,
-                command::cmd_reject_ppr(&app_state, &cli.wallet, &id, &pending_payment_req_id)
-                    .await?
+                command::cmd_reject_pr(&app_state, &cli.wallet, &id, &payment_req_id).await?
+            );
+        }
+        Commands::CancelPaymentRequest { id, payment_req_id } => {
+            info!(
+                "Cancel Pending Payment Request for {}: {}",
+                cli.wallet,
+                command::cmd_cancel_pr(&app_state, &cli.wallet, &id, &payment_req_id).await?
             );
         }
     }

@@ -4,9 +4,9 @@ use anyhow::Result;
 use bcr_common::cdk_common::wallet::TransactionId;
 use bcr_wallet_api::{AppState, config::CreateWalletConfig};
 use bcr_wallet_core::types::{
-    PaymentResultCallback, PendingPaymentSubscriptionCallback, TransactionFilters, TransactionSort,
-    get_btc_tx_id, get_contact_node_id, get_payment_request_id, get_payment_type,
-    get_transaction_status,
+    PaymentRequestDirection, PaymentResultCallback, PendingPaymentSubscriptionCallback,
+    TransactionFilters, TransactionSort, get_btc_tx_id, get_contact_node_id,
+    get_payment_request_id, get_payment_type, get_transaction_status,
 };
 use chrono::{DateTime, Utc};
 use tokio::sync::oneshot;
@@ -713,7 +713,7 @@ pub async fn cmd_request_payment_from_contact(
     Ok(res)
 }
 
-pub async fn cmd_subscribe_to_pprs(app_state: &AppState, _name: &str, id: &str) -> Result<String> {
+pub async fn cmd_subscribe_to_prs(app_state: &AppState, _name: &str, id: &str) -> Result<String> {
     let mut res = String::new();
     let cancel_token = CancellationToken::new();
     let cancel_token_clone = cancel_token.clone();
@@ -733,7 +733,7 @@ pub async fn cmd_subscribe_to_pprs(app_state: &AppState, _name: &str, id: &str) 
     });
 
     app_state
-        .wallet_subscribe_to_pending_payment_requests(id.to_owned(), cancel_token, res_cb)
+        .wallet_subscribe_to_payment_requests(id.to_owned(), cancel_token, res_cb)
         .await?;
 
     let Ok(id) = rx.await else {
@@ -746,16 +746,29 @@ pub async fn cmd_subscribe_to_pprs(app_state: &AppState, _name: &str, id: &str) 
     Ok(res)
 }
 
-pub async fn cmd_list_pprs(app_state: &AppState, name: &str, id: &str) -> Result<String> {
+pub async fn cmd_list_prs(app_state: &AppState, name: &str, id: &str) -> Result<String> {
     let mut res = String::new();
-    let pprs = app_state
-        .wallet_list_pending_payment_requests(id.to_owned())
+    let incoming_pprs = app_state
+        .wallet_list_payment_requests(id.to_owned(), PaymentRequestDirection::Incoming, vec![])
+        .await?;
+    let outgoing_pprs = app_state
+        .wallet_list_payment_requests(id.to_owned(), PaymentRequestDirection::Outgoing, vec![])
         .await?;
     push_break(&mut res);
     push_break(&mut res);
-    res.push_str(&format!("Pending Payment Requests for {name}:\n"));
+    res.push_str(&format!("Incoming Payment Requests for {name}:\n"));
     push_break(&mut res);
-    for ppr in pprs {
+    for ppr in incoming_pprs {
+        res.push_str(&format!(
+            "Id: {} NodeId: {} Amount: {}\n",
+            ppr.id, ppr.node_id, ppr.amount
+        ));
+        push_break(&mut res);
+    }
+    push_break(&mut res);
+    res.push_str(&format!("Outgoing Payment Requests for {name}:\n"));
+    push_break(&mut res);
+    for ppr in outgoing_pprs {
         res.push_str(&format!(
             "Id: {} NodeId: {} Amount: {}\n",
             ppr.id, ppr.node_id, ppr.amount
@@ -766,20 +779,20 @@ pub async fn cmd_list_pprs(app_state: &AppState, name: &str, id: &str) -> Result
     Ok(res)
 }
 
-pub async fn cmd_get_ppr(
+pub async fn cmd_get_pr(
     app_state: &AppState,
     name: &str,
     id: &str,
-    pending_payment_req_id: &str,
+    payment_req_id: &str,
 ) -> Result<String> {
     let mut res = String::new();
     let ppr = app_state
-        .wallet_get_pending_payment_request(id.to_owned(), pending_payment_req_id.to_owned())
+        .wallet_get_payment_request(id.to_owned(), payment_req_id.to_owned())
         .await?;
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!(
-        "Pending Payment Request for {pending_payment_req_id} for {name}:\n"
+        "Pending Payment Request for {payment_req_id} for {name}:\n"
     ));
     push_break(&mut res);
     res.push_str(&format!(
@@ -791,30 +804,27 @@ pub async fn cmd_get_ppr(
     Ok(res)
 }
 
-pub async fn cmd_pay_ppr(
+pub async fn cmd_pay_pr(
     app_state: &AppState,
     name: &str,
     id: &str,
-    pending_payment_req_id: &str,
+    payment_req_id: &str,
 ) -> Result<String> {
     let mut res = String::new();
     let payment_summary = app_state
-        .wallet_prepare_pay_pending_payment_request(
-            id.to_owned(),
-            pending_payment_req_id.to_owned(),
-        )
+        .wallet_prepare_pay_payment_request(id.to_owned(), payment_req_id.to_owned())
         .await?;
     info!(
         "Payment Summary: Amount: {}, Unit: {}, Fees: {}",
         &payment_summary.amount, &payment_summary.unit, &payment_summary.fees,
     );
     let result = app_state
-        .wallet_pay_pending_payment_request(id.to_owned(), payment_summary.request_id.to_string())
+        .wallet_pay_payment_request(id.to_owned(), payment_summary.request_id.to_string())
         .await?;
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!(
-        "Pay Payment Request {pending_payment_req_id} for {name}, Wallet ID: {id}.\n"
+        "Pay Payment Request {payment_req_id} for {name}, Wallet ID: {id}.\n"
     ));
     res.push_str(&format!(
         "Unit: {}, Amount: {}, Fees: {}",
@@ -826,20 +836,39 @@ pub async fn cmd_pay_ppr(
     Ok(res)
 }
 
-pub async fn cmd_reject_ppr(
+pub async fn cmd_reject_pr(
     app_state: &AppState,
     name: &str,
     id: &str,
-    pending_payment_req_id: &str,
+    payment_req_id: &str,
 ) -> Result<String> {
     let mut res = String::new();
     app_state
-        .wallet_reject_pending_payment_request(id.to_owned(), pending_payment_req_id.to_owned())
+        .wallet_reject_payment_request(id.to_owned(), payment_req_id.to_owned())
         .await?;
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!(
-        "Reject Pending Payment Request for {pending_payment_req_id} for {name}:\n"
+        "Reject Pending Payment Request for {payment_req_id} for {name}:\n"
+    ));
+    push_break(&mut res);
+    Ok(res)
+}
+
+pub async fn cmd_cancel_pr(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    payment_req_id: &str,
+) -> Result<String> {
+    let mut res = String::new();
+    app_state
+        .wallet_cancel_payment_request(id.to_owned(), payment_req_id.to_owned())
+        .await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Cancel Pending Payment Request for {payment_req_id} for {name}:\n"
     ));
     push_break(&mut res);
     Ok(res)
