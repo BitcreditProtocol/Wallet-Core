@@ -28,7 +28,7 @@
 
 use crate::api::*;
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
-use flutter_rust_bridge::for_generated::{Lifetimeable, Lockable, transform_result_dco};
+use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
 use flutter_rust_bridge::{Handler, IntoIntoDart};
 
 // Section: boilerplate
@@ -2653,14 +2653,16 @@ impl SseDecode for crate::api::WalletErrorCode {
             19 => crate::api::WalletErrorCode::InsufficientOnChainMeltAmount,
             20 => crate::api::WalletErrorCode::InsufficientOnChainMintAmount,
             21 => crate::api::WalletErrorCode::NoDevMode,
-            22 => crate::api::WalletErrorCode::InvalidBitcoinAddress,
-            23 => crate::api::WalletErrorCode::InvalidMnemonic,
-            24 => crate::api::WalletErrorCode::InvalidTransactionId,
-            25 => crate::api::WalletErrorCode::InvalidCursor,
-            26 => crate::api::WalletErrorCode::SortMismatch,
-            27 => crate::api::WalletErrorCode::MnemonicNotFound,
-            28 => crate::api::WalletErrorCode::WalletUniqueName,
-            29 => crate::api::WalletErrorCode::WalletUniqueId,
+            22 => crate::api::WalletErrorCode::MeltQuoteMismatch,
+            23 => crate::api::WalletErrorCode::SwapCommitmentMismatch,
+            24 => crate::api::WalletErrorCode::InvalidBitcoinAddress,
+            25 => crate::api::WalletErrorCode::InvalidMnemonic,
+            26 => crate::api::WalletErrorCode::InvalidTransactionId,
+            27 => crate::api::WalletErrorCode::InvalidCursor,
+            28 => crate::api::WalletErrorCode::SortMismatch,
+            29 => crate::api::WalletErrorCode::MnemonicNotFound,
+            30 => crate::api::WalletErrorCode::WalletUniqueName,
+            31 => crate::api::WalletErrorCode::WalletUniqueId,
             _ => unreachable!("Invalid variant for WalletErrorCode: {}", inner),
         };
     }
@@ -3896,14 +3898,16 @@ impl flutter_rust_bridge::IntoDart for crate::api::WalletErrorCode {
             Self::InsufficientOnChainMeltAmount => 19.into_dart(),
             Self::InsufficientOnChainMintAmount => 20.into_dart(),
             Self::NoDevMode => 21.into_dart(),
-            Self::InvalidBitcoinAddress => 22.into_dart(),
-            Self::InvalidMnemonic => 23.into_dart(),
-            Self::InvalidTransactionId => 24.into_dart(),
-            Self::InvalidCursor => 25.into_dart(),
-            Self::SortMismatch => 26.into_dart(),
-            Self::MnemonicNotFound => 27.into_dart(),
-            Self::WalletUniqueName => 28.into_dart(),
-            Self::WalletUniqueId => 29.into_dart(),
+            Self::MeltQuoteMismatch => 22.into_dart(),
+            Self::SwapCommitmentMismatch => 23.into_dart(),
+            Self::InvalidBitcoinAddress => 24.into_dart(),
+            Self::InvalidMnemonic => 25.into_dart(),
+            Self::InvalidTransactionId => 26.into_dart(),
+            Self::InvalidCursor => 27.into_dart(),
+            Self::SortMismatch => 28.into_dart(),
+            Self::MnemonicNotFound => 29.into_dart(),
+            Self::WalletUniqueName => 30.into_dart(),
+            Self::WalletUniqueId => 31.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -5300,14 +5304,16 @@ impl SseEncode for crate::api::WalletErrorCode {
                 crate::api::WalletErrorCode::InsufficientOnChainMeltAmount => 19,
                 crate::api::WalletErrorCode::InsufficientOnChainMintAmount => 20,
                 crate::api::WalletErrorCode::NoDevMode => 21,
-                crate::api::WalletErrorCode::InvalidBitcoinAddress => 22,
-                crate::api::WalletErrorCode::InvalidMnemonic => 23,
-                crate::api::WalletErrorCode::InvalidTransactionId => 24,
-                crate::api::WalletErrorCode::InvalidCursor => 25,
-                crate::api::WalletErrorCode::SortMismatch => 26,
-                crate::api::WalletErrorCode::MnemonicNotFound => 27,
-                crate::api::WalletErrorCode::WalletUniqueName => 28,
-                crate::api::WalletErrorCode::WalletUniqueId => 29,
+                crate::api::WalletErrorCode::MeltQuoteMismatch => 22,
+                crate::api::WalletErrorCode::SwapCommitmentMismatch => 23,
+                crate::api::WalletErrorCode::InvalidBitcoinAddress => 24,
+                crate::api::WalletErrorCode::InvalidMnemonic => 25,
+                crate::api::WalletErrorCode::InvalidTransactionId => 26,
+                crate::api::WalletErrorCode::InvalidCursor => 27,
+                crate::api::WalletErrorCode::SortMismatch => 28,
+                crate::api::WalletErrorCode::MnemonicNotFound => 29,
+                crate::api::WalletErrorCode::WalletUniqueName => 30,
+                crate::api::WalletErrorCode::WalletUniqueId => 31,
                 _ => {
                     unimplemented!("");
                 }
@@ -5664,7 +5670,7 @@ mod io {
     use flutter_rust_bridge::for_generated::byteorder::{
         NativeEndian, ReadBytesExt, WriteBytesExt,
     };
-    use flutter_rust_bridge::for_generated::{Lifetimeable, Lockable, transform_result_dco};
+    use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
     use flutter_rust_bridge::{Handler, IntoIntoDart};
 
     // Section: boilerplate
@@ -5703,7 +5709,7 @@ mod web {
     };
     use flutter_rust_bridge::for_generated::wasm_bindgen;
     use flutter_rust_bridge::for_generated::wasm_bindgen::prelude::*;
-    use flutter_rust_bridge::for_generated::{Lifetimeable, Lockable, transform_result_dco};
+    use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
     use flutter_rust_bridge::{Handler, IntoIntoDart};
 
     // Section: boilerplate

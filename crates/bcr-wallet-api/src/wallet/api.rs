@@ -851,6 +851,7 @@ impl WalletApi for super::Wallet {
         &mut self,
         substitute: Arc<dyn ClowderMintConnector>,
     ) -> Result<url::Url> {
+        let substitute_clowder_id = substitute.get_clowder_id().await?;
         let debit_proofs = self.debit.delete_proofs().await?;
 
         // Exchange debit
@@ -859,7 +860,10 @@ impl WalletApi for super::Wallet {
         tracing::info!("Exchanging debit offline");
         for (_, proofs) in debit_proofs.into_iter() {
             let proofs_len = proofs.len();
-            match self.offline_exchange(substitute.as_ref(), proofs).await {
+            match self
+                .offline_exchange(substitute.as_ref(), proofs, substitute_clowder_id)
+                .await
+            {
                 Ok(exchanged) => {
                     exchanged_debit.extend(exchanged);
                 }
@@ -955,6 +959,7 @@ impl WalletApi for super::Wallet {
                 .beta_clients
                 .get(&substitute)
                 .ok_or(Error::BetaNotFound(substitute.clone()))?;
+            let substitute_clowder_id = substitute_client.get_clowder_id().await?;
             // Get keyset infos from substitute
             // Get local proofs
             tracing::debug!("Offline Pay by Token: Get Local Proofs");
@@ -968,6 +973,7 @@ impl WalletApi for super::Wallet {
                 .offline_exchange(
                     substitute_client.as_ref(),
                     local_proofs.into_values().collect(),
+                    substitute_clowder_id,
                 )
                 .await?;
 
