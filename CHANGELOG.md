@@ -6,6 +6,7 @@
 * Update bcr-common and remove support for cashuB tokens
 * Fix intermint exchange fees
 * Fix dealing with new keysets when doing intermint exchanges
+* Fix migrate rabid
 
 # 0.9.3
 

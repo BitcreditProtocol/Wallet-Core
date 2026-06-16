@@ -369,6 +369,10 @@ impl super::PocketApi for Pocket {
         self.unit.clone()
     }
 
+    fn set_beta_provider(&mut self, beta_provider: Arc<dyn BetaProvider>) {
+        self.beta = beta_provider;
+    }
+
     async fn balance(
         &self,
         keysets_info: &HashMap<cashu::Id, KeySetInfo>,
@@ -488,11 +492,14 @@ impl super::PocketApi for Pocket {
         let mut proofs_by_keyset = HashMap::<cashu::Id, Vec<cdk00::Proof>>::new();
 
         for y in proofs.iter() {
-            if let Some(proof) = self.pdb.delete_proof(*y).await? {
-                proofs_by_keyset
-                    .entry(proof.keyset_id)
-                    .or_default()
-                    .push(proof);
+            if let Some((proof, state)) = self.pdb.delete_proof(*y).await? {
+                // delete all, but return only unspent proofs
+                if matches!(state, cdk07::State::Unspent) {
+                    proofs_by_keyset
+                        .entry(proof.keyset_id)
+                        .or_default()
+                        .push(proof);
+                }
             }
         }
 

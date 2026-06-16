@@ -619,11 +619,17 @@ impl PocketRepository for PocketDB {
             .collect())
     }
 
-    async fn delete_proof(&self, y: cdk01::PublicKey) -> Result<Option<cdk00::Proof>> {
+    async fn delete_proof(
+        &self,
+        y: cdk01::PublicKey,
+    ) -> Result<Option<(cdk00::Proof, cdk07::State)>> {
         let db_clone = self.db.clone();
         let table = self.proof_table;
         let proof = spawn_blocking(move || Self::delete_proof_sync(db_clone, table, y)).await??;
-        Ok(proof.map(|p| p.into()))
+        Ok(proof.map(|p| {
+            let state = p.state;
+            (p.into(), state)
+        }))
     }
 
     async fn list_unspent(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {

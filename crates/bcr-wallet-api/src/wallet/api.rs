@@ -1,7 +1,10 @@
 use crate::{
     ClowderMintConnector,
     error::{Error, Result},
-    pocket::debit::{MeltProtestResult, ProtestResult},
+    pocket::{
+        RandomBetaProvider,
+        debit::{MeltProtestResult, ProtestResult},
+    },
     types::{
         MintSummary, PAYMENT_TYPE_METADATA_KEY, PaymentSummary, TRANSACTION_STATUS_METADATA_KEY,
         WalletConfig,
@@ -855,23 +858,30 @@ impl WalletApi for super::Wallet {
         let debit_proofs = self.debit.delete_proofs().await?;
 
         // Exchange debit
-        let mut exchanged_debit = Vec::new();
+        let mut exchanged_proofs = Vec::new();
 
-        tracing::info!("Exchanging debit offline");
-        for (_, proofs) in debit_proofs.into_iter() {
-            let proofs_len = proofs.len();
-            match self
-                .offline_exchange(substitute.as_ref(), proofs, substitute_clowder_id)
-                .await
-            {
-                Ok(exchanged) => {
-                    exchanged_debit.extend(exchanged);
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "Could not exchange {} proofs during pocket migration: {e}",
-                        proofs_len
-                    );
+        tracing::info!("Exchanging proofs offline");
+        for (keyset_id, proofs) in debit_proofs.into_iter() {
+            tracing::info!(
+                "Exchanging {} proofs for keyset: {}",
+                proofs.len(),
+                keyset_id
+            );
+            for proof in proofs {
+                let proof_y = proof.y();
+                let proof_amount = proof.amount;
+                match self
+                    .offline_exchange(substitute.as_ref(), vec![proof], substitute_clowder_id)
+                    .await
+                {
+                    Ok(exchanged) => {
+                        exchanged_proofs.extend(exchanged);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Could not exchange proof {proof_y:?} with amount {proof_amount} for keyset {keyset_id} during pocket migration: {e}",
+                        );
+                    }
                 }
             }
         }
@@ -886,6 +896,13 @@ impl WalletApi for super::Wallet {
         }
         self.beta_clients = beta_clients;
 
+        let beta_provider = Arc::new(RandomBetaProvider::new(
+            self.beta_clients.values().cloned().collect(),
+            self.clowder_id,
+        )?);
+
+        self.debit.set_beta_provider(beta_provider);
+
         // Swap intermint exchanged proofs
         tracing::info!("Swapping exchanged proofs");
         let keysets_info = self.get_wallet_mint_keyset_infos().await?;
@@ -893,7 +910,7 @@ impl WalletApi for super::Wallet {
             .receive_proofs(
                 self.client.clone(),
                 &keysets_info,
-                exchanged_debit,
+                exchanged_proofs,
                 self.swap_config(),
             )
             .await?;

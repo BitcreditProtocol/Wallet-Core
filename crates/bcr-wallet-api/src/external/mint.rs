@@ -593,7 +593,10 @@ impl ClowderMintConnector for HttpClientExt {
         &self,
         request: wire_attestation::IssuanceAttestationRequest,
     ) -> Result<wire_attestation::IssuanceAttestation> {
-        debug!("HTTP call to post_attest_issuance");
+        debug!(
+            "HTTP call to post_attest_issuance on {}",
+            self.main.mint_url()
+        );
         Ok(self.main.post_attest_issuance(&request).await?)
     }
 }
@@ -961,7 +964,10 @@ impl ClowderMintConnector for SentinelClient {
         &self,
         request: wire_attestation::IssuanceAttestationRequest,
     ) -> Result<wire_attestation::IssuanceAttestation> {
-        debug!("HTTP call to post_attest_issuance on sentinel");
+        debug!(
+            "HTTP call to post_attest_issuance on sentinel {}",
+            self.main.mint_url()
+        );
         Ok(self.main.post_attest_issuance(&request).await?)
     }
 }
