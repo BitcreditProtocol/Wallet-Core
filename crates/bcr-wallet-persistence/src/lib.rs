@@ -47,7 +47,10 @@ pub trait PocketRepository: SendSync {
         &self,
         ys: &[cdk01::PublicKey],
     ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
-    async fn delete_proof(&self, y: cdk01::PublicKey) -> Result<Option<cdk00::Proof>>;
+    async fn delete_proof(
+        &self,
+        y: cdk01::PublicKey,
+    ) -> Result<Option<(cdk00::Proof, cdk07::State)>>;
     async fn list_unspent(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn list_pending(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;
     async fn list_reserved(&self) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>>;

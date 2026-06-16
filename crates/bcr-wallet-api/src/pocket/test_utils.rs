@@ -111,6 +111,7 @@ pub mod tests {
         #[async_trait]
         impl PocketApi for DebitPocket {
             fn unit(&self) -> CurrencyUnit;
+            fn set_beta_provider(&mut self, beta_provider: Arc<dyn crate::pocket::BetaProvider>);
             async fn balance(&self,
                 keysets_info: &HashMap<cashu::Id, KeySetInfo>,
             ) -> Result<crate::pocket::PocketBalance>;
