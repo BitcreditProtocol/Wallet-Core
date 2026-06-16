@@ -471,7 +471,9 @@ impl Wallet {
         }
         let initial_amount = proofs.total_amount()?;
         let mut proofs = proofs;
+        let mut is_intermint = false;
         if &mint != self.client.mint_url() {
+            is_intermint = true;
             if let Some((clowder_path, _)) = intermint_infos {
                 let alpha_id = clowder_path.mints[0].node_id;
                 let alpha_client = (self.client_factory)(mint.clone());
@@ -527,11 +529,18 @@ impl Wallet {
             };
         }
 
+        // refresh keyset infos if it was intermint, since it could have changed in-between (added new keyset)
+        let alpha_keysets_info = if is_intermint {
+            &self.get_wallet_mint_keyset_infos().await?
+        } else {
+            local_alpha_keysets_info
+        };
+
         let (stored_amount, ys) = self
             .debit
             .receive_proofs(
                 self.client.clone(),
-                local_alpha_keysets_info,
+                alpha_keysets_info,
                 proofs,
                 self.swap_config(),
             )
