@@ -32,4 +32,3 @@ uuid = {workspace = true}
 bcr-common = {workspace = true, features = ["test-utils"]}
 bcr-wallet-persistence = {workspace = true, features = ["test-utils", "db-redb"]}
 mockall = { workspace = true}
-nostr-relay-builder = "0.43"

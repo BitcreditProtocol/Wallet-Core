@@ -332,7 +332,6 @@ dependencies = [
  "futures",
  "mockall",
  "nostr",
- "nostr-relay-builder",
  "rand 0.9.4",
  "reqwest",
  "secp256k1",
@@ -2252,22 +2251,6 @@ dependencies = [
  "lru",
  "nostr",
  "tokio",
-]
-
-[[package]]
-name = "nostr-relay-builder"
-version = "0.43.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "019df99035f53643078e4733b9559f6d5a2f666d576e26254aa3ab8a043eb86e"
-dependencies = [
- "async-utility",
- "async-wsocket",
- "atomic-destructor",
- "negentropy",
- "nostr",
- "nostr-database",
- "tokio",
- "tracing",
 ]
 
 [[package]]

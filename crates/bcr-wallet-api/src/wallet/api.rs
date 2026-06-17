@@ -599,6 +599,7 @@ impl WalletApi for super::Wallet {
                 node_id,
                 payment_request_id,
             } => {
+                self.refresh_contact_relays(&node_id).await;
                 let Ok(Some(contact)) = self.contact_repo.get_contact(node_id.clone()).await else {
                     return Err(Error::ContactNotFound(node_id));
                 };
@@ -1138,6 +1139,7 @@ impl WalletApi for super::Wallet {
         {
             return Err(Error::ContactNotFound(node_id));
         }
+        self.refresh_contact_relays(&node_id).await;
 
         let infos = self.get_wallet_mint_keyset_infos().await?;
 
@@ -1388,6 +1390,7 @@ impl WalletApi for super::Wallet {
         description: Option<String>,
         deadline: Option<u64>,
     ) -> Result<Uuid> {
+        self.refresh_contact_relays(&node_id).await;
         let Ok(Some(contact)) = self.contact_repo.get_contact(node_id.clone()).await else {
             return Err(Error::ContactNotFound(node_id));
         };

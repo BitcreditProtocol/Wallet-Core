@@ -17,7 +17,7 @@ use bcr_wallet_core::{
     types::{PaymentRequest, WalletConfig},
 };
 use bitcoin::secp256k1;
-use nostr::types::Timestamp;
+use nostr::{RelayUrl, types::Timestamp};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -197,6 +197,7 @@ pub trait NostrRepository: SendSync {
 pub trait ContactStoreApi: SendSync {
     async fn add_contact(&self, contact: Contact) -> Result<()>;
     async fn edit_contact(&self, node_id: NodeId, name: Name) -> Result<()>;
+    async fn edit_contact_relays(&self, node_id: NodeId, relays: Vec<RelayUrl>) -> Result<()>;
     async fn delete_contact(&self, node_id: NodeId) -> Result<()>;
     async fn get_contact(&self, node_id: NodeId) -> Result<Option<Contact>>;
     async fn list_contacts(&self, search_term: Option<String>) -> Result<Vec<Contact>>;
