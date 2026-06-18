@@ -106,6 +106,31 @@ impl ContactDB {
         Ok(())
     }
 
+    fn edit_contact_relays_sync(
+        db: Arc<Database>,
+        contact_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        node_id: NodeId,
+        relays: Vec<RelayUrl>,
+    ) -> Result<()> {
+        let id = node_id.clone();
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(contact_table)?;
+            let Some(old_value) = table.get(id.to_string().as_bytes())?.map(|v| v.value()) else {
+                return Ok(());
+            };
+            let mut entry: ContactEntry = ciborium::from_reader(old_value.as_slice())?;
+            entry.nostr_relays = relays;
+            let mut serialized = Vec::new();
+            ciborium::into_writer(&entry, &mut serialized)?;
+            table.insert(id.to_string().as_bytes(), serialized)?;
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
+
     fn delete_contact_sync(
         db: Arc<Database>,
         contact_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
@@ -202,6 +227,13 @@ impl ContactStoreApi for ContactDB {
         let db_clone = self.db.clone();
         let table = self.contact_table;
         spawn_blocking(move || Self::edit_contact_sync(db_clone, table, node_id, name)).await?
+    }
+
+    async fn edit_contact_relays(&self, node_id: NodeId, relays: Vec<RelayUrl>) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.contact_table;
+        spawn_blocking(move || Self::edit_contact_relays_sync(db_clone, table, node_id, relays))
+            .await?
     }
 
     async fn delete_contact(&self, node_id: NodeId) -> Result<()> {
@@ -320,7 +352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_edot_contact_overwrites_existing_contact_for_same_node_id() {
+    async fn test_edit_contact_overwrites_existing_contact_for_same_node_id() {
         let repo = get_db("wallet-overwrite-contact");
         let node_id = node_id(NODE_ID_1);
 
@@ -343,6 +375,39 @@ mod tests {
             .expect("contact exists");
 
         assert_eq!(result.name, name("Alice Updated"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_contact_relays_overwrites_existing_contact_relays_for_same_node_id() {
+        let repo = get_db("wallet-overwrite-contact");
+        let node_id = node_id(NODE_ID_1);
+
+        repo.add_contact(Contact {
+            node_id: node_id.clone(),
+            name: name("Alice"),
+            nostr_relays: vec![RelayUrl::from_str("wss://test.example").unwrap()],
+        })
+        .await
+        .expect("add contact works");
+
+        let new_relays = vec![RelayUrl::from_str("wss://test2.example").unwrap()];
+
+        repo.edit_contact_relays(node_id.clone(), new_relays)
+            .await
+            .expect("edit updated contact relays works");
+
+        let result = repo
+            .get_contact(node_id)
+            .await
+            .expect("get_contact works")
+            .expect("contact exists");
+
+        assert!(
+            result
+                .nostr_relays
+                .contains(&RelayUrl::from_str("wss://test2.example").unwrap())
+        );
+        assert!(result.nostr_relays.len() == 1);
     }
 
     #[tokio::test]

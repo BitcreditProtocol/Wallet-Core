@@ -82,6 +82,7 @@ jobs:
             --excl-start 'mod tests \{' \
             --ignore 'tests/*' \
             --ignore "crates/bcr-wallet-ffi/*" \
+            --ignore "crates/bcr-wallet-cli/*" \
             --keep-only "crates/*" \
             -o lcov.info \
             -t lcov `find crates -name coverage`

@@ -373,6 +373,10 @@ impl AppState {
         let wallet = self.get_wallet(&wallet_id).await?;
         let unit = wallet.read().await.debit_unit();
         let node_id = NodeId::from_str(&node_id)?;
+        let wallet_network = wallet.read().await.network();
+        if node_id.network() != wallet_network {
+            return Err(Error::InvalidNetwork(wallet_network, node_id.network()));
+        }
 
         let summary = wallet
             .read()
@@ -412,6 +416,10 @@ impl AppState {
         let node_id = NodeId::from_str(&node_id)?;
         let amount = cashu::Amount::from(amount);
         let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet_network = wallet.read().await.network();
+        if node_id.network() != wallet_network {
+            return Err(Error::InvalidNetwork(wallet_network, node_id.network()));
+        }
         let unit = wallet.read().await.debit_unit();
         let payment_req_id = wallet
             .read()
@@ -795,6 +803,10 @@ impl AppState {
         let node_id = NodeId::from_str(&node_id)?;
         let name = Name::from_str(&name)?;
         let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet_network = wallet.read().await.network();
+        if node_id.network() != wallet_network {
+            return Err(Error::InvalidNetwork(wallet_network, node_id.network()));
+        }
         wallet.read().await.add_contact(node_id, name).await?;
         Ok(())
     }
@@ -808,6 +820,10 @@ impl AppState {
         let node_id = NodeId::from_str(&node_id)?;
         let name = Name::from_str(&name)?;
         let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet_network = wallet.read().await.network();
+        if node_id.network() != wallet_network {
+            return Err(Error::InvalidNetwork(wallet_network, node_id.network()));
+        }
         wallet.read().await.edit_contact(node_id, name).await?;
         Ok(())
     }
@@ -815,6 +831,10 @@ impl AppState {
     pub async fn wallet_delete_contact(&self, wallet_id: String, node_id: String) -> Result<()> {
         let node_id = NodeId::from_str(&node_id)?;
         let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet_network = wallet.read().await.network();
+        if node_id.network() != wallet_network {
+            return Err(Error::InvalidNetwork(wallet_network, node_id.network()));
+        }
         wallet.read().await.delete_contact(node_id).await?;
         Ok(())
     }
@@ -822,6 +842,10 @@ impl AppState {
     pub async fn wallet_get_contact(&self, wallet_id: String, node_id: String) -> Result<Contact> {
         let node_id = NodeId::from_str(&node_id)?;
         let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet_network = wallet.read().await.network();
+        if node_id.network() != wallet_network {
+            return Err(Error::InvalidNetwork(wallet_network, node_id.network()));
+        }
         match wallet.read().await.get_contact(node_id.clone()).await? {
             Some(c) => Ok(c),
             None => Err(Error::ContactNotFound(node_id)),
