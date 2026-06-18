@@ -1128,7 +1128,7 @@ mod tests {
         nips::nip19::{Nip19Profile, ToBech32},
         types::RelayUrl,
     };
-    use bcr_common::{cashu::nut18 as cdk18, wire::clowder as wire_clowder};
+    use bcr_common::{cashu::nut18 as cdk18, core_tests, wire::clowder as wire_clowder};
     use bcr_wallet_core::{
         event::ContactPaymentRequestPayload,
         name::Name,
@@ -1150,7 +1150,12 @@ mod tests {
     use super::*;
     use crate::{
         external::mint::{HttpClientExt, MockClowderMintConnector},
-        pocket::{PocketBalance, test_utils::tests::MockDebitPocket},
+        pocket::{
+            PocketBalance,
+            test_utils::tests::{
+                MockDebitPocket, mock_commitment_result, setup_attestation_mock, test_kinfos,
+            },
+        },
         wallet::{
             api::WalletApi,
             test_utils::tests::{MockConsumer, MockTransport},
@@ -1193,6 +1198,18 @@ mod tests {
             state,
             direction,
         }
+    }
+
+    fn test_keyset_and_proofs(
+        amounts: &[Amount],
+    ) -> (
+        cashu::KeySetInfo,
+        bcr_common::cashu::MintKeySet,
+        Vec<cashu::Proof>,
+    ) {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, amounts);
+        (cashu::KeySetInfo::from(info), keyset, proofs)
     }
 
     struct MockWalletCtx {
@@ -1883,6 +1900,299 @@ mod tests {
         let (_txid, token) = wlt.read().await.pay(pid, &http_cl, 123).await.unwrap();
 
         assert!(token.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_pay_errors_if_no_current_payment_reference() {
+        let ctx = wallet_ctx();
+        let wlt = wallet(ctx).await;
+
+        let pid = Uuid::new_v4();
+        let http_cl = reqwest::Client::new();
+
+        let err = wlt.read().await.pay(pid, &http_cl, 123).await.unwrap_err();
+
+        match err {
+            Error::NoPrepareRef(id) => assert_eq!(id, pid),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pay_errors_if_payment_reference_id_mismatch() {
+        let ctx = wallet_ctx();
+        let wlt = wallet(ctx).await;
+
+        let prepared_pid = Uuid::new_v4();
+        let actual_pid = Uuid::new_v4();
+
+        *wlt.read().await.current_payment.lock().await = Some(PayReference {
+            request_id: prepared_pid,
+            unit: CurrencyUnit::Sat,
+            fees: cashu::Amount::ZERO,
+            ptype: WalletPaymentType::Token,
+            memo: None,
+        });
+
+        let http_cl = reqwest::Client::new();
+
+        let err = wlt
+            .read()
+            .await
+            .pay(actual_pid, &http_cl, 123)
+            .await
+            .unwrap_err();
+
+        match err {
+            Error::NoPrepareRef(id) => assert_eq!(id, actual_pid),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pay_onchain() {
+        let mut ctx = wallet_ctx();
+
+        let pid = Uuid::new_v4();
+        let tx_id = TransactionId::new(vec![]);
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        ctx.client
+            .expect_mint_url()
+            .times(1)
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
+
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+
+        ctx.debit
+            .expect_pay_onchain_melt()
+            .times(1)
+            .returning(|_request_id, _client| Ok((bitcoin::Txid::all_zeros(), HashMap::default())));
+
+        ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
+            assert_eq!(tx.direction, TransactionDirection::Outgoing);
+            assert_eq!(tx.amount, Amount::ZERO);
+            assert_eq!(tx.fee, Amount::ZERO);
+            assert_eq!(tx.unit, CurrencyUnit::Sat);
+            assert_eq!(tx.timestamp, 123);
+            assert_eq!(tx.memo, Some("melt memo".to_string()));
+            assert_eq!(
+                tx.metadata.get(PAYMENT_TYPE_METADATA_KEY),
+                Some(&PaymentType::OnChain.to_string())
+            );
+            assert_eq!(
+                tx.metadata.get(TRANSACTION_STATUS_METADATA_KEY),
+                Some(&TransactionStatus::Settled.to_string())
+            );
+            Ok(tx_id)
+        });
+
+        let wlt = wallet(ctx).await;
+
+        *wlt.read().await.current_payment.lock().await = Some(PayReference {
+            request_id: pid,
+            unit: CurrencyUnit::Sat,
+            fees: cashu::Amount::ZERO,
+            ptype: WalletPaymentType::OnChain,
+            memo: Some("melt memo".to_string()),
+        });
+
+        let http_cl = reqwest::Client::new();
+
+        let (res_tx_id, token) = wlt.read().await.pay(pid, &http_cl, 123).await.unwrap();
+
+        assert_eq!(res_tx_id, tx_id);
+        assert!(token.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_pay_cdk18() {
+        let mut ctx = wallet_ctx();
+
+        let pid = Uuid::new_v4();
+        let tx_id = TransactionId::new(vec![]);
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        ctx.client
+            .expect_mint_url()
+            .times(2)
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
+
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+
+        ctx.debit
+            .expect_send_proofs()
+            .times(1)
+            .returning(|_rid, _infos, _client, _swap| Ok(HashMap::default()));
+
+        ctx.nostr_transport
+            .expect_send_private_msg()
+            .times(1)
+            .returning(|_target, _payload| Ok(EventId::all_zeros()));
+
+        ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
+            assert_eq!(tx.direction, TransactionDirection::Outgoing);
+            assert_eq!(tx.amount, Amount::ZERO);
+            assert_eq!(tx.fee, Amount::ZERO);
+            assert_eq!(tx.unit, CurrencyUnit::Sat);
+            assert_eq!(tx.timestamp, 123);
+            assert_eq!(tx.memo, Some("cdk18 memo".to_string()));
+            assert_eq!(
+                tx.metadata.get(PAYMENT_TYPE_METADATA_KEY),
+                Some(&PaymentType::Cdk18.to_string())
+            );
+            assert_eq!(
+                tx.metadata.get(TRANSACTION_STATUS_METADATA_KEY),
+                Some(&TransactionStatus::Pending.to_string())
+            );
+            assert!(tx.metadata.contains_key("nostr::event_id"));
+            Ok(tx_id)
+        });
+
+        let transport = cdk18::Transport {
+            _type: cdk18::TransportType::Nostr,
+            target: Nip19Profile::new(
+                PublicKey::from_byte_array([0u8; 32]),
+                vec![RelayUrl::from_str("wss://test.example.com").unwrap()],
+            )
+            .to_bech32()
+            .unwrap(),
+            tags: vec![],
+        };
+
+        let wlt = wallet(ctx).await;
+
+        *wlt.read().await.current_payment.lock().await = Some(PayReference {
+            request_id: pid,
+            unit: CurrencyUnit::Sat,
+            fees: cashu::Amount::ZERO,
+            ptype: WalletPaymentType::Cdk18 {
+                transport,
+                id: Some("payment-id".to_string()),
+            },
+            memo: Some("cdk18 memo".to_string()),
+        });
+
+        let http_cl = reqwest::Client::new();
+
+        let (res_tx_id, token) = wlt.read().await.pay(pid, &http_cl, 123).await.unwrap();
+
+        assert_eq!(res_tx_id, tx_id);
+        assert!(token.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_pay_contact() {
+        let mut ctx = wallet_ctx();
+
+        let pid = Uuid::new_v4();
+        let tx_id = TransactionId::new(vec![]);
+        let contact_node_id = node_id(NODE_ID_1);
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        ctx.client
+            .expect_mint_url()
+            .times(2)
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
+
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+
+        ctx.contact_repo
+            .expect_get_contact()
+            .times(2)
+            .returning(|_| Ok(Some(test_contact())));
+
+        ctx.nostr_transport
+            .expect_fetch_relay_list()
+            .times(1)
+            .returning(|_, _| Ok(vec![]));
+
+        ctx.nostr_transport
+            .expect_nip19_for_contact()
+            .times(1)
+            .returning(|_| {
+                Ok(Nip19Profile::new(
+                    PublicKey::from_byte_array([0u8; 32]),
+                    vec![RelayUrl::from_str("wss://test.example.com").unwrap()],
+                )
+                .to_bech32()
+                .unwrap()
+                .to_string())
+            });
+
+        ctx.nostr_transport
+            .expect_send_private_msg()
+            .times(1)
+            .returning(|_target, _payload| Ok(EventId::all_zeros()));
+
+        ctx.debit
+            .expect_send_proofs()
+            .times(1)
+            .returning(|_rid, _infos, _client, _swap| Ok(HashMap::default()));
+
+        ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
+            assert_eq!(tx.direction, TransactionDirection::Outgoing);
+            assert_eq!(tx.amount, Amount::ZERO);
+            assert_eq!(tx.fee, Amount::ZERO);
+            assert_eq!(tx.unit, CurrencyUnit::Sat);
+            assert_eq!(tx.timestamp, 123);
+            assert_eq!(tx.memo, Some("contact memo".to_string()));
+            assert_eq!(
+                tx.metadata.get(PAYMENT_TYPE_METADATA_KEY),
+                Some(&PaymentType::Contact.to_string())
+            );
+            assert_eq!(
+                tx.metadata.get(TRANSACTION_STATUS_METADATA_KEY),
+                Some(&TransactionStatus::Pending.to_string())
+            );
+            assert_eq!(
+                tx.metadata.get(CONTACT_NODE_ID_METADATA_KEY),
+                Some(&contact_node_id.to_string())
+            );
+            assert!(tx.metadata.contains_key("nostr::event_id"));
+            Ok(tx_id)
+        });
+
+        let wlt = wallet(ctx).await;
+
+        *wlt.read().await.current_payment.lock().await = Some(PayReference {
+            request_id: pid,
+            unit: CurrencyUnit::Sat,
+            fees: cashu::Amount::ZERO,
+            ptype: WalletPaymentType::Contact {
+                node_id: node_id(NODE_ID_1),
+                payment_request_id: None,
+            },
+            memo: Some("contact memo".to_string()),
+        });
+
+        let http_cl = reqwest::Client::new();
+
+        let (res_tx_id, token) = wlt.read().await.pay(pid, &http_cl, 123).await.unwrap();
+
+        assert_eq!(res_tx_id, tx_id);
+        assert!(token.is_none());
     }
 
     #[tokio::test]
@@ -3370,5 +3680,320 @@ mod tests {
             .await
             .expect("contact payment request event should be processed")
             .expect("payment-request storage signal should be sent");
+    }
+
+    #[tokio::test]
+    async fn test_online_exchange_returns_input_if_alpha_is_wallet_mint() {
+        let mut ctx = wallet_ctx();
+
+        ctx.client
+            .expect_mint_url()
+            .times(1)
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
+
+        let wlt = wallet(ctx).await;
+
+        let alpha_client = MockClowderMintConnector::new();
+        let alpha_url = url::Url::from_str("https://mint.example").unwrap();
+
+        let res = wlt
+            .read()
+            .await
+            .online_exchange(vec![], alpha_url, &alpha_client, vec![], 123)
+            .await
+            .unwrap();
+
+        assert!(res.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_receive_token_errors_on_invalid_intermint_clowder_path() {
+        let mut ctx = wallet_ctx();
+
+        let token_mint = url::Url::from_str("https://other-mint.example").unwrap();
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        ctx.client
+            .expect_mint_url()
+            .times(2)
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
+
+        ctx.client
+            .expect_post_clowder_path()
+            .times(1)
+            .withf({
+                let token_mint = token_mint.clone();
+                move |mint| *mint == token_mint
+            })
+            .returning(|mint| {
+                Ok(wire_clowder::ConnectedMintsResponse {
+                    mints: vec![wire_clowder::ConnectedMintResponse {
+                        mint,
+                        clowder: url::Url::from_str("https://clowder.example").unwrap(),
+                        node_id: test_pub_key(),
+                    }],
+                })
+            });
+
+        let wlt = wallet(ctx).await;
+
+        let token = Token::new_bitcr(
+            to_mint_url(&token_mint),
+            vec![],
+            Some("intermint token".to_string()),
+            CurrencyUnit::Sat,
+        );
+
+        let err = wlt
+            .read()
+            .await
+            .receive_token(token, 123)
+            .await
+            .unwrap_err();
+
+        match err {
+            Error::InvalidClowderPath => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_receive_token_same_mint_success() {
+        let mut ctx = wallet_ctx();
+
+        let tx_id = TransactionId::new(vec![]);
+        let mint_url = url::Url::from_str("https://mint.example").unwrap();
+
+        let (info, _keyset, proofs) = test_keyset_and_proofs(&[Amount::from(8), Amount::from(16)]);
+        let k_infos = HashMap::from([(info.id, info.clone())]);
+
+        let expected_ys: Vec<_> = proofs
+            .iter()
+            .map(|p| p.y().expect("valid proof y"))
+            .collect();
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(move || Ok(k_infos.values().cloned().collect()));
+
+        ctx.client
+            .expect_mint_url()
+            .times(4)
+            .return_const(mint_url.clone());
+
+        ctx.debit
+            .expect_unit()
+            .times(3)
+            .returning(|| CurrencyUnit::Sat);
+
+        ctx.debit.expect_receive_proofs().times(1).return_once(
+            move |_client, keysets_info, received_proofs, _swap_config| {
+                assert!(keysets_info.contains_key(&info.id));
+                assert_eq!(received_proofs.len(), 2);
+                assert_eq!(received_proofs.total_amount().unwrap(), Amount::from(24));
+                Ok((Amount::from(24), expected_ys))
+            },
+        );
+
+        ctx.tx_repo
+            .expect_store_tx()
+            .times(1)
+            .return_once(move |tx| {
+                assert_eq!(tx.direction, TransactionDirection::Incoming);
+                assert_eq!(tx.amount, Amount::from(24));
+                assert_eq!(tx.fee, Amount::ZERO);
+                assert_eq!(tx.unit, CurrencyUnit::Sat);
+                assert_eq!(tx.timestamp, 123);
+                assert_eq!(tx.memo, Some("token memo".to_string()));
+                assert_eq!(
+                    tx.metadata.get(PAYMENT_TYPE_METADATA_KEY),
+                    Some(&PaymentType::Token.to_string())
+                );
+                assert_eq!(
+                    tx.metadata.get(TRANSACTION_STATUS_METADATA_KEY),
+                    Some(&TransactionStatus::Settled.to_string())
+                );
+                Ok(tx_id)
+            });
+
+        let token = Token::new_bitcr(
+            to_mint_url(&mint_url),
+            proofs,
+            Some("token memo".to_string()),
+            CurrencyUnit::Sat,
+        );
+
+        let wlt = wallet(ctx).await;
+
+        let res = wlt.read().await.receive_token(token, 123).await.unwrap();
+
+        assert_eq!(res, tx_id);
+    }
+
+    #[tokio::test]
+    async fn test_online_exchange_success_with_valid_proofs() {
+        let mut ctx = wallet_ctx();
+
+        let wallet_mint = url::Url::from_str("https://wallet-mint.example").unwrap();
+        let alpha_mint = url::Url::from_str("https://alpha-mint.example").unwrap();
+        let alpha_beta_url = url::Url::from_str("https://alpha-beta.example").unwrap();
+
+        let (info, alpha_keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = test_kinfos(info);
+        let alpha_proofs =
+            core_tests::generate_random_ecash_proofs(&alpha_keyset, &[Amount::from(8)]);
+
+        let mut alpha_client = MockClowderMintConnector::new();
+        let mut alpha_beta = MockClowderMintConnector::new();
+        setup_attestation_mock(&mut alpha_beta);
+
+        ctx.client
+            .expect_mint_url()
+            .times(1)
+            .return_const(wallet_mint.clone());
+
+        ctx.client
+            .expect_post_online_exchange()
+            .times(1)
+            .withf(|locked_proofs, exchange_path| {
+                locked_proofs.len() == 1 && exchange_path.len() == 3
+            })
+            .returning(|locked_proofs, _exchange_path| Ok(locked_proofs));
+
+        let url_clone = alpha_beta_url.clone();
+        alpha_client
+            .expect_get_clowder_betas()
+            .times(1)
+            .returning(move || Ok(vec![url_clone.clone()]));
+
+        alpha_client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(move || Ok(k_infos.values().cloned().collect()));
+        alpha_client
+            .expect_post_swap_commitment()
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(mock_commitment_result()));
+
+        let alpha_keyset_for_lookup = alpha_keyset.clone();
+        alpha_client
+            .expect_get_mint_keyset()
+            .times(1)
+            .with(mockall::predicate::eq(kid))
+            .returning(move |_| {
+                Ok(bcr_wallet_core::util::to_keyset(
+                    &alpha_keyset_for_lookup,
+                    None,
+                ))
+            });
+
+        let alpha_keyset_for_swap = alpha_keyset.clone();
+        alpha_client
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(move |_inputs, outputs, _commitment| {
+                let amounts = outputs.iter().map(|b| b.amount).collect::<Vec<_>>();
+                Ok(core_tests::generate_ecash_signatures(
+                    &alpha_keyset_for_swap,
+                    &amounts,
+                ))
+            });
+
+        let mut wlt = wallet(ctx).await;
+
+        let arc_alpha_beta = Arc::new(alpha_beta);
+        wlt = wallet_with_betas(wlt, vec![(alpha_beta_url, arc_alpha_beta.clone())]).await;
+        wlt.write().await.client_factory = Box::new(move |url| {
+            assert_eq!(
+                url,
+                url::Url::from_str("https://alpha-beta.example").unwrap()
+            );
+            arc_alpha_beta.clone()
+        });
+
+        let path = vec![
+            wire_clowder::ConnectedMintResponse {
+                mint: alpha_mint.clone(),
+                clowder: url::Url::from_str("https://clowder-alpha.example").unwrap(),
+                node_id: test_pub_key(),
+            },
+            wire_clowder::ConnectedMintResponse {
+                mint: wallet_mint.clone(),
+                clowder: url::Url::from_str("https://clowder-wallet.example").unwrap(),
+                node_id: test_pub_key(),
+            },
+        ];
+        let now = chrono::Utc::now().timestamp() as u64;
+        let res = wlt
+            .read()
+            .await
+            .online_exchange(alpha_proofs, alpha_mint, &alpha_client, path, now)
+            .await
+            .unwrap();
+
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].amount, Amount::from(8));
+        assert!(res[0].witness.is_some());
+    }
+
+    fn add_test_dleqs(proofs: &mut [cashu::Proof]) {
+        for proof in proofs {
+            proof.dleq = Some(cashu::nut12::ProofDleq {
+                e: cashu::SecretKey::generate(),
+                s: cashu::SecretKey::generate(),
+                r: cashu::SecretKey::generate(),
+            });
+        }
+    }
+    #[tokio::test]
+    async fn test_offline_exchange_success_with_valid_proofs() {
+        let ctx = wallet_ctx();
+        let wlt = wallet(ctx).await;
+
+        let (_alpha_info, alpha_keyset) = core_tests::generate_random_ecash_keyset();
+        let mut alpha_proofs =
+            core_tests::generate_random_ecash_proofs(&alpha_keyset, &[Amount::from(8)]);
+        add_test_dleqs(&mut alpha_proofs);
+
+        let (_beta_info, beta_keyset) = core_tests::generate_random_ecash_keyset();
+        let mut beta_proofs =
+            core_tests::generate_random_ecash_proofs(&beta_keyset, &[Amount::from(8)]);
+        add_test_dleqs(&mut beta_proofs);
+
+        let mut substitute = MockClowderMintConnector::new();
+
+        substitute
+            .expect_post_offline_exchange()
+            .times(1)
+            .withf(
+                |fingerprints, hash_locks, _wallet_pk, substitute_clowder_id| {
+                    fingerprints.len() == 1
+                        && hash_locks.len() == 1
+                        && *substitute_clowder_id == test_pub_key()
+                },
+            )
+            .return_once(
+                move |_fingerprints, _hash_locks, _wallet_pk, _substitute_clowder_id| {
+                    Ok(beta_proofs)
+                },
+            );
+
+        let res = wlt
+            .read()
+            .await
+            .offline_exchange(&substitute, alpha_proofs, test_pub_key())
+            .await
+            .unwrap();
+
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].amount, Amount::from(8));
+
+        assert!(res[0].witness.is_some());
     }
 }
