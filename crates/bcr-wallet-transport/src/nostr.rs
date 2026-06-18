@@ -1,5 +1,5 @@
 use crate::{
-    ClientApi, NostrEventChannel, NostrWalletEvent, SortOrder, TransportApi,
+    ClientApi, ConsumerApi, NostrEventChannel, NostrWalletEvent, SortOrder, TransportApi,
     error::{Error, Result},
 };
 use async_trait::async_trait;
@@ -379,8 +379,11 @@ impl Consumer {
             event_channel,
         }
     }
+}
 
-    pub async fn start(&self) -> Result<JoinSet<()>> {
+#[async_trait]
+impl ConsumerApi for Consumer {
+    async fn start(&self) -> Result<JoinSet<()>> {
         let client = self.client.clone();
         let mut tasks = JoinSet::new();
 

@@ -36,6 +36,11 @@ pub trait TransportApi: SendSync {
 }
 
 #[async_trait]
+pub trait ConsumerApi: SendSync {
+    async fn start(&self) -> Result<tokio::task::JoinSet<()>>;
+}
+
+#[async_trait]
 pub trait ClientApi: SendSync {
     async fn connect(&self) -> Result<()>;
 }

@@ -2,8 +2,9 @@ pub mod tests {
     use async_trait::async_trait;
     use bcr_common::cashu::nut18 as cdk18;
     use bcr_wallet_core::contact::Contact;
-    use bcr_wallet_transport::{TransportApi, error::Result};
+    use bcr_wallet_transport::{ConsumerApi, TransportApi, error::Result};
     use nostr::{PublicKey, RelayUrl, event::EventId};
+
     mockall::mock! {
         pub Transport {}
 
@@ -22,6 +23,15 @@ pub mod tests {
                 npub: PublicKey,
                 relays: Vec<RelayUrl>,
             ) -> Result<Vec<RelayUrl>>;
+        }
+    }
+
+    mockall::mock! {
+        pub Consumer {}
+
+        #[async_trait]
+        impl ConsumerApi for Consumer {
+            async fn start(&self) -> Result<tokio::task::JoinSet<()>>;
         }
     }
 }

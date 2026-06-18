@@ -760,8 +760,8 @@ pub async fn cmd_list_prs(app_state: &AppState, name: &str, id: &str) -> Result<
     push_break(&mut res);
     for ppr in incoming_pprs {
         res.push_str(&format!(
-            "Id: {} NodeId: {} Amount: {}\n",
-            ppr.id, ppr.node_id, ppr.amount
+            "Id: {}, NodeId: {}, Amount: {}, Direction: {:?}, State: {:?}\n",
+            ppr.id, ppr.node_id, ppr.amount, ppr.direction, ppr.state
         ));
         push_break(&mut res);
     }
@@ -770,8 +770,8 @@ pub async fn cmd_list_prs(app_state: &AppState, name: &str, id: &str) -> Result<
     push_break(&mut res);
     for ppr in outgoing_pprs {
         res.push_str(&format!(
-            "Id: {} NodeId: {} Amount: {}\n",
-            ppr.id, ppr.node_id, ppr.amount
+            "Id: {}, NodeId: {}, Amount: {}, Direction: {:?}, State: {:?}\n",
+            ppr.id, ppr.node_id, ppr.amount, ppr.direction, ppr.state
         ));
         push_break(&mut res);
     }

@@ -1540,6 +1540,10 @@ impl WalletApi for super::Wallet {
         if req.direction == PaymentRequestDirection::Outgoing {
             return Err(Error::PaymentRequestInWrongState(payment_req_id));
         }
+        // can only pay pending payment requests
+        if req.state != PaymentRequestState::Pending {
+            return Err(Error::PaymentRequestInWrongState(payment_req_id));
+        }
         // has to be added to contacts to pay the payment request
         if self
             .contact_repo

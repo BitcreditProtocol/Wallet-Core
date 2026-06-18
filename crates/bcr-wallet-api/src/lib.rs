@@ -1223,7 +1223,7 @@ async fn build_wallet(
         Arc::new(nostr_transport),
         nostr_event_channel,
         nostr_repo,
-        nostr_consumer,
+        Box::new(nostr_consumer),
     )
     .await;
 
