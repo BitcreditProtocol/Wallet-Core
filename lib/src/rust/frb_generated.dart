@@ -2956,13 +2956,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   CreateWalletRequest dco_decode_create_wallet_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return CreateWalletRequest(
-      defaultMintUrl: dco_decode_String(arr[0]),
-      bitcoinNetwork: dco_decode_String(arr[1]),
-      mnemonic: dco_decode_String(arr[2]),
-      nostrRelays: dco_decode_list_String(arr[3]),
+      name: dco_decode_String(arr[0]),
+      defaultMintUrl: dco_decode_String(arr[1]),
+      bitcoinNetwork: dco_decode_String(arr[2]),
+      mnemonic: dco_decode_String(arr[3]),
+      nostrRelays: dco_decode_list_String(arr[4]),
     );
   }
 
@@ -4749,11 +4750,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_name = sse_decode_String(deserializer);
     var var_defaultMintUrl = sse_decode_String(deserializer);
     var var_bitcoinNetwork = sse_decode_String(deserializer);
     var var_mnemonic = sse_decode_String(deserializer);
     var var_nostrRelays = sse_decode_list_String(deserializer);
     return CreateWalletRequest(
+      name: var_name,
       defaultMintUrl: var_defaultMintUrl,
       bitcoinNetwork: var_bitcoinNetwork,
       mnemonic: var_mnemonic,
@@ -6690,6 +6693,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.name, serializer);
     sse_encode_String(self.defaultMintUrl, serializer);
     sse_encode_String(self.bitcoinNetwork, serializer);
     sse_encode_String(self.mnemonic, serializer);

@@ -2571,11 +2571,13 @@ impl SseDecode for crate::api::Contact {
 impl SseDecode for crate::api::CreateWalletRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_name = <String>::sse_decode(deserializer);
         let mut var_defaultMintUrl = <String>::sse_decode(deserializer);
         let mut var_bitcoinNetwork = <String>::sse_decode(deserializer);
         let mut var_mnemonic = <String>::sse_decode(deserializer);
         let mut var_nostrRelays = <Vec<String>>::sse_decode(deserializer);
         return crate::api::CreateWalletRequest {
+            name: var_name,
             default_mint_url: var_defaultMintUrl,
             bitcoin_network: var_bitcoinNetwork,
             mnemonic: var_mnemonic,
@@ -4305,6 +4307,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::Contact> for crate::api::Cont
 impl flutter_rust_bridge::IntoDart for crate::api::CreateWalletRequest {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.name.into_into_dart().into_dart(),
             self.default_mint_url.into_into_dart().into_dart(),
             self.bitcoin_network.into_into_dart().into_dart(),
             self.mnemonic.into_into_dart().into_dart(),
@@ -6336,6 +6339,7 @@ impl SseEncode for crate::api::Contact {
 impl SseEncode for crate::api::CreateWalletRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.name, serializer);
         <String>::sse_encode(self.default_mint_url, serializer);
         <String>::sse_encode(self.bitcoin_network, serializer);
         <String>::sse_encode(self.mnemonic, serializer);
