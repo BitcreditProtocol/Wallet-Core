@@ -1,6 +1,6 @@
 name: wallet_ffi
 description: "Wallet FFI"
-version: 0.9.6
+version: 0.9.7
 homepage:
 
 environment:
