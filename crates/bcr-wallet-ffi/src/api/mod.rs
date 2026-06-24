@@ -21,7 +21,6 @@ use bcr_wallet_api::{
 use flutter_rust_bridge::{DartFnFuture, JoinHandle, frb};
 use log::{error, info};
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 pub const VERSION: &str = env!("CRATE_VERSION");
 
@@ -216,7 +215,6 @@ fn init_panic_hook() {
 // ------------------------------------------------------------- API
 #[frb]
 pub async fn wallet_add(req: CreateWalletRequest) -> Result<AddWalletResponse, WalletError> {
-    let name = Uuid::new_v4().to_string();
     let parsed_url = url::Url::from_str(&req.default_mint_url).expect("Not a valid mint URL");
     let parsed_mnemonic =
         bip39::Mnemonic::from_str(&req.mnemonic).expect("Not a valid bip39 mnemonic");
@@ -229,7 +227,7 @@ pub async fn wallet_add(req: CreateWalletRequest) -> Result<AddWalletResponse, W
         "Not a valid bitcoin network - use one of bitcoin, testnet, testnet4, signet, regtest",
     );
     let cfg = CreateWalletConfig {
-        name,
+        name: req.name,
         network: parsed_network,
         nostr_relays: parsed_nostr_relays,
         mnemonic: parsed_mnemonic,
@@ -250,7 +248,6 @@ pub async fn wallet_add(req: CreateWalletRequest) -> Result<AddWalletResponse, W
 pub async fn wallet_restore(
     req: CreateWalletRequest,
 ) -> Result<RestoreWalletResponse, WalletError> {
-    let name = Uuid::new_v4().to_string();
     let parsed_url = url::Url::from_str(&req.default_mint_url).expect("Not a valid mint URL");
     let parsed_mnemonic =
         bip39::Mnemonic::from_str(&req.mnemonic).expect("Not a valid bip39 mnemonic");
@@ -263,7 +260,7 @@ pub async fn wallet_restore(
         "Not a valid bitcoin network - use one of bitcoin, testnet, testnet4, signet, regtest",
     );
     let cfg = CreateWalletConfig {
-        name,
+        name: req.name,
         network: parsed_network,
         nostr_relays: parsed_nostr_relays,
         mnemonic: parsed_mnemonic,
@@ -1007,6 +1004,8 @@ pub async fn wallet_mint_is_rabid(req: WalletRequest) -> Result<MintIsRabidRespo
 // -------------------------------------------------------------- Data types
 #[derive(Debug, Clone)]
 pub struct CreateWalletRequest {
+    // The name of the wallet to create
+    pub name: String,
     // The default mint URL for the wallet and restoration
     pub default_mint_url: String,
     // The bitcoin_network to use. Options are: bitcoin, testnet, testnet4, signet, regtest

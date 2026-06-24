@@ -282,12 +282,14 @@ class Contact {
 }
 
 class CreateWalletRequest {
+  final String name;
   final String defaultMintUrl;
   final String bitcoinNetwork;
   final String mnemonic;
   final List<String> nostrRelays;
 
   const CreateWalletRequest({
+    required this.name,
     required this.defaultMintUrl,
     required this.bitcoinNetwork,
     required this.mnemonic,
@@ -296,6 +298,7 @@ class CreateWalletRequest {
 
   @override
   int get hashCode =>
+      name.hashCode ^
       defaultMintUrl.hashCode ^
       bitcoinNetwork.hashCode ^
       mnemonic.hashCode ^
@@ -306,6 +309,7 @@ class CreateWalletRequest {
       identical(this, other) ||
       other is CreateWalletRequest &&
           runtimeType == other.runtimeType &&
+          name == other.name &&
           defaultMintUrl == other.defaultMintUrl &&
           bitcoinNetwork == other.bitcoinNetwork &&
           mnemonic == other.mnemonic &&

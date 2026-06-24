@@ -1,5 +1,6 @@
 # 0.9.6
 
+* Fix being able to set a wallet name for wallet-ffi - `CreateWalletRequest` now has a `name` field
 
 # 0.9.5
 

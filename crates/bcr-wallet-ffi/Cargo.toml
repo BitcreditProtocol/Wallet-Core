@@ -22,7 +22,6 @@ nostr = {workspace = true}
 once_cell = {version = "1.21"}
 tokio = {workspace = true}
 tokio-util = {workspace = true}
-uuid = {workspace = true}
 url = {workspace = true}
 
 [lints.rust]
