@@ -25,6 +25,7 @@ use bcr_wallet_persistence::redb::{Database, build_pursedb, build_wallet_dbs, cr
 use bcr_wallet_transport::NostrEventChannel;
 use bcr_wallet_transport::nostr;
 use error::{Error, Result};
+use std::sync::atomic::Ordering;
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -219,9 +220,13 @@ impl AppState {
     }
 
     async fn validate_add_wallet(&self, cfg: &CreateWalletConfig) -> Result<()> {
-        let existing_wallet_names = self.purse.names().await;
-        if existing_wallet_names.contains(&cfg.name) {
-            return Err(Error::WalletUniqueName(cfg.name.clone()));
+        if self
+            .purse
+            .names_by_network(cfg.network)
+            .await
+            .contains(&cfg.name)
+        {
+            return Err(Error::WalletUniqueName(cfg.name.clone(), cfg.network));
         }
 
         let seed = seed_from_mnemonic(&cfg.mnemonic);
@@ -911,13 +916,17 @@ impl AppState {
         Ok(updated)
     }
 
+    pub fn set_dev_mode(&self, dev_mode: bool) {
+        self.cfg.dev_mode.store(dev_mode, Ordering::Relaxed);
+    }
+
     //////////////////////////////////////////////////// Wallet Dev Mode Calls
     pub async fn wallet_dev_mode_detailed_balance(
         &self,
         wallet_id: String,
     ) -> Result<Vec<WalletDetailedBalanceEntry>> {
         tracing::debug!("dev_mode_detailed_wallet_balance({wallet_id})");
-        if !self.cfg.dev_mode {
+        if !self.cfg.dev_mode.load(Ordering::Relaxed) {
             return Err(Error::NoDevMode);
         }
 

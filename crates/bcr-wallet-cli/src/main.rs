@@ -197,7 +197,7 @@ async fn main() -> Result<()> {
             .map(|(wid, w)| (wid.to_owned(), w.mnemonic.to_owned()))
             .collect(),
         swap_expiry: chrono::TimeDelta::minutes(15),
-        dev_mode: true,
+        dev_mode: false.into(),
     };
     let app_state = AppState::initialize(app_state_cfg).await?;
 

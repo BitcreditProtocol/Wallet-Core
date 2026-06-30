@@ -1,5 +1,10 @@
 # 0.9.7
 
+* Wallet name is now only unique per btc network
+* Add API to set dev_mode dynamically (without restart)
+    * `wallet_set_dev_mode` - dynamically sets dev-mode
+        * but of course the caller needs to remember, so the next time the app is started, dev-mode is set as well
+
 # 0.9.6
 
 * Fix being able to set a wallet name for wallet-ffi - `CreateWalletRequest` now has a `name` field

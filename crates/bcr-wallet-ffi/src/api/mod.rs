@@ -125,7 +125,7 @@ pub async fn init_wallet_ffi(conf: WalletFfiConfig) {
         db_path: parsed_path,
         mnemonics: parsed_mnemonics,
         swap_expiry,
-        dev_mode: conf.dev_mode,
+        dev_mode: conf.dev_mode.into(),
     };
 
     let app_state = AppState::initialize(app_state_cfg)
@@ -1001,6 +1001,17 @@ pub async fn wallet_mint_is_rabid(req: WalletRequest) -> Result<MintIsRabidRespo
     Ok(MintIsRabidResponse { rabid: is_rabid })
 }
 
+#[frb]
+pub async fn wallet_set_dev_mode(
+    req: SetDevModeRequest,
+) -> Result<SetDevModeResponse, WalletError> {
+    let app_state = get_app_state().await;
+    app_state.set_dev_mode(req.dev_mode);
+    Ok(SetDevModeResponse {
+        dev_mode: req.dev_mode,
+    })
+}
+
 // -------------------------------------------------------------- Data types
 #[derive(Debug, Clone)]
 pub struct CreateWalletRequest {
@@ -1029,6 +1040,16 @@ pub struct RestoreWalletResponse {
 #[derive(Debug, Clone)]
 pub struct WalletRequest {
     pub wallet_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SetDevModeRequest {
+    pub dev_mode: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SetDevModeResponse {
+    pub dev_mode: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -2112,7 +2133,7 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::WalletUniqueId(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::WalletUniqueId)
             }
-            BcrWalletError::WalletUniqueName(_) => {
+            BcrWalletError::WalletUniqueName(_, _) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::WalletUniqueName)
             }
             BcrWalletError::EmptyToken(_) => {

@@ -46,14 +46,17 @@ impl<Wlt> Purse<Wlt>
 where
     Wlt: WalletApi,
 {
-    pub async fn names(&self) -> Vec<String> {
+    pub async fn names_by_network(&self, network: bitcoin::Network) -> Vec<String> {
         let wallets: Vec<_> = {
             let wlts = self.wallets.read().await;
             wlts.values().cloned().collect()
         };
-        let mut res = Vec::with_capacity(wallets.len());
+        let mut res: Vec<String> = Vec::new();
         for wlt in wallets.iter() {
-            res.push(wlt.read().await.name());
+            let info = wlt.read().await.info();
+            if info.network == network {
+                res.push(info.name);
+            }
         }
         res
     }

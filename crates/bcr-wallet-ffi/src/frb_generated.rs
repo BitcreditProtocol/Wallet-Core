@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 315712078;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -742533650;
 
 // Section: executor
 
@@ -2368,6 +2368,42 @@ fn wire__crate__api__wallet_restore_impl(
         },
     )
 }
+fn wire__crate__api__wallet_set_dev_mode_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "wallet_set_dev_mode",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_req = <crate::api::SetDevModeRequest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::WalletError>(
+                    (move || async move {
+                        let output_ok = crate::api::wallet_set_dev_mode(api_req).await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__wallet_subscribe_to_payment_requests_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -3015,6 +3051,26 @@ impl SseDecode for crate::api::RestoreWalletResponse {
         let mut var_walletId = <String>::sse_decode(deserializer);
         return crate::api::RestoreWalletResponse {
             wallet_id: var_walletId,
+        };
+    }
+}
+
+impl SseDecode for crate::api::SetDevModeRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_devMode = <bool>::sse_decode(deserializer);
+        return crate::api::SetDevModeRequest {
+            dev_mode: var_devMode,
+        };
+    }
+}
+
+impl SseDecode for crate::api::SetDevModeResponse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_devMode = <bool>::sse_decode(deserializer);
+        return crate::api::SetDevModeResponse {
+            dev_mode: var_devMode,
         };
     }
 }
@@ -4208,7 +4264,8 @@ fn pde_ffi_dispatcher_primary_impl(
             data_len,
         ),
         65 => wire__crate__api__wallet_restore_impl(port, ptr, rust_vec_len, data_len),
-        66 => wire__crate__api__wallet_subscribe_to_payment_requests_impl(
+        66 => wire__crate__api__wallet_set_dev_mode_impl(port, ptr, rust_vec_len, data_len),
+        67 => wire__crate__api__wallet_subscribe_to_payment_requests_impl(
             port,
             ptr,
             rust_vec_len,
@@ -4607,6 +4664,37 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::RestoreWalletResponse>
     for crate::api::RestoreWalletResponse
 {
     fn into_into_dart(self) -> crate::api::RestoreWalletResponse {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::SetDevModeRequest {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.dev_mode.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::SetDevModeRequest {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::SetDevModeRequest>
+    for crate::api::SetDevModeRequest
+{
+    fn into_into_dart(self) -> crate::api::SetDevModeRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::SetDevModeResponse {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.dev_mode.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::SetDevModeResponse
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::SetDevModeResponse>
+    for crate::api::SetDevModeResponse
+{
+    fn into_into_dart(self) -> crate::api::SetDevModeResponse {
         self
     }
 }
@@ -6713,6 +6801,20 @@ impl SseEncode for crate::api::RestoreWalletResponse {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.wallet_id, serializer);
+    }
+}
+
+impl SseEncode for crate::api::SetDevModeRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.dev_mode, serializer);
+    }
+}
+
+impl SseEncode for crate::api::SetDevModeResponse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.dev_mode, serializer);
     }
 }
 
