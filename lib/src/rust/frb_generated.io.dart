@@ -85,6 +85,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MnemonicRequest dco_decode_box_autoadd_mnemonic_request(dynamic raw);
 
   @protected
+  SetDevModeRequest dco_decode_box_autoadd_set_dev_mode_request(dynamic raw);
+
+  @protected
   TimeRange dco_decode_box_autoadd_time_range(dynamic raw);
 
   @protected
@@ -361,6 +364,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RestoreWalletResponse dco_decode_restore_wallet_response(dynamic raw);
+
+  @protected
+  SetDevModeRequest dco_decode_set_dev_mode_request(dynamic raw);
+
+  @protected
+  SetDevModeResponse dco_decode_set_dev_mode_response(dynamic raw);
 
   @protected
   StatusResponse dco_decode_status_response(dynamic raw);
@@ -755,6 +764,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SetDevModeRequest sse_decode_box_autoadd_set_dev_mode_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   TimeRange sse_decode_box_autoadd_time_range(SseDeserializer deserializer);
 
   @protected
@@ -1103,6 +1117,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RestoreWalletResponse sse_decode_restore_wallet_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SetDevModeRequest sse_decode_set_dev_mode_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SetDevModeResponse sse_decode_set_dev_mode_response(
     SseDeserializer deserializer,
   );
 
@@ -1603,6 +1627,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_set_dev_mode_request(
+    SetDevModeRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_time_range(
     TimeRange self,
     SseSerializer serializer,
@@ -2016,6 +2046,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_restore_wallet_response(
     RestoreWalletResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_set_dev_mode_request(
+    SetDevModeRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_set_dev_mode_response(
+    SetDevModeResponse self,
     SseSerializer serializer,
   );
 

@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 315712078;
+  int get rustContentHash => -742533650;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -314,6 +314,10 @@ abstract class RustLibApi extends BaseApi {
 
   Future<RestoreWalletResponse> crateApiWalletRestore({
     required CreateWalletRequest req,
+  });
+
+  Future<SetDevModeResponse> crateApiWalletSetDevMode({
+    required SetDevModeRequest req,
   });
 
   Future<WalletPaymentCheckHandle> crateApiWalletSubscribeToPaymentRequests({
@@ -2420,6 +2424,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "wallet_restore", argNames: ["req"]);
 
   @override
+  Future<SetDevModeResponse> crateApiWalletSetDevMode({
+    required SetDevModeRequest req,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_set_dev_mode_request(req, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 66,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_set_dev_mode_response,
+          decodeErrorData: sse_decode_wallet_error,
+        ),
+        constMeta: kCrateApiWalletSetDevModeConstMeta,
+        argValues: [req],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWalletSetDevModeConstMeta =>
+      const TaskConstMeta(debugName: "wallet_set_dev_mode", argNames: ["req"]);
+
+  @override
   Future<WalletPaymentCheckHandle> crateApiWalletSubscribeToPaymentRequests({
     required WalletSubscribeToPaymentRequestsRequest req,
     required FutureOr<void> Function(WalletPendingPaymentRequestResponse)
@@ -2440,7 +2474,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 66,
+            funcId: 67,
             port: port_,
           );
         },
@@ -2662,6 +2696,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MnemonicRequest dco_decode_box_autoadd_mnemonic_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_mnemonic_request(raw);
+  }
+
+  @protected
+  SetDevModeRequest dco_decode_box_autoadd_set_dev_mode_request(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_set_dev_mode_request(raw);
   }
 
   @protected
@@ -3266,6 +3306,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (arr.length != 1)
       throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
     return RestoreWalletResponse(walletId: dco_decode_String(arr[0]));
+  }
+
+  @protected
+  SetDevModeRequest dco_decode_set_dev_mode_request(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 1)
+      throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
+    return SetDevModeRequest(devMode: dco_decode_bool(arr[0]));
+  }
+
+  @protected
+  SetDevModeResponse dco_decode_set_dev_mode_response(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 1)
+      throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
+    return SetDevModeResponse(devMode: dco_decode_bool(arr[0]));
   }
 
   @protected
@@ -4418,6 +4476,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SetDevModeRequest sse_decode_box_autoadd_set_dev_mode_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_set_dev_mode_request(deserializer));
+  }
+
+  @protected
   TimeRange sse_decode_box_autoadd_time_range(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_time_range(deserializer));
@@ -5171,6 +5237,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_walletId = sse_decode_String(deserializer);
     return RestoreWalletResponse(walletId: var_walletId);
+  }
+
+  @protected
+  SetDevModeRequest sse_decode_set_dev_mode_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_devMode = sse_decode_bool(deserializer);
+    return SetDevModeRequest(devMode: var_devMode);
+  }
+
+  @protected
+  SetDevModeResponse sse_decode_set_dev_mode_response(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_devMode = sse_decode_bool(deserializer);
+    return SetDevModeResponse(devMode: var_devMode);
   }
 
   @protected
@@ -6350,6 +6434,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_set_dev_mode_request(
+    SetDevModeRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_set_dev_mode_request(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_time_range(
     TimeRange self,
     SseSerializer serializer,
@@ -7070,6 +7163,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.walletId, serializer);
+  }
+
+  @protected
+  void sse_encode_set_dev_mode_request(
+    SetDevModeRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.devMode, serializer);
+  }
+
+  @protected
+  void sse_encode_set_dev_mode_response(
+    SetDevModeResponse self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.devMode, serializer);
   }
 
   @protected

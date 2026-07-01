@@ -57,8 +57,8 @@ pub enum Error {
     InsufficientBalance(cashu::Amount, cashu::Amount),
     #[error("wallet with id {0} not found")]
     WalletNotFound(String),
-    #[error("wallet with name {0} already exists")]
-    WalletUniqueName(String),
+    #[error("wallet with name {0} already exists for network {1}")]
+    WalletUniqueName(String, bitcoin::Network),
     #[error("wallet with id {0} already exists")]
     WalletUniqueId(String),
     #[error("mnemonic for id {0} not found")]

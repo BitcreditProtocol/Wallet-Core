@@ -24,6 +24,7 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
     push_break(&mut res);
     res.push_str(&format!("{} Wallet(s) found.\n", wallet_ids.len()));
     push_line(&mut res);
+    app_state.set_dev_mode(true);
 
     for id in wallet_ids.iter() {
         let info = app_state.wallet_info(id.clone()).await?;
