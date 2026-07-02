@@ -57,6 +57,7 @@ async fn post_swap_commitment_inner(
     let inputs_ys = fingerprints.iter().map(|fp| fp.y).collect::<Vec<_>>();
     let sent_digest = wire_attestation::fp_digest(&fingerprints);
     let expiry = (chrono::Utc::now() + expiry_seconds).timestamp() as u64;
+    debug!("HTTP call to commit_swap on {}", client.mint_url());
     let (committed_content, commitment) = client
         .commit_swap(
             fingerprints,
@@ -390,6 +391,7 @@ impl ClowderMintConnector for HttpClientExt {
         outputs: Vec<cashu::BlindedMessage>,
         commitment: secp256k1::schnorr::Signature,
     ) -> Result<Vec<cashu::BlindSignature>> {
+        debug!("HTTP call to post_swap_committed on {}", self.mint_url());
         let signatures = self.main.swap(inputs, outputs, commitment).await?;
         Ok(signatures)
     }
@@ -761,6 +763,7 @@ impl ClowderMintConnector for SentinelClient {
         outputs: Vec<cashu::BlindedMessage>,
         commitment: secp256k1::schnorr::Signature,
     ) -> Result<Vec<cashu::BlindSignature>> {
+        debug!("HTTP call to post_swap_committed on {}", self.mint_url());
         let signatures = self.main.swap(inputs, outputs, commitment).await?;
         Ok(signatures)
     }
