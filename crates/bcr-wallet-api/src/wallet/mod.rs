@@ -685,6 +685,20 @@ impl Wallet {
         }
         let initial_amount = proofs.total_amount()?;
         let mut proofs = proofs;
+
+        // check if these are proofs we created ourselves - if they are and are still outgoing and pending, we reclaim them
+        let tx_id_to_check_for_reclaim = TransactionId::new(proofs.ys()?);
+        if let Ok(tx_for_ys) = self.tx_repo.load_tx(tx_id_to_check_for_reclaim).await {
+            // if it's Outgoing and Pending, we attempt to reclaim it
+            if util::tx_can_be_refreshed(&tx_for_ys) {
+                tracing::debug!(
+                    "Detected incoming proofs from an outgoing, pending transaction of ourselves - reclaiming"
+                );
+                self.reclaim_tx(tx_id_to_check_for_reclaim).await?;
+                return Ok(tx_id_to_check_for_reclaim);
+            }
+        }
+
         let mut is_intermint = false;
         if &mint != self.client.mint_url() {
             is_intermint = true;
@@ -3445,6 +3459,12 @@ mod tests {
             },
         );
 
+        ctx.tx_repo.expect_load_tx().times(1).returning(|_| {
+            Err(bcr_wallet_persistence::error::Error::TransactionNotFound(
+                TransactionId::new(vec![]),
+            ))
+        });
+
         ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
             assert_eq!(tx.direction, TransactionDirection::Incoming);
             assert_eq!(tx.amount, Amount::ZERO);
@@ -3545,6 +3565,11 @@ mod tests {
                 Ok((Amount::ZERO, ys.clone()))
             },
         );
+        ctx.tx_repo.expect_load_tx().times(1).returning(|_| {
+            Err(bcr_wallet_persistence::error::Error::TransactionNotFound(
+                TransactionId::new(vec![]),
+            ))
+        });
         ctx.tx_repo
             .expect_store_tx()
             .times(1)
@@ -3799,6 +3824,12 @@ mod tests {
                 Ok((Amount::from(24), expected_ys))
             },
         );
+
+        ctx.tx_repo.expect_load_tx().times(1).returning(|_| {
+            Err(bcr_wallet_persistence::error::Error::TransactionNotFound(
+                TransactionId::new(vec![]),
+            ))
+        });
 
         ctx.tx_repo
             .expect_store_tx()
