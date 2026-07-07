@@ -1,4 +1,4 @@
-use crate::error::{Error, Result};
+use crate::{Error, Result};
 use async_trait::async_trait;
 use bcr_common::{
     cashu::{self, Proof},
