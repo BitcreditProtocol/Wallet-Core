@@ -7,5 +7,5 @@ use thiserror::Error;
 pub enum Error {
     /// all errors originating from the external mint API
     #[error("Mint API error: {0}")]
-    MintApi(#[from] bcr_common::cdk_common::Error),
+    MintApi(#[from] bcr_common::client::mint::Error),
 }

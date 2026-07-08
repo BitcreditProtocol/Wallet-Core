@@ -2008,7 +2008,7 @@ impl WalletError {
         WalletError {
             kind: WalletErrorKind::Internal,
             code: WalletErrorCode::Internal,
-            msg: format!("Internal: {msg}"),
+            msg,
         }
     }
 
@@ -2016,7 +2016,15 @@ impl WalletError {
         WalletError {
             kind: WalletErrorKind::NotFound,
             code,
-            msg: format!("Not found: {msg}"),
+            msg,
+        }
+    }
+
+    pub fn unavailable(msg: String, code: WalletErrorCode) -> Self {
+        WalletError {
+            kind: WalletErrorKind::Unavailable,
+            code,
+            msg,
         }
     }
 
@@ -2024,7 +2032,7 @@ impl WalletError {
         WalletError {
             kind: WalletErrorKind::Network,
             code: WalletErrorCode::Network,
-            msg: format!("Network: {msg}"),
+            msg,
         }
     }
 }
@@ -2036,6 +2044,7 @@ pub enum WalletErrorKind {
     Network,
     Internal,
     Initialization,
+    Unavailable,
     Unsupported,
 }
 
@@ -2052,6 +2061,8 @@ pub enum WalletErrorCode {
     InvalidToken,
     CashuMintUrl,
     Url,
+    Uuid,
+    Amount,
     InsufficientBalance,
     NoActiveKeyset,
     UnknownKeysetId,
@@ -2081,6 +2092,17 @@ pub enum WalletErrorCode {
     InvalidBillId,
     InvalidName,
     EmptyName,
+    MintClientResourceNotFound,
+    MintClientServiceUnavailable,
+    MintClientBadRequest,
+    MintClientKeysetNotFound,
+    MintClientMeltOpSuspended,
+    MintClientCommitmentMismatch,
+    AttestationInvalidProof,
+    AttestationDigestMismatch,
+    AttestationUnknownBeta,
+    AttestationVerifyNotFound,
+    AttestationSignature,
 }
 
 impl From<BcrWalletError> for WalletError {
@@ -2101,10 +2123,13 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::Cdk11(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Cdk10(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Cdk14(_) => WalletError::internal(value.to_string()),
-            BcrWalletError::CdkAmount(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::CdkAmount(_) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::Amount)
+            }
             BcrWalletError::CdkDhke(_) => WalletError::internal(value.to_string()),
-            BcrWalletError::BtcBip32(_) => WalletError::internal(value.to_string()),
-            BcrWalletError::Uuid(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::Uuid(_) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::Uuid)
+            }
             BcrWalletError::SerdeJson(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Url(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::Url)
@@ -2181,7 +2206,6 @@ impl From<BcrWalletError> for WalletError {
                 code: WalletErrorCode::Unsupported,
                 msg: String::default(),
             },
-            BcrWalletError::External(_) => WalletError::internal(value.to_string()),
             BcrWalletError::MnemonicNotFound(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::MnemonicNotFound)
             }
@@ -2241,7 +2265,46 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::SwapCommitmentMismatch => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::SwapCommitmentMismatch)
             }
-            BcrWalletError::Attestation(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::MintClientInternal(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::MintClientResourceNotFound(err) => {
+                WalletError::not_found(err.to_string(), WalletErrorCode::MintClientResourceNotFound)
+            }
+            BcrWalletError::MintClientServiceUnavailable(err) => WalletError::unavailable(
+                err.to_string(),
+                WalletErrorCode::MintClientServiceUnavailable,
+            ),
+            BcrWalletError::MintClientBadRequest(err) => {
+                WalletError::bad_request(err.to_string(), WalletErrorCode::MintClientBadRequest)
+            }
+            BcrWalletError::MintClientKeysetNotFound(err) => {
+                WalletError::not_found(err.to_string(), WalletErrorCode::MintClientKeysetNotFound)
+            }
+            BcrWalletError::MintClientMeltOpSuspended(err) => WalletError::unavailable(
+                err.to_string(),
+                WalletErrorCode::MintClientMeltOpSuspended,
+            ),
+            BcrWalletError::MintClientCommitmentMismatch(err) => WalletError::bad_request(
+                err.to_string(),
+                WalletErrorCode::MintClientCommitmentMismatch,
+            ),
+            BcrWalletError::AttestationInvalidProof(_) => WalletError::bad_request(
+                value.to_string(),
+                WalletErrorCode::AttestationInvalidProof,
+            ),
+            BcrWalletError::AttestationDigestMismatch => WalletError::bad_request(
+                value.to_string(),
+                WalletErrorCode::AttestationDigestMismatch,
+            ),
+            BcrWalletError::AttestationUnknownBeta(_) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::AttestationUnknownBeta)
+            }
+            BcrWalletError::AttestationVerifyNotFound(_) => WalletError::not_found(
+                value.to_string(),
+                WalletErrorCode::AttestationVerifyNotFound,
+            ),
+            BcrWalletError::AttestationSignature(_) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::AttestationSignature)
+            }
         }
     }
 }

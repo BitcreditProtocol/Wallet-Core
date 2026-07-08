@@ -4,6 +4,7 @@
 * Add API to set dev_mode dynamically (without restart)
     * `wallet_set_dev_mode` - dynamically sets dev-mode
         * but of course the caller needs to remember, so the next time the app is started, dev-mode is set as well
+* Improve Mint Client Errors
 
 # 0.9.6
 

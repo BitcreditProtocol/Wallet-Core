@@ -1173,6 +1173,12 @@ class WalletError implements FrbException {
     required WalletErrorCode code,
   }) => RustLib.instance.api.crateApiWalletErrorNotFound(msg: msg, code: code);
 
+  static Future<WalletError> unavailable({
+    required String msg,
+    required WalletErrorCode code,
+  }) =>
+      RustLib.instance.api.crateApiWalletErrorUnavailable(msg: msg, code: code);
+
   @override
   int get hashCode => kind.hashCode ^ code.hashCode ^ msg.hashCode;
 
@@ -1198,6 +1204,8 @@ enum WalletErrorCode {
   invalidToken,
   cashuMintUrl,
   url,
+  uuid,
+  amount,
   insufficientBalance,
   noActiveKeyset,
   unknownKeysetId,
@@ -1227,6 +1235,17 @@ enum WalletErrorCode {
   invalidBillId,
   invalidName,
   emptyName,
+  mintClientResourceNotFound,
+  mintClientServiceUnavailable,
+  mintClientBadRequest,
+  mintClientKeysetNotFound,
+  mintClientMeltOpSuspended,
+  mintClientCommitmentMismatch,
+  attestationInvalidProof,
+  attestationDigestMismatch,
+  attestationUnknownBeta,
+  attestationVerifyNotFound,
+  attestationSignature,
 }
 
 enum WalletErrorKind {
@@ -1235,6 +1254,7 @@ enum WalletErrorKind {
   network,
   internal,
   initialization,
+  unavailable,
   unsupported,
 }
 

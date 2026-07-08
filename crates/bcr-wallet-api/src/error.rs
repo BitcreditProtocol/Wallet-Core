@@ -43,8 +43,6 @@ pub enum Error {
     InvalidSplitTarget,
     #[error("Error during Swap: {0}")]
     Swap(String),
-    #[error("bitcoin::bip32 {0}")]
-    BtcBip32(#[from] bitcoin::bip32::Error),
     #[error("uuid:: {0}")]
     Uuid(#[from] uuid::Error),
     #[error("serde_json: {0}")]
@@ -141,20 +139,138 @@ pub enum Error {
     Database(#[from] bcr_wallet_persistence::error::Error),
     #[error("Transport Error: {0}")]
     Transport(#[from] bcr_wallet_transport::error::Error),
-    #[error("External Error: {0}")]
-    External(#[from] crate::external::Error),
     #[error("Dev Mode is disabled")]
     NoDevMode,
     #[error("melt quote commitment does not match request")]
     MeltQuoteMismatch,
     #[error("swap commitment does not match request")]
     SwapCommitmentMismatch,
-    #[error("attestation: {0}")]
-    Attestation(#[from] bcr_common::wire::attestation::AttestationError),
     #[error("No payment request found for {0}")]
     PaymentRequestNotFound(Uuid),
     #[error("Given Payment Request {0} was in the wrong state for this operation")]
     PaymentRequestInWrongState(Uuid),
+    #[error("Mint Client returned an internal Error: {0}")]
+    MintClientInternal(String),
+    #[error("{0}")]
+    MintClientResourceNotFound(String),
+    #[error("{0}")]
+    MintClientServiceUnavailable(String),
+    #[error("{0}")]
+    MintClientBadRequest(String),
+    #[error("{0}")]
+    MintClientKeysetNotFound(String),
+    #[error("{0}")]
+    MintClientMeltOpSuspended(String),
+    #[error("{0}")]
+    MintClientCommitmentMismatch(String),
+    #[error("invalid proof: {0}")]
+    AttestationInvalidProof(String),
+    #[error("fp_digest mismatch")]
+    AttestationDigestMismatch,
+    #[error("unknown beta: {0}")]
+    AttestationUnknownBeta(String),
+    #[error("{0}")]
+    AttestationVerifyNotFound(String),
+    #[error("{0}")]
+    AttestationSignature(String),
+}
+
+impl From<crate::external::Error> for Error {
+    fn from(value: crate::external::Error) -> Self {
+        match value {
+            crate::external::Error::MintApi(error) => match error {
+                bcr_common::client::mint::Error::ResourceNotFound(rnferror) => match rnferror {
+                    bcr_common::client::mint::RNFError::Unknown => {
+                        Error::MintClientResourceNotFound(rnferror.to_string())
+                    }
+                    bcr_common::client::mint::RNFError::KeysetId(id) => {
+                        Error::MintClientKeysetNotFound(id.to_string())
+                    }
+                    bcr_common::client::mint::RNFError::Generic(msg) => {
+                        Error::MintClientResourceNotFound(msg)
+                    }
+                    bcr_common::client::mint::RNFError::Quote(value) => {
+                        Error::MintClientResourceNotFound(value.to_string())
+                    }
+                    bcr_common::client::mint::RNFError::Treasury(value) => {
+                        Error::MintClientResourceNotFound(value.to_string())
+                    }
+                    bcr_common::client::mint::RNFError::Clowder(value) => {
+                        Error::MintClientResourceNotFound(value.to_string())
+                    }
+                },
+                bcr_common::client::mint::Error::InvalidRequest(brerror) => match brerror {
+                    bcr_common::client::mint::BRError::Unknown => {
+                        Error::MintClientBadRequest(brerror.to_string())
+                    }
+                    bcr_common::client::mint::BRError::CommitmentMismatch => {
+                        Error::MintClientCommitmentMismatch(brerror.to_string())
+                    }
+                    bcr_common::client::mint::BRError::Generic(msg) => {
+                        Error::MintClientBadRequest(msg)
+                    }
+                    bcr_common::client::mint::BRError::Quote(value) => {
+                        Error::MintClientBadRequest(value.to_string())
+                    }
+                    bcr_common::client::mint::BRError::Treasury(value) => {
+                        Error::MintClientBadRequest(value.to_string())
+                    }
+                    bcr_common::client::mint::BRError::Clowder(value) => {
+                        Error::MintClientBadRequest(value.to_string())
+                    }
+                },
+                bcr_common::client::mint::Error::ServiceUnavailable(suerror) => match suerror {
+                    bcr_common::client::mint::SUError::Unknown => {
+                        Error::MintClientServiceUnavailable(suerror.to_string())
+                    }
+                    bcr_common::client::mint::SUError::Core(value) => {
+                        Error::MintClientServiceUnavailable(value.to_string())
+                    }
+                    bcr_common::client::mint::SUError::Quote(value) => {
+                        Error::MintClientServiceUnavailable(value.to_string())
+                    }
+                    bcr_common::client::mint::SUError::MeltOpSuspended(msg) => {
+                        Error::MintClientMeltOpSuspended(msg)
+                    }
+                    bcr_common::client::mint::SUError::Clowder(value) => {
+                        Error::MintClientServiceUnavailable(value.to_string())
+                    }
+                },
+                bcr_common::client::mint::Error::Internal(err) => Error::MintClientInternal(err),
+                bcr_common::client::mint::Error::Reqwest(error) => {
+                    Error::MintClientInternal(error.to_string())
+                }
+                bcr_common::client::mint::Error::Cdk20(error) => {
+                    Error::MintClientInternal(error.to_string())
+                }
+                bcr_common::client::mint::Error::BorshSign(error) => {
+                    Error::MintClientInternal(error.to_string())
+                }
+            },
+        }
+    }
+}
+
+impl From<bcr_common::wire::attestation::AttestationError> for Error {
+    fn from(value: bcr_common::wire::attestation::AttestationError) -> Self {
+        match value {
+            bcr_common::wire::attestation::AttestationError::InvalidProof(error) => {
+                Error::AttestationInvalidProof(error.to_string())
+            }
+            bcr_common::wire::attestation::AttestationError::DigestMismatch => {
+                Error::AttestationDigestMismatch
+            }
+            bcr_common::wire::attestation::AttestationError::UnknownBeta(public_key) => {
+                Error::AttestationUnknownBeta(public_key.to_string())
+            }
+            bcr_common::wire::attestation::AttestationError::VerifyNotFound => {
+                Error::AttestationVerifyNotFound(value.to_string())
+            }
+            bcr_common::wire::attestation::AttestationError::Signature(_) => {
+                Error::AttestationSignature(value.to_string())
+            }
+        }
+    }
 }
 
 impl From<bcr_common::core::swap::wallet::Error> for Error {
