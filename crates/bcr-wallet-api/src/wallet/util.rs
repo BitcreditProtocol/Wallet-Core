@@ -38,6 +38,13 @@ pub fn proofs_to_fingerprints(
     Ok((fingerprints, secrets))
 }
 
+pub fn remove_dleq_from_proofs(mut proofs: Vec<Proof>) -> Vec<Proof> {
+    for proof in proofs.iter_mut() {
+        proof.dleq = None;
+    }
+    proofs
+}
+
 pub fn sign_htlc_proof(
     proof: &mut Proof,
     preimage: &str,
@@ -167,4 +174,168 @@ pub fn tx_can_be_refreshed(tx: &cdk_common::wallet::Transaction) -> bool {
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bcr_common::{
+        cashu::{self, Amount},
+        core_tests,
+    };
+    use bcr_wallet_core::{
+        types::{TRANSACTION_STATUS_METADATA_KEY, TransactionStatus},
+        util::to_mint_url,
+    };
+    use std::str::FromStr;
+
+    fn add_test_dleqs(proofs: &mut [cashu::Proof]) {
+        for proof in proofs {
+            proof.dleq = Some(cashu::nut12::ProofDleq {
+                e: cashu::SecretKey::generate(),
+                s: cashu::SecretKey::generate(),
+                r: cashu::SecretKey::generate(),
+            });
+        }
+    }
+
+    fn test_proofs(amounts: &[Amount]) -> Vec<cashu::Proof> {
+        let (_info, keyset) = core_tests::generate_random_ecash_keyset();
+        let mut proofs = core_tests::generate_random_ecash_proofs(&keyset, amounts);
+        add_test_dleqs(&mut proofs);
+        proofs
+    }
+
+    #[test]
+    fn test_proofs_to_fingerprints_success() {
+        let proofs = test_proofs(&[Amount::from(8), Amount::from(4)]);
+        let expected_secrets: Vec<_> = proofs.iter().map(|p| p.secret.clone()).collect();
+        let expected_amounts: Vec<_> = proofs.iter().map(|p| p.amount).collect();
+        let expected_keyset_ids: Vec<_> = proofs.iter().map(|p| p.keyset_id).collect();
+        let expected_cs: Vec<_> = proofs.iter().map(|p| p.c).collect();
+        let expected_dleqs: Vec<_> = proofs.iter().map(|p| p.dleq.clone()).collect();
+        let expected_ys: Vec<_> = proofs.iter().map(|p| p.y().expect("works")).collect();
+        let (fingerprints, secrets) = proofs_to_fingerprints(proofs).expect("works");
+        assert_eq!(fingerprints.len(), 2);
+        assert_eq!(secrets, expected_secrets);
+        for (idx, fp) in fingerprints.iter().enumerate() {
+            assert_eq!(fp.amount, expected_amounts[idx].to_u64());
+            assert_eq!(fp.keyset_id, expected_keyset_ids[idx]);
+            assert_eq!(fp.c, expected_cs[idx]);
+            assert_eq!(fp.dleq, expected_dleqs[idx]);
+            assert_eq!(fp.y, expected_ys[idx]);
+        }
+    }
+
+    #[test]
+    fn test_proofs_to_fingerprints_returns_missing_dleq_error() {
+        let mut proofs = test_proofs(&[Amount::from(8)]);
+        proofs[0].dleq = None;
+        let res = proofs_to_fingerprints(proofs);
+        assert!(matches!(res, Err(Error::MissingDleq)));
+    }
+
+    #[test]
+    fn test_proofs_to_fingerprints_empty_vec() {
+        let (fingerprints, secrets) = proofs_to_fingerprints(vec![]).expect("works");
+        assert!(fingerprints.is_empty());
+        assert!(secrets.is_empty());
+    }
+
+    #[test]
+    fn test_remove_dleq_from_proofs_removes_all_dleqs() {
+        let proofs = test_proofs(&[Amount::from(8), Amount::from(4), Amount::from(2)]);
+        assert!(proofs.iter().all(|p| p.dleq.is_some()));
+        let stripped = remove_dleq_from_proofs(proofs);
+        assert_eq!(stripped.len(), 3);
+        assert!(stripped.iter().all(|p| p.dleq.is_none()));
+    }
+
+    #[test]
+    fn test_remove_dleq_from_proofs_preserves_other_fields() {
+        let proofs = test_proofs(&[Amount::from(8)]);
+        let original = proofs[0].clone();
+        let stripped = remove_dleq_from_proofs(proofs).pop().expect("works");
+        assert_eq!(stripped.amount, original.amount);
+        assert_eq!(stripped.keyset_id, original.keyset_id);
+        assert_eq!(stripped.secret, original.secret);
+        assert_eq!(stripped.c, original.c);
+        assert_eq!(stripped.witness, original.witness);
+        assert!(stripped.dleq.is_none());
+    }
+
+    #[test]
+    fn test_sign_htlc_proof_signature_verifies_against_secret_bytes() {
+        let mut proofs = test_proofs(&[Amount::from(8)]);
+        let proof = proofs.first_mut().expect("proof exists");
+        let wallet_secret = cashu::SecretKey::generate();
+        let wallet_public_key = wallet_secret.public_key();
+        let message = proof.secret.to_bytes();
+        let preimage = "test-preimage";
+        sign_htlc_proof(proof, preimage, &wallet_secret).expect("works");
+        let witness = proof.witness.as_ref().expect("witness exists");
+        let signature = match witness {
+            cashu::Witness::HTLCWitness(htlc_witness) => htlc_witness.signatures.as_ref().unwrap()
+                [0]
+            .parse::<secp256k1::schnorr::Signature>()
+            .unwrap(),
+            other => panic!("expected HTLC witness, got {other:?}"),
+        };
+
+        wallet_public_key
+            .verify(&message, &signature)
+            .expect("works");
+    }
+
+    #[test]
+    fn test_tx_can_be_refreshed_false_for_incoming_pending() {
+        let tx = test_tx(
+            cdk_common::wallet::TransactionDirection::Incoming,
+            TransactionStatus::Pending,
+        );
+        assert!(!tx_can_be_refreshed(&tx));
+    }
+
+    #[test]
+    fn test_tx_can_be_refreshed_false_for_outgoing_canceled() {
+        let tx = test_tx(
+            cdk_common::wallet::TransactionDirection::Outgoing,
+            TransactionStatus::Canceled,
+        );
+        assert!(!tx_can_be_refreshed(&tx));
+    }
+
+    #[test]
+    fn test_tx_can_be_refreshed_true_for_outgoing_pending() {
+        let tx = test_tx(
+            cdk_common::wallet::TransactionDirection::Outgoing,
+            TransactionStatus::Pending,
+        );
+        assert!(tx_can_be_refreshed(&tx));
+    }
+
+    fn test_tx(
+        direction: cdk_common::wallet::TransactionDirection,
+        status: TransactionStatus,
+    ) -> cdk_common::wallet::Transaction {
+        cdk_common::wallet::Transaction {
+            mint_url: to_mint_url(&url::Url::from_str("https://mint.example").unwrap()),
+            fee: cashu::Amount::from(0),
+            direction,
+            memo: None,
+            timestamp: 5,
+            unit: cashu::CurrencyUnit::Sat,
+            ys: vec![],
+            amount: cashu::Amount::from(42),
+            metadata: HashMap::from([(
+                TRANSACTION_STATUS_METADATA_KEY.to_owned(),
+                status.to_string(),
+            )]),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
+        }
+    }
 }
