@@ -255,6 +255,8 @@ pub(crate) async fn committed_swap(
     premints: HashMap<cashu::Id, cdk00::PreMintSecrets>,
     attestation: wire_attestation::IssuanceAttestation,
 ) -> Result<Vec<cdk00::BlindSignature>> {
+    // Remove dleqs from same-mint swaps to not give up a blinding factor
+    let inputs = crate::wallet::util::remove_dleq_from_proofs(inputs);
     let commit_result = client
         .post_swap_commitment(
             inputs.clone(),
