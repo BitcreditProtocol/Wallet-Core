@@ -1178,7 +1178,7 @@ async fn build_wallet(
 ) -> Result<Arc<RwLock<wallet::Wallet>>> {
     // building wallet dbs
     let (tx_repo, debitdb, mintmeltdb, nostrdb, contactdb, pending_incoming_payment_request_db) =
-        build_wallet_dbs(db_version, &w_cfg.wallet_id, &w_cfg.debit, db).await?;
+        build_wallet_dbs(db_version, &w_cfg.wallet_id, &w_cfg.debit, db, seed).await?;
 
     let nostr_repo = Arc::new(nostrdb);
     let nostr_event_channel = NostrEventChannel::new();

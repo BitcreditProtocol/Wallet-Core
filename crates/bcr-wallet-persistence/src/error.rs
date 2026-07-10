@@ -8,10 +8,16 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("cashu::nut01: {0}")]
+    Cdk01(#[from] cashu::nut01::Error),
     #[error("deserialize ciborium: {0}")]
     CiboriumDe(#[from] ciborium::de::Error<std::io::Error>),
     #[error("serialize ciborium: {0}")]
     CiboriumSer(#[from] ciborium::ser::Error<std::io::Error>),
+    #[error("borsh serialization: {0}")]
+    BorshSerialization(String),
+    #[error("encryption: {0}")]
+    Encryption(#[from] bcr_wallet_core::crypto::EncryptionError),
     #[error("Database operation error: {0}")]
     Redb(#[from] redb::Error),
     #[error("Database error: {0}")]

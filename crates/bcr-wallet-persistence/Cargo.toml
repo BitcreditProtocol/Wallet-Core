@@ -13,6 +13,7 @@ async-trait.workspace = true
 bcr-common = {workspace = true}
 bcr-wallet-core = {workspace = true}
 bitcoin.workspace = true
+borsh = {workspace = true}
 chrono = {workspace = true}
 ciborium = {workspace = true}
 mockall = {workspace = true, optional = true}

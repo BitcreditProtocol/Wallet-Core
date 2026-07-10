@@ -11,6 +11,7 @@ bip39.workspace = true
 bitcoin.workspace = true
 borsh.workspace = true
 chrono = {workspace = true}
+ecies.workspace = true
 nostr = {workspace = true}
 serde.workspace = true
 strum = {workspace = true, features = ["derive"]}

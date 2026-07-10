@@ -1,4 +1,5 @@
 pub mod contact;
+pub mod migration;
 pub mod mintmelt;
 pub mod nostr;
 pub mod payment_request;
@@ -9,6 +10,8 @@ pub mod transaction;
 use crate::error::Result;
 pub use ::redb::Database;
 use bcr_common::cashu::CurrencyUnit;
+use bcr_wallet_core::types::Seed;
+use bcr_wallet_core::util::keypair_from_seed;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -26,6 +29,7 @@ pub async fn build_wallet_dbs(
     wallet_id: &str,
     debit: &CurrencyUnit,
     db: Arc<Database>,
+    seed: Seed,
 ) -> Result<(
     transaction::TransactionDB,
     pocket::PocketDB,
@@ -34,8 +38,15 @@ pub async fn build_wallet_dbs(
     contact::ContactDB,
     payment_request::PaymentRequestDB,
 )> {
+    let keys = keypair_from_seed(seed);
+
+    // Execute Migrations for wallet
+    let wallet_namespace =
+        migration::collect_wallet_namespace(wallet_id.to_owned(), debit.to_owned(), keys);
+    migration::migrate(db.clone(), wallet_namespace).await?;
+
     let txdb = transaction::TransactionDB::new(db.clone(), wallet_id)?;
-    let debitdb = pocket::PocketDB::new(db.clone(), wallet_id, debit)?;
+    let debitdb = pocket::PocketDB::new(db.clone(), wallet_id, debit, keys)?;
     let mintmeltdb = mintmelt::MintMeltDB::new(db.clone(), wallet_id, debit)?;
     let nostrdb = nostr::NostrDB::new(db.clone(), wallet_id)?;
     let contactdb = contact::ContactDB::new(db.clone(), wallet_id)?;

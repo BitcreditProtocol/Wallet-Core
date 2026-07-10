@@ -7,6 +7,8 @@
 * Improve Mint Client Errors
 * Don't send dleq proofs on same-mint swaps to avoid giving up a blinding factor unnecessarily
 * Fix offline substitute pay by token for attestation, multi-keysets and fees
+* Add a Database migration scheme
+* Migrate Proofs persistence to be versioned, encrypted and borsh-serialized 
 
 # 0.9.6
 
