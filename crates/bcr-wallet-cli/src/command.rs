@@ -102,7 +102,7 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
                 };
                 res.push_str(&format!(
                     "\t\tId: {} \t Amount: {:8} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {} \t BTC TxID/Quote ID: {} \t Contact: {} \t Payment Request ID: {}",
-                    tx.id(), tx.amount, tx.unit, tx.fee,  status, format_timestamp(tx.timestamp), &format!("{:?}", ptype), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id, contact.map(|n| n.to_string()).unwrap_or_default(), payment_req_id.map(|id| id.to_string()).unwrap_or_default()
+                    tx.id(), tx.amount, tx.unit, tx.fee,  status, format_timestamp(tx.timestamp), format!("{:?}", ptype), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id, contact.map(|n| n.to_string()).unwrap_or_default(), payment_req_id.map(|id| id.to_string()).unwrap_or_default()
                 ));
                 push_break(&mut res);
             }
@@ -264,7 +264,7 @@ pub async fn cmd_pay_by_token(
 
     info!(
         "Payment Summary: Amount: {}, Unit: {}, Fees: {}",
-        &payment_summary.amount, &payment_summary.unit, &payment_summary.fees,
+        payment_summary.amount, payment_summary.unit, payment_summary.fees,
     );
     let result = app_state
         .wallet_pay_by_token(id.to_owned(), payment_summary.request_id.to_string())
@@ -274,10 +274,10 @@ pub async fn cmd_pay_by_token(
     push_break(&mut res);
     res.push_str(&format!("Pay by Token for {name}, Wallet ID: {id}.\n"));
     push_break(&mut res);
-    res.push_str(&format!("Payment Summary: {}", &payment_summary.request_id));
+    res.push_str(&format!("Payment Summary: {}", payment_summary.request_id));
     res.push_str(&format!(
         "Unit: {}, Amount: {}, Fees: {}",
-        &payment_summary.unit, &payment_summary.amount, &payment_summary.fees
+        payment_summary.unit, payment_summary.amount, payment_summary.fees
     ));
     push_break(&mut res);
     res.push_str(&format!("Transaction ID: {}", result.tx_id));
@@ -303,7 +303,7 @@ pub async fn cmd_pay_to_contact(
 
     info!(
         "Payment Summary: Amount: {}, Unit: {}, Fees: {}",
-        &payment_summary.amount, &payment_summary.unit, &payment_summary.fees,
+        payment_summary.amount, payment_summary.unit, payment_summary.fees,
     );
     let result = app_state
         .wallet_pay_to_contact(id.to_owned(), payment_summary.request_id.to_string())
@@ -315,10 +315,10 @@ pub async fn cmd_pay_to_contact(
         "Pay to Contact {node_id} for {name}, Wallet ID: {id}.\n"
     ));
     push_break(&mut res);
-    res.push_str(&format!("Payment Summary: {}", &payment_summary.request_id));
+    res.push_str(&format!("Payment Summary: {}", payment_summary.request_id));
     res.push_str(&format!(
         "Unit: {}, Amount: {}, Fees: {}",
-        &payment_summary.unit, &payment_summary.amount, &payment_summary.fees
+        payment_summary.unit, payment_summary.amount, payment_summary.fees
     ));
     push_break(&mut res);
     res.push_str(&format!("Transaction ID: {}", result));
@@ -339,7 +339,7 @@ pub async fn cmd_send_payment(
 
     info!(
         "Payment Summary: Amount: {}, Unit: {}, Fees: {}",
-        &payment_summary.amount, &payment_summary.unit, &payment_summary.fees,
+        payment_summary.amount, payment_summary.unit, payment_summary.fees,
     );
 
     let tx_id = app_state
@@ -352,10 +352,10 @@ pub async fn cmd_send_payment(
         "Send Payment for {name}, Input: {input} - Wallet ID: {id}.\n"
     ));
     push_break(&mut res);
-    res.push_str(&format!("Payment Summary: {}", &payment_summary.request_id));
+    res.push_str(&format!("Payment Summary: {}", payment_summary.request_id));
     res.push_str(&format!(
         "Unit: {}, Amount: {}, Fees: {}",
-        &payment_summary.unit, &payment_summary.amount, &payment_summary.fees
+        payment_summary.unit, payment_summary.amount, payment_summary.fees
     ));
     push_break(&mut res);
     res.push_str(&format!("Transaction ID: {tx_id}"));
@@ -817,7 +817,7 @@ pub async fn cmd_pay_pr(
         .await?;
     info!(
         "Payment Summary: Amount: {}, Unit: {}, Fees: {}",
-        &payment_summary.amount, &payment_summary.unit, &payment_summary.fees,
+        payment_summary.amount, payment_summary.unit, payment_summary.fees,
     );
     let result = app_state
         .wallet_pay_payment_request(id.to_owned(), payment_summary.request_id.to_string())
@@ -829,7 +829,7 @@ pub async fn cmd_pay_pr(
     ));
     res.push_str(&format!(
         "Unit: {}, Amount: {}, Fees: {}",
-        &payment_summary.unit, &payment_summary.amount, &payment_summary.fees
+        payment_summary.unit, payment_summary.amount, payment_summary.fees
     ));
     push_break(&mut res);
     res.push_str(&format!("Transaction ID: {}", result));
