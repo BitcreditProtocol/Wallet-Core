@@ -11,12 +11,12 @@ use crate::{
     },
     wallet::{
         api,
-        types::{PayReference, WalletInfo, WalletPaymentType, WalletProtestResult},
+        types::{PayReference, SwapConfig, WalletInfo, WalletPaymentType, WalletProtestResult},
     },
 };
 use async_trait::async_trait;
 use bcr_common::{
-    cashu::{self, Amount, CurrencyUnit, ProofsMethods, nut00 as cdk00, nut18 as cdk18},
+    cashu::{self, Amount, CurrencyUnit, KeySet, ProofsMethods, nut00 as cdk00, nut18 as cdk18},
     cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
     core::NodeId,
     wallet::Token,
@@ -39,7 +39,11 @@ use bitcoin::{base58, secp256k1};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use nostr::RelayUrl;
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+    sync::Arc,
+};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -1192,6 +1196,20 @@ impl WalletApi for super::Wallet {
                 .get(&substitute)
                 .ok_or(Error::BetaNotFound(substitute.clone()))?;
             let substitute_clowder_id = substitute_client.get_clowder_id().await?;
+
+            // Create beta provider for substitute to do attestation
+            let mut beta_clients = HashMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
+
+            for beta in substitute_client.as_ref().get_clowder_betas().await? {
+                let beta_client = (self.client_factory)(beta.clone());
+                beta_clients.insert(beta, beta_client);
+            }
+
+            let beta_provider = RandomBetaProvider::new(
+                beta_clients.values().cloned().collect(),
+                substitute_clowder_id,
+            )?;
+
             // Get keyset infos from substitute
             // Get local proofs
             tracing::debug!("Offline Pay by Token: Get Local Proofs");
@@ -1216,16 +1234,30 @@ impl WalletApi for super::Wallet {
                 .into_iter()
                 .map(|k| (k.id, k))
                 .collect();
+
+            let kids: HashSet<cashu::Id> = substitute_proofs.iter().map(|p| p.keyset_id).collect();
+            let mut keysets: HashMap<cashu::Id, KeySet> = HashMap::new();
+            for kid in kids.iter() {
+                let keyset = substitute_client.get_mint_keyset(*kid).await?;
+                keysets.insert(*kid, keyset);
+            }
             tracing::debug!("Offline Pay by Token: Swap to unlocked substitute proofs to target.");
+            // create swap config for substitute
+            let swap_config = SwapConfig {
+                expiry: self.swap_expiry,
+                alpha_pk: substitute_clowder_id,
+            };
             // Swap to unlocked substitute proofs to target
             let unlocked_sending_proofs = self
                 .debit
                 .swap_to_unlocked_substitute_proofs(
                     substitute_proofs,
                     &keysets_info,
+                    keysets,
                     substitute_client.clone(),
+                    beta_provider,
                     send_amount,
-                    self.swap_config(),
+                    swap_config,
                 )
                 .await?;
 

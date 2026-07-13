@@ -70,7 +70,9 @@ pub trait PocketApi: SendSync {
         &self,
         proofs: Vec<cashu::Proof>,
         keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets: HashMap<cashu::Id, KeySet>,
         client: Arc<dyn ClowderMintConnector>,
+        beta_provider: RandomBetaProvider,
         send_amount: Amount,
         swap_config: SwapConfig,
     ) -> Result<Vec<cashu::Proof>>;
@@ -554,7 +556,7 @@ async fn send_proofs(
                 keysets.insert(*kid, keyset);
             }
 
-            for (y, _) in swap_proofs.iter() {
+            for y in swap_proofs.keys() {
                 let _ = db.mark_as_pendingspent(*y).await?;
             }
 

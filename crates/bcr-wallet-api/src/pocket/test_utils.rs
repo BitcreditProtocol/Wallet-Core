@@ -146,7 +146,9 @@ pub mod tests {
                 &self,
                 proofs: Vec<cashu::Proof>,
                 keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+                keysets: HashMap<cashu::Id, cashu::KeySet>,
                 client: Arc<dyn ClowderMintConnector>,
+                beta_provider: crate::pocket::RandomBetaProvider,
                 send_amount: Amount,
                 swap_config: SwapConfig,
             ) -> Result<Vec<cashu::Proof>>;

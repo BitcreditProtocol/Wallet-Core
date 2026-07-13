@@ -6,6 +6,7 @@
         * but of course the caller needs to remember, so the next time the app is started, dev-mode is set as well
 * Improve Mint Client Errors
 * Don't send dleq proofs on same-mint swaps to avoid giving up a blinding factor unnecessarily
+* Fix offline substitute pay by token for attestation, multi-keysets and fees
 
 # 0.9.6
 

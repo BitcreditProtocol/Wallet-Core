@@ -529,93 +529,115 @@ impl super::PocketApi for Pocket {
         &self,
         proofs: Vec<cdk00::Proof>,
         keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets: HashMap<cashu::Id, KeySet>,
         client: Arc<dyn ClowderMintConnector>,
+        beta_provider: RandomBetaProvider,
         send_amount: Amount,
         swap_config: SwapConfig,
     ) -> Result<Vec<cashu::Proof>> {
-        let mut swapped_proofs = Vec::new();
         let total_amount = proofs.total_amount()?;
         let change_amount = total_amount - send_amount;
-        tracing::debug!("Swapping to unlocked substitute proofs - {change_amount} will be lost.");
-        // handle keyset
-        let active_info = keysets_info
-            .values()
-            .find(|info| info.unit == self.unit && info.active);
-        let Some(active_info) = active_info else {
-            return Err(Error::NoActiveKeyset);
-        };
-        let active_keyset = client.get_mint_keyset(active_info.id).await?;
-        // calculate splits
-        let send_splits = send_amount.split_targeted(
-            &SplitTarget::None,
-            &bcr_wallet_core::util::to_fee_and_amounts(&active_keyset),
-        )?;
-        let send_splits_len = send_splits.len();
-        let change_splits = change_amount.split_targeted(
-            &SplitTarget::None,
-            &bcr_wallet_core::util::to_fee_and_amounts(&active_keyset),
-        )?;
-        let mut splits: Vec<Amount> = Vec::with_capacity(send_splits.len() + change_splits.len());
-        splits.extend(send_splits);
-        splits.extend(change_splits);
-        // TODO: How to add Fees here?
-        // no counter etc., since we're not persisting them anyway
-        let premint_secrets = cashu::PreMintSecrets::random(
-            active_info.id,
-            total_amount,
-            &SplitTarget::Values(splits),
-            &bcr_wallet_core::util::to_fee_and_amounts(&active_keyset),
-        )?;
-        let mut premints = HashMap::from([(active_info.id, premint_secrets)]);
-        let keysets = HashMap::from([(active_info.id, active_keyset)]);
+
+        let swap_plan: Vec<_> = prepare_swap(&proofs, keysets_info)?.into_iter().collect();
+        tracing::debug!(
+            "Swapping to unlocked substitute proofs {swap_plan:?} - {change_amount} will be used for fees and/or lost."
+        );
+
+        // prepare the premints
+        let mut premints: HashMap<cashu::Id, cdk00::PreMintSecrets> = HashMap::new();
+        let mut remaining_payment = send_amount;
+        // collect payments by kid, so we can reconstruct it after the swap
+        let mut payment_targets_by_kid: HashMap<cashu::Id, Amount> = HashMap::new();
+
+        for (kid, amount) in swap_plan {
+            let keyset_payment_target = std::cmp::min(amount, remaining_payment);
+
+            let target = if keyset_payment_target > Amount::ZERO {
+                // used for our payment - needs to add up to our payment amount
+                payment_targets_by_kid.insert(kid, keyset_payment_target);
+                remaining_payment -= keyset_payment_target;
+                SplitTarget::Value(keyset_payment_target)
+            } else {
+                // change - doesn't matter how we get it
+                SplitTarget::default()
+            };
+
+            // no counter etc., since we're not persisting them anyway
+            let premint = cashu::PreMintSecrets::random(
+                kid,
+                amount,
+                &target,
+                &bcr_wallet_core::util::to_fee_and_amounts(&keysets[&kid]),
+            )?;
+            premints.insert(kid, premint);
+        }
+
+        if remaining_payment != Amount::ZERO {
+            return Err(Error::Swap(format!(
+                "swap plan cannot fund payment target {send_amount}, missing {remaining_payment}"
+            )));
+        }
+
         let blinds: Vec<cdk00::BlindedMessage> = premints
             .values()
             .flat_map(|premint| premint.blinded_messages())
             .collect();
 
-        let attestation = self.beta.attest(&proofs).await?;
-        let all_signatures = super::committed_swap(
+        let attestation = beta_provider.attest(&proofs).await?;
+        let signatures = super::committed_swap(
             client.as_ref(),
             None,
             proofs,
             blinds,
             &swap_config,
-            HashMap::new(),
+            premints.iter().map(|(k, v)| (*k, v.clone())).collect(),
             attestation,
         )
         .await?;
 
-        // We only take the send_splits signatures, they add up to our send_amount
-        let mut send_signatures = all_signatures;
-        send_signatures.truncate(send_splits_len);
-
-        let mut signatures: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
-        for signature in send_signatures {
-            signatures
+        let mut on_target: Vec<cdk00::Proof> = Vec::new();
+        let mut sigs_by_kid: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
+        for signature in signatures {
+            sigs_by_kid
                 .entry(signature.keyset_id)
                 .and_modify(|v| v.push(signature.clone()))
                 .or_insert_with(|| vec![signature]);
         }
 
-        let mut current_amount = Amount::ZERO;
-        // only collect sending proofs, so we can take all - change is discarded for now
-        for (kid, signatures) in signatures.into_iter() {
+        let mut selected_amount = Amount::ZERO;
+        for (kid, sigs) in sigs_by_kid.into_iter() {
             let premint = premints.remove(&kid).expect("premint should be here");
             let keyset = keysets.get(&kid).expect("keyset should be here");
-            let unblinded_proofs = unblind_proofs(keyset, signatures, premint);
-            for proof in unblinded_proofs.into_iter() {
-                current_amount += proof.amount;
-                swapped_proofs.push(proof);
+            let mut proofs = unblind_proofs(keyset, sigs, premint);
+
+            // get payment amount for this keyset
+            let keyset_target_amount = payment_targets_by_kid.remove(&kid).unwrap_or(Amount::ZERO);
+            let mut selected_amount_per_keyset = Amount::ZERO;
+
+            proofs.sort_by_key(|proof| std::cmp::Reverse(proof.amount));
+            for proof in proofs {
+                let amount = proof.amount;
+                if selected_amount_per_keyset + amount <= keyset_target_amount {
+                    selected_amount_per_keyset += amount;
+                    selected_amount += amount;
+                    on_target.push(proof);
+                }
+            }
+
+            if selected_amount_per_keyset != keyset_target_amount {
+                return Err(Error::Swap(format!(
+                    "did not select exact payment proofs for keyset {kid}: {selected_amount_per_keyset} / {keyset_target_amount}"
+                )));
             }
         }
 
-        if current_amount != send_amount {
-            tracing::warn!(
-                "Mismatch between target {send_amount} and amount from proofs {current_amount}"
-            );
+        if selected_amount != send_amount {
+            return Err(Error::Swap(format!(
+                "did not select exact payment proofs for total amount: {selected_amount} / {send_amount}"
+            )));
         }
 
-        Ok(swapped_proofs)
+        Ok(on_target)
     }
 
     async fn dev_mode_detailed_balance(
