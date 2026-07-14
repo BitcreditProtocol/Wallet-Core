@@ -9,6 +9,7 @@ use redb::{Database, ReadableTable, TableDefinition};
 use std::sync::Arc;
 
 mod migration_0001;
+mod migration_0002;
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct AppliedMigration {
@@ -18,13 +19,38 @@ pub struct AppliedMigration {
 
 const MIGRATIONS_TABLE: TableDefinition<&str, Vec<u8>> = TableDefinition::new("migrations");
 
-pub async fn migrate(db: Arc<Database>, namespace: WalletStorageNamespace) -> Result<()> {
-    tokio::task::spawn_blocking(move || migrate_sync(db, namespace))
+pub async fn migrate_purse(db: Arc<Database>) -> Result<()> {
+    tokio::task::spawn_blocking(move || migrate_purse_sync(db))
         .await
         .map_err(|e| Error::Custom(format!("migration task failed: {e}")))?
 }
 
-fn migrate_sync(db: Arc<Database>, namespace: WalletStorageNamespace) -> Result<()> {
+fn migrate_purse_sync(db: Arc<Database>) -> Result<()> {
+    tracing::info!("Checking DB migrations for purse ..");
+    let write_txn = db.begin_write()?;
+
+    let applied = load_applied_migrations(&write_txn)?;
+
+    let migration_0002_id_for_purse = migration_0002::migration_name_for_purse();
+    if !applied.contains(&migration_0002_id_for_purse) {
+        tracing::info!("Applying Migration 0002 for purse");
+        migration_0002::migration_0002_add_purse_envelope(&write_txn)?;
+        mark_migration_applied(&write_txn, &migration_0002_id_for_purse)?;
+        tracing::info!("Applied Migration 0002 for purse");
+    }
+
+    write_txn.commit()?;
+    tracing::info!("Finished DB migrations for purse");
+    Ok(())
+}
+
+pub async fn migrate_wallet(db: Arc<Database>, namespace: WalletStorageNamespace) -> Result<()> {
+    tokio::task::spawn_blocking(move || migrate_wallet_sync(db, namespace))
+        .await
+        .map_err(|e| Error::Custom(format!("migration task failed: {e}")))?
+}
+
+fn migrate_wallet_sync(db: Arc<Database>, namespace: WalletStorageNamespace) -> Result<()> {
     tracing::info!(
         "Checking DB migrations for wallet {}..",
         &namespace.wallet_id
@@ -199,7 +225,7 @@ mod tests {
         let namespace = test_namespace("wallet-1");
         let expected_id = migration_0001::migration_name_for_wallet(&namespace.wallet_id);
 
-        migrate(db.clone(), namespace)
+        migrate_wallet(db.clone(), namespace)
             .await
             .expect("migration succeeds");
 
@@ -220,11 +246,11 @@ mod tests {
 
         assert_ne!(first_id, second_id);
 
-        migrate(db.clone(), first_namespace)
+        migrate_wallet(db.clone(), first_namespace)
             .await
             .expect("first wallet migration succeeds");
 
-        migrate(db.clone(), second_namespace)
+        migrate_wallet(db.clone(), second_namespace)
             .await
             .expect("second wallet migration succeeds");
 

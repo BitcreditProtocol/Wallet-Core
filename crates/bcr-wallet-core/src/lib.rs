@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+pub mod borsh;
 pub mod contact;
 pub mod crypto;
 pub mod event;
