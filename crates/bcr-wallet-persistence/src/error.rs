@@ -1,6 +1,6 @@
 use bcr_common::{
     cashu::{self, nut02 as cdk02},
-    cdk_common,
+    cdk_common::{self, wallet::TransactionId},
 };
 use thiserror::Error;
 
@@ -36,8 +36,12 @@ pub enum Error {
     Cdk(#[from] cdk_common::Error),
     #[error("wallet id {0} not found")]
     WalletIdNotFound(String),
+    #[error("invalid tx id {0}")]
+    Uuid(#[from] uuid::Error),
     #[error("transaction not found {0}")]
-    TransactionNotFound(cdk_common::wallet::TransactionId),
+    TransactionNotFound(uuid::Uuid),
+    #[error("transaction not found for ys {0}")]
+    TransactionNotFoundForYs(TransactionId),
     #[error("proof not in desired state: {0}")]
     InvalidProofState(cashu::PublicKey),
     #[error("proof in local DB not found: {0}")]

@@ -1,9 +1,15 @@
+use std::collections::HashMap;
+
 use crate::{
     error::{Error, Result},
-    redb::{migration::WalletStorageNamespace, pocket},
+    redb::{migration::WalletStorageNamespace, pocket, transaction},
 };
-use bcr_common::cashu::{
-    nut00 as cdk00, nut01 as cdk01, nut02 as cdk02, nut07 as cdk07, nut12 as cdk12, secret::Secret,
+use bcr_common::{
+    cashu::{
+        CurrencyUnit, MintUrl, nut00 as cdk00, nut01 as cdk01, nut02 as cdk02, nut07 as cdk07,
+        nut12 as cdk12, secret::Secret,
+    },
+    cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
 };
 use redb::{ReadableTable, TableDefinition};
 
@@ -18,11 +24,12 @@ pub(super) fn migration_name_for_wallet(wallet_id: &str) -> String {
     )
 }
 
-pub(super) fn migration_0001_add_proof_envelope_and_encryption(
+pub(super) fn migration_0001_envelope_and_encryption(
     txn: &redb::WriteTransaction,
     namespace: &WalletStorageNamespace,
 ) -> Result<()> {
     migrate_proof_table_to_envelope_and_encryption(txn, &namespace.proof_table, &namespace.keys)?;
+    migrate_transaction_table_to_envelope_and_id_changes(txn, &namespace.transaction_table)?;
 
     Ok(())
 }
@@ -60,6 +67,43 @@ fn migrate_proof_table_to_envelope_and_encryption(
     }
 
     for (key, new_proof) in migrated_proofs.iter() {
+        table.insert(key.as_slice(), new_proof)?;
+    }
+
+    Ok(())
+}
+
+// Fetch old transactions
+// convert to new format
+// put in V1 envelope
+// Store new transactions
+fn migrate_transaction_table_to_envelope_and_id_changes(
+    txn: &redb::WriteTransaction,
+    table_name: &str,
+) -> Result<()> {
+    let table_def: TableDefinition<&[u8], Vec<u8>> = TableDefinition::new(table_name);
+    let mut table = match txn.open_table(table_def) {
+        Ok(table) => table,
+        Err(redb::TableError::TableDoesNotExist(_)) => {
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut migrated_txs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for item in table.iter()? {
+        let (k, v) = item?;
+        let tx: TransactionEntry = ciborium::from_reader(v.value().as_slice())?;
+        let cashu_tx: Transaction = tx.into();
+        let new_tx_id = uuid::Uuid::new_v4();
+        let stored_tx_v1 = transaction::to_stored_tx_v1(cashu_tx, new_tx_id)?;
+
+        let migrated_tx_bytes =
+            borsh::to_vec(&stored_tx_v1).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+        migrated_txs.push((k.value().to_vec(), migrated_tx_bytes));
+    }
+
+    for (key, new_proof) in migrated_txs.iter() {
         table.insert(key.as_slice(), new_proof)?;
     }
 
@@ -105,6 +149,61 @@ impl std::convert::From<ProofEntry> for cdk00::Proof {
             witness: entry.witness,
             dleq: entry.dleq,
             p2pk_e: None,
+        }
+    }
+}
+
+///////////////////////////////////////////// TransactionEntry
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct TransactionEntry {
+    pub tx_id: String,
+    pub mint_url: MintUrl,
+    pub direction: TransactionDirection,
+    pub amount: bcr_common::cashu::Amount,
+    pub fee: bcr_common::cashu::Amount,
+    pub unit: CurrencyUnit,
+    pub ys: Vec<cdk01::PublicKey>,
+    pub timestamp: u64,
+    pub memo: Option<String>,
+    pub metadata: HashMap<String, String>,
+    pub quote_id: Option<String>,
+}
+
+impl std::convert::From<Transaction> for TransactionEntry {
+    fn from(tx: Transaction) -> Self {
+        let tx_id = TransactionId::new(tx.ys.clone());
+        TransactionEntry {
+            tx_id: tx_id.to_string(),
+            mint_url: tx.mint_url,
+            direction: tx.direction,
+            amount: tx.amount,
+            fee: tx.fee,
+            unit: tx.unit,
+            ys: tx.ys,
+            timestamp: tx.timestamp,
+            memo: tx.memo,
+            metadata: tx.metadata,
+            quote_id: tx.quote_id,
+        }
+    }
+}
+impl std::convert::From<TransactionEntry> for Transaction {
+    fn from(entry: TransactionEntry) -> Self {
+        Transaction {
+            mint_url: entry.mint_url,
+            direction: entry.direction,
+            amount: entry.amount,
+            fee: entry.fee,
+            unit: entry.unit,
+            ys: entry.ys,
+            timestamp: entry.timestamp,
+            memo: entry.memo,
+            metadata: entry.metadata,
+            quote_id: entry.quote_id,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
         }
     }
 }
@@ -224,8 +323,12 @@ mod tests {
 
         let write_txn = db.begin_write().expect("begin write transaction");
 
-        migration_0001_add_proof_envelope_and_encryption(&write_txn, &namespace)
-            .expect("migration succeeds for missing proof table");
+        migrate_proof_table_to_envelope_and_encryption(
+            &write_txn,
+            &namespace.proof_table,
+            &namespace.keys,
+        )
+        .expect("migration succeeds for missing proof table");
 
         write_txn.commit().expect("commit migration");
     }
@@ -245,8 +348,12 @@ mod tests {
         );
 
         let write_txn = db.begin_write().expect("begin write transaction");
-        migration_0001_add_proof_envelope_and_encryption(&write_txn, &namespace)
-            .expect("migrate legacy proof");
+        migrate_proof_table_to_envelope_and_encryption(
+            &write_txn,
+            &namespace.proof_table,
+            &namespace.keys,
+        )
+        .expect("migrate legacy proof");
         write_txn.commit().expect("commit migration");
         let (migrated, state) = load_migrated_proof(&db, &namespace.proof_table, y, keys);
 
@@ -268,8 +375,12 @@ mod tests {
             cdk07::State::PendingSpent,
         );
         let write_txn = db.begin_write().expect("begin write transaction");
-        migration_0001_add_proof_envelope_and_encryption(&write_txn, &namespace)
-            .expect("migrate legacy proof");
+        migrate_proof_table_to_envelope_and_encryption(
+            &write_txn,
+            &namespace.proof_table,
+            &namespace.keys,
+        )
+        .expect("migrate legacy proof");
         write_txn.commit().expect("commit migration");
         let (migrated, state) = load_migrated_proof(&db, &namespace.proof_table, y, keys);
 
@@ -290,8 +401,12 @@ mod tests {
 
         let write_txn = db.begin_write().expect("begin write transaction");
 
-        migration_0001_add_proof_envelope_and_encryption(&write_txn, &namespace)
-            .expect("migrate legacy proof");
+        migrate_proof_table_to_envelope_and_encryption(
+            &write_txn,
+            &namespace.proof_table,
+            &namespace.keys,
+        )
+        .expect("migrate legacy proof");
 
         write_txn.commit().expect("commit migration");
 
@@ -320,8 +435,12 @@ mod tests {
 
         let write_txn = db.begin_write().expect("begin write transaction");
 
-        migration_0001_add_proof_envelope_and_encryption(&write_txn, &namespace)
-            .expect("migrate legacy proof");
+        migrate_proof_table_to_envelope_and_encryption(
+            &write_txn,
+            &namespace.proof_table,
+            &namespace.keys,
+        )
+        .expect("migrate legacy proof");
 
         write_txn.commit().expect("commit migration");
 
@@ -381,8 +500,12 @@ mod tests {
 
         let write_txn = db.begin_write().expect("begin write transaction");
 
-        migration_0001_add_proof_envelope_and_encryption(&write_txn, &namespace)
-            .expect("migrate all legacy proofs");
+        migrate_proof_table_to_envelope_and_encryption(
+            &write_txn,
+            &namespace.proof_table,
+            &namespace.keys,
+        )
+        .expect("migrate all legacy proofs");
 
         write_txn.commit().expect("commit migration");
 

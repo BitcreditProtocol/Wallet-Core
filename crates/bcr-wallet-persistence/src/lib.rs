@@ -7,7 +7,7 @@ pub mod test_utils;
 use crate::error::Result;
 use async_trait::async_trait;
 use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07};
-use bcr_common::cdk_common::wallet::{Transaction, TransactionId};
+use bcr_common::cdk_common::wallet::Transaction;
 use bcr_common::core::NodeId;
 use bcr_wallet_core::contact::Contact;
 use bcr_wallet_core::name::Name;
@@ -95,24 +95,25 @@ pub trait PurseRepository: SendSync {
 #[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
 #[async_trait]
 pub trait TransactionRepository: SendSync {
-    async fn store_tx(&self, tx: Transaction) -> Result<TransactionId>;
-    async fn load_tx(&self, tx_id: TransactionId) -> Result<Transaction>;
+    async fn store_tx(&self, tx: Transaction) -> Result<uuid::Uuid>;
+    async fn load_tx(&self, tx_id: uuid::Uuid) -> Result<Transaction>;
+    async fn load_tx_by_ys(&self, ys: Vec<cdk01::PublicKey>) -> Result<(uuid::Uuid, Transaction)>;
     #[allow(dead_code)]
-    async fn delete_tx(&self, tx_id: TransactionId) -> Result<()>;
-    async fn list_tx_ids(&self) -> Result<Vec<TransactionId>>;
+    async fn delete_tx(&self, tx_id: uuid::Uuid) -> Result<()>;
+    async fn list_tx_ids(&self) -> Result<Vec<uuid::Uuid>>;
     async fn list_txs(&self) -> Result<Vec<Transaction>>;
     async fn update_metadata(
         &self,
-        tx_id: TransactionId,
+        tx_id: uuid::Uuid,
         key: String,
         value: String,
     ) -> Result<Option<String>>;
     async fn update_memo(
         &self,
-        tx_id: TransactionId,
+        tx_id: uuid::Uuid,
         new_memo: Option<String>,
     ) -> Result<Option<String>>;
-    async fn update_fee(&self, tx_id: TransactionId, fee_to_add: cashu::Amount) -> Result<()>;
+    async fn update_fee(&self, tx_id: uuid::Uuid, fee_to_add: cashu::Amount) -> Result<()>;
     async fn delete_repo(&self) -> Result<()>;
 }
 

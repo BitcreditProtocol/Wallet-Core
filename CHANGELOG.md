@@ -11,6 +11,11 @@
 * Migrate Proofs persistence to be versioned, encrypted and borsh-serialized 
 * Migrated DB models to versioned payload, borsh serialization and in some cases encryption at rest
     * purse: versioned & borsh
+    * transaction: versioned & borsh & data model rework
+* Reworked Transaction data model
+    * Don't use cashu::Transaction internally anymore, but a custom Transaction Data Model for our needs
+    * Transaction ID is now a random uuid
+    * Transactions have a concept of linked_transactions for different reasons - e.g. linking a tx and the reclaim of the transaction
 
 # 0.9.6
 

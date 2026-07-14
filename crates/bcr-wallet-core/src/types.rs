@@ -229,6 +229,12 @@ pub fn get_payment_request_id(metas: &HashMap<String, String>) -> Option<Uuid> {
     Uuid::from_str(id).ok()
 }
 
+pub const TRANSACTION_LINK_RECLAIM_KEY: &str = "transaction_link_reclaim";
+pub fn get_transaction_link_reclaim(metas: &HashMap<String, String>) -> Option<Uuid> {
+    let id = metas.get(TRANSACTION_LINK_RECLAIM_KEY)?;
+    Uuid::from_str(id).ok()
+}
+
 impl std::convert::From<SendSummary> for PaymentSummary {
     fn from(value: SendSummary) -> Self {
         Self {

@@ -81,7 +81,7 @@ fn premints_from_storage(stored: PremintStorage) -> HashMap<cashu::Id, cdk00::Pr
         .collect()
 }
 
-/// StoredProof is a versioned, encrypted, borsh-serialized
+/// StoredProof is a versioned, encrypted, borsh-serialized proof
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub(super) enum StoredProof {
     V1(EncryptedProofPayloadV1),
