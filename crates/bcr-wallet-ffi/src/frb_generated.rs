@@ -3058,6 +3058,7 @@ impl SseDecode for crate::api::ProtestStatus {
         return match inner {
             0 => crate::api::ProtestStatus::Resolved,
             1 => crate::api::ProtestStatus::Rabid,
+            2 => crate::api::ProtestStatus::Offline,
             _ => unreachable!("Invalid variant for ProtestStatus: {}", inner),
         };
     }
@@ -4691,6 +4692,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::ProtestStatus {
         match self {
             Self::Resolved => 0.into_dart(),
             Self::Rabid => 1.into_dart(),
+            Self::Offline => 2.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -6837,6 +6839,7 @@ impl SseEncode for crate::api::ProtestStatus {
             match self {
                 crate::api::ProtestStatus::Resolved => 0,
                 crate::api::ProtestStatus::Rabid => 1,
+                crate::api::ProtestStatus::Offline => 2,
                 _ => {
                     unimplemented!("");
                 }

@@ -1,4 +1,8 @@
-use bcr_common::cashu;
+use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, secret::Secret};
+use bcr_common::wire::borsh::{
+    deserialize_blindedmessage, deserialize_cashu_amount, deserialize_from_str, serialize_as_str,
+    serialize_blindedmessage, serialize_cashu_amount,
+};
 use borsh::{
     BorshDeserialize, BorshSerialize,
     io::{Error as BorshError, ErrorKind, Read, Write},
@@ -70,8 +74,103 @@ pub fn deserialize_mint_keyset_infos(
     Ok(infos)
 }
 
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct PremintEntry {
+    #[borsh(
+        serialize_with = "serialize_blindedmessage",
+        deserialize_with = "deserialize_blindedmessage"
+    )]
+    pub blinded_message: cdk00::BlindedMessage,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub secret: Secret,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub secret_key: cdk01::SecretKey,
+    #[borsh(
+        serialize_with = "serialize_cashu_amount",
+        deserialize_with = "deserialize_cashu_amount"
+    )]
+    pub amount: cashu::Amount,
+}
+
+type PremintStorage = Vec<(String, Vec<PremintEntry>)>;
+
+pub fn serialize_premints(
+    premints: &HashMap<cashu::Id, cdk00::PreMintSecrets>,
+    writer: &mut impl Write,
+) -> Result<()> {
+    let stored = premints_to_storage(premints);
+    BorshSerialize::serialize(&stored, writer)
+}
+
+pub fn deserialize_premints(
+    reader: &mut impl Read,
+) -> Result<HashMap<cashu::Id, cdk00::PreMintSecrets>> {
+    let stored = PremintStorage::deserialize_reader(reader)?;
+    premints_from_storage(stored)
+}
+
+fn premints_to_storage(premints: &HashMap<cashu::Id, cdk00::PreMintSecrets>) -> PremintStorage {
+    let mut stored: PremintStorage = premints
+        .iter()
+        .map(|(keyset_id, premint_secrets)| {
+            let entries = premint_secrets
+                .secrets
+                .iter()
+                .map(|premint| PremintEntry {
+                    blinded_message: premint.blinded_message.clone(),
+                    secret: premint.secret.clone(),
+                    secret_key: premint.r.clone(),
+                    amount: premint.amount,
+                })
+                .collect();
+
+            (keyset_id.to_string(), entries)
+        })
+        .collect();
+    stored.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    stored
+}
+
+fn premints_from_storage(
+    stored: PremintStorage,
+) -> Result<HashMap<cashu::Id, cdk00::PreMintSecrets>> {
+    stored
+        .into_iter()
+        .map(|(keyset_id, entries)| {
+            let keyset_id = keyset_id.parse::<cashu::Id>().map_err(|err| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("invalid keyset ID `{keyset_id}`: {err}"),
+                )
+            })?;
+
+            let secrets = entries
+                .into_iter()
+                .map(|entry| cdk00::PreMint {
+                    blinded_message: entry.blinded_message,
+                    secret: entry.secret,
+                    r: entry.secret_key,
+                    amount: entry.amount,
+                })
+                .collect();
+
+            Ok((keyset_id, cdk00::PreMintSecrets { secrets, keyset_id }))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    use bcr_common::core_tests::{
+        generate_random_ecash_blindedmessages, generate_random_ecash_keyset,
+    };
+
     use super::*;
     use std::io::Cursor;
 
@@ -97,13 +196,13 @@ mod tests {
         }
     }
 
-    fn serialize(infos: &HashMap<cashu::Id, cashu::KeySetInfo>) -> Vec<u8> {
+    fn serialize_mint_ks_infos(infos: &HashMap<cashu::Id, cashu::KeySetInfo>) -> Vec<u8> {
         let mut bytes = Vec::new();
         serialize_mint_keyset_infos(infos, &mut bytes).expect("serialization should succeed");
         bytes
     }
 
-    fn deserialize(bytes: &[u8]) -> Result<HashMap<cashu::Id, cashu::KeySetInfo>> {
+    fn deserialize_mint_ks_infos(bytes: &[u8]) -> Result<HashMap<cashu::Id, cashu::KeySetInfo>> {
         let mut reader = Cursor::new(bytes);
         deserialize_mint_keyset_infos(&mut reader)
     }
@@ -119,8 +218,9 @@ mod tests {
     #[test]
     fn round_trip_empty_map() {
         let original = HashMap::new();
-        let bytes = serialize(&original);
-        let deserialized = deserialize(&bytes).expect("deserialization should succeed");
+        let bytes = serialize_mint_ks_infos(&original);
+        let deserialized =
+            deserialize_mint_ks_infos(&bytes).expect("deserialization should succeed");
         assert!(deserialized.is_empty());
     }
 
@@ -129,8 +229,9 @@ mod tests {
         let info = keyset_info(KEYSET_ID_1, "sat", true, 100, Some(1_900_000_000));
         let mut original = HashMap::new();
         original.insert(info.id, info);
-        let bytes = serialize(&original);
-        let deserialized = deserialize(&bytes).expect("deserialization should succeed");
+        let bytes = serialize_mint_ks_infos(&original);
+        let deserialized =
+            deserialize_mint_ks_infos(&bytes).expect("deserialization should succeed");
         assert_eq!(deserialized.len(), 1);
         let id = cashu::Id::from_str(KEYSET_ID_1).unwrap();
         let actual = deserialized.get(&id).expect("keyset should exist");
@@ -145,8 +246,9 @@ mod tests {
         let mut original = HashMap::new();
         original.insert(first.id, first);
         original.insert(second.id, second);
-        let bytes = serialize(&original);
-        let deserialized = deserialize(&bytes).expect("deserialization should succeed");
+        let bytes = serialize_mint_ks_infos(&original);
+        let deserialized =
+            deserialize_mint_ks_infos(&bytes).expect("deserialization should succeed");
         assert_eq!(deserialized.len(), original.len());
         for (id, expected) in &original {
             let actual = deserialized
@@ -167,7 +269,10 @@ mod tests {
         let mut map_b = HashMap::new();
         map_b.insert(second.id, second);
         map_b.insert(first.id, first);
-        assert_eq!(serialize(&map_a), serialize(&map_b));
+        assert_eq!(
+            serialize_mint_ks_infos(&map_a),
+            serialize_mint_ks_infos(&map_b)
+        );
     }
 
     #[test]
@@ -176,8 +281,9 @@ mod tests {
         let info = keyset_info(KEYSET_ID_2, "sat", true, 100, None);
         let mut original = HashMap::new();
         original.insert(map_id, info);
-        let bytes = serialize(&original);
-        let deserialized = deserialize(&bytes).expect("deserialization should succeed");
+        let bytes = serialize_mint_ks_infos(&original);
+        let deserialized =
+            deserialize_mint_ks_infos(&bytes).expect("deserialization should succeed");
         let actual = deserialized
             .get(&map_id)
             .expect("map key should be preserved");
@@ -197,7 +303,92 @@ mod tests {
             },
         )];
         let bytes = borsh::to_vec(&stored).expect("test data should serialize");
-        let error = deserialize(&bytes).expect_err("invalid ID must be rejected");
+        let error = deserialize_mint_ks_infos(&bytes).expect_err("invalid ID must be rejected");
         assert_eq!(error.kind(), ErrorKind::InvalidData);
+    }
+
+    // serialize premints
+    fn sample_premints() -> HashMap<cashu::Id, cdk00::PreMintSecrets> {
+        let (_, keyset) = generate_random_ecash_keyset();
+
+        let amounts = [
+            cashu::Amount::from(1),
+            cashu::Amount::from(2),
+            cashu::Amount::from(4),
+            cashu::Amount::from(8),
+        ];
+
+        let secrets = generate_random_ecash_blindedmessages(keyset.id, &amounts)
+            .into_iter()
+            .map(|(blinded_message, secret, r)| cdk00::PreMint {
+                amount: blinded_message.amount,
+                blinded_message,
+                secret,
+                r,
+            })
+            .collect();
+
+        HashMap::from([(
+            keyset.id,
+            cdk00::PreMintSecrets {
+                keyset_id: keyset.id,
+                secrets,
+            },
+        )])
+    }
+
+    #[test]
+    fn serialize_and_deserialize_premints_roundtrip() {
+        let original = sample_premints();
+        let mut encoded = Vec::new();
+        serialize_premints(&original, &mut encoded).expect("premints should serialize");
+        let decoded =
+            deserialize_premints(&mut Cursor::new(encoded)).expect("premints should deserialize");
+        assert_eq!(decoded.len(), original.len());
+        for (keyset_id, original_premints) in &original {
+            let decoded_premints = decoded
+                .get(keyset_id)
+                .expect("decoded map should contain keyset");
+            assert_eq!(decoded_premints.keyset_id, original_premints.keyset_id);
+            assert_eq!(
+                decoded_premints.secrets.len(),
+                original_premints.secrets.len()
+            );
+            for (decoded, original) in decoded_premints
+                .secrets
+                .iter()
+                .zip(&original_premints.secrets)
+            {
+                assert_eq!(decoded.blinded_message, original.blinded_message);
+                assert_eq!(decoded.secret, original.secret);
+                assert_eq!(decoded.r, original.r);
+                assert_eq!(decoded.amount, original.amount);
+            }
+        }
+    }
+
+    #[test]
+    fn empty_premints_roundtrip() {
+        let original = HashMap::new();
+        let mut encoded = Vec::new();
+        serialize_premints(&original, &mut encoded).expect("empty premints should serialize");
+        let decoded = deserialize_premints(&mut Cursor::new(encoded))
+            .expect("empty premints should deserialize");
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn deserialize_premints_rejects_invalid_keyset_id() {
+        let stored: PremintStorage = vec![("not-a-valid-keyset-id".to_owned(), Vec::new())];
+        let mut encoded = Vec::new();
+        BorshSerialize::serialize(&stored, &mut encoded)
+            .expect("storage representation should serialize");
+        let error = deserialize_premints(&mut Cursor::new(encoded))
+            .expect_err("invalid keyset id should fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            error.to_string().contains("invalid keyset ID"),
+            "unexpected error: {error}"
+        );
     }
 }

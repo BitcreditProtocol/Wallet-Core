@@ -1102,6 +1102,13 @@ impl DebitPocketApi for Pocket {
                     result: None,
                 })
             }
+            wire_common::ProtestStatus::Offline => {
+                tracing::warn!("Protest for {qid} returned offline");
+                Ok(ProtestResult {
+                    status: wire_common::ProtestStatus::Offline,
+                    result: None,
+                })
+            }
         }
     }
 
@@ -1185,6 +1192,13 @@ impl DebitPocketApi for Pocket {
                     result: None,
                 })
             }
+            wire_common::ProtestStatus::Offline => {
+                tracing::warn!("Swap protest for {commitment_sig} returned offline");
+                Ok(ProtestResult {
+                    status: wire_common::ProtestStatus::Offline,
+                    result: None,
+                })
+            }
         }
     }
 
@@ -1229,6 +1243,16 @@ impl DebitPocketApi for Pocket {
                     txid: None,
                 })
             }
+            wire_common::ProtestStatus::Offline => {
+                tracing::warn!("Melt protest for {quote_id} returned offline");
+                Ok(MeltProtestResult {
+                    base: ProtestResult {
+                        status: wire_common::ProtestStatus::Offline,
+                        result: None,
+                    },
+                    txid: None,
+                })
+            }
         }
     }
 
@@ -1250,7 +1274,7 @@ mod tests {
         external::mint::{MeltQuoteResult, MockClowderMintConnector},
         pocket::{PocketApi, debit::DebitPocketApi, test_utils::tests::test_kinfos},
     };
-    use bcr_common::{core_tests, wire::mint::MintResponse};
+    use bcr_common::{core_tests, wire::mint::OnchainMintResponse};
     use bcr_wallet_persistence::{
         MockMintMeltRepository, MockPocketRepository,
         test_utils::tests::valid_payment_address_testnet,
@@ -1939,7 +1963,7 @@ mod tests {
         connector
             .expect_post_mint_onchain()
             .times(1)
-            .returning(move |_| Ok(MintResponse { signatures: vec![] }));
+            .returning(move |_| Ok(OnchainMintResponse { signatures: vec![] }));
 
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
 
@@ -2566,7 +2590,7 @@ mod tests {
             .expect_post_mint_onchain()
             .times(1)
             .returning(move |_| {
-                Ok(MintResponse {
+                Ok(OnchainMintResponse {
                     signatures: blind_sigs.clone(),
                 })
             });

@@ -215,7 +215,7 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
     async fn post_mint_onchain(
         &self,
         req: wire_mint::OnchainMintRequest,
-    ) -> Result<wire_mint::MintResponse>;
+    ) -> Result<wire_mint::OnchainMintResponse>;
     async fn post_protest_mint(
         &self,
         req: wire_mint::MintProtestRequest,
@@ -531,7 +531,7 @@ impl ClowderMintConnector for HttpClientExt {
     async fn post_mint_onchain(
         &self,
         req: wire_mint::OnchainMintRequest,
-    ) -> Result<wire_mint::MintResponse> {
+    ) -> Result<wire_mint::OnchainMintResponse> {
         let url = self
             .mint_url()
             .join(TreasuryEp::MINT_ONCHAIN_V1_EXT)
@@ -542,7 +542,7 @@ impl ClowderMintConnector for HttpClientExt {
 
         match res.error_for_status_ref() {
             Ok(_) => {
-                let response: wire_mint::MintResponse = res.json().await?;
+                let response: wire_mint::OnchainMintResponse = res.json().await?;
                 Ok(response)
             }
             Err(err) => {
@@ -904,7 +904,7 @@ impl ClowderMintConnector for SentinelClient {
     async fn post_mint_onchain(
         &self,
         req: wire_mint::OnchainMintRequest,
-    ) -> Result<wire_mint::MintResponse> {
+    ) -> Result<wire_mint::OnchainMintResponse> {
         let url = self
             .mint_url()
             .join(TreasuryEp::MINT_ONCHAIN_V1_EXT)
@@ -914,7 +914,7 @@ impl ClowderMintConnector for SentinelClient {
         let res = self.secondary.post(url).json(&req).send().await?;
         match res.error_for_status_ref() {
             Ok(_) => {
-                let response: wire_mint::MintResponse = res.json().await?;
+                let response: wire_mint::OnchainMintResponse = res.json().await?;
                 Ok(response)
             }
             Err(err) => {

@@ -62,4 +62,6 @@ pub enum Error {
     PaymentRequestAlreadyExists(String),
     #[error("Payment Request not found {0}")]
     PaymentRequestNotFound(String),
+    #[error("Counter Exhausted")]
+    CounterExhausted,
 }

@@ -9,76 +9,105 @@ use bcr_common::cashu::{
 };
 use bcr_common::wire::borsh::{
     deserialize_cashu_amount, deserialize_from_str, deserialize_optionproofdleq,
-    deserialize_optionproofwitness, serialize_as_str, serialize_cashu_amount,
-    serialize_optionproofdleq, serialize_optionproofwitness,
+    deserialize_optionproofwitness, deserialize_vec_of_strs, deserialize_vecof_blindedmessage,
+    serialize_as_str, serialize_cashu_amount, serialize_optionproofdleq,
+    serialize_optionproofwitness, serialize_vec_of_strs, serialize_vecof_blindedmessage,
 };
-use bcr_wallet_core::crypto;
+use bcr_wallet_core::{
+    borsh::{deserialize_premints, serialize_premints},
+    crypto,
+};
 use bitcoin::secp256k1;
 use borsh::{BorshDeserialize, BorshSerialize};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
 use std::{collections::HashMap, sync::Arc};
 use tokio::task::spawn_blocking;
 
-///////////////////////////////////////////// Commitment
-type PremintStorage = Vec<(
-    cashu::Id,
-    Vec<(
-        cdk00::BlindedMessage,
-        Secret,
-        cdk01::SecretKey,
-        cashu::Amount,
-    )>,
-)>;
+/// StoredCommitment is a versioned, encrypted, borsh-serialized commitment
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) enum StoredCommitment {
+    V1(EncryptedCommitmentPayloadV1),
+}
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-struct Commitment {
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct EncryptedCommitmentPayloadV1 {
+    pub ciphertext: Vec<u8>,
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredCommitmentPayloadV1 {
+    #[borsh(
+        serialize_with = "serialize_vec_of_strs",
+        deserialize_with = "deserialize_vec_of_strs"
+    )]
     inputs: Vec<cashu::PublicKey>,
+    #[borsh(
+        serialize_with = "serialize_vecof_blindedmessage",
+        deserialize_with = "deserialize_vecof_blindedmessage"
+    )]
     outputs: Vec<cashu::BlindedMessage>,
     expiry: u64,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
     commitment: secp256k1::schnorr::Signature,
     ephemeral_secret: Vec<u8>,
     body_content: String,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
     wallet_key: cashu::PublicKey,
-    #[serde(default)]
-    premints: PremintStorage,
+    #[borsh(
+        serialize_with = "serialize_premints",
+        deserialize_with = "deserialize_premints"
+    )]
+    premints: HashMap<cashu::Id, cdk00::PreMintSecrets>,
 }
 
-fn premints_to_storage(premints: HashMap<cashu::Id, cdk00::PreMintSecrets>) -> PremintStorage {
-    premints
-        .into_iter()
-        .map(|(kid, ps)| {
-            let tuples = ps
-                .secrets
-                .into_iter()
-                .map(|p| (p.blinded_message, p.secret, p.r, p.amount))
-                .collect();
-            (kid, tuples)
-        })
-        .collect()
+pub(super) fn to_stored_commitment_v1(
+    record: SwapCommitmentRecord,
+    keys: bitcoin::secp256k1::Keypair,
+) -> Result<StoredCommitment> {
+    let payload = StoredCommitmentPayloadV1 {
+        inputs: record.inputs,
+        outputs: record.outputs,
+        expiry: record.expiry,
+        commitment: record.commitment,
+        ephemeral_secret: record.ephemeral_secret.secret_bytes().to_vec(),
+        body_content: record.body_content,
+        wallet_key: record.wallet_key,
+        premints: record.premints,
+    };
+    let encoded = borsh::to_vec(&payload).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+    let encrypted = crypto::encrypt_ecies(&encoded, &keys.public_key())?;
+    Ok(StoredCommitment::V1(EncryptedCommitmentPayloadV1 {
+        ciphertext: encrypted,
+    }))
 }
 
-fn premints_from_storage(stored: PremintStorage) -> HashMap<cashu::Id, cdk00::PreMintSecrets> {
-    stored
-        .into_iter()
-        .map(|(kid, tuples)| {
-            let secrets = tuples
-                .into_iter()
-                .map(|(bm, secret, r, amount)| cdk00::PreMint {
-                    blinded_message: bm,
-                    secret,
-                    r,
-                    amount,
-                })
-                .collect();
-            (
-                kid,
-                cdk00::PreMintSecrets {
-                    secrets,
-                    keyset_id: kid,
-                },
-            )
-        })
-        .collect()
+pub(super) fn from_stored_commitment_v1(
+    commitment: StoredCommitment,
+    keys: bitcoin::secp256k1::Keypair,
+) -> Result<SwapCommitmentRecord> {
+    let StoredCommitment::V1(encrypted_payload) = commitment;
+    let decrypted = crypto::decrypt_ecies(&encrypted_payload.ciphertext, &keys.secret_key())?;
+    let c: StoredCommitmentPayloadV1 =
+        borsh::from_slice(&decrypted).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+
+    let secret = secp256k1::SecretKey::from_slice(&c.ephemeral_secret)
+        .map_err(|e| Error::Custom(format!("invalid ephemeral secret: {e}")))?;
+    Ok(SwapCommitmentRecord {
+        inputs: c.inputs,
+        outputs: c.outputs,
+        expiry: c.expiry,
+        commitment: c.commitment,
+        ephemeral_secret: secret,
+        body_content: c.body_content,
+        wallet_key: c.wallet_key,
+        premints: c.premints,
+    })
 }
 
 /// StoredProof is a versioned, encrypted, borsh-serialized
@@ -194,11 +223,20 @@ pub(super) fn from_stored_proof_v1(
     Ok((decoded.into(), state))
 }
 
-///////////////////////////////////////////// CounterEntry
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct CounterEntry {
-    kid: cdk02::Id,
-    counter: u32,
+/// StoredCounter is a versioned, borsh-serialized wallet counter
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) enum StoredCounter {
+    V1(StoredCounterPayloadV1),
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredCounterPayloadV1 {
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub kid: cdk02::Id,
+    pub counter: u32,
 }
 
 ///////////////////////////////////////////// PocketDB
@@ -473,7 +511,7 @@ impl PocketDB {
         db: Arc<Database>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         kid: cdk02::Id,
-    ) -> Result<CounterEntry> {
+    ) -> Result<StoredCounter> {
         let read_txn = db.begin_read()?;
 
         match read_txn.open_table(counter_table) {
@@ -481,8 +519,10 @@ impl PocketDB {
                 let entry = table.get(kid.to_bytes().as_slice())?;
                 match entry {
                     Some(e) => {
-                        let counter: CounterEntry = ciborium::from_reader(e.value().as_slice())?;
-                        Ok(counter)
+                        let deserialized: StoredCounter =
+                            borsh::from_slice(e.value().as_slice())
+                                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                        Ok(deserialized)
                     }
                     None => Self::insert_counter_sync(db, counter_table, kid),
                 }
@@ -498,15 +538,15 @@ impl PocketDB {
         db: Arc<Database>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         kid: cdk02::Id,
-    ) -> Result<CounterEntry> {
-        let entry = CounterEntry { kid, counter: 0 };
+    ) -> Result<StoredCounter> {
+        let entry = StoredCounter::V1(StoredCounterPayloadV1 { kid, counter: 0 });
         let write_txn = db.begin_write()?;
 
         {
             let mut table = write_txn.open_table(counter_table)?;
 
-            let mut serialized = Vec::new();
-            ciborium::into_writer(&entry, &mut serialized)?;
+            let serialized =
+                borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
             table.insert(kid.to_bytes().as_slice(), serialized)?;
         }
 
@@ -517,9 +557,11 @@ impl PocketDB {
     fn increment_counter_sync(
         db: Arc<Database>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        old: CounterEntry,
-        new: CounterEntry,
+        old: StoredCounter,
+        new: StoredCounter,
     ) -> Result<()> {
+        let StoredCounter::V1(old) = old;
+        let StoredCounter::V1(new) = new;
         if old.kid != new.kid {
             return Err(Error::CounterKidMismatch);
         }
@@ -530,14 +572,16 @@ impl PocketDB {
             let old_value = table.get(old.kid.to_bytes().as_slice())?.map(|v| v.value());
 
             if let Some(old_value) = old_value {
-                let old_counter: CounterEntry = ciborium::from_reader(old_value.as_slice())?;
+                let deserialized: StoredCounter = borsh::from_slice(&old_value)
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                let StoredCounter::V1(old_counter) = deserialized;
 
                 if old_counter.kid != old.kid {
                     return Err(Error::CounterKidMismatch);
                 }
 
-                let mut serialized = Vec::new();
-                ciborium::into_writer(&new, &mut serialized)?;
+                let serialized = borsh::to_vec(&StoredCounter::V1(new))
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
                 table.insert(old.kid.to_bytes().as_slice(), serialized)?;
             } else {
                 return Err(Error::CounterNotFound(old.kid));
@@ -552,25 +596,17 @@ impl PocketDB {
         db: Arc<Database>,
         commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         record: crate::SwapCommitmentRecord,
+        keys: bitcoin::secp256k1::Keypair,
     ) -> Result<()> {
         let commitment = record.commitment;
-        let entry = Commitment {
-            inputs: record.inputs,
-            outputs: record.outputs,
-            expiry: record.expiry,
-            commitment,
-            ephemeral_secret: record.ephemeral_secret.secret_bytes().to_vec(),
-            body_content: record.body_content,
-            wallet_key: record.wallet_key,
-            premints: premints_to_storage(record.premints),
-        };
+        let entry = to_stored_commitment_v1(record, keys)?;
         let write_txn = db.begin_write()?;
 
         {
             let mut table = write_txn.open_table(commitment_table)?;
+            let serialized =
+                borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
 
-            let mut serialized = Vec::new();
-            ciborium::into_writer(&entry, &mut serialized)?;
             table.insert(commitment.serialize().as_slice(), serialized)?;
         }
 
@@ -582,6 +618,7 @@ impl PocketDB {
         db: Arc<Database>,
         commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         commitment: secp256k1::schnorr::Signature,
+        keys: bitcoin::secp256k1::Keypair,
     ) -> Result<SwapCommitmentRecord> {
         let read_txn = db.begin_read()?;
 
@@ -590,19 +627,11 @@ impl PocketDB {
                 let entry = table.get(commitment.serialize().as_slice())?;
                 match entry {
                     Some(e) => {
-                        let c: Commitment = ciborium::from_reader(e.value().as_slice())?;
-                        let secret = secp256k1::SecretKey::from_slice(&c.ephemeral_secret)
-                            .map_err(|e| Error::Custom(format!("invalid ephemeral secret: {e}")))?;
-                        Ok(SwapCommitmentRecord {
-                            inputs: c.inputs,
-                            outputs: c.outputs,
-                            expiry: c.expiry,
-                            commitment: c.commitment,
-                            ephemeral_secret: secret,
-                            body_content: c.body_content,
-                            wallet_key: c.wallet_key,
-                            premints: premints_from_storage(c.premints),
-                        })
+                        let deserialized: StoredCommitment =
+                            borsh::from_slice(e.value().as_slice())
+                                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                        let record = from_stored_commitment_v1(deserialized, keys)?;
+                        Ok(record)
                     }
                     None => Err(Error::Custom(format!(
                         "commitment not found: {}",
@@ -621,6 +650,7 @@ impl PocketDB {
     fn list_commitments_sync(
         db: Arc<Database>,
         commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        keys: bitcoin::secp256k1::Keypair,
     ) -> Result<Vec<SwapCommitmentRecord>> {
         let read_txn = db.begin_read()?;
 
@@ -628,19 +658,10 @@ impl PocketDB {
             Ok(table) => {
                 let mut res = Vec::new();
                 for (_, v) in table.range::<&[u8]>(..)?.flatten() {
-                    let c: Commitment = ciborium::from_reader(v.value().as_slice())?;
-                    let secret = secp256k1::SecretKey::from_slice(&c.ephemeral_secret)
-                        .map_err(|e| Error::Custom(format!("invalid ephemeral secret: {e}")))?;
-                    res.push(SwapCommitmentRecord {
-                        inputs: c.inputs,
-                        outputs: c.outputs,
-                        expiry: c.expiry,
-                        commitment: c.commitment,
-                        ephemeral_secret: secret,
-                        body_content: c.body_content,
-                        wallet_key: c.wallet_key,
-                        premints: premints_from_storage(c.premints),
-                    });
+                    let deserialized: StoredCommitment = borsh::from_slice(v.value().as_slice())
+                        .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                    let record = from_stored_commitment_v1(deserialized, keys)?;
+                    res.push(record);
                 }
                 Ok(res)
             }
@@ -877,6 +898,7 @@ impl PocketRepository for PocketDB {
         let table = self.counter_table;
         let counter =
             spawn_blocking(move || Self::load_counter_sync(db_clone, table, kid)).await??;
+        let StoredCounter::V1(counter) = counter;
         Ok(counter.counter)
     }
 
@@ -888,18 +910,24 @@ impl PocketRepository for PocketDB {
     ) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.counter_table;
-        let old = CounterEntry { kid, counter: old };
-        let new = CounterEntry {
+        let old_c = StoredCounterPayloadV1 { kid, counter: old };
+        let old = StoredCounter::V1(old_c.clone());
+        let new = StoredCounter::V1(StoredCounterPayloadV1 {
             kid,
-            counter: old.counter + increment,
-        };
+            counter: old_c
+                .counter
+                .checked_add(increment)
+                // TODO (future): how do we handle this? we can switch seeds / switch keyset, but if we hit u32::Max, this fails
+                .ok_or(Error::CounterExhausted)?,
+        });
         spawn_blocking(move || Self::increment_counter_sync(db_clone, table, old, new)).await?
     }
 
     async fn store_commitment(&self, record: crate::SwapCommitmentRecord) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.commitment_table;
-        spawn_blocking(move || Self::store_commitment_sync(db_clone, table, record)).await?
+        let keys = self.keys;
+        spawn_blocking(move || Self::store_commitment_sync(db_clone, table, record, keys)).await?
     }
 
     async fn load_commitment(
@@ -908,7 +936,9 @@ impl PocketRepository for PocketDB {
     ) -> Result<SwapCommitmentRecord> {
         let db_clone = self.db.clone();
         let table = self.commitment_table;
-        spawn_blocking(move || Self::load_commitment_sync(db_clone, table, commitment)).await?
+        let keys = self.keys;
+        spawn_blocking(move || Self::load_commitment_sync(db_clone, table, commitment, keys))
+            .await?
     }
 
     async fn delete_commitment(&self, commitment: secp256k1::schnorr::Signature) -> Result<()> {
@@ -920,7 +950,8 @@ impl PocketRepository for PocketDB {
     async fn list_commitments(&self) -> Result<Vec<SwapCommitmentRecord>> {
         let db_clone = self.db.clone();
         let table = self.commitment_table;
-        spawn_blocking(move || Self::list_commitments_sync(db_clone, table)).await?
+        let keys = self.keys;
+        spawn_blocking(move || Self::list_commitments_sync(db_clone, table, keys)).await?
     }
 
     async fn delete_repo(&self) -> Result<()> {

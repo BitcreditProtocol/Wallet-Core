@@ -486,6 +486,9 @@ pub async fn cmd_protest_mint(
         bcr_common::wire::common::ProtestStatus::Rabid => {
             res.push_str("Protest returned Rabid - mint declared rabid by betas");
         }
+        bcr_common::wire::common::ProtestStatus::Offline => {
+            res.push_str("Protest returned Offline - mint declared offline by betas");
+        }
     }
 
     Ok(res)
@@ -521,6 +524,9 @@ pub async fn cmd_protest_swap(
         bcr_common::wire::common::ProtestStatus::Rabid => {
             res.push_str("Protest returned Rabid - mint declared rabid by betas");
         }
+        bcr_common::wire::common::ProtestStatus::Offline => {
+            res.push_str("Protest returned Offline - mint declared offline by betas");
+        }
     }
 
     Ok(res)
@@ -553,6 +559,9 @@ pub async fn cmd_protest_melt(
         }
         bcr_common::wire::common::ProtestStatus::Rabid => {
             res.push_str("Protest returned Rabid - mint declared rabid by betas");
+        }
+        bcr_common::wire::common::ProtestStatus::Offline => {
+            res.push_str("Protest returned Offline - mint declared offline by betas");
         }
     }
 
