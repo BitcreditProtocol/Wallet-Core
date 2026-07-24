@@ -3160,6 +3160,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<TransactionLink> dco_decode_list_transaction_link(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_transaction_link).toList();
+  }
+
+  @protected
   List<TransactionStatus> dco_decode_list_transaction_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_transaction_status).toList();
@@ -3394,8 +3400,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Transaction dco_decode_transaction(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return Transaction(
       id: dco_decode_String(arr[0]),
       amount: dco_decode_u_64(arr[1]),
@@ -3406,9 +3412,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       memo: dco_decode_opt_String(arr[6]),
       ptype: dco_decode_payment_type(arr[7]),
       status: dco_decode_transaction_status(arr[8]),
-      txId: dco_decode_opt_String(arr[9]),
+      btcTxId: dco_decode_opt_String(arr[9]),
       quoteId: dco_decode_opt_String(arr[10]),
-      contact: dco_decode_opt_String(arr[11]),
+      contactNodeId: dco_decode_opt_String(arr[11]),
+      paymentRequestId: dco_decode_opt_String(arr[12]),
+      linkedTxs: dco_decode_list_transaction_link(arr[13]),
     );
   }
 
@@ -3444,6 +3452,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       direction: dco_decode_opt_box_autoadd_transaction_direction(arr[2]),
       timeRange: dco_decode_opt_box_autoadd_time_range(arr[3]),
     );
+  }
+
+  @protected
+  TransactionLink dco_decode_transaction_link(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return TransactionLink(
+      txId: dco_decode_String(arr[0]),
+      reason: dco_decode_transaction_link_reason(arr[1]),
+    );
+  }
+
+  @protected
+  TransactionLinkReason dco_decode_transaction_link_reason(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return TransactionLinkReason.values[raw as int];
   }
 
   @protected
@@ -5043,6 +5069,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<TransactionLink> sse_decode_list_transaction_link(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <TransactionLink>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_transaction_link(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<TransactionStatus> sse_decode_list_transaction_status(
     SseDeserializer deserializer,
   ) {
@@ -5328,9 +5368,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_memo = sse_decode_opt_String(deserializer);
     var var_ptype = sse_decode_payment_type(deserializer);
     var var_status = sse_decode_transaction_status(deserializer);
-    var var_txId = sse_decode_opt_String(deserializer);
+    var var_btcTxId = sse_decode_opt_String(deserializer);
     var var_quoteId = sse_decode_opt_String(deserializer);
-    var var_contact = sse_decode_opt_String(deserializer);
+    var var_contactNodeId = sse_decode_opt_String(deserializer);
+    var var_paymentRequestId = sse_decode_opt_String(deserializer);
+    var var_linkedTxs = sse_decode_list_transaction_link(deserializer);
     return Transaction(
       id: var_id,
       amount: var_amount,
@@ -5341,9 +5383,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       memo: var_memo,
       ptype: var_ptype,
       status: var_status,
-      txId: var_txId,
+      btcTxId: var_btcTxId,
       quoteId: var_quoteId,
-      contact: var_contact,
+      contactNodeId: var_contactNodeId,
+      paymentRequestId: var_paymentRequestId,
+      linkedTxs: var_linkedTxs,
     );
   }
 
@@ -5390,6 +5434,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       direction: var_direction,
       timeRange: var_timeRange,
     );
+  }
+
+  @protected
+  TransactionLink sse_decode_transaction_link(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_txId = sse_decode_String(deserializer);
+    var var_reason = sse_decode_transaction_link_reason(deserializer);
+    return TransactionLink(txId: var_txId, reason: var_reason);
+  }
+
+  @protected
+  TransactionLinkReason sse_decode_transaction_link_reason(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return TransactionLinkReason.values[inner];
   }
 
   @protected
@@ -6987,6 +7048,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_transaction_link(
+    List<TransactionLink> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_transaction_link(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_transaction_status(
     List<TransactionStatus> self,
     SseSerializer serializer,
@@ -7252,9 +7325,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.memo, serializer);
     sse_encode_payment_type(self.ptype, serializer);
     sse_encode_transaction_status(self.status, serializer);
-    sse_encode_opt_String(self.txId, serializer);
+    sse_encode_opt_String(self.btcTxId, serializer);
     sse_encode_opt_String(self.quoteId, serializer);
-    sse_encode_opt_String(self.contact, serializer);
+    sse_encode_opt_String(self.contactNodeId, serializer);
+    sse_encode_opt_String(self.paymentRequestId, serializer);
+    sse_encode_list_transaction_link(self.linkedTxs, serializer);
   }
 
   @protected
@@ -7291,6 +7366,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       serializer,
     );
     sse_encode_opt_box_autoadd_time_range(self.timeRange, serializer);
+  }
+
+  @protected
+  void sse_encode_transaction_link(
+    TransactionLink self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.txId, serializer);
+    sse_encode_transaction_link_reason(self.reason, serializer);
+  }
+
+  @protected
+  void sse_encode_transaction_link_reason(
+    TransactionLinkReason self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected

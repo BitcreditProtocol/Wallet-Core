@@ -1,63 +1,182 @@
 use crate::error::Error;
 use crate::{TransactionRepository, error::Result};
 use async_trait::async_trait;
-use bcr_common::cashu::{CurrencyUnit, MintUrl, nut01 as cdk01};
-use bcr_common::cdk_common::wallet::{Transaction, TransactionDirection, TransactionId};
+use bcr_common::cashu::{self, CurrencyUnit, MintUrl};
+use bcr_common::cdk_common::wallet::TransactionDirection;
+use bcr_common::core::NodeId;
+use bcr_common::wire::borsh::{
+    deserialize_cashu_amount, deserialize_from_str, deserialize_vec_of_strs, serialize_as_str,
+    serialize_cashu_amount, serialize_vec_of_strs,
+};
+use bcr_wallet_core::types::{PaymentType, Transaction, TransactionStatus};
+use borsh::{BorshDeserialize, BorshSerialize};
+use nostr::event::EventId;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc};
 use tokio::task::spawn_blocking;
+use uuid::Uuid;
 
-///////////////////////////////////////////// TransactionEntry
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-struct TransactionEntry {
-    pub tx_id: String,
-    pub mint_url: MintUrl,
-    pub direction: TransactionDirection,
-    pub amount: bcr_common::cashu::Amount,
-    pub fee: bcr_common::cashu::Amount,
-    pub unit: CurrencyUnit,
-    pub ys: Vec<cdk01::PublicKey>,
-    pub timestamp: u64,
-    pub memo: Option<String>,
-    pub metadata: HashMap<String, String>,
-    pub quote_id: Option<String>,
+/// StoredTransaction is a versioned, borsh-serialized transaction
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) enum StoredTransaction {
+    V1(StoredTransactionPayloadV1),
 }
 
-impl std::convert::From<Transaction> for TransactionEntry {
-    fn from(tx: Transaction) -> Self {
-        let tx_id = TransactionId::new(tx.ys.clone());
-        TransactionEntry {
-            tx_id: tx_id.to_string(),
-            mint_url: tx.mint_url,
-            direction: tx.direction,
-            amount: tx.amount,
-            fee: tx.fee,
-            unit: tx.unit,
-            ys: tx.ys,
-            timestamp: tx.timestamp,
-            memo: tx.memo,
-            metadata: tx.metadata,
-            quote_id: tx.quote_id,
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct StoredTransactionPayloadV1 {
+    pub id: Uuid,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub mint_url: MintUrl,
+    #[borsh(
+        serialize_with = "serialize_vec_of_strs",
+        deserialize_with = "deserialize_vec_of_strs"
+    )]
+    pub ys: Vec<cashu::PublicKey>,
+    #[borsh(
+        serialize_with = "serialize_cashu_amount",
+        deserialize_with = "deserialize_cashu_amount"
+    )]
+    pub amount: cashu::Amount,
+    #[borsh(
+        serialize_with = "serialize_cashu_amount",
+        deserialize_with = "deserialize_cashu_amount"
+    )]
+    pub fees: cashu::Amount,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub unit: CurrencyUnit,
+    pub tstamp: u64,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub direction: TransactionDirection,
+    pub memo: Option<String>,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub payment_type: PaymentType,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub status: TransactionStatus,
+    pub btc_tx_id: Option<String>,
+    pub quote_id: Option<Uuid>,
+    pub nostr_event_id: Option<String>,
+    pub contact_node_id: Option<NodeId>,
+    pub payment_request_id: Option<Uuid>,
+    pub linked_txs: Vec<TransactionLink>,
+}
+
+impl From<bcr_wallet_core::types::Transaction> for StoredTransactionPayloadV1 {
+    fn from(value: bcr_wallet_core::types::Transaction) -> Self {
+        Self {
+            id: value.id,
+            mint_url: value.mint_url,
+            ys: value.ys,
+            amount: value.amount,
+            fees: value.fees,
+            unit: value.unit,
+            tstamp: value.tstamp,
+            direction: value.direction,
+            memo: value.memo,
+            payment_type: value.payment_type,
+            status: value.status,
+            btc_tx_id: value.btc_tx_id.map(|bid| bid.to_string()),
+            quote_id: value.quote_id,
+            nostr_event_id: value.nostr_event_id.map(|nei| nei.to_string()),
+            contact_node_id: value.contact_node_id,
+            payment_request_id: value.payment_request_id,
+            linked_txs: value.linked_txs.into_iter().map(|ltx| ltx.into()).collect(),
         }
     }
 }
-impl std::convert::From<TransactionEntry> for Transaction {
-    fn from(entry: TransactionEntry) -> Self {
-        Transaction {
-            mint_url: entry.mint_url,
-            direction: entry.direction,
-            amount: entry.amount,
-            fee: entry.fee,
-            unit: entry.unit,
-            ys: entry.ys,
-            timestamp: entry.timestamp,
-            memo: entry.memo,
-            metadata: entry.metadata,
-            quote_id: entry.quote_id,
-            payment_request: None,
-            payment_proof: None,
-            payment_method: None,
-            saga_id: None,
+
+impl TryFrom<StoredTransactionPayloadV1> for bcr_wallet_core::types::Transaction {
+    type Error = Error;
+    fn try_from(value: StoredTransactionPayloadV1) -> Result<Self> {
+        Ok(Self {
+            id: value.id,
+            mint_url: value.mint_url,
+            ys: value.ys,
+            amount: value.amount,
+            fees: value.fees,
+            unit: value.unit,
+            tstamp: value.tstamp,
+            direction: value.direction,
+            memo: value.memo,
+            payment_type: value.payment_type,
+            status: value.status,
+            btc_tx_id: value
+                .btc_tx_id
+                .map(|bid| bitcoin::Txid::from_str(&bid))
+                .transpose()
+                .map_err(|e| Error::InvalidBtcTxId(e.to_string()))?,
+            quote_id: value.quote_id,
+            nostr_event_id: value
+                .nostr_event_id
+                .map(|nei| EventId::from_str(&nei))
+                .transpose()
+                .map_err(|e| Error::InvalidNostrEventId(e.to_string()))?,
+            contact_node_id: value.contact_node_id,
+            payment_request_id: value.payment_request_id,
+            linked_txs: value.linked_txs.into_iter().map(|ltx| ltx.into()).collect(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct TransactionLink {
+    pub tx_id: Uuid,
+    pub reason: TransactionLinkReason,
+}
+
+impl From<bcr_wallet_core::types::TransactionLink> for TransactionLink {
+    fn from(value: bcr_wallet_core::types::TransactionLink) -> Self {
+        Self {
+            tx_id: value.tx_id,
+            reason: value.reason.into(),
+        }
+    }
+}
+
+impl From<TransactionLink> for bcr_wallet_core::types::TransactionLink {
+    fn from(value: TransactionLink) -> Self {
+        Self {
+            tx_id: value.tx_id,
+            reason: value.reason.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum TransactionLinkReason {
+    Reclaim,
+}
+
+impl From<bcr_wallet_core::types::TransactionLinkReason> for TransactionLinkReason {
+    fn from(value: bcr_wallet_core::types::TransactionLinkReason) -> Self {
+        match value {
+            bcr_wallet_core::types::TransactionLinkReason::Reclaim => {
+                TransactionLinkReason::Reclaim
+            }
+        }
+    }
+}
+
+impl From<TransactionLinkReason> for bcr_wallet_core::types::TransactionLinkReason {
+    fn from(value: TransactionLinkReason) -> Self {
+        match value {
+            TransactionLinkReason::Reclaim => {
+                bcr_wallet_core::types::TransactionLinkReason::Reclaim
+            }
         }
     }
 }
@@ -71,10 +190,14 @@ pub struct TransactionDB {
 impl TransactionDB {
     const TRANSACTION_BASE_DB_NAME: &'static str = "transactions";
 
+    pub fn transaction_table_name(wallet_id: &str) -> String {
+        format!("{wallet_id}_{}", Self::TRANSACTION_BASE_DB_NAME)
+    }
+
     pub fn new(db: Arc<Database>, wallet_id: &str) -> Result<Self> {
         // Leak once to get static string, because of dynamically generated table names
         let transaction_name: &'static str =
-            Box::leak(format!("{wallet_id}_{}", Self::TRANSACTION_BASE_DB_NAME).into_boxed_str());
+            Box::leak(Self::transaction_table_name(wallet_id).into_boxed_str());
         let transaction_table = TableDefinition::new(transaction_name);
         Ok(Self {
             db,
@@ -86,16 +209,16 @@ impl TransactionDB {
         db: Arc<Database>,
         tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         tx: Transaction,
-    ) -> Result<TransactionId> {
-        let id = tx.id();
-        let entry: TransactionEntry = tx.into();
+    ) -> Result<Uuid> {
+        let id = tx.id;
+        let entry = StoredTransaction::V1(tx.into());
         let write_txn = db.begin_write()?;
 
         {
             let mut table = write_txn.open_table(tx_table)?;
+            let serialized =
+                borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
 
-            let mut serialized = Vec::new();
-            ciborium::into_writer(&entry, &mut serialized)?;
             table.insert(id.as_bytes().as_slice(), serialized)?;
         }
 
@@ -106,8 +229,8 @@ impl TransactionDB {
     fn load_tx_sync(
         db: Arc<Database>,
         tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        tx_id: TransactionId,
-    ) -> Result<Option<TransactionEntry>> {
+        tx_id: Uuid,
+    ) -> Result<Option<Transaction>> {
         let read_txn = db.begin_read()?;
 
         match read_txn.open_table(tx_table) {
@@ -115,8 +238,11 @@ impl TransactionDB {
                 let entry = table.get(tx_id.as_bytes().as_slice())?;
                 match entry {
                     Some(e) => {
-                        let tx: TransactionEntry = ciborium::from_reader(e.value().as_slice())?;
-                        Ok(Some(tx))
+                        let deserialized: StoredTransaction =
+                            borsh::from_slice(e.value().as_slice())
+                                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                        let StoredTransaction::V1(tx) = deserialized;
+                        Ok(Some(tx.try_into()?))
                     }
                     None => Ok(None),
                 }
@@ -126,34 +252,20 @@ impl TransactionDB {
         }
     }
 
-    fn delete_tx_sync(
-        db: Arc<Database>,
-        tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        tx_id: TransactionId,
-    ) -> Result<()> {
-        let write_txn = db.begin_write()?;
-
-        {
-            let mut table = write_txn.open_table(tx_table)?;
-            table.remove(tx_id.as_bytes().as_slice())?;
-        }
-
-        write_txn.commit()?;
-        Ok(())
-    }
-
     fn list_tx_ids_sync(
         db: Arc<Database>,
         tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-    ) -> Result<Vec<TransactionId>> {
+    ) -> Result<Vec<Uuid>> {
         let read_txn = db.begin_read()?;
 
         match read_txn.open_table(tx_table) {
             Ok(table) => {
                 let mut res = Vec::new();
-                for (_, v) in table.range::<&[u8]>(..)?.flatten() {
-                    let tx: TransactionEntry = ciborium::from_reader(v.value().as_slice())?;
-                    res.push(TransactionId::from_str(&tx.tx_id)?);
+                for item in table.range::<&[u8]>(..)? {
+                    let (k, _) = item?;
+                    let tx_id = Uuid::from_slice(k.value().to_vec().as_slice())
+                        .map_err(|e| Error::InvalidTransactionId(e.to_string()))?;
+                    res.push(tx_id);
                 }
                 Ok(res)
             }
@@ -165,15 +277,18 @@ impl TransactionDB {
     fn list_txs_sync(
         db: Arc<Database>,
         tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-    ) -> Result<Vec<TransactionEntry>> {
+    ) -> Result<Vec<Transaction>> {
         let read_txn = db.begin_read()?;
 
         match read_txn.open_table(tx_table) {
             Ok(table) => {
                 let mut res = Vec::new();
                 for (_, v) in table.range::<&[u8]>(..)?.flatten() {
-                    let tx: TransactionEntry = ciborium::from_reader(v.value().as_slice())?;
-                    res.push(tx);
+                    let deserialized: StoredTransaction =
+                        borsh::from_slice(v.value().as_slice())
+                            .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                    let StoredTransaction::V1(tx) = deserialized;
+                    res.push(tx.try_into()?);
                 }
                 Ok(res)
             }
@@ -182,26 +297,28 @@ impl TransactionDB {
         }
     }
 
-    fn update_meta_sync(
+    fn update_status_sync(
         db: Arc<Database>,
         tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        tx_id: TransactionId,
-        k: String,
-        v: String,
-    ) -> Result<Option<String>> {
+        tx_id: Uuid,
+        status: TransactionStatus,
+    ) -> Result<Option<TransactionStatus>> {
         let write_txn = db.begin_write()?;
         let old_v = {
             let mut table = write_txn.open_table(tx_table)?;
             let old_value = table.get(tx_id.as_bytes().as_slice())?.map(|v| v.value());
 
             if let Some(old_value) = old_value {
-                let mut tx: TransactionEntry = ciborium::from_reader(old_value.as_slice())?;
-                let old = tx.metadata.insert(k, v);
+                let deserialized: StoredTransaction = borsh::from_slice(&old_value)
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                let StoredTransaction::V1(mut tx) = deserialized;
+                let old = tx.status;
+                tx.status = status;
 
-                let mut serialized = Vec::new();
-                ciborium::into_writer(&tx, &mut serialized)?;
+                let serialized = borsh::to_vec(&StoredTransaction::V1(tx))
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
                 table.insert(tx_id.as_bytes().as_slice(), serialized)?;
-                old
+                Some(old)
             } else {
                 None
             }
@@ -214,7 +331,7 @@ impl TransactionDB {
     fn update_memo_sync(
         db: Arc<Database>,
         tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        tx_id: TransactionId,
+        tx_id: Uuid,
         new_memo: Option<String>,
     ) -> Result<Option<String>> {
         let write_txn = db.begin_write()?;
@@ -223,12 +340,15 @@ impl TransactionDB {
             let old_value = table.get(tx_id.as_bytes().as_slice())?.map(|v| v.value());
 
             if let Some(old_value) = old_value {
-                let mut tx: TransactionEntry = ciborium::from_reader(old_value.as_slice())?;
+                let deserialized: StoredTransaction = borsh::from_slice(&old_value)
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                let StoredTransaction::V1(mut tx) = deserialized;
+
                 let old = tx.memo.clone();
                 tx.memo = new_memo;
 
-                let mut serialized = Vec::new();
-                ciborium::into_writer(&tx, &mut serialized)?;
+                let serialized = borsh::to_vec(&StoredTransaction::V1(tx))
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
                 table.insert(tx_id.as_bytes().as_slice(), serialized)?;
                 old
             } else {
@@ -240,26 +360,54 @@ impl TransactionDB {
         Ok(old_v)
     }
 
-    fn update_fee_sync(
+    fn link_txs_sync(
         db: Arc<Database>,
         tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        tx_id: TransactionId,
-        fee_to_add: bcr_common::cashu::Amount,
+        tx_id_1: Uuid,
+        tx_id_2: Uuid,
+        reason: TransactionLinkReason,
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
 
         {
             let mut table = write_txn.open_table(tx_table)?;
-            let old_value = table.get(tx_id.as_bytes().as_slice())?.map(|v| v.value());
+            let entry_1 = table
+                .get(tx_id_1.as_bytes().as_slice())?
+                .map(|v| v.value())
+                .ok_or(Error::TransactionNotFound(tx_id_1))?;
+            let entry_2 = table
+                .get(tx_id_2.as_bytes().as_slice())?
+                .map(|v| v.value())
+                .ok_or(Error::TransactionNotFound(tx_id_2))?;
 
-            if let Some(old_value) = old_value {
-                let mut tx: TransactionEntry = ciborium::from_reader(old_value.as_slice())?;
-                tx.fee += fee_to_add;
+            let deserialized_1: StoredTransaction = borsh::from_slice(&entry_1)
+                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            let StoredTransaction::V1(mut tx_1) = deserialized_1;
 
-                let mut serialized = Vec::new();
-                ciborium::into_writer(&tx, &mut serialized)?;
-                table.insert(tx_id.as_bytes().as_slice(), serialized)?;
-            }
+            let deserialized_2: StoredTransaction = borsh::from_slice(&entry_2)
+                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            let StoredTransaction::V1(mut tx_2) = deserialized_2;
+
+            let link_1_to_2 = TransactionLink {
+                tx_id: tx_id_2,
+                reason,
+            };
+
+            let link_2_to_1 = TransactionLink {
+                tx_id: tx_id_1,
+                reason,
+            };
+
+            tx_1.linked_txs.push(link_1_to_2);
+            tx_2.linked_txs.push(link_2_to_1);
+
+            let serialized_1 = borsh::to_vec(&StoredTransaction::V1(tx_1))
+                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            table.insert(tx_id_1.as_bytes().as_slice(), serialized_1)?;
+
+            let serialized_2 = borsh::to_vec(&StoredTransaction::V1(tx_2))
+                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            table.insert(tx_id_2.as_bytes().as_slice(), serialized_2)?;
         }
 
         write_txn.commit()?;
@@ -285,28 +433,21 @@ impl TransactionDB {
 
 #[async_trait]
 impl TransactionRepository for TransactionDB {
-    async fn store_tx(&self, tx: Transaction) -> Result<TransactionId> {
+    async fn store_tx(&self, tx: Transaction) -> Result<Uuid> {
         let db_clone = self.db.clone();
         let table = self.transaction_table;
         spawn_blocking(move || Self::store_tx_sync(db_clone, table, tx)).await?
     }
 
-    async fn load_tx(&self, tx_id: TransactionId) -> Result<Transaction> {
+    async fn load_tx(&self, tx_id: Uuid) -> Result<Transaction> {
         let db_clone = self.db.clone();
         let table = self.transaction_table;
         let res = spawn_blocking(move || Self::load_tx_sync(db_clone, table, tx_id)).await??;
         let entry = res.ok_or(Error::TransactionNotFound(tx_id))?;
-        Ok(entry.into())
+        Ok(entry)
     }
 
-    async fn delete_tx(&self, tx_id: TransactionId) -> Result<()> {
-        let db_clone = self.db.clone();
-        let table = self.transaction_table;
-        spawn_blocking(move || Self::delete_tx_sync(db_clone, table, tx_id)).await??;
-        Ok(())
-    }
-
-    async fn list_tx_ids(&self) -> Result<Vec<TransactionId>> {
+    async fn list_tx_ids(&self) -> Result<Vec<Uuid>> {
         let db_clone = self.db.clone();
         let table = self.transaction_table;
         spawn_blocking(move || Self::list_tx_ids_sync(db_clone, table)).await?
@@ -316,38 +457,37 @@ impl TransactionRepository for TransactionDB {
         let db_clone = self.db.clone();
         let table = self.transaction_table;
         let res = spawn_blocking(move || Self::list_txs_sync(db_clone, table)).await??;
-        Ok(res.into_iter().map(|entry| entry.into()).collect())
+        Ok(res)
     }
 
-    async fn update_metadata(
+    async fn update_status(
         &self,
-        tx_id: TransactionId,
-        k: String,
-        v: String,
-    ) -> Result<Option<String>> {
+        tx_id: Uuid,
+        status: TransactionStatus,
+    ) -> Result<Option<TransactionStatus>> {
         let db_clone = self.db.clone();
         let table = self.transaction_table;
-        spawn_blocking(move || Self::update_meta_sync(db_clone, table, tx_id, k, v)).await?
+        spawn_blocking(move || Self::update_status_sync(db_clone, table, tx_id, status)).await?
     }
 
-    async fn update_memo(
-        &self,
-        tx_id: TransactionId,
-        new_memo: Option<String>,
-    ) -> Result<Option<String>> {
+    async fn update_memo(&self, tx_id: Uuid, new_memo: Option<String>) -> Result<Option<String>> {
         let db_clone = self.db.clone();
         let table = self.transaction_table;
         spawn_blocking(move || Self::update_memo_sync(db_clone, table, tx_id, new_memo)).await?
     }
 
-    async fn update_fee(
+    async fn link_txs(
         &self,
-        tx_id: TransactionId,
-        fee_to_add: bcr_common::cashu::Amount,
+        tx_id_1: Uuid,
+        tx_id_2: Uuid,
+        reason: bcr_wallet_core::types::TransactionLinkReason,
     ) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.transaction_table;
-        spawn_blocking(move || Self::update_fee_sync(db_clone, table, tx_id, fee_to_add)).await?
+        spawn_blocking(move || {
+            Self::link_txs_sync(db_clone, table, tx_id_1, tx_id_2, reason.into())
+        })
+        .await?
     }
 
     async fn delete_repo(&self) -> Result<()> {
@@ -363,7 +503,7 @@ mod tests {
         error::Error,
         test_utils::tests::{test_other_pub_key, test_pub_key, wallet_id},
     };
-    use bcr_wallet_core::types::{PAYMENT_TYPE_METADATA_KEY, PaymentType};
+    use bcr_wallet_core::types::PaymentType;
 
     use super::*;
     use bcr_common::cashu::Amount;
@@ -382,29 +522,24 @@ mod tests {
 
     fn test_tx() -> Transaction {
         let mint_url = MintUrl::from_str("https://example.com").expect("valid mint url");
-        let mut metadata = HashMap::new();
-        metadata.insert(
-            PAYMENT_TYPE_METADATA_KEY.to_string(),
-            PaymentType::Token.to_string(),
-        );
-
         Transaction {
+            id: Uuid::new_v4(),
             mint_url,
             direction: TransactionDirection::Outgoing,
             amount: Amount::from(42u64),
-            fee: Amount::ZERO,
+            fees: Amount::ZERO,
             unit: CurrencyUnit::Sat,
-
-            ys: vec![cdk01::PublicKey::from(test_pub_key())],
-
-            timestamp: Utc::now().timestamp() as u64,
+            ys: vec![cashu::PublicKey::from(test_pub_key())],
+            tstamp: Utc::now().timestamp() as u64,
             memo: Some("some memo".to_string()),
-            metadata,
+            payment_type: PaymentType::Token,
+            status: TransactionStatus::Pending,
             quote_id: None,
-            payment_request: None,
-            payment_proof: None,
-            payment_method: None,
-            saga_id: None,
+            btc_tx_id: None,
+            nostr_event_id: None,
+            contact_node_id: None,
+            payment_request_id: None,
+            linked_txs: vec![],
         }
     }
 
@@ -420,7 +555,7 @@ mod tests {
         let repo = get_db(&wallet_id());
 
         let tx = test_tx();
-        let tx_id = tx.id();
+        let tx_id = tx.id;
 
         let err = repo.load_tx(tx_id).await.unwrap_err();
         match err {
@@ -438,7 +573,7 @@ mod tests {
 
         let loaded = repo.load_tx(tx_id).await.expect("load_tx works");
 
-        assert_eq!(loaded, tx);
+        assert_eq!(loaded.id, tx.id);
     }
 
     #[tokio::test]
@@ -446,10 +581,10 @@ mod tests {
         let repo = get_db(&wallet_id());
 
         let mut tx1 = test_tx();
-        tx1.ys = vec![cdk01::PublicKey::from(test_pub_key())];
+        tx1.ys = vec![cashu::PublicKey::from(test_pub_key())];
 
         let mut tx2 = test_tx();
-        tx2.ys = vec![cdk01::PublicKey::from(test_other_pub_key())];
+        tx2.ys = vec![cashu::PublicKey::from(test_other_pub_key())];
 
         let id1 = repo.store_tx(tx1.clone()).await.unwrap();
         let id2 = repo.store_tx(tx2.clone()).await.unwrap();
@@ -471,7 +606,7 @@ mod tests {
         let repo = get_db(&wallet_id());
 
         let tx = test_tx();
-        let tx_id = tx.id();
+        let tx_id = tx.id;
 
         let old = repo
             .update_memo(tx_id, None)
@@ -506,21 +641,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_metadata_missing_returns_none() {
+    async fn test_update_status_missing_returns_none() {
         let repo = get_db(&wallet_id());
 
         let tx = test_tx();
-        let tx_id = tx.id();
+        let tx_id = tx.id;
 
         let old = repo
-            .update_metadata(tx_id, "new".to_string(), "value".to_string())
+            .update_status(tx_id, TransactionStatus::Settled)
             .await
-            .expect("update_metadata works");
+            .expect("update_status works");
         assert_eq!(old, None);
     }
 
     #[tokio::test]
-    async fn test_update_metadata_insert_and_overwrite() {
+    async fn test_update_status_insert_and_overwrite() {
         let repo = get_db(&wallet_id());
 
         let tx = test_tx();
@@ -528,53 +663,19 @@ mod tests {
 
         // no value for key before - returns None
         let old = repo
-            .update_metadata(tx_id, "tag".to_string(), "first".to_string())
+            .update_status(tx_id, TransactionStatus::Settled)
             .await
             .unwrap();
-        assert_eq!(old, None);
+        assert_eq!(old, Some(TransactionStatus::Pending));
 
         // overwrite value for key - returns old key
         let old = repo
-            .update_metadata(tx_id, "tag".to_string(), "second".to_string())
+            .update_status(tx_id, TransactionStatus::Pending)
             .await
             .unwrap();
-        assert_eq!(old, Some("first".to_string()));
+        assert_eq!(old, Some(TransactionStatus::Settled));
 
         let loaded = repo.load_tx(tx_id).await.unwrap();
-        assert_eq!(
-            loaded.metadata.get("tag").cloned(),
-            Some("second".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn test_update_fee() {
-        let repo = get_db(&wallet_id());
-
-        let tx = test_tx();
-        let tx_id = repo.store_tx(tx).await.unwrap();
-
-        repo.update_fee(tx_id, bcr_common::cashu::Amount::ONE)
-            .await
-            .unwrap();
-
-        let loaded = repo.load_tx(tx_id).await.unwrap();
-        assert_eq!(loaded.fee, bcr_common::cashu::Amount::ONE,);
-    }
-
-    #[tokio::test]
-    async fn test_delete_removes() {
-        let repo = get_db(&wallet_id());
-
-        let tx = test_tx();
-        let tx_id = repo.store_tx(tx).await.unwrap();
-
-        repo.delete_tx(tx_id).await.unwrap();
-
-        let err = repo.load_tx(tx_id).await.unwrap_err();
-        match err {
-            Error::TransactionNotFound(id) => assert_eq!(id, tx_id),
-            other => panic!("expected TransactionNotFound, got: {other:?}"),
-        }
+        assert_eq!(loaded.status, TransactionStatus::Pending);
     }
 }

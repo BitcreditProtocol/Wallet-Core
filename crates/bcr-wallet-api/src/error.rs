@@ -78,7 +78,7 @@ pub enum Error {
     #[error("no reference to prepare request_id: {0}")]
     NoPrepareRef(uuid::Uuid),
     #[error("transaction can't be reclaimed - not outgoing or pending {0}")]
-    TransactionCantBeReclaimed(cdk_common::wallet::TransactionId),
+    TransactionCantBeReclaimed(uuid::Uuid),
     #[error("Mint not supporting debit currency")]
     NoDebitCurrencyInMint(Vec<cashu::CurrencyUnit>),
     #[error("network mismatch, ours: {0}, theirs: {1}")]

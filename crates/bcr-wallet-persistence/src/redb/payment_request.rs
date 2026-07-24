@@ -5,7 +5,6 @@ use crate::{
 use async_trait::async_trait;
 use bcr_common::{
     cashu::{Amount, CurrencyUnit},
-    cdk_common::wallet::TransactionId,
     core::NodeId,
 };
 use bcr_wallet_core::types::{PaymentRequest, PaymentRequestDirection, PaymentRequestState};
@@ -41,7 +40,7 @@ impl From<PaymentRequestEntryDirection> for PaymentRequestDirection {
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PaymentRequestEntryState {
     Pending,
-    Paid { tx_id: TransactionId },
+    Paid { tx_id: Uuid },
     Canceled,
     Rejected,
 }
@@ -332,10 +331,7 @@ mod tests {
     use crate::{PaymentRequestStoreApi, error::Error, test_utils::tests::wallet_id};
 
     use super::*;
-    use bcr_common::{
-        cashu::{Amount, CurrencyUnit},
-        cdk_common::wallet::TransactionId,
-    };
+    use bcr_common::cashu::{Amount, CurrencyUnit};
     use bcr_wallet_core::types::{PaymentRequest, PaymentRequestDirection, PaymentRequestState};
     use chrono::Utc;
     use redb::{Builder, backends::InMemoryBackend};
@@ -536,7 +532,7 @@ mod tests {
 
         repo.add_payment_request(payment_request).await.unwrap();
 
-        let tx_id = TransactionId::new(vec![]);
+        let tx_id = Uuid::new_v4();
         repo.set_payment_request_state(id, PaymentRequestState::Paid { tx_id })
             .await
             .expect("set_payment_request_state works");

@@ -4,11 +4,9 @@ use crate::wallet::api::WalletApi;
 use crate::wallet::types::{
     WalletBalance, WalletDetailedBalanceEntry, WalletInfo, WalletProtestResult,
 };
-use bcr_common::cdk_common::wallet::Transaction;
 use bcr_common::core::NodeId;
 use bcr_common::{
     cashu::{self, CurrencyUnit},
-    cdk_common::wallet::TransactionId,
     wallet::Token,
 };
 use bcr_wallet_core::contact::Contact;
@@ -16,7 +14,7 @@ use bcr_wallet_core::name::Name;
 use bcr_wallet_core::types::{
     self, ListTransactionsResult, MintSummary, PaymentRequest, PaymentRequestDirection,
     PaymentRequestState, PaymentResultCallback, PaymentSummary, PendingPaymentSubscriptionCallback,
-    Seed, TransactionCursor, TransactionFilters, TransactionSort, WalletConfig,
+    Seed, Transaction, TransactionCursor, TransactionFilters, TransactionSort, WalletConfig,
 };
 use bcr_wallet_core::util::{
     build_wallet_id, keypair_from_mnemonic, keypair_from_seed, seed_from_mnemonic,
@@ -298,11 +296,7 @@ impl AppState {
         wallet.read().await.balance().await
     }
 
-    pub async fn wallet_receive_token(
-        &self,
-        wallet_id: String,
-        token: String,
-    ) -> Result<TransactionId> {
+    pub async fn wallet_receive_token(&self, wallet_id: String, token: String) -> Result<Uuid> {
         let tstamp = chrono::Utc::now().timestamp() as u64;
         tracing::debug!("wallet_receive({wallet_id}, {token}, {tstamp})");
 
@@ -392,11 +386,7 @@ impl AppState {
         Ok(summary)
     }
 
-    pub async fn wallet_pay_to_contact(
-        &self,
-        wallet_id: String,
-        rid: String,
-    ) -> Result<TransactionId> {
+    pub async fn wallet_pay_to_contact(&self, wallet_id: String, rid: String) -> Result<Uuid> {
         let tstamp = chrono::Utc::now().timestamp() as u64;
         tracing::debug!("wallet_pay_to_contact({wallet_id}, {rid}, {tstamp})");
         let p_id = Uuid::from_str(&rid)?;
@@ -501,11 +491,7 @@ impl AppState {
         Ok(tx_id)
     }
 
-    pub async fn wallet_pay_payment_request(
-        &self,
-        wallet_id: String,
-        rid: String,
-    ) -> Result<TransactionId> {
+    pub async fn wallet_pay_payment_request(&self, wallet_id: String, rid: String) -> Result<Uuid> {
         tracing::debug!("wallet_pay_payment_request({wallet_id}, {rid})");
         let tstamp = chrono::Utc::now().timestamp() as u64;
         let p_id = Uuid::from_str(&rid)?;
@@ -575,7 +561,7 @@ impl AppState {
         Ok(summary)
     }
 
-    pub async fn wallet_melt(&self, wallet_id: String, rid: String) -> Result<TransactionId> {
+    pub async fn wallet_melt(&self, wallet_id: String, rid: String) -> Result<Uuid> {
         let tstamp = chrono::Utc::now().timestamp() as u64;
         tracing::debug!("wallet_melt({wallet_id}, {rid}, {tstamp})");
 
@@ -601,10 +587,7 @@ impl AppState {
         Ok(summary)
     }
 
-    pub async fn wallet_check_pending_mints(
-        &self,
-        wallet_id: String,
-    ) -> Result<Vec<TransactionId>> {
+    pub async fn wallet_check_pending_mints(&self, wallet_id: String) -> Result<Vec<Uuid>> {
         tracing::debug!("wallet_check_pending_mints({wallet_id})");
         let wallet = self.get_wallet(&wallet_id).await?;
         let tx_ids = wallet.read().await.check_pending_mints().await?;
@@ -685,7 +668,7 @@ impl AppState {
         Ok(summary)
     }
 
-    pub async fn wallet_pay(&self, wallet_id: String, rid: String) -> Result<TransactionId> {
+    pub async fn wallet_pay(&self, wallet_id: String, rid: String) -> Result<Uuid> {
         let tstamp = chrono::Utc::now().timestamp() as u64;
         tracing::debug!("wallet_pay({wallet_id}, {rid}, {tstamp})");
 
@@ -741,7 +724,7 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn wallet_list_tx_ids(&self, wallet_id: String) -> Result<Vec<TransactionId>> {
+    pub async fn wallet_list_tx_ids(&self, wallet_id: String) -> Result<Vec<Uuid>> {
         tracing::debug!("wallet_list_tx_ids({wallet_id})");
 
         let wallet = self.get_wallet(&wallet_id).await?;
@@ -771,7 +754,7 @@ impl AppState {
     pub async fn wallet_load_tx(&self, wallet_id: String, tx_id: &str) -> Result<Transaction> {
         tracing::debug!("wallet_load_tx({wallet_id}, {tx_id})");
 
-        let tx_id = TransactionId::from_str(tx_id)?;
+        let tx_id = Uuid::from_str(tx_id)?;
         let wallet = self.get_wallet(&wallet_id).await?;
         let tx = wallet.read().await.load_tx(tx_id).await?;
         Ok(tx)
@@ -785,7 +768,7 @@ impl AppState {
     ) -> Result<()> {
         tracing::debug!("wallet_edit_tx_memo({wallet_id}, {tx_id}, {new_memo:?})");
 
-        let tx_id = TransactionId::from_str(&tx_id)?;
+        let tx_id = Uuid::from_str(&tx_id)?;
         let wallet = self.get_wallet(&wallet_id).await?;
         wallet.read().await.edit_tx_memo(tx_id, new_memo).await?;
         Ok(())
@@ -793,7 +776,7 @@ impl AppState {
 
     pub async fn wallet_reclaim_tx(&self, wallet_id: String, tx_id: &str) -> Result<cashu::Amount> {
         tracing::debug!("wallet_reclaim_tx({wallet_id}, {tx_id})");
-        let tx_id = TransactionId::from_str(tx_id)?;
+        let tx_id = Uuid::from_str(tx_id)?;
         let wallet = self.get_wallet(&wallet_id).await?;
         let amount = wallet.read().await.reclaim_tx(tx_id).await?;
         Ok(amount)
@@ -910,7 +893,7 @@ impl AppState {
     pub async fn wallet_refresh_tx(&self, wallet_id: String, tx_id: &str) -> Result<bool> {
         tracing::debug!("wallet_refresh_tx({wallet_id}, {tx_id})");
 
-        let tx_id = TransactionId::from_str(tx_id)?;
+        let tx_id = Uuid::from_str(tx_id)?;
         let wallet = self.get_wallet(&wallet_id).await?;
         let updated = wallet.read().await.refresh_tx(tx_id).await?;
         Ok(updated)
@@ -1107,7 +1090,7 @@ pub struct WalletCurrencyUnit {
 
 #[derive(Clone, Debug)]
 pub struct CreatedToken {
-    pub tx_id: TransactionId,
+    pub tx_id: Uuid,
     pub token: Token,
 }
 

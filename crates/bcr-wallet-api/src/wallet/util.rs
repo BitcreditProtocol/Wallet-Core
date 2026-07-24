@@ -12,6 +12,7 @@ use bcr_common::{
     core::swap::wallet::prepare_swap,
     wire::keys::ProofFingerprint,
 };
+use bcr_wallet_core::types::Transaction;
 use bitcoin::{hashes::sha256::Hash as Sha256, secp256k1};
 use secp256k1::schnorr::Signature;
 
@@ -159,7 +160,7 @@ pub async fn htlc_lock(
     Ok(result_proofs)
 }
 
-pub fn tx_can_be_refreshed(tx: &cdk_common::wallet::Transaction) -> bool {
+pub fn tx_can_be_refreshed(tx: &Transaction) -> bool {
     // Only refresh outgoing transactions
     if matches!(
         tx.direction,
@@ -169,8 +170,7 @@ pub fn tx_can_be_refreshed(tx: &cdk_common::wallet::Transaction) -> bool {
     }
 
     // Only refresh pending transactions
-    let p_status = crate::types::get_transaction_status(&tx.metadata);
-    if !matches!(p_status, crate::types::TransactionStatus::Pending) {
+    if !matches!(tx.status, crate::types::TransactionStatus::Pending) {
         return false;
     }
     true
@@ -184,10 +184,11 @@ mod tests {
         core_tests,
     };
     use bcr_wallet_core::{
-        types::{TRANSACTION_STATUS_METADATA_KEY, TransactionStatus},
+        types::{PaymentType, TransactionStatus},
         util::to_mint_url,
     };
     use std::str::FromStr;
+    use uuid::Uuid;
 
     fn add_test_dleqs(proofs: &mut [cashu::Proof]) {
         for proof in proofs {
@@ -317,25 +318,25 @@ mod tests {
     fn test_tx(
         direction: cdk_common::wallet::TransactionDirection,
         status: TransactionStatus,
-    ) -> cdk_common::wallet::Transaction {
-        cdk_common::wallet::Transaction {
+    ) -> Transaction {
+        Transaction {
+            id: Uuid::new_v4(),
             mint_url: to_mint_url(&url::Url::from_str("https://mint.example").unwrap()),
-            fee: cashu::Amount::from(0),
+            fees: cashu::Amount::from(0),
             direction,
             memo: None,
-            timestamp: 5,
+            tstamp: 5,
             unit: cashu::CurrencyUnit::Sat,
             ys: vec![],
             amount: cashu::Amount::from(42),
-            metadata: HashMap::from([(
-                TRANSACTION_STATUS_METADATA_KEY.to_owned(),
-                status.to_string(),
-            )]),
+            status,
+            payment_type: PaymentType::Token,
             quote_id: None,
-            payment_request: None,
-            payment_proof: None,
-            payment_method: None,
-            saga_id: None,
+            payment_request_id: None,
+            btc_tx_id: None,
+            nostr_event_id: None,
+            contact_node_id: None,
+            linked_txs: vec![],
         }
     }
 }

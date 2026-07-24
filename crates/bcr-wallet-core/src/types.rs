@@ -1,14 +1,13 @@
 use bcr_common::{
-    cashu::{self, Amount, CurrencyUnit, KeySetInfo},
-    cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
+    cashu::{self, Amount, CurrencyUnit, KeySetInfo, MintUrl},
+    cdk_common::wallet::TransactionDirection,
     core::NodeId,
 };
 use bitcoin::{address::NetworkUnchecked, secp256k1};
 use chrono::{DateTime, Datelike, Utc};
-use nostr::RelayUrl;
+use nostr::{RelayUrl, event::EventId};
 use std::{
     collections::{BTreeMap, HashMap},
-    str::FromStr,
     sync::Arc,
 };
 use uuid::Uuid;
@@ -17,7 +16,7 @@ use crate::event::ContactPaymentRequestPayload;
 
 pub type Seed = [u8; 64];
 
-pub type PaymentResultCallback = Arc<dyn Fn(Option<TransactionId>) + Send + Sync + 'static>;
+pub type PaymentResultCallback = Arc<dyn Fn(Option<Uuid>) + Send + Sync + 'static>;
 pub type PendingPaymentSubscriptionCallback = Arc<dyn Fn(Uuid) + Send + Sync + 'static>;
 
 #[derive(Default, Debug, Clone)]
@@ -82,7 +81,7 @@ pub struct MintSummary {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PaymentRequestState {
     Pending,
-    Paid { tx_id: TransactionId },
+    Paid { tx_id: Uuid },
     Canceled,
     Rejected,
 }
@@ -164,6 +163,40 @@ impl From<ContactPaymentRequestPayload> for PaymentRequest {
     }
 }
 
+/// A transaction in our wallet
+#[derive(Debug, Clone)]
+pub struct Transaction {
+    pub id: Uuid,
+    pub mint_url: MintUrl,
+    pub ys: Vec<cashu::PublicKey>,
+    pub amount: cashu::Amount,
+    pub fees: cashu::Amount,
+    pub unit: CurrencyUnit,
+    pub tstamp: u64,
+    pub direction: TransactionDirection,
+    pub memo: Option<String>,
+    pub payment_type: PaymentType,
+    pub status: TransactionStatus,
+    pub btc_tx_id: Option<bitcoin::Txid>,
+    pub quote_id: Option<Uuid>,
+    pub nostr_event_id: Option<EventId>,
+    pub contact_node_id: Option<NodeId>,
+    pub payment_request_id: Option<Uuid>,
+    pub linked_txs: Vec<TransactionLink>,
+}
+
+/// A link to another transaction with a reason, e.g. linking a payment transaction with a reclaim of the payment
+#[derive(Debug, Clone)]
+pub struct TransactionLink {
+    pub tx_id: Uuid,
+    pub reason: TransactionLinkReason,
+}
+
+#[derive(strum::EnumString, strum::Display, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionLinkReason {
+    Reclaim,
+}
+
 #[derive(strum::EnumString, strum::Display, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PaymentType {
     #[default]
@@ -193,40 +226,6 @@ pub enum TransactionStatus {
     Pending,
     Settled,
     Canceled,
-}
-
-pub const TRANSACTION_STATUS_METADATA_KEY: &str = "transaction_status";
-pub fn get_transaction_status(metas: &HashMap<String, String>) -> TransactionStatus {
-    let Some(status) = metas.get(TRANSACTION_STATUS_METADATA_KEY) else {
-        return TransactionStatus::default();
-    };
-    TransactionStatus::from_str(status).unwrap_or_default()
-}
-
-pub const PAYMENT_TYPE_METADATA_KEY: &str = "payment_type";
-pub fn get_payment_type(metas: &HashMap<String, String>) -> PaymentType {
-    let Some(ptype) = metas.get(PAYMENT_TYPE_METADATA_KEY) else {
-        return PaymentType::NotApplicable;
-    };
-    PaymentType::from_str(ptype).unwrap_or(PaymentType::NotApplicable)
-}
-
-pub const BTC_TX_ID_TYPE_METADATA_KEY: &str = "btc_tx_id";
-pub fn get_btc_tx_id(metas: &HashMap<String, String>) -> Option<bitcoin::Txid> {
-    let tx_id = metas.get(BTC_TX_ID_TYPE_METADATA_KEY)?;
-    bitcoin::Txid::from_str(tx_id).ok()
-}
-
-pub const CONTACT_NODE_ID_METADATA_KEY: &str = "contact_node_id";
-pub fn get_contact_node_id(metas: &HashMap<String, String>) -> Option<NodeId> {
-    let node_id = metas.get(CONTACT_NODE_ID_METADATA_KEY)?;
-    NodeId::from_str(node_id).ok()
-}
-
-pub const PAYMENT_REQUEST_ID_METADATA_KEY: &str = "payment_request_id";
-pub fn get_payment_request_id(metas: &HashMap<String, String>) -> Option<Uuid> {
-    let id = metas.get(PAYMENT_REQUEST_ID_METADATA_KEY)?;
-    Uuid::from_str(id).ok()
 }
 
 impl std::convert::From<SendSummary> for PaymentSummary {
@@ -269,13 +268,13 @@ impl TransactionFilters {
     pub fn matches_tx(&self, tx: &Transaction) -> bool {
         if let Some(range) = self.time_range {
             if let Some(from) = range.from
-                && tx.timestamp < from
+                && tx.tstamp < from
             {
                 return false;
             }
 
             if let Some(to) = range.to
-                && tx.timestamp > to
+                && tx.tstamp > to
             {
                 return false;
             }
@@ -287,13 +286,11 @@ impl TransactionFilters {
             return false;
         }
 
-        let payment_type = get_payment_type(&tx.metadata);
-        if !self.payment_types.is_empty() && !self.payment_types.contains(&payment_type) {
+        if !self.payment_types.is_empty() && !self.payment_types.contains(&tx.payment_type) {
             return false;
         }
 
-        let status = get_transaction_status(&tx.metadata);
-        if !self.statuses.is_empty() && !self.statuses.contains(&status) {
+        if !self.statuses.is_empty() && !self.statuses.contains(&tx.status) {
             return false;
         }
 
@@ -315,22 +312,22 @@ pub struct TimeRange {
 pub enum TransactionCursor {
     TimeAsc {
         tstamp: u64,
-        id: TransactionId,
+        id: Uuid,
     },
 
     #[strum_discriminants(default)]
     TimeDesc {
         tstamp: u64,
-        id: TransactionId,
+        id: Uuid,
     },
 
     AmountAsc {
         amount: Amount,
-        id: TransactionId,
+        id: Uuid,
     },
     AmountDesc {
         amount: Amount,
-        id: TransactionId,
+        id: Uuid,
     },
 }
 
@@ -342,20 +339,20 @@ impl TransactionCursor {
     pub fn from_tx(tx: &Transaction, sort: TransactionSort) -> Self {
         match sort {
             TransactionSort::TimeAsc => Self::TimeAsc {
-                tstamp: tx.timestamp,
-                id: tx.id(),
+                tstamp: tx.tstamp,
+                id: tx.id,
             },
             TransactionSort::TimeDesc => Self::TimeDesc {
-                tstamp: tx.timestamp,
-                id: tx.id(),
+                tstamp: tx.tstamp,
+                id: tx.id,
             },
             TransactionSort::AmountAsc => Self::AmountAsc {
                 amount: tx.amount,
-                id: tx.id(),
+                id: tx.id,
             },
             TransactionSort::AmountDesc => Self::AmountDesc {
                 amount: tx.amount,
-                id: tx.id(),
+                id: tx.id,
             },
         }
     }
@@ -364,16 +361,16 @@ impl TransactionCursor {
     pub fn tx_is_after(&self, tx: &Transaction) -> bool {
         match self {
             Self::TimeAsc { tstamp, id } => {
-                tx.timestamp > *tstamp || (tx.timestamp == *tstamp && tx.id() > *id)
+                tx.tstamp > *tstamp || (tx.tstamp == *tstamp && tx.id > *id)
             }
             Self::TimeDesc { tstamp, id } => {
-                tx.timestamp < *tstamp || (tx.timestamp == *tstamp && tx.id() < *id)
+                tx.tstamp < *tstamp || (tx.tstamp == *tstamp && tx.id < *id)
             }
             Self::AmountAsc { amount, id } => {
-                tx.amount > *amount || (tx.amount == *amount && tx.id() > *id)
+                tx.amount > *amount || (tx.amount == *amount && tx.id > *id)
             }
             Self::AmountDesc { amount, id } => {
-                tx.amount < *amount || (tx.amount == *amount && tx.id() < *id)
+                tx.amount < *amount || (tx.amount == *amount && tx.id < *id)
             }
         }
     }
@@ -398,7 +395,7 @@ pub fn extract_fees_per_month(transactions: &[Transaction]) -> Vec<FeesByMonth> 
     let mut fees_by_month: BTreeMap<(i32, u32), Amount> = BTreeMap::new();
 
     for tx in transactions {
-        let Some(dt) = DateTime::<Utc>::from_timestamp(tx.timestamp as i64, 0) else {
+        let Some(dt) = DateTime::<Utc>::from_timestamp(tx.tstamp as i64, 0) else {
             continue;
         };
 
@@ -407,8 +404,8 @@ pub fn extract_fees_per_month(transactions: &[Transaction]) -> Vec<FeesByMonth> 
 
         fees_by_month
             .entry((year, month))
-            .and_modify(|fees| *fees += tx.fee)
-            .or_insert(tx.fee);
+            .and_modify(|fees| *fees += tx.fees)
+            .or_insert(tx.fees);
     }
 
     fees_by_month
@@ -420,6 +417,8 @@ pub fn extract_fees_per_month(transactions: &[Transaction]) -> Vec<FeesByMonth> 
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
     use chrono::{TimeZone, Utc};
 
@@ -431,20 +430,23 @@ mod tests {
 
     fn tx(timestamp: u64, fee: Amount) -> Transaction {
         Transaction {
+            id: Uuid::new_v4(),
             mint_url: cashu::MintUrl::from_str("https://mint.example").unwrap(),
             direction: TransactionDirection::Incoming,
             amount: Amount::from(0),
-            fee,
+            fees: fee,
             unit: CurrencyUnit::Sat,
             ys: vec![],
-            timestamp,
+            tstamp: timestamp,
             memo: None,
-            metadata: HashMap::new(),
             quote_id: None,
-            payment_request: None,
-            payment_proof: None,
-            payment_method: None,
-            saga_id: None,
+            payment_type: PaymentType::Token,
+            status: TransactionStatus::Pending,
+            payment_request_id: None,
+            btc_tx_id: None,
+            nostr_event_id: None,
+            contact_node_id: None,
+            linked_txs: vec![],
         }
     }
 

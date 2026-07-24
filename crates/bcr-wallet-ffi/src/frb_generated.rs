@@ -2832,6 +2832,18 @@ impl SseDecode for Vec<crate::api::Transaction> {
     }
 }
 
+impl SseDecode for Vec<crate::api::TransactionLink> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::TransactionLink>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::api::TransactionStatus> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3149,9 +3161,11 @@ impl SseDecode for crate::api::Transaction {
         let mut var_memo = <Option<String>>::sse_decode(deserializer);
         let mut var_ptype = <crate::api::PaymentType>::sse_decode(deserializer);
         let mut var_status = <crate::api::TransactionStatus>::sse_decode(deserializer);
-        let mut var_txId = <Option<String>>::sse_decode(deserializer);
+        let mut var_btcTxId = <Option<String>>::sse_decode(deserializer);
         let mut var_quoteId = <Option<String>>::sse_decode(deserializer);
-        let mut var_contact = <Option<String>>::sse_decode(deserializer);
+        let mut var_contactNodeId = <Option<String>>::sse_decode(deserializer);
+        let mut var_paymentRequestId = <Option<String>>::sse_decode(deserializer);
+        let mut var_linkedTxs = <Vec<crate::api::TransactionLink>>::sse_decode(deserializer);
         return crate::api::Transaction {
             id: var_id,
             amount: var_amount,
@@ -3162,9 +3176,11 @@ impl SseDecode for crate::api::Transaction {
             memo: var_memo,
             ptype: var_ptype,
             status: var_status,
-            tx_id: var_txId,
+            btc_tx_id: var_btcTxId,
             quote_id: var_quoteId,
-            contact: var_contact,
+            contact_node_id: var_contactNodeId,
+            payment_request_id: var_paymentRequestId,
+            linked_txs: var_linkedTxs,
         };
     }
 }
@@ -3210,6 +3226,29 @@ impl SseDecode for crate::api::TransactionFilters {
             statuses: var_statuses,
             direction: var_direction,
             time_range: var_timeRange,
+        };
+    }
+}
+
+impl SseDecode for crate::api::TransactionLink {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_txId = <String>::sse_decode(deserializer);
+        let mut var_reason = <crate::api::TransactionLinkReason>::sse_decode(deserializer);
+        return crate::api::TransactionLink {
+            tx_id: var_txId,
+            reason: var_reason,
+        };
+    }
+}
+
+impl SseDecode for crate::api::TransactionLinkReason {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::TransactionLinkReason::Reclaim,
+            _ => unreachable!("Invalid variant for TransactionLinkReason: {}", inner),
         };
     }
 }
@@ -4796,9 +4835,11 @@ impl flutter_rust_bridge::IntoDart for crate::api::Transaction {
             self.memo.into_into_dart().into_dart(),
             self.ptype.into_into_dart().into_dart(),
             self.status.into_into_dart().into_dart(),
-            self.tx_id.into_into_dart().into_dart(),
+            self.btc_tx_id.into_into_dart().into_dart(),
             self.quote_id.into_into_dart().into_dart(),
-            self.contact.into_into_dart().into_dart(),
+            self.contact_node_id.into_into_dart().into_dart(),
+            self.payment_request_id.into_into_dart().into_dart(),
+            self.linked_txs.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4870,6 +4911,44 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::TransactionFilters>
     for crate::api::TransactionFilters
 {
     fn into_into_dart(self) -> crate::api::TransactionFilters {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::TransactionLink {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.tx_id.into_into_dart().into_dart(),
+            self.reason.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::TransactionLink {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::TransactionLink>
+    for crate::api::TransactionLink
+{
+    fn into_into_dart(self) -> crate::api::TransactionLink {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::TransactionLinkReason {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Reclaim => 0.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::TransactionLinkReason
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::TransactionLinkReason>
+    for crate::api::TransactionLinkReason
+{
+    fn into_into_dart(self) -> crate::api::TransactionLinkReason {
         self
     }
 }
@@ -6645,6 +6724,16 @@ impl SseEncode for Vec<crate::api::Transaction> {
     }
 }
 
+impl SseEncode for Vec<crate::api::TransactionLink> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::TransactionLink>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<crate::api::TransactionStatus> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -6914,9 +7003,11 @@ impl SseEncode for crate::api::Transaction {
         <Option<String>>::sse_encode(self.memo, serializer);
         <crate::api::PaymentType>::sse_encode(self.ptype, serializer);
         <crate::api::TransactionStatus>::sse_encode(self.status, serializer);
-        <Option<String>>::sse_encode(self.tx_id, serializer);
+        <Option<String>>::sse_encode(self.btc_tx_id, serializer);
         <Option<String>>::sse_encode(self.quote_id, serializer);
-        <Option<String>>::sse_encode(self.contact, serializer);
+        <Option<String>>::sse_encode(self.contact_node_id, serializer);
+        <Option<String>>::sse_encode(self.payment_request_id, serializer);
+        <Vec<crate::api::TransactionLink>>::sse_encode(self.linked_txs, serializer);
     }
 }
 
@@ -6953,6 +7044,29 @@ impl SseEncode for crate::api::TransactionFilters {
         <Vec<crate::api::TransactionStatus>>::sse_encode(self.statuses, serializer);
         <Option<crate::api::TransactionDirection>>::sse_encode(self.direction, serializer);
         <Option<crate::api::TimeRange>>::sse_encode(self.time_range, serializer);
+    }
+}
+
+impl SseEncode for crate::api::TransactionLink {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.tx_id, serializer);
+        <crate::api::TransactionLinkReason>::sse_encode(self.reason, serializer);
+    }
+}
+
+impl SseEncode for crate::api::TransactionLinkReason {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::TransactionLinkReason::Reclaim => 0,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 
