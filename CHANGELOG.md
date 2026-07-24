@@ -9,6 +9,8 @@
 * Fix offline substitute pay by token for attestation, multi-keysets and fees
 * Add a Database migration scheme
 * Migrate Proofs persistence to be versioned, encrypted and borsh-serialized 
+* Migrated DB models to versioned payload, borsh serialization and in some cases encryption at rest
+    * purse: versioned & borsh
 
 # 0.9.6
 

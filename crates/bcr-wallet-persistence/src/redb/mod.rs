@@ -21,6 +21,9 @@ pub fn create_db(path: impl AsRef<Path>) -> Result<Database> {
 }
 
 pub async fn build_pursedb(_db_version: u32, db: Arc<Database>) -> Result<purse::PurseDB> {
+    // Execute Migrations for purse
+    migration::migrate_purse(db.clone()).await?;
+
     purse::PurseDB::new(db)
 }
 
@@ -43,7 +46,7 @@ pub async fn build_wallet_dbs(
     // Execute Migrations for wallet
     let wallet_namespace =
         migration::collect_wallet_namespace(wallet_id.to_owned(), debit.to_owned(), keys);
-    migration::migrate(db.clone(), wallet_namespace).await?;
+    migration::migrate_wallet(db.clone(), wallet_namespace).await?;
 
     let txdb = transaction::TransactionDB::new(db.clone(), wallet_id)?;
     let debitdb = pocket::PocketDB::new(db.clone(), wallet_id, debit, keys)?;
