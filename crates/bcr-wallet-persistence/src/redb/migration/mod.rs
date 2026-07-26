@@ -66,7 +66,7 @@ fn migrate_wallet_sync(db: Arc<Database>, namespace: WalletStorageNamespace) -> 
             "Applying Migration 0001 for wallet {}",
             &namespace.wallet_id
         );
-        migration_0001::migration_0001_add_proof_envelope_and_encryption(&write_txn, &namespace)?;
+        migration_0001::migration_0001_envelope_and_encryption(&write_txn, &namespace)?;
         mark_migration_applied(&write_txn, &migration_0001_id_for_wallet)?;
         tracing::info!("Applied Migration 0001 for wallet {}", &namespace.wallet_id);
     }
@@ -84,6 +84,8 @@ fn migrate_wallet_sync(db: Arc<Database>, namespace: WalletStorageNamespace) -> 
 pub struct WalletStorageNamespace {
     wallet_id: String,
     proof_table: String,
+    counter_table: String,
+    commitment_table: String,
     keys: bitcoin::secp256k1::Keypair,
 }
 
@@ -95,6 +97,8 @@ pub fn collect_wallet_namespace(
     WalletStorageNamespace {
         wallet_id: wallet_id.to_string(),
         proof_table: PocketDB::proof_table_name(&wallet_id, &unit),
+        counter_table: PocketDB::counter_table_name(&wallet_id, &unit),
+        commitment_table: PocketDB::commitment_table_name(&wallet_id, &unit),
         keys,
     }
 }

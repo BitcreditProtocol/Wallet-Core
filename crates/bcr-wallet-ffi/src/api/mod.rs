@@ -1282,6 +1282,7 @@ pub enum ProtestStatus {
     #[default]
     Resolved,
     Rabid,
+    Offline,
 }
 
 impl From<bcr_common::wire::common::ProtestStatus> for ProtestStatus {
@@ -1289,6 +1290,7 @@ impl From<bcr_common::wire::common::ProtestStatus> for ProtestStatus {
         match s {
             bcr_common::wire::common::ProtestStatus::Resolved => ProtestStatus::Resolved,
             bcr_common::wire::common::ProtestStatus::Rabid => ProtestStatus::Rabid,
+            bcr_common::wire::common::ProtestStatus::Offline => ProtestStatus::Offline,
         }
     }
 }

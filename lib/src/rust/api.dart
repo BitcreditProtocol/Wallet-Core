@@ -575,7 +575,8 @@ enum PaymentType {
 
 enum ProtestStatus {
   resolved,
-  rabid;
+  rabid,
+  offline;
 
   static Future<ProtestStatus> default_() =>
       RustLib.instance.api.crateApiProtestStatusDefault();
