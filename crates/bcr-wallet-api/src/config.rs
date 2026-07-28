@@ -10,6 +10,9 @@ pub struct AppStateConfig {
     pub db_path: PathBuf,
     pub mnemonics: HashMap<String, bip39::Mnemonic>,
     pub swap_expiry: chrono::TimeDelta,
+    /// List of Esplora API base URLs (in order of priority).
+    /// The first URL is used for API requests with fallback to subsequent URLs on failure.
+    pub esplora_base_urls: Vec<url::Url>,
     pub dev_mode: AtomicBool,
 }
 

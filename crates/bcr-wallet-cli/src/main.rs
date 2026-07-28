@@ -19,6 +19,7 @@ mod command;
 pub struct CliSettings {
     pub log_level: String,
     pub db_path: PathBuf,
+    pub esplora_base_urls: Vec<url::Url>,
     pub wallets: HashMap<String, WalletSettings>,
 }
 
@@ -102,6 +103,11 @@ enum Commands {
     RunJobs,
     #[command(name = "gen_mnemonic")]
     GenMnemonic { network: bitcoin::Network },
+    #[command(name = "check_btc_tx")]
+    CheckBtcTx {
+        tx_id: bitcoin::Txid,
+        network: bitcoin::Network,
+    },
     #[command(name = "wallet_id")]
     WalletId {
         network: bitcoin::Network,
@@ -197,6 +203,7 @@ async fn main() -> Result<()> {
             .map(|(wid, w)| (wid.to_owned(), w.mnemonic.to_owned()))
             .collect(),
         swap_expiry: chrono::TimeDelta::minutes(15),
+        esplora_base_urls: settings.esplora_base_urls,
         dev_mode: false.into(),
     };
     let app_state = AppState::initialize(app_state_cfg).await?;
@@ -316,6 +323,13 @@ async fn main() -> Result<()> {
             let (mnemonic, wallet_id) = generate_random_mnemonic(12, network);
             info!("Wallet ID: {}", wallet_id);
             info!("Mnemonic: {}", mnemonic);
+        }
+        Commands::CheckBtcTx { tx_id, network } => {
+            info!(
+                "CheckBTCtx for {}: {}",
+                cli.wallet,
+                command::cmd_check_btc_tx(&app_state, &cli.wallet, &tx_id, network).await?
+            );
         }
         Commands::WalletId { network, mnemonic } => {
             let mnemonic = mnemonic.join(" ");

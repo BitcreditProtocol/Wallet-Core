@@ -25,8 +25,9 @@ use bcr_wallet_core::{
     event::{ContactPaymentRequestPayload, EventEnvelope},
     name::Name,
     types::{
-        PaymentRequest, PaymentRequestDirection, PaymentRequestState, PaymentResultCallback,
-        PaymentType, PendingPaymentSubscriptionCallback, Transaction, TransactionStatus,
+        MeltEstimation, PaymentRequest, PaymentRequestDirection, PaymentRequestState,
+        PaymentResultCallback, PaymentType, PendingPaymentSubscriptionCallback, Transaction,
+        TransactionStatus,
     },
     util::{from_mint_url, to_mint_url},
 };
@@ -58,9 +59,12 @@ pub trait WalletApi: SendSync {
     #[allow(dead_code)]
     fn clowder_id(&self) -> secp256k1::PublicKey;
     fn mint_urls(&self) -> Vec<url::Url>;
+    async fn estimate_melt(&self, amount: bitcoin::Amount) -> Result<MeltEstimation>;
     async fn prepare_melt(
         &self,
         amount: bitcoin::Amount,
+        network_fee: bitcoin::Amount,
+        melt_fee: bitcoin::Amount,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         description: Option<String>,
     ) -> Result<PaymentSummary>;
@@ -220,9 +224,16 @@ impl WalletApi for super::Wallet {
         self.nostr_transport.relays().to_owned()
     }
 
+    async fn estimate_melt(&self, amount: bitcoin::Amount) -> Result<MeltEstimation> {
+        let res = self.client.post_melt_estimate_onchain(amount).await?;
+        Ok(res)
+    }
+
     async fn prepare_melt(
         &self,
         amount: bitcoin::Amount,
+        network_fee: bitcoin::Amount,
+        melt_fee: bitcoin::Amount,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         description: Option<String>,
     ) -> Result<PaymentSummary> {
@@ -233,6 +244,8 @@ impl WalletApi for super::Wallet {
             .prepare_onchain_melt(
                 address.assume_checked().to_string(),
                 amount.to_sat(),
+                network_fee.to_sat(),
+                melt_fee.to_sat(),
                 &infos,
                 self.client.clone(),
                 self.swap_config(),

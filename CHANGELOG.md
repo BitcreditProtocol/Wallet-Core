@@ -22,6 +22,25 @@
         * TransactionId across the whole stack is now a `Uuid`
     * Implement database migration to this new model
     * Rework `reclaim` code paths to create two linked transactions instead of overwriting one
+* Rework Melt Flow
+    * Add `esplora_base_urls` to config (similar to E-Bill)
+    * Changed melt limit to `546` (dust limit)
+    * Add endpoint `wallet_estimate_melt` that takes `wallet_id` and `amount`
+        * Returns a `WalletEstimateMeltResponse`
+            * `tx_vsize` - estimated size of the tx
+            * `fee_rates` - list of fee rates for `target_blocks` -> `sat_per_vb`
+            * `melt_fee` - absolute amount of melt fee for the given amount
+            * `melt_fee_ppk` - melt fee in ppk (parts per thousand)
+    * Add fields `network_fee` and `melt_fee` to `wallet_prepare_melt`
+        * These have to be set based on the estimation response
+    * Add endpoint `check_btc_tx_status` that takes a `btc_tx_id` and a `bitcoin_network`
+        * Returns a `BtcTransactionStatus` with
+            * `tx_id` - the Transaction ID
+            * `bitcoin_network` - the btc network
+            * `receivers` - the receiver `address`es of the transaction with their `amount`s
+            * `fee` - the fee in sat
+            * `confirmations` - the amount of confirmations (0 for unconfirmed)
+            * `Option<confirmation_tstamp>` - the block time of the confirmation if it's confirmed
 
 # 0.9.6
 

@@ -48,6 +48,8 @@ pub trait DebitPocketApi: super::PocketApi {
         &self,
         address: String,
         amount: u64,
+        network_fee: u64,
+        melt_fee: u64,
         keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
@@ -804,6 +806,8 @@ impl DebitPocketApi for Pocket {
         &self,
         address: String,
         amount: u64,
+        network_fee: u64,
+        melt_fee: u64,
         keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
@@ -812,8 +816,10 @@ impl DebitPocketApi for Pocket {
             .parse()
             .map_err(|e| Error::MintingError(format!("invalid address: {e}")))?;
 
+        // inputs need to cover amount + network_fee + melt_fee
+        let full_amount = amount + network_fee + melt_fee;
         let (_, send_ref) = self
-            .compute_send_costs(Amount::from(amount), keysets_info)
+            .compute_send_costs(Amount::from(full_amount), keysets_info)
             .await?;
 
         let sending_proofs = send_proofs(
@@ -833,7 +839,14 @@ impl DebitPocketApi for Pocket {
             let proofs: Vec<cashu::Proof> = sending_proofs.values().cloned().collect();
             let attestation = self.beta.attest(&proofs).await?;
             let quote_result = client
-                .post_melt_quote_onchain(proofs, parsed_address, swap_config.alpha_pk, attestation)
+                .post_melt_quote_onchain(
+                    proofs,
+                    bitcoin::Amount::from_sat(amount),
+                    bitcoin::Amount::from_sat(network_fee),
+                    parsed_address,
+                    swap_config.alpha_pk,
+                    attestation,
+                )
                 .await?;
             let quote_id = quote_result.quote_id;
             let expiry = quote_result.expiry;
@@ -849,7 +862,7 @@ impl DebitPocketApi for Pocket {
         }
         .await;
 
-        let (quote_id, expiry, offered_amount) = match quote_record_amount {
+        let (quote_id, expiry, _) = match quote_record_amount {
             Ok(r) => r,
             Err(e) => {
                 for y in &sent_ys {
@@ -863,11 +876,7 @@ impl DebitPocketApi for Pocket {
             }
         };
 
-        let fee = if offered_amount.to_sat() < amount {
-            Amount::from(amount - offered_amount.to_sat())
-        } else {
-            Amount::ZERO
-        };
+        let fee = Amount::from(network_fee + melt_fee);
 
         let mut summary = MeltSummary::new();
         summary.amount = Amount::from(amount);
@@ -1652,6 +1661,8 @@ mod tests {
             address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
                 .expect("valid address"),
             amount: bitcoin::Amount::from_sat(100),
+            network_fee: bitcoin::Amount::from_sat(10),
+            melt_fee: bitcoin::Amount::from_sat(1),
             expiry: 999999,
             wallet_key,
         };
@@ -1705,6 +1716,8 @@ mod tests {
             address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
                 .expect("valid address"),
             amount: bitcoin::Amount::from_sat(amount),
+            network_fee: bitcoin::Amount::from_sat(3),
+            melt_fee: bitcoin::Amount::from_sat(1),
             expiry: 999999,
             wallet_key,
         };
@@ -2718,12 +2731,16 @@ mod tests {
         let k_infos = test_kinfos(info);
 
         let amount = 24;
+        let network_fee = 3;
+        let melt_fee = 1;
         let quote_id = Uuid::new_v4();
         let expiry = 999999;
-        let offered_amount = bitcoin::Amount::from_sat(23);
+        let offered_amount = bitcoin::Amount::from_sat(amount);
 
-        let proofs =
-            core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8), Amount::from(16)]);
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(4), Amount::from(8), Amount::from(16)],
+        );
 
         let proofs_by_y: HashMap<_, _> = proofs
             .iter()
@@ -2742,13 +2759,13 @@ mod tests {
 
         let pending = proofs_by_y.clone();
         pdb.expect_mark_as_pendingspent()
-            .times(2)
+            .times(3)
             .returning(move |y| Ok(pending.get(&y).unwrap().clone()));
 
         connector
             .expect_post_melt_quote_onchain()
             .times(1)
-            .returning(move |_, _, _, _| {
+            .returning(move |_, _, _, _, _, __| {
                 Ok(MeltQuoteResult {
                     quote_id,
                     expiry,
@@ -2771,6 +2788,8 @@ mod tests {
             .prepare_onchain_melt(
                 valid_payment_address_testnet().assume_checked().to_string(),
                 amount,
+                network_fee,
+                melt_fee,
                 &k_infos,
                 Arc::new(connector),
                 test_swap_config(),
@@ -2780,7 +2799,7 @@ mod tests {
 
         assert_eq!(summary.amount, Amount::from(amount));
         assert_eq!(summary.expiry, expiry);
-        assert_eq!(summary.fees, Amount::from(1));
+        assert_eq!(summary.fees, Amount::from(network_fee + melt_fee));
 
         let current_melt = pocket.current_melt.lock().unwrap();
         let melt_ref = current_melt.as_ref().unwrap();
@@ -2803,6 +2822,8 @@ mod tests {
             .prepare_onchain_melt(
                 "invalid-bitcoin-address".to_string(),
                 24,
+                2,
+                1,
                 &k_infos,
                 Arc::new(connector),
                 test_swap_config(),

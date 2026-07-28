@@ -1,5 +1,6 @@
 log_level = "DEBUG"
 db_path = "./alice.db"
+esplora_base_urls = ["https://esplora.minibill.tech", "https://blockstream.info"]
 
 [wallets.ddfb860cf982e17b6a45ce073823bf722d903c8a176de99e786c7f8b582dd6d6]
 network = "testnet"

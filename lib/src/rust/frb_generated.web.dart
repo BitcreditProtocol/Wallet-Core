@@ -76,6 +76,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool dco_decode_bool(dynamic raw);
 
   @protected
+  BtcTxStatusRequest dco_decode_box_autoadd_btc_tx_status_request(dynamic raw);
+
+  @protected
   CreateWalletRequest dco_decode_box_autoadd_create_wallet_request(dynamic raw);
 
   @protected
@@ -128,6 +131,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletEditTransactionMemoRequest
   dco_decode_box_autoadd_wallet_edit_transaction_memo_request(dynamic raw);
+
+  @protected
+  WalletEstimateMeltRequest dco_decode_box_autoadd_wallet_estimate_melt_request(
+    dynamic raw,
+  );
 
   @protected
   WalletFfiConfig dco_decode_box_autoadd_wallet_ffi_config(dynamic raw);
@@ -246,6 +254,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BtcTxStatusReceiver dco_decode_btc_tx_status_receiver(dynamic raw);
+
+  @protected
+  BtcTxStatusRequest dco_decode_btc_tx_status_request(dynamic raw);
+
+  @protected
+  BtcTxStatusResponse dco_decode_btc_tx_status_response(dynamic raw);
+
+  @protected
   Cdk18PaymentRequest dco_decode_cdk_18_payment_request(dynamic raw);
 
   @protected
@@ -253,6 +270,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   CreateWalletRequest dco_decode_create_wallet_request(dynamic raw);
+
+  @protected
+  double dco_decode_f_32(dynamic raw);
 
   @protected
   FeesByMonth dco_decode_fees_by_month(dynamic raw);
@@ -271,6 +291,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String> dco_decode_list_String(dynamic raw);
+
+  @protected
+  List<BtcTxStatusReceiver> dco_decode_list_btc_tx_status_receiver(dynamic raw);
 
   @protected
   List<Contact> dco_decode_list_contact(dynamic raw);
@@ -310,6 +333,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<WalletDevModeDetailedBalanceEntry>
   dco_decode_list_wallet_dev_mode_detailed_balance_entry(dynamic raw);
+
+  @protected
+  List<WalletEstimateMeltFeeRate> dco_decode_list_wallet_estimate_melt_fee_rate(
+    dynamic raw,
+  );
 
   @protected
   MigrateRabidResponse dco_decode_migrate_rabid_response(dynamic raw);
@@ -407,6 +435,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   TransactionStatus dco_decode_transaction_status(dynamic raw);
 
   @protected
+  int dco_decode_u_16(dynamic raw);
+
+  @protected
   int dco_decode_u_32(dynamic raw);
 
   @protected
@@ -493,6 +524,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletErrorKind dco_decode_wallet_error_kind(dynamic raw);
+
+  @protected
+  WalletEstimateMeltFeeRate dco_decode_wallet_estimate_melt_fee_rate(
+    dynamic raw,
+  );
+
+  @protected
+  WalletEstimateMeltRequest dco_decode_wallet_estimate_melt_request(
+    dynamic raw,
+  );
+
+  @protected
+  WalletEstimateMeltResponse dco_decode_wallet_estimate_melt_response(
+    dynamic raw,
+  );
 
   @protected
   WalletFfiConfig dco_decode_wallet_ffi_config(dynamic raw);
@@ -760,6 +806,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
+  BtcTxStatusRequest sse_decode_box_autoadd_btc_tx_status_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   CreateWalletRequest sse_decode_box_autoadd_create_wallet_request(
     SseDeserializer deserializer,
   );
@@ -826,6 +877,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletEditTransactionMemoRequest
   sse_decode_box_autoadd_wallet_edit_transaction_memo_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletEstimateMeltRequest sse_decode_box_autoadd_wallet_estimate_melt_request(
     SseDeserializer deserializer,
   );
 
@@ -974,6 +1030,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BtcTxStatusReceiver sse_decode_btc_tx_status_receiver(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BtcTxStatusRequest sse_decode_btc_tx_status_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BtcTxStatusResponse sse_decode_btc_tx_status_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Cdk18PaymentRequest sse_decode_cdk_18_payment_request(
     SseDeserializer deserializer,
   );
@@ -985,6 +1056,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   CreateWalletRequest sse_decode_create_wallet_request(
     SseDeserializer deserializer,
   );
+
+  @protected
+  double sse_decode_f_32(SseDeserializer deserializer);
 
   @protected
   FeesByMonth sse_decode_fees_by_month(SseDeserializer deserializer);
@@ -1007,6 +1081,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
+
+  @protected
+  List<BtcTxStatusReceiver> sse_decode_list_btc_tx_status_receiver(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<Contact> sse_decode_list_contact(SseDeserializer deserializer);
@@ -1056,6 +1135,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<WalletDevModeDetailedBalanceEntry>
   sse_decode_list_wallet_dev_mode_detailed_balance_entry(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<WalletEstimateMeltFeeRate> sse_decode_list_wallet_estimate_melt_fee_rate(
     SseDeserializer deserializer,
   );
 
@@ -1183,6 +1267,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   TransactionStatus sse_decode_transaction_status(SseDeserializer deserializer);
 
   @protected
+  int sse_decode_u_16(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_u_32(SseDeserializer deserializer);
 
   @protected
@@ -1289,6 +1376,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletErrorKind sse_decode_wallet_error_kind(SseDeserializer deserializer);
+
+  @protected
+  WalletEstimateMeltFeeRate sse_decode_wallet_estimate_melt_fee_rate(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletEstimateMeltRequest sse_decode_wallet_estimate_melt_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletEstimateMeltResponse sse_decode_wallet_estimate_melt_response(
+    SseDeserializer deserializer,
+  );
 
   @protected
   WalletFfiConfig sse_decode_wallet_ffi_config(SseDeserializer deserializer);
@@ -1633,6 +1735,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_btc_tx_status_request(
+    BtcTxStatusRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_create_wallet_request(
     CreateWalletRequest self,
     SseSerializer serializer,
@@ -1710,6 +1818,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_wallet_edit_transaction_memo_request(
     WalletEditTransactionMemoRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_wallet_estimate_melt_request(
+    WalletEstimateMeltRequest self,
     SseSerializer serializer,
   );
 
@@ -1870,6 +1984,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_btc_tx_status_receiver(
+    BtcTxStatusReceiver self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_btc_tx_status_request(
+    BtcTxStatusRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_btc_tx_status_response(
+    BtcTxStatusResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_cdk_18_payment_request(
     Cdk18PaymentRequest self,
     SseSerializer serializer,
@@ -1883,6 +2015,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     CreateWalletRequest self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_f_32(double self, SseSerializer serializer);
 
   @protected
   void sse_encode_fees_by_month(FeesByMonth self, SseSerializer serializer);
@@ -1907,6 +2042,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_btc_tx_status_receiver(
+    List<BtcTxStatusReceiver> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_contact(List<Contact> self, SseSerializer serializer);
@@ -1974,6 +2115,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_wallet_dev_mode_detailed_balance_entry(
     List<WalletDevModeDetailedBalanceEntry> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_wallet_estimate_melt_fee_rate(
+    List<WalletEstimateMeltFeeRate> self,
     SseSerializer serializer,
   );
 
@@ -2146,6 +2293,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_u_16(int self, SseSerializer serializer);
+
+  @protected
   void sse_encode_u_32(int self, SseSerializer serializer);
 
   @protected
@@ -2268,6 +2418,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_error_kind(
     WalletErrorKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_estimate_melt_fee_rate(
+    WalletEstimateMeltFeeRate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_estimate_melt_request(
+    WalletEstimateMeltRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_estimate_melt_response(
+    WalletEstimateMeltResponse self,
     SseSerializer serializer,
   );
 

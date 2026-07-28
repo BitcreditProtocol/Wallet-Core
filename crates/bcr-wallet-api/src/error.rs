@@ -67,6 +67,10 @@ pub enum Error {
     InvalidToken(String),
     #[error("invalid bitcoin address: {0}")]
     InvalidBitcoinAddress(String),
+    #[error("invalid bitcoin network: {0}")]
+    InvalidBitcoinNetwork(String),
+    #[error("invalid bitcoin tx id: {0}")]
+    InvalidBitcoinTxId(String),
     #[error("no active keyset")]
     NoActiveKeyset,
     #[error("unknown keyset ID")]
@@ -149,6 +153,8 @@ pub enum Error {
     PaymentRequestNotFound(Uuid),
     #[error("Given Payment Request {0} was in the wrong state for this operation")]
     PaymentRequestInWrongState(Uuid),
+    #[error("Bitcoin Client returned an Api Error: {0}")]
+    BitcoinClient(String),
     #[error("Mint Client returned an internal Error: {0}")]
     MintClientInternal(String),
     #[error("{0}")]
@@ -247,6 +253,7 @@ impl From<crate::external::Error> for Error {
                     Error::MintClientInternal(error.to_string())
                 }
             },
+            crate::external::Error::BitcoinApi(error) => Error::BitcoinClient(error.to_string()),
         }
     }
 }
