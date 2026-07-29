@@ -176,6 +176,17 @@ pub fn tx_can_be_refreshed(tx: &Transaction) -> bool {
     true
 }
 
+pub fn update_optional_field<T: Clone + PartialEq>(
+    field_to_update: &mut Option<T>,
+    field: &Option<T>,
+    changed: &mut bool,
+) {
+    if field_to_update != field {
+        *field_to_update = field.clone();
+        *changed = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +195,7 @@ mod tests {
         core_tests,
     };
     use bcr_wallet_core::{
+        name::Name,
         types::{PaymentType, TransactionStatus},
         util::to_mint_url,
     };
@@ -338,5 +350,49 @@ mod tests {
             contact_node_id: None,
             linked_txs: vec![],
         }
+    }
+
+    #[test]
+    fn update_optional_field_baseline() {
+        let mut field_to_update = Some(String::from("hi"));
+        let mut changed = false;
+        update_optional_field(
+            &mut field_to_update,
+            &Some(String::from("hello")),
+            &mut changed,
+        );
+        assert!(changed);
+        assert_eq!(Some(String::from("hello")), field_to_update);
+    }
+
+    #[test]
+    fn update_optional_field_same() {
+        let mut field_to_update = Some(String::from("hello"));
+        let mut changed = false;
+        update_optional_field(
+            &mut field_to_update,
+            &Some(String::from("hello")),
+            &mut changed,
+        );
+        assert!(!changed);
+        assert_eq!(Some(String::from("hello")), field_to_update);
+    }
+
+    #[test]
+    fn update_optional_field_none() {
+        let mut field_to_update: Option<Name> = None;
+        let mut changed = false;
+        update_optional_field(&mut field_to_update, &None, &mut changed);
+        assert!(!changed);
+        assert_eq!(None, field_to_update);
+    }
+
+    #[test]
+    fn update_optional_field_some_none() {
+        let mut field_to_update = Some(String::from("hi"));
+        let mut changed = false;
+        update_optional_field(&mut field_to_update, &None, &mut changed);
+        assert!(changed);
+        assert_eq!(None, field_to_update);
     }
 }

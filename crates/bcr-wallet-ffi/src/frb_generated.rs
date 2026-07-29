@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 822415845;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1690913843;
 
 // Section: executor
 
@@ -98,6 +98,42 @@ fn wire__crate__api__WalletPaymentCheckHandle_cancel_impl(
         },
     )
 }
+fn wire__crate__api__add_contact_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "add_contact",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_req = <crate::api::AddContactRequest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::WalletError>(
+                    (move || async move {
+                        let output_ok = crate::api::add_contact(api_req).await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__check_btc_tx_status_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -134,6 +170,78 @@ fn wire__crate__api__check_btc_tx_status_impl(
         },
     )
 }
+fn wire__crate__api__delete_contact_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "delete_contact",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_req = <crate::api::DeleteContactRequest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::WalletError>(
+                    (move || async move {
+                        let output_ok = crate::api::delete_contact(api_req).await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__edit_contact_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "edit_contact",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_req = <crate::api::EditContactRequest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::WalletError>(
+                    (move || async move {
+                        let output_ok = crate::api::edit_contact(api_req).await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__generate_random_mnemonic_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -162,6 +270,42 @@ fn wire__crate__api__generate_random_mnemonic_impl(
                 transform_result_sse::<_, crate::api::WalletError>(
                     (move || async move {
                         let output_ok = crate::api::generate_random_mnemonic(api_req).await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__get_contact_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "get_contact",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_req = <crate::api::GetContactRequest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::WalletError>(
+                    (move || async move {
+                        let output_ok = crate::api::get_contact(api_req).await?;
                         Ok(output_ok)
                     })()
                     .await,
@@ -270,6 +414,42 @@ fn wire__crate__api__is_valid_token_impl(
                 transform_result_sse::<_, crate::api::WalletError>(
                     (move || async move {
                         let output_ok = crate::api::is_valid_token(api_req).await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__list_contacts_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "list_contacts",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_req = <crate::api::ListContactsRequest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::WalletError>(
+                    (move || async move {
+                        let output_ok = crate::api::list_contacts(api_req).await?;
                         Ok(output_ok)
                     })()
                     .await,
@@ -507,42 +687,6 @@ fn wire__crate__api__wallet_add_impl(
         },
     )
 }
-fn wire__crate__api__wallet_add_contact_impl(
-    port_: flutter_rust_bridge::for_generated::MessagePort,
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "wallet_add_contact",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_req = <crate::api::WalletAddContactRequest>::sse_decode(&mut deserializer);
-            deserializer.end();
-            move |context| async move {
-                transform_result_sse::<_, crate::api::WalletError>(
-                    (move || async move {
-                        let output_ok = crate::api::wallet_add_contact(api_req).await?;
-                        Ok(output_ok)
-                    })()
-                    .await,
-                )
-            }
-        },
-    )
-}
 fn wire__crate__api__wallet_cancel_payment_request_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -668,42 +812,6 @@ fn wire__crate__api__wallet_delete_impl(
         },
     )
 }
-fn wire__crate__api__wallet_delete_contact_impl(
-    port_: flutter_rust_bridge::for_generated::MessagePort,
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "wallet_delete_contact",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_req = <crate::api::WalletDeleteContactRequest>::sse_decode(&mut deserializer);
-            deserializer.end();
-            move |context| async move {
-                transform_result_sse::<_, crate::api::WalletError>(
-                    (move || async move {
-                        let output_ok = crate::api::wallet_delete_contact(api_req).await?;
-                        Ok(output_ok)
-                    })()
-                    .await,
-                )
-            }
-        },
-    )
-}
 fn wire__crate__api__wallet_dev_mode_get_detailed_balance_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -733,42 +841,6 @@ fn wire__crate__api__wallet_dev_mode_get_detailed_balance_impl(
                     (move || async move {
                         let output_ok =
                             crate::api::wallet_dev_mode_get_detailed_balance(api_req).await?;
-                        Ok(output_ok)
-                    })()
-                    .await,
-                )
-            }
-        },
-    )
-}
-fn wire__crate__api__wallet_edit_contact_impl(
-    port_: flutter_rust_bridge::for_generated::MessagePort,
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "wallet_edit_contact",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_req = <crate::api::WalletEditContactRequest>::sse_decode(&mut deserializer);
-            deserializer.end();
-            move |context| async move {
-                transform_result_sse::<_, crate::api::WalletError>(
-                    (move || async move {
-                        let output_ok = crate::api::wallet_edit_contact(api_req).await?;
                         Ok(output_ok)
                     })()
                     .await,
@@ -1052,42 +1124,6 @@ fn wire__crate__api__wallet_get_balance_impl(
                 transform_result_sse::<_, crate::api::WalletError>(
                     (move || async move {
                         let output_ok = crate::api::wallet_get_balance(api_req).await?;
-                        Ok(output_ok)
-                    })()
-                    .await,
-                )
-            }
-        },
-    )
-}
-fn wire__crate__api__wallet_get_contact_impl(
-    port_: flutter_rust_bridge::for_generated::MessagePort,
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "wallet_get_contact",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_req = <crate::api::WalletGetContactRequest>::sse_decode(&mut deserializer);
-            deserializer.end();
-            move |context| async move {
-                transform_result_sse::<_, crate::api::WalletError>(
-                    (move || async move {
-                        let output_ok = crate::api::wallet_get_contact(api_req).await?;
                         Ok(output_ok)
                     })()
                     .await,
@@ -1494,42 +1530,6 @@ fn wire__crate__api__wallet_id_for_mnemonic_and_network_impl(
         },
     )
 }
-fn wire__crate__api__wallet_list_contacts_impl(
-    port_: flutter_rust_bridge::for_generated::MessagePort,
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "wallet_list_contacts",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_req = <crate::api::WalletListContactsRequest>::sse_decode(&mut deserializer);
-            deserializer.end();
-            move |context| async move {
-                transform_result_sse::<_, crate::api::WalletError>(
-                    (move || async move {
-                        let output_ok = crate::api::wallet_list_contacts(api_req).await?;
-                        Ok(output_ok)
-                    })()
-                    .await,
-                )
-            }
-        },
-    )
-}
 fn wire__crate__api__wallet_list_payment_requests_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1890,6 +1890,43 @@ fn wire__crate__api__wallet_pay_payment_request_impl(
         },
     )
 }
+fn wire__crate__api__wallet_pay_to_contact_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "wallet_pay_to_contact",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_req =
+                <crate::api::WalletPaymentByContactRequest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::WalletError>(
+                    (move || async move {
+                        let output_ok = crate::api::wallet_pay_to_contact(api_req).await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__wallet_prepare_melt_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1993,6 +2030,43 @@ fn wire__crate__api__wallet_prepare_pay_payment_request_impl(
                     (move || async move {
                         let output_ok =
                             crate::api::wallet_prepare_pay_payment_request(api_req).await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__wallet_prepare_pay_to_contact_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "wallet_prepare_pay_to_contact",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_req =
+                <crate::api::WalletPreparePaymentByContactRequest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::WalletError>(
+                    (move || async move {
+                        let output_ok = crate::api::wallet_prepare_pay_to_contact(api_req).await?;
                         Ok(output_ok)
                     })()
                     .await,
@@ -2671,6 +2745,34 @@ impl SseDecode for String {
     }
 }
 
+impl SseDecode for crate::api::AddContactRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_bitcoinNetwork = <String>::sse_decode(deserializer);
+        let mut var_email = <Option<String>>::sse_decode(deserializer);
+        let mut var_nodeId = <Option<String>>::sse_decode(deserializer);
+        let mut var_name = <Option<String>>::sse_decode(deserializer);
+        let mut var_company = <Option<String>>::sse_decode(deserializer);
+        return crate::api::AddContactRequest {
+            bitcoin_network: var_bitcoinNetwork,
+            email: var_email,
+            node_id: var_nodeId,
+            name: var_name,
+            company: var_company,
+        };
+    }
+}
+
+impl SseDecode for crate::api::AddContactResponse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_contactId = <String>::sse_decode(deserializer);
+        return crate::api::AddContactResponse {
+            contact_id: var_contactId,
+        };
+    }
+}
+
 impl SseDecode for crate::api::AddWalletResponse {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2747,11 +2849,17 @@ impl SseDecode for crate::api::Cdk18PaymentRequest {
 impl SseDecode for crate::api::Contact {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_nodeId = <String>::sse_decode(deserializer);
-        let mut var_name = <String>::sse_decode(deserializer);
+        let mut var_id = <String>::sse_decode(deserializer);
+        let mut var_nodeId = <Option<String>>::sse_decode(deserializer);
+        let mut var_email = <Option<String>>::sse_decode(deserializer);
+        let mut var_name = <Option<String>>::sse_decode(deserializer);
+        let mut var_company = <Option<String>>::sse_decode(deserializer);
         return crate::api::Contact {
+            id: var_id,
             node_id: var_nodeId,
+            email: var_email,
             name: var_name,
+            company: var_company,
         };
     }
 }
@@ -2774,6 +2882,58 @@ impl SseDecode for crate::api::CreateWalletRequest {
     }
 }
 
+impl SseDecode for crate::api::DeleteContactRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_bitcoinNetwork = <String>::sse_decode(deserializer);
+        let mut var_contactId = <String>::sse_decode(deserializer);
+        return crate::api::DeleteContactRequest {
+            bitcoin_network: var_bitcoinNetwork,
+            contact_id: var_contactId,
+        };
+    }
+}
+
+impl SseDecode for crate::api::DeleteContactResponse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_contactId = <String>::sse_decode(deserializer);
+        return crate::api::DeleteContactResponse {
+            contact_id: var_contactId,
+        };
+    }
+}
+
+impl SseDecode for crate::api::EditContactRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_bitcoinNetwork = <String>::sse_decode(deserializer);
+        let mut var_contactId = <String>::sse_decode(deserializer);
+        let mut var_nodeId = <Option<String>>::sse_decode(deserializer);
+        let mut var_email = <Option<String>>::sse_decode(deserializer);
+        let mut var_name = <Option<String>>::sse_decode(deserializer);
+        let mut var_company = <Option<String>>::sse_decode(deserializer);
+        return crate::api::EditContactRequest {
+            bitcoin_network: var_bitcoinNetwork,
+            contact_id: var_contactId,
+            node_id: var_nodeId,
+            email: var_email,
+            name: var_name,
+            company: var_company,
+        };
+    }
+}
+
+impl SseDecode for crate::api::EditContactResponse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_contactId = <String>::sse_decode(deserializer);
+        return crate::api::EditContactResponse {
+            contact_id: var_contactId,
+        };
+    }
+}
+
 impl SseDecode for f32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2791,6 +2951,28 @@ impl SseDecode for crate::api::FeesByMonth {
             year: var_year,
             month: var_month,
             fees: var_fees,
+        };
+    }
+}
+
+impl SseDecode for crate::api::GetContactRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_bitcoinNetwork = <String>::sse_decode(deserializer);
+        let mut var_contactId = <String>::sse_decode(deserializer);
+        return crate::api::GetContactRequest {
+            bitcoin_network: var_bitcoinNetwork,
+            contact_id: var_contactId,
+        };
+    }
+}
+
+impl SseDecode for crate::api::GetContactResponse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_contact = <crate::api::Contact>::sse_decode(deserializer);
+        return crate::api::GetContactResponse {
+            contact: var_contact,
         };
     }
 }
@@ -2866,6 +3048,28 @@ impl SseDecode for Vec<crate::api::Contact> {
             ans_.push(<crate::api::Contact>::sse_decode(deserializer));
         }
         return ans_;
+    }
+}
+
+impl SseDecode for crate::api::ListContactsRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_bitcoinNetwork = <String>::sse_decode(deserializer);
+        let mut var_searchTerm = <Option<String>>::sse_decode(deserializer);
+        return crate::api::ListContactsRequest {
+            bitcoin_network: var_bitcoinNetwork,
+            search_term: var_searchTerm,
+        };
+    }
+}
+
+impl SseDecode for crate::api::ListContactsResponse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_contacts = <Vec<crate::api::Contact>>::sse_decode(deserializer);
+        return crate::api::ListContactsResponse {
+            contacts: var_contacts,
+        };
     }
 }
 
@@ -3470,30 +3674,6 @@ impl SseDecode for usize {
     }
 }
 
-impl SseDecode for crate::api::WalletAddContactRequest {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_walletId = <String>::sse_decode(deserializer);
-        let mut var_nodeId = <String>::sse_decode(deserializer);
-        let mut var_name = <String>::sse_decode(deserializer);
-        return crate::api::WalletAddContactRequest {
-            wallet_id: var_walletId,
-            node_id: var_nodeId,
-            name: var_name,
-        };
-    }
-}
-
-impl SseDecode for crate::api::WalletAddContactResponse {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_nodeId = <String>::sse_decode(deserializer);
-        return crate::api::WalletAddContactResponse {
-            node_id: var_nodeId,
-        };
-    }
-}
-
 impl SseDecode for crate::api::WalletBalanceResponse {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3560,28 +3740,6 @@ impl SseDecode for crate::api::WalletCurrencyUnitResponse {
     }
 }
 
-impl SseDecode for crate::api::WalletDeleteContactRequest {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_walletId = <String>::sse_decode(deserializer);
-        let mut var_nodeId = <String>::sse_decode(deserializer);
-        return crate::api::WalletDeleteContactRequest {
-            wallet_id: var_walletId,
-            node_id: var_nodeId,
-        };
-    }
-}
-
-impl SseDecode for crate::api::WalletDeleteContactResponse {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_nodeId = <String>::sse_decode(deserializer);
-        return crate::api::WalletDeleteContactResponse {
-            node_id: var_nodeId,
-        };
-    }
-}
-
 impl SseDecode for crate::api::WalletDevModeDetailedBalanceEntry {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3603,30 +3761,6 @@ impl SseDecode for crate::api::WalletDevModeDetailedBalanceResponse {
             <Vec<crate::api::WalletDevModeDetailedBalanceEntry>>::sse_decode(deserializer);
         return crate::api::WalletDevModeDetailedBalanceResponse {
             entries: var_entries,
-        };
-    }
-}
-
-impl SseDecode for crate::api::WalletEditContactRequest {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_walletId = <String>::sse_decode(deserializer);
-        let mut var_nodeId = <String>::sse_decode(deserializer);
-        let mut var_name = <String>::sse_decode(deserializer);
-        return crate::api::WalletEditContactRequest {
-            wallet_id: var_walletId,
-            node_id: var_nodeId,
-            name: var_name,
-        };
-    }
-}
-
-impl SseDecode for crate::api::WalletEditContactResponse {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_nodeId = <String>::sse_decode(deserializer);
-        return crate::api::WalletEditContactResponse {
-            node_id: var_nodeId,
         };
     }
 }
@@ -3678,58 +3812,62 @@ impl SseDecode for crate::api::WalletErrorCode {
             1 => crate::api::WalletErrorCode::Network,
             2 => crate::api::WalletErrorCode::WalletNotFound,
             3 => crate::api::WalletErrorCode::ContactNotFound,
-            4 => crate::api::WalletErrorCode::PaymentRequestNotFound,
-            5 => crate::api::WalletErrorCode::PaymentRequestInWrongState,
-            6 => crate::api::WalletErrorCode::ContactAlreadyExists,
-            7 => crate::api::WalletErrorCode::EmptyToken,
-            8 => crate::api::WalletErrorCode::InvalidToken,
-            9 => crate::api::WalletErrorCode::CashuMintUrl,
-            10 => crate::api::WalletErrorCode::Url,
-            11 => crate::api::WalletErrorCode::Uuid,
-            12 => crate::api::WalletErrorCode::Amount,
-            13 => crate::api::WalletErrorCode::InsufficientBalance,
-            14 => crate::api::WalletErrorCode::NoActiveKeyset,
-            15 => crate::api::WalletErrorCode::UnknownKeysetId,
-            16 => crate::api::WalletErrorCode::InvalidCurrencyUnit,
-            17 => crate::api::WalletErrorCode::NoPrepareRef,
-            18 => crate::api::WalletErrorCode::InactiveKeyset,
-            19 => crate::api::WalletErrorCode::NoDebitCurrencyInMint,
-            20 => crate::api::WalletErrorCode::InvalidNetwork,
-            21 => crate::api::WalletErrorCode::InvalidBitcoinNetwork,
-            22 => crate::api::WalletErrorCode::InvalidBitcoinTxId,
-            23 => crate::api::WalletErrorCode::MissingAmount,
-            24 => crate::api::WalletErrorCode::UnknownPaymentRequest,
-            25 => crate::api::WalletErrorCode::Unsupported,
-            26 => crate::api::WalletErrorCode::TransactionCantBeReclaimed,
-            27 => crate::api::WalletErrorCode::InsufficientOnChainMeltAmount,
-            28 => crate::api::WalletErrorCode::InsufficientOnChainMintAmount,
-            29 => crate::api::WalletErrorCode::NoDevMode,
-            30 => crate::api::WalletErrorCode::MeltQuoteMismatch,
-            31 => crate::api::WalletErrorCode::SwapCommitmentMismatch,
-            32 => crate::api::WalletErrorCode::InvalidBitcoinAddress,
-            33 => crate::api::WalletErrorCode::InvalidMnemonic,
-            34 => crate::api::WalletErrorCode::InvalidTransactionId,
-            35 => crate::api::WalletErrorCode::InvalidCursor,
-            36 => crate::api::WalletErrorCode::SortMismatch,
-            37 => crate::api::WalletErrorCode::MnemonicNotFound,
-            38 => crate::api::WalletErrorCode::WalletUniqueName,
-            39 => crate::api::WalletErrorCode::WalletUniqueId,
-            40 => crate::api::WalletErrorCode::InvalidNodeId,
-            41 => crate::api::WalletErrorCode::InvalidBillId,
-            42 => crate::api::WalletErrorCode::InvalidName,
-            43 => crate::api::WalletErrorCode::EmptyName,
-            44 => crate::api::WalletErrorCode::MintClientResourceNotFound,
-            45 => crate::api::WalletErrorCode::MintClientServiceUnavailable,
-            46 => crate::api::WalletErrorCode::MintClientBadRequest,
-            47 => crate::api::WalletErrorCode::MintClientKeysetNotFound,
-            48 => crate::api::WalletErrorCode::MintClientMeltOpSuspended,
-            49 => crate::api::WalletErrorCode::MintClientCommitmentMismatch,
-            50 => crate::api::WalletErrorCode::AttestationInvalidProof,
-            51 => crate::api::WalletErrorCode::AttestationDigestMismatch,
-            52 => crate::api::WalletErrorCode::AttestationUnknownBeta,
-            53 => crate::api::WalletErrorCode::AttestationVerifyNotFound,
-            54 => crate::api::WalletErrorCode::AttestationSignature,
-            55 => crate::api::WalletErrorCode::BitcoinApi,
+            4 => crate::api::WalletErrorCode::ContactMustHaveNodeId,
+            5 => crate::api::WalletErrorCode::PaymentRequestNotFound,
+            6 => crate::api::WalletErrorCode::PaymentRequestInWrongState,
+            7 => crate::api::WalletErrorCode::ContactAlreadyExists,
+            8 => crate::api::WalletErrorCode::EmptyToken,
+            9 => crate::api::WalletErrorCode::InvalidToken,
+            10 => crate::api::WalletErrorCode::CashuMintUrl,
+            11 => crate::api::WalletErrorCode::Url,
+            12 => crate::api::WalletErrorCode::Uuid,
+            13 => crate::api::WalletErrorCode::Amount,
+            14 => crate::api::WalletErrorCode::InsufficientBalance,
+            15 => crate::api::WalletErrorCode::NoActiveKeyset,
+            16 => crate::api::WalletErrorCode::UnknownKeysetId,
+            17 => crate::api::WalletErrorCode::InvalidCurrencyUnit,
+            18 => crate::api::WalletErrorCode::NoPrepareRef,
+            19 => crate::api::WalletErrorCode::InactiveKeyset,
+            20 => crate::api::WalletErrorCode::NoDebitCurrencyInMint,
+            21 => crate::api::WalletErrorCode::InvalidNetwork,
+            22 => crate::api::WalletErrorCode::InvalidBitcoinNetwork,
+            23 => crate::api::WalletErrorCode::InvalidBitcoinTxId,
+            24 => crate::api::WalletErrorCode::MissingAmount,
+            25 => crate::api::WalletErrorCode::UnknownPaymentRequest,
+            26 => crate::api::WalletErrorCode::Unsupported,
+            27 => crate::api::WalletErrorCode::TransactionCantBeReclaimed,
+            28 => crate::api::WalletErrorCode::InsufficientOnChainMeltAmount,
+            29 => crate::api::WalletErrorCode::InsufficientOnChainMintAmount,
+            30 => crate::api::WalletErrorCode::NoDevMode,
+            31 => crate::api::WalletErrorCode::MeltQuoteMismatch,
+            32 => crate::api::WalletErrorCode::SwapCommitmentMismatch,
+            33 => crate::api::WalletErrorCode::InvalidBitcoinAddress,
+            34 => crate::api::WalletErrorCode::InvalidMnemonic,
+            35 => crate::api::WalletErrorCode::InvalidTransactionId,
+            36 => crate::api::WalletErrorCode::InvalidCursor,
+            37 => crate::api::WalletErrorCode::SortMismatch,
+            38 => crate::api::WalletErrorCode::MnemonicNotFound,
+            39 => crate::api::WalletErrorCode::WalletUniqueName,
+            40 => crate::api::WalletErrorCode::WalletUniqueId,
+            41 => crate::api::WalletErrorCode::InvalidNodeId,
+            42 => crate::api::WalletErrorCode::InvalidBillId,
+            43 => crate::api::WalletErrorCode::InvalidName,
+            44 => crate::api::WalletErrorCode::EmptyName,
+            45 => crate::api::WalletErrorCode::InvalidEmail,
+            46 => crate::api::WalletErrorCode::EmptyEmail,
+            47 => crate::api::WalletErrorCode::InvalidContact,
+            48 => crate::api::WalletErrorCode::MintClientResourceNotFound,
+            49 => crate::api::WalletErrorCode::MintClientServiceUnavailable,
+            50 => crate::api::WalletErrorCode::MintClientBadRequest,
+            51 => crate::api::WalletErrorCode::MintClientKeysetNotFound,
+            52 => crate::api::WalletErrorCode::MintClientMeltOpSuspended,
+            53 => crate::api::WalletErrorCode::MintClientCommitmentMismatch,
+            54 => crate::api::WalletErrorCode::AttestationInvalidProof,
+            55 => crate::api::WalletErrorCode::AttestationDigestMismatch,
+            56 => crate::api::WalletErrorCode::AttestationUnknownBeta,
+            57 => crate::api::WalletErrorCode::AttestationVerifyNotFound,
+            58 => crate::api::WalletErrorCode::AttestationSignature,
+            59 => crate::api::WalletErrorCode::BitcoinApi,
             _ => unreachable!("Invalid variant for WalletErrorCode: {}", inner),
         };
     }
@@ -3818,28 +3956,6 @@ impl SseDecode for crate::api::WalletFfiConfig {
     }
 }
 
-impl SseDecode for crate::api::WalletGetContactRequest {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_walletId = <String>::sse_decode(deserializer);
-        let mut var_nodeId = <String>::sse_decode(deserializer);
-        return crate::api::WalletGetContactRequest {
-            wallet_id: var_walletId,
-            node_id: var_nodeId,
-        };
-    }
-}
-
-impl SseDecode for crate::api::WalletGetContactResponse {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_contact = <crate::api::Contact>::sse_decode(deserializer);
-        return crate::api::WalletGetContactResponse {
-            contact: var_contact,
-        };
-    }
-}
-
 impl SseDecode for crate::api::WalletGetPaymentRequestRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3898,28 +4014,6 @@ impl SseDecode for crate::api::WalletInfoResponse {
             network: var_network,
             default_mint_url: var_defaultMintUrl,
             nostr_relays: var_nostrRelays,
-        };
-    }
-}
-
-impl SseDecode for crate::api::WalletListContactsRequest {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_walletId = <String>::sse_decode(deserializer);
-        let mut var_searchTerm = <Option<String>>::sse_decode(deserializer);
-        return crate::api::WalletListContactsRequest {
-            wallet_id: var_walletId,
-            search_term: var_searchTerm,
-        };
-    }
-}
-
-impl SseDecode for crate::api::WalletListContactsResponse {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_contacts = <Vec<crate::api::Contact>>::sse_decode(deserializer);
-        return crate::api::WalletListContactsResponse {
-            contacts: var_contacts,
         };
     }
 }
@@ -4056,6 +4150,18 @@ impl SseDecode for crate::api::WalletPayRequest {
     }
 }
 
+impl SseDecode for crate::api::WalletPaymentByContactRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_walletId = <String>::sse_decode(deserializer);
+        let mut var_rid = <String>::sse_decode(deserializer);
+        return crate::api::WalletPaymentByContactRequest {
+            wallet_id: var_walletId,
+            rid: var_rid,
+        };
+    }
+}
+
 impl SseDecode for crate::api::WalletPaymentByTokenRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -4116,6 +4222,22 @@ impl SseDecode for crate::api::WalletPreparePayPaymentRequestRequest {
         return crate::api::WalletPreparePayPaymentRequestRequest {
             wallet_id: var_walletId,
             payment_request_id: var_paymentRequestId,
+        };
+    }
+}
+
+impl SseDecode for crate::api::WalletPreparePaymentByContactRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_walletId = <String>::sse_decode(deserializer);
+        let mut var_contactId = <String>::sse_decode(deserializer);
+        let mut var_amount = <u64>::sse_decode(deserializer);
+        let mut var_description = <Option<String>>::sse_decode(deserializer);
+        return crate::api::WalletPreparePaymentByContactRequest {
+            wallet_id: var_walletId,
+            contact_id: var_contactId,
+            amount: var_amount,
+            description: var_description,
         };
     }
 }
@@ -4362,13 +4484,13 @@ impl SseDecode for crate::api::WalletRequestPaymentFromContactRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_walletId = <String>::sse_decode(deserializer);
-        let mut var_nodeId = <String>::sse_decode(deserializer);
+        let mut var_contactId = <String>::sse_decode(deserializer);
         let mut var_amount = <u64>::sse_decode(deserializer);
         let mut var_description = <Option<String>>::sse_decode(deserializer);
         let mut var_deadline = <Option<u64>>::sse_decode(deserializer);
         return crate::api::WalletRequestPaymentFromContactRequest {
             wallet_id: var_walletId,
-            node_id: var_nodeId,
+            contact_id: var_contactId,
             amount: var_amount,
             description: var_description,
             deadline: var_deadline,
@@ -4457,65 +4579,65 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
-        2 => wire__crate__api__check_btc_tx_status_impl(port, ptr, rust_vec_len, data_len),
-        3 => wire__crate__api__generate_random_mnemonic_impl(port, ptr, rust_vec_len, data_len),
-        4 => wire__crate__api__init_app_impl(port, ptr, rust_vec_len, data_len),
-        5 => wire__crate__api__init_wallet_ffi_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__is_valid_token_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__payment_type_default_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__protest_status_default_impl(port, ptr, rust_vec_len, data_len),
-        9 => {
+        2 => wire__crate__api__add_contact_impl(port, ptr, rust_vec_len, data_len),
+        3 => wire__crate__api__check_btc_tx_status_impl(port, ptr, rust_vec_len, data_len),
+        4 => wire__crate__api__delete_contact_impl(port, ptr, rust_vec_len, data_len),
+        5 => wire__crate__api__edit_contact_impl(port, ptr, rust_vec_len, data_len),
+        6 => wire__crate__api__generate_random_mnemonic_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__get_contact_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__init_app_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__init_wallet_ffi_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__is_valid_token_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__list_contacts_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__payment_type_default_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__protest_status_default_impl(port, ptr, rust_vec_len, data_len),
+        14 => {
             wire__crate__api__transaction_direction_default_impl(port, ptr, rust_vec_len, data_len)
         }
-        10 => wire__crate__api__transaction_filters_default_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__transaction_sort_default_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__transaction_status_default_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__wallet_add_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__wallet_add_contact_impl(port, ptr, rust_vec_len, data_len),
-        15 => {
+        15 => wire__crate__api__transaction_filters_default_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__transaction_sort_default_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__transaction_status_default_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__wallet_add_impl(port, ptr, rust_vec_len, data_len),
+        19 => {
             wire__crate__api__wallet_cancel_payment_request_impl(port, ptr, rust_vec_len, data_len)
         }
-        16 => wire__crate__api__wallet_check_pending_mints_impl(port, ptr, rust_vec_len, data_len),
-        17 => {
+        20 => wire__crate__api__wallet_check_pending_mints_impl(port, ptr, rust_vec_len, data_len),
+        21 => {
             wire__crate__api__wallet_check_received_payment_impl(port, ptr, rust_vec_len, data_len)
         }
-        18 => wire__crate__api__wallet_delete_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__wallet_delete_contact_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__wallet_dev_mode_get_detailed_balance_impl(
+        22 => wire__crate__api__wallet_delete_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__wallet_dev_mode_get_detailed_balance_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        21 => wire__crate__api__wallet_edit_contact_impl(port, ptr, rust_vec_len, data_len),
-        22 => {
+        24 => {
             wire__crate__api__wallet_edit_transaction_memo_impl(port, ptr, rust_vec_len, data_len)
         }
-        23 => wire__crate__api__wallet_error_bad_request_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__wallet_error_internal_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__wallet_error_network_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__wallet_error_not_found_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__wallet_error_unavailable_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__wallet_estimate_melt_impl(port, ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__wallet_get_balance_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__wallet_get_contact_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__wallet_get_currency_unit_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__wallet_get_ids_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__wallet_get_info_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__wallet_get_mint_url_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__wallet_get_name_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__wallet_get_node_id_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__wallet_get_payment_request_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__wallet_get_status_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__api__wallet_get_transaction_ids_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__crate__api__wallet_get_transactions_impl(port, ptr, rust_vec_len, data_len),
-        41 => wire__crate__api__wallet_id_for_mnemonic_and_network_impl(
+        25 => wire__crate__api__wallet_error_bad_request_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__wallet_error_internal_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__wallet_error_network_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__wallet_error_not_found_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__wallet_error_unavailable_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__wallet_estimate_melt_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__wallet_get_balance_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__wallet_get_currency_unit_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__wallet_get_ids_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__wallet_get_info_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__wallet_get_mint_url_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__wallet_get_name_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__wallet_get_node_id_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__wallet_get_payment_request_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__wallet_get_status_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__wallet_get_transaction_ids_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__wallet_get_transactions_impl(port, ptr, rust_vec_len, data_len),
+        42 => wire__crate__api__wallet_id_for_mnemonic_and_network_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        42 => wire__crate__api__wallet_list_contacts_impl(port, ptr, rust_vec_len, data_len),
         43 => {
             wire__crate__api__wallet_list_payment_requests_impl(port, ptr, rust_vec_len, data_len)
         }
@@ -4528,43 +4650,47 @@ fn pde_ffi_dispatcher_primary_impl(
         50 => wire__crate__api__wallet_pay_impl(port, ptr, rust_vec_len, data_len),
         51 => wire__crate__api__wallet_pay_by_token_impl(port, ptr, rust_vec_len, data_len),
         52 => wire__crate__api__wallet_pay_payment_request_impl(port, ptr, rust_vec_len, data_len),
-        53 => wire__crate__api__wallet_prepare_melt_impl(port, ptr, rust_vec_len, data_len),
-        54 => wire__crate__api__wallet_prepare_pay_by_token_impl(port, ptr, rust_vec_len, data_len),
-        55 => wire__crate__api__wallet_prepare_pay_payment_request_impl(
+        53 => wire__crate__api__wallet_pay_to_contact_impl(port, ptr, rust_vec_len, data_len),
+        54 => wire__crate__api__wallet_prepare_melt_impl(port, ptr, rust_vec_len, data_len),
+        55 => wire__crate__api__wallet_prepare_pay_by_token_impl(port, ptr, rust_vec_len, data_len),
+        56 => wire__crate__api__wallet_prepare_pay_payment_request_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        56 => wire__crate__api__wallet_prepare_payment_impl(port, ptr, rust_vec_len, data_len),
         57 => {
+            wire__crate__api__wallet_prepare_pay_to_contact_impl(port, ptr, rust_vec_len, data_len)
+        }
+        58 => wire__crate__api__wallet_prepare_payment_impl(port, ptr, rust_vec_len, data_len),
+        59 => {
             wire__crate__api__wallet_prepare_payment_request_impl(port, ptr, rust_vec_len, data_len)
         }
-        58 => wire__crate__api__wallet_protest_melt_impl(port, ptr, rust_vec_len, data_len),
-        59 => wire__crate__api__wallet_protest_mint_impl(port, ptr, rust_vec_len, data_len),
-        60 => wire__crate__api__wallet_protest_swap_impl(port, ptr, rust_vec_len, data_len),
-        61 => wire__crate__api__wallet_receive_impl(port, ptr, rust_vec_len, data_len),
-        62 => wire__crate__api__wallet_reclaim_transaction_impl(port, ptr, rust_vec_len, data_len),
-        63 => wire__crate__api__wallet_recover_pending_stale_proofs_impl(
+        60 => wire__crate__api__wallet_protest_melt_impl(port, ptr, rust_vec_len, data_len),
+        61 => wire__crate__api__wallet_protest_mint_impl(port, ptr, rust_vec_len, data_len),
+        62 => wire__crate__api__wallet_protest_swap_impl(port, ptr, rust_vec_len, data_len),
+        63 => wire__crate__api__wallet_receive_impl(port, ptr, rust_vec_len, data_len),
+        64 => wire__crate__api__wallet_reclaim_transaction_impl(port, ptr, rust_vec_len, data_len),
+        65 => wire__crate__api__wallet_recover_pending_stale_proofs_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        64 => wire__crate__api__wallet_refresh_transaction_impl(port, ptr, rust_vec_len, data_len),
-        65 => wire__crate__api__wallet_refresh_transactions_impl(port, ptr, rust_vec_len, data_len),
-        66 => {
+        66 => wire__crate__api__wallet_refresh_transaction_impl(port, ptr, rust_vec_len, data_len),
+        67 => wire__crate__api__wallet_refresh_transactions_impl(port, ptr, rust_vec_len, data_len),
+        68 => {
             wire__crate__api__wallet_reject_payment_request_impl(port, ptr, rust_vec_len, data_len)
         }
-        67 => wire__crate__api__wallet_request_payment_from_contact_impl(
+        69 => wire__crate__api__wallet_request_payment_from_contact_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        68 => wire__crate__api__wallet_restore_impl(port, ptr, rust_vec_len, data_len),
-        69 => wire__crate__api__wallet_set_dev_mode_impl(port, ptr, rust_vec_len, data_len),
-        70 => wire__crate__api__wallet_subscribe_to_payment_requests_impl(
+        70 => wire__crate__api__wallet_restore_impl(port, ptr, rust_vec_len, data_len),
+        71 => wire__crate__api__wallet_set_dev_mode_impl(port, ptr, rust_vec_len, data_len),
+        72 => wire__crate__api__wallet_subscribe_to_payment_requests_impl(
             port,
             ptr,
             rust_vec_len,
@@ -4608,6 +4734,44 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<WalletPaymentCheckHandle>>
     }
 }
 
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::AddContactRequest {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.bitcoin_network.into_into_dart().into_dart(),
+            self.email.into_into_dart().into_dart(),
+            self.node_id.into_into_dart().into_dart(),
+            self.name.into_into_dart().into_dart(),
+            self.company.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::AddContactRequest {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::AddContactRequest>
+    for crate::api::AddContactRequest
+{
+    fn into_into_dart(self) -> crate::api::AddContactRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::AddContactResponse {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.contact_id.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::AddContactResponse
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::AddContactResponse>
+    for crate::api::AddContactResponse
+{
+    fn into_into_dart(self) -> crate::api::AddContactResponse {
+        self
+    }
+}
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::AddWalletResponse {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -4714,8 +4878,11 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::Cdk18PaymentRequest>
 impl flutter_rust_bridge::IntoDart for crate::api::Contact {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.id.into_into_dart().into_dart(),
             self.node_id.into_into_dart().into_dart(),
+            self.email.into_into_dart().into_dart(),
             self.name.into_into_dart().into_dart(),
+            self.company.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4751,6 +4918,86 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::CreateWalletRequest>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::DeleteContactRequest {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.bitcoin_network.into_into_dart().into_dart(),
+            self.contact_id.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::DeleteContactRequest
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::DeleteContactRequest>
+    for crate::api::DeleteContactRequest
+{
+    fn into_into_dart(self) -> crate::api::DeleteContactRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::DeleteContactResponse {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.contact_id.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::DeleteContactResponse
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::DeleteContactResponse>
+    for crate::api::DeleteContactResponse
+{
+    fn into_into_dart(self) -> crate::api::DeleteContactResponse {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::EditContactRequest {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.bitcoin_network.into_into_dart().into_dart(),
+            self.contact_id.into_into_dart().into_dart(),
+            self.node_id.into_into_dart().into_dart(),
+            self.email.into_into_dart().into_dart(),
+            self.name.into_into_dart().into_dart(),
+            self.company.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::EditContactRequest
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::EditContactRequest>
+    for crate::api::EditContactRequest
+{
+    fn into_into_dart(self) -> crate::api::EditContactRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::EditContactResponse {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.contact_id.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::EditContactResponse
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::EditContactResponse>
+    for crate::api::EditContactResponse
+{
+    fn into_into_dart(self) -> crate::api::EditContactResponse {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::FeesByMonth {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -4764,6 +5011,41 @@ impl flutter_rust_bridge::IntoDart for crate::api::FeesByMonth {
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::FeesByMonth {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::FeesByMonth> for crate::api::FeesByMonth {
     fn into_into_dart(self) -> crate::api::FeesByMonth {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::GetContactRequest {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.bitcoin_network.into_into_dart().into_dart(),
+            self.contact_id.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::GetContactRequest {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::GetContactRequest>
+    for crate::api::GetContactRequest
+{
+    fn into_into_dart(self) -> crate::api::GetContactRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::GetContactResponse {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.contact.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::GetContactResponse
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::GetContactResponse>
+    for crate::api::GetContactResponse
+{
+    fn into_into_dart(self) -> crate::api::GetContactResponse {
         self
     }
 }
@@ -4804,6 +5086,44 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::IsValidTokenResponse>
     for crate::api::IsValidTokenResponse
 {
     fn into_into_dart(self) -> crate::api::IsValidTokenResponse {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::ListContactsRequest {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.bitcoin_network.into_into_dart().into_dart(),
+            self.search_term.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::ListContactsRequest
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::ListContactsRequest>
+    for crate::api::ListContactsRequest
+{
+    fn into_into_dart(self) -> crate::api::ListContactsRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::ListContactsResponse {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.contacts.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::ListContactsResponse
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::ListContactsResponse>
+    for crate::api::ListContactsResponse
+{
+    fn into_into_dart(self) -> crate::api::ListContactsResponse {
         self
     }
 }
@@ -5268,45 +5588,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::TransactionStatus>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::WalletAddContactRequest {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.wallet_id.into_into_dart().into_dart(),
-            self.node_id.into_into_dart().into_dart(),
-            self.name.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::WalletAddContactRequest
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletAddContactRequest>
-    for crate::api::WalletAddContactRequest
-{
-    fn into_into_dart(self) -> crate::api::WalletAddContactRequest {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::WalletAddContactResponse {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [self.node_id.into_into_dart().into_dart()].into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::WalletAddContactResponse
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletAddContactResponse>
-    for crate::api::WalletAddContactResponse
-{
-    fn into_into_dart(self) -> crate::api::WalletAddContactResponse {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::WalletBalanceResponse {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -5423,44 +5704,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletCurrencyUnitResponse>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::WalletDeleteContactRequest {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.wallet_id.into_into_dart().into_dart(),
-            self.node_id.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::WalletDeleteContactRequest
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletDeleteContactRequest>
-    for crate::api::WalletDeleteContactRequest
-{
-    fn into_into_dart(self) -> crate::api::WalletDeleteContactRequest {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::WalletDeleteContactResponse {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [self.node_id.into_into_dart().into_dart()].into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::WalletDeleteContactResponse
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletDeleteContactResponse>
-    for crate::api::WalletDeleteContactResponse
-{
-    fn into_into_dart(self) -> crate::api::WalletDeleteContactResponse {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::WalletDevModeDetailedBalanceEntry {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -5496,45 +5739,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletDevModeDetailedBalanceR
     for crate::api::WalletDevModeDetailedBalanceResponse
 {
     fn into_into_dart(self) -> crate::api::WalletDevModeDetailedBalanceResponse {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::WalletEditContactRequest {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.wallet_id.into_into_dart().into_dart(),
-            self.node_id.into_into_dart().into_dart(),
-            self.name.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::WalletEditContactRequest
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletEditContactRequest>
-    for crate::api::WalletEditContactRequest
-{
-    fn into_into_dart(self) -> crate::api::WalletEditContactRequest {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::WalletEditContactResponse {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [self.node_id.into_into_dart().into_dart()].into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::WalletEditContactResponse
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletEditContactResponse>
-    for crate::api::WalletEditContactResponse
-{
-    fn into_into_dart(self) -> crate::api::WalletEditContactResponse {
         self
     }
 }
@@ -5602,58 +5806,62 @@ impl flutter_rust_bridge::IntoDart for crate::api::WalletErrorCode {
             Self::Network => 1.into_dart(),
             Self::WalletNotFound => 2.into_dart(),
             Self::ContactNotFound => 3.into_dart(),
-            Self::PaymentRequestNotFound => 4.into_dart(),
-            Self::PaymentRequestInWrongState => 5.into_dart(),
-            Self::ContactAlreadyExists => 6.into_dart(),
-            Self::EmptyToken => 7.into_dart(),
-            Self::InvalidToken => 8.into_dart(),
-            Self::CashuMintUrl => 9.into_dart(),
-            Self::Url => 10.into_dart(),
-            Self::Uuid => 11.into_dart(),
-            Self::Amount => 12.into_dart(),
-            Self::InsufficientBalance => 13.into_dart(),
-            Self::NoActiveKeyset => 14.into_dart(),
-            Self::UnknownKeysetId => 15.into_dart(),
-            Self::InvalidCurrencyUnit => 16.into_dart(),
-            Self::NoPrepareRef => 17.into_dart(),
-            Self::InactiveKeyset => 18.into_dart(),
-            Self::NoDebitCurrencyInMint => 19.into_dart(),
-            Self::InvalidNetwork => 20.into_dart(),
-            Self::InvalidBitcoinNetwork => 21.into_dart(),
-            Self::InvalidBitcoinTxId => 22.into_dart(),
-            Self::MissingAmount => 23.into_dart(),
-            Self::UnknownPaymentRequest => 24.into_dart(),
-            Self::Unsupported => 25.into_dart(),
-            Self::TransactionCantBeReclaimed => 26.into_dart(),
-            Self::InsufficientOnChainMeltAmount => 27.into_dart(),
-            Self::InsufficientOnChainMintAmount => 28.into_dart(),
-            Self::NoDevMode => 29.into_dart(),
-            Self::MeltQuoteMismatch => 30.into_dart(),
-            Self::SwapCommitmentMismatch => 31.into_dart(),
-            Self::InvalidBitcoinAddress => 32.into_dart(),
-            Self::InvalidMnemonic => 33.into_dart(),
-            Self::InvalidTransactionId => 34.into_dart(),
-            Self::InvalidCursor => 35.into_dart(),
-            Self::SortMismatch => 36.into_dart(),
-            Self::MnemonicNotFound => 37.into_dart(),
-            Self::WalletUniqueName => 38.into_dart(),
-            Self::WalletUniqueId => 39.into_dart(),
-            Self::InvalidNodeId => 40.into_dart(),
-            Self::InvalidBillId => 41.into_dart(),
-            Self::InvalidName => 42.into_dart(),
-            Self::EmptyName => 43.into_dart(),
-            Self::MintClientResourceNotFound => 44.into_dart(),
-            Self::MintClientServiceUnavailable => 45.into_dart(),
-            Self::MintClientBadRequest => 46.into_dart(),
-            Self::MintClientKeysetNotFound => 47.into_dart(),
-            Self::MintClientMeltOpSuspended => 48.into_dart(),
-            Self::MintClientCommitmentMismatch => 49.into_dart(),
-            Self::AttestationInvalidProof => 50.into_dart(),
-            Self::AttestationDigestMismatch => 51.into_dart(),
-            Self::AttestationUnknownBeta => 52.into_dart(),
-            Self::AttestationVerifyNotFound => 53.into_dart(),
-            Self::AttestationSignature => 54.into_dart(),
-            Self::BitcoinApi => 55.into_dart(),
+            Self::ContactMustHaveNodeId => 4.into_dart(),
+            Self::PaymentRequestNotFound => 5.into_dart(),
+            Self::PaymentRequestInWrongState => 6.into_dart(),
+            Self::ContactAlreadyExists => 7.into_dart(),
+            Self::EmptyToken => 8.into_dart(),
+            Self::InvalidToken => 9.into_dart(),
+            Self::CashuMintUrl => 10.into_dart(),
+            Self::Url => 11.into_dart(),
+            Self::Uuid => 12.into_dart(),
+            Self::Amount => 13.into_dart(),
+            Self::InsufficientBalance => 14.into_dart(),
+            Self::NoActiveKeyset => 15.into_dart(),
+            Self::UnknownKeysetId => 16.into_dart(),
+            Self::InvalidCurrencyUnit => 17.into_dart(),
+            Self::NoPrepareRef => 18.into_dart(),
+            Self::InactiveKeyset => 19.into_dart(),
+            Self::NoDebitCurrencyInMint => 20.into_dart(),
+            Self::InvalidNetwork => 21.into_dart(),
+            Self::InvalidBitcoinNetwork => 22.into_dart(),
+            Self::InvalidBitcoinTxId => 23.into_dart(),
+            Self::MissingAmount => 24.into_dart(),
+            Self::UnknownPaymentRequest => 25.into_dart(),
+            Self::Unsupported => 26.into_dart(),
+            Self::TransactionCantBeReclaimed => 27.into_dart(),
+            Self::InsufficientOnChainMeltAmount => 28.into_dart(),
+            Self::InsufficientOnChainMintAmount => 29.into_dart(),
+            Self::NoDevMode => 30.into_dart(),
+            Self::MeltQuoteMismatch => 31.into_dart(),
+            Self::SwapCommitmentMismatch => 32.into_dart(),
+            Self::InvalidBitcoinAddress => 33.into_dart(),
+            Self::InvalidMnemonic => 34.into_dart(),
+            Self::InvalidTransactionId => 35.into_dart(),
+            Self::InvalidCursor => 36.into_dart(),
+            Self::SortMismatch => 37.into_dart(),
+            Self::MnemonicNotFound => 38.into_dart(),
+            Self::WalletUniqueName => 39.into_dart(),
+            Self::WalletUniqueId => 40.into_dart(),
+            Self::InvalidNodeId => 41.into_dart(),
+            Self::InvalidBillId => 42.into_dart(),
+            Self::InvalidName => 43.into_dart(),
+            Self::EmptyName => 44.into_dart(),
+            Self::InvalidEmail => 45.into_dart(),
+            Self::EmptyEmail => 46.into_dart(),
+            Self::InvalidContact => 47.into_dart(),
+            Self::MintClientResourceNotFound => 48.into_dart(),
+            Self::MintClientServiceUnavailable => 49.into_dart(),
+            Self::MintClientBadRequest => 50.into_dart(),
+            Self::MintClientKeysetNotFound => 51.into_dart(),
+            Self::MintClientMeltOpSuspended => 52.into_dart(),
+            Self::MintClientCommitmentMismatch => 53.into_dart(),
+            Self::AttestationInvalidProof => 54.into_dart(),
+            Self::AttestationDigestMismatch => 55.into_dart(),
+            Self::AttestationUnknownBeta => 56.into_dart(),
+            Self::AttestationVerifyNotFound => 57.into_dart(),
+            Self::AttestationSignature => 58.into_dart(),
+            Self::BitcoinApi => 59.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -5779,44 +5987,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletFfiConfig>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::WalletGetContactRequest {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.wallet_id.into_into_dart().into_dart(),
-            self.node_id.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::WalletGetContactRequest
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletGetContactRequest>
-    for crate::api::WalletGetContactRequest
-{
-    fn into_into_dart(self) -> crate::api::WalletGetContactRequest {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::WalletGetContactResponse {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [self.contact.into_into_dart().into_dart()].into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::WalletGetContactResponse
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletGetContactResponse>
-    for crate::api::WalletGetContactResponse
-{
-    fn into_into_dart(self) -> crate::api::WalletGetContactResponse {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::WalletGetPaymentRequestRequest {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -5913,44 +6083,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletInfoResponse>
     for crate::api::WalletInfoResponse
 {
     fn into_into_dart(self) -> crate::api::WalletInfoResponse {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::WalletListContactsRequest {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.wallet_id.into_into_dart().into_dart(),
-            self.search_term.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::WalletListContactsRequest
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletListContactsRequest>
-    for crate::api::WalletListContactsRequest
-{
-    fn into_into_dart(self) -> crate::api::WalletListContactsRequest {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::WalletListContactsResponse {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [self.contacts.into_into_dart().into_dart()].into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::WalletListContactsResponse
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletListContactsResponse>
-    for crate::api::WalletListContactsResponse
-{
-    fn into_into_dart(self) -> crate::api::WalletListContactsResponse {
         self
     }
 }
@@ -6167,6 +6299,27 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletPayRequest>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::WalletPaymentByContactRequest {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.wallet_id.into_into_dart().into_dart(),
+            self.rid.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::WalletPaymentByContactRequest
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletPaymentByContactRequest>
+    for crate::api::WalletPaymentByContactRequest
+{
+    fn into_into_dart(self) -> crate::api::WalletPaymentByContactRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::WalletPaymentByTokenRequest {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -6268,6 +6421,29 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletPreparePayPaymentReques
     for crate::api::WalletPreparePayPaymentRequestRequest
 {
     fn into_into_dart(self) -> crate::api::WalletPreparePayPaymentRequestRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::WalletPreparePaymentByContactRequest {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.wallet_id.into_into_dart().into_dart(),
+            self.contact_id.into_into_dart().into_dart(),
+            self.amount.into_into_dart().into_dart(),
+            self.description.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::WalletPreparePaymentByContactRequest
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletPreparePaymentByContactRequest>
+    for crate::api::WalletPreparePaymentByContactRequest
+{
+    fn into_into_dart(self) -> crate::api::WalletPreparePaymentByContactRequest {
         self
     }
 }
@@ -6683,7 +6859,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::WalletRequestPaymentFromConta
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.wallet_id.into_into_dart().into_dart(),
-            self.node_id.into_into_dart().into_dart(),
+            self.contact_id.into_into_dart().into_dart(),
             self.amount.into_into_dart().into_dart(),
             self.description.into_into_dart().into_dart(),
             self.deadline.into_into_dart().into_dart(),
@@ -6886,6 +7062,24 @@ impl SseEncode for String {
     }
 }
 
+impl SseEncode for crate::api::AddContactRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.bitcoin_network, serializer);
+        <Option<String>>::sse_encode(self.email, serializer);
+        <Option<String>>::sse_encode(self.node_id, serializer);
+        <Option<String>>::sse_encode(self.name, serializer);
+        <Option<String>>::sse_encode(self.company, serializer);
+    }
+}
+
+impl SseEncode for crate::api::AddContactResponse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.contact_id, serializer);
+    }
+}
+
 impl SseEncode for crate::api::AddWalletResponse {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -6939,8 +7133,11 @@ impl SseEncode for crate::api::Cdk18PaymentRequest {
 impl SseEncode for crate::api::Contact {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.node_id, serializer);
-        <String>::sse_encode(self.name, serializer);
+        <String>::sse_encode(self.id, serializer);
+        <Option<String>>::sse_encode(self.node_id, serializer);
+        <Option<String>>::sse_encode(self.email, serializer);
+        <Option<String>>::sse_encode(self.name, serializer);
+        <Option<String>>::sse_encode(self.company, serializer);
     }
 }
 
@@ -6952,6 +7149,40 @@ impl SseEncode for crate::api::CreateWalletRequest {
         <String>::sse_encode(self.bitcoin_network, serializer);
         <String>::sse_encode(self.mnemonic, serializer);
         <Vec<String>>::sse_encode(self.nostr_relays, serializer);
+    }
+}
+
+impl SseEncode for crate::api::DeleteContactRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.bitcoin_network, serializer);
+        <String>::sse_encode(self.contact_id, serializer);
+    }
+}
+
+impl SseEncode for crate::api::DeleteContactResponse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.contact_id, serializer);
+    }
+}
+
+impl SseEncode for crate::api::EditContactRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.bitcoin_network, serializer);
+        <String>::sse_encode(self.contact_id, serializer);
+        <Option<String>>::sse_encode(self.node_id, serializer);
+        <Option<String>>::sse_encode(self.email, serializer);
+        <Option<String>>::sse_encode(self.name, serializer);
+        <Option<String>>::sse_encode(self.company, serializer);
+    }
+}
+
+impl SseEncode for crate::api::EditContactResponse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.contact_id, serializer);
     }
 }
 
@@ -6968,6 +7199,21 @@ impl SseEncode for crate::api::FeesByMonth {
         <i32>::sse_encode(self.year, serializer);
         <u32>::sse_encode(self.month, serializer);
         <u64>::sse_encode(self.fees, serializer);
+    }
+}
+
+impl SseEncode for crate::api::GetContactRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.bitcoin_network, serializer);
+        <String>::sse_encode(self.contact_id, serializer);
+    }
+}
+
+impl SseEncode for crate::api::GetContactResponse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::Contact>::sse_encode(self.contact, serializer);
     }
 }
 
@@ -7032,6 +7278,21 @@ impl SseEncode for Vec<crate::api::Contact> {
         for item in self {
             <crate::api::Contact>::sse_encode(item, serializer);
         }
+    }
+}
+
+impl SseEncode for crate::api::ListContactsRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.bitcoin_network, serializer);
+        <Option<String>>::sse_encode(self.search_term, serializer);
+    }
+}
+
+impl SseEncode for crate::api::ListContactsResponse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<crate::api::Contact>>::sse_encode(self.contacts, serializer);
     }
 }
 
@@ -7550,22 +7811,6 @@ impl SseEncode for usize {
     }
 }
 
-impl SseEncode for crate::api::WalletAddContactRequest {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.wallet_id, serializer);
-        <String>::sse_encode(self.node_id, serializer);
-        <String>::sse_encode(self.name, serializer);
-    }
-}
-
-impl SseEncode for crate::api::WalletAddContactResponse {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.node_id, serializer);
-    }
-}
-
 impl SseEncode for crate::api::WalletBalanceResponse {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -7613,21 +7858,6 @@ impl SseEncode for crate::api::WalletCurrencyUnitResponse {
     }
 }
 
-impl SseEncode for crate::api::WalletDeleteContactRequest {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.wallet_id, serializer);
-        <String>::sse_encode(self.node_id, serializer);
-    }
-}
-
-impl SseEncode for crate::api::WalletDeleteContactResponse {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.node_id, serializer);
-    }
-}
-
 impl SseEncode for crate::api::WalletDevModeDetailedBalanceEntry {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -7641,22 +7871,6 @@ impl SseEncode for crate::api::WalletDevModeDetailedBalanceResponse {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <Vec<crate::api::WalletDevModeDetailedBalanceEntry>>::sse_encode(self.entries, serializer);
-    }
-}
-
-impl SseEncode for crate::api::WalletEditContactRequest {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.wallet_id, serializer);
-        <String>::sse_encode(self.node_id, serializer);
-        <String>::sse_encode(self.name, serializer);
-    }
-}
-
-impl SseEncode for crate::api::WalletEditContactResponse {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.node_id, serializer);
     }
 }
 
@@ -7694,58 +7908,62 @@ impl SseEncode for crate::api::WalletErrorCode {
                 crate::api::WalletErrorCode::Network => 1,
                 crate::api::WalletErrorCode::WalletNotFound => 2,
                 crate::api::WalletErrorCode::ContactNotFound => 3,
-                crate::api::WalletErrorCode::PaymentRequestNotFound => 4,
-                crate::api::WalletErrorCode::PaymentRequestInWrongState => 5,
-                crate::api::WalletErrorCode::ContactAlreadyExists => 6,
-                crate::api::WalletErrorCode::EmptyToken => 7,
-                crate::api::WalletErrorCode::InvalidToken => 8,
-                crate::api::WalletErrorCode::CashuMintUrl => 9,
-                crate::api::WalletErrorCode::Url => 10,
-                crate::api::WalletErrorCode::Uuid => 11,
-                crate::api::WalletErrorCode::Amount => 12,
-                crate::api::WalletErrorCode::InsufficientBalance => 13,
-                crate::api::WalletErrorCode::NoActiveKeyset => 14,
-                crate::api::WalletErrorCode::UnknownKeysetId => 15,
-                crate::api::WalletErrorCode::InvalidCurrencyUnit => 16,
-                crate::api::WalletErrorCode::NoPrepareRef => 17,
-                crate::api::WalletErrorCode::InactiveKeyset => 18,
-                crate::api::WalletErrorCode::NoDebitCurrencyInMint => 19,
-                crate::api::WalletErrorCode::InvalidNetwork => 20,
-                crate::api::WalletErrorCode::InvalidBitcoinNetwork => 21,
-                crate::api::WalletErrorCode::InvalidBitcoinTxId => 22,
-                crate::api::WalletErrorCode::MissingAmount => 23,
-                crate::api::WalletErrorCode::UnknownPaymentRequest => 24,
-                crate::api::WalletErrorCode::Unsupported => 25,
-                crate::api::WalletErrorCode::TransactionCantBeReclaimed => 26,
-                crate::api::WalletErrorCode::InsufficientOnChainMeltAmount => 27,
-                crate::api::WalletErrorCode::InsufficientOnChainMintAmount => 28,
-                crate::api::WalletErrorCode::NoDevMode => 29,
-                crate::api::WalletErrorCode::MeltQuoteMismatch => 30,
-                crate::api::WalletErrorCode::SwapCommitmentMismatch => 31,
-                crate::api::WalletErrorCode::InvalidBitcoinAddress => 32,
-                crate::api::WalletErrorCode::InvalidMnemonic => 33,
-                crate::api::WalletErrorCode::InvalidTransactionId => 34,
-                crate::api::WalletErrorCode::InvalidCursor => 35,
-                crate::api::WalletErrorCode::SortMismatch => 36,
-                crate::api::WalletErrorCode::MnemonicNotFound => 37,
-                crate::api::WalletErrorCode::WalletUniqueName => 38,
-                crate::api::WalletErrorCode::WalletUniqueId => 39,
-                crate::api::WalletErrorCode::InvalidNodeId => 40,
-                crate::api::WalletErrorCode::InvalidBillId => 41,
-                crate::api::WalletErrorCode::InvalidName => 42,
-                crate::api::WalletErrorCode::EmptyName => 43,
-                crate::api::WalletErrorCode::MintClientResourceNotFound => 44,
-                crate::api::WalletErrorCode::MintClientServiceUnavailable => 45,
-                crate::api::WalletErrorCode::MintClientBadRequest => 46,
-                crate::api::WalletErrorCode::MintClientKeysetNotFound => 47,
-                crate::api::WalletErrorCode::MintClientMeltOpSuspended => 48,
-                crate::api::WalletErrorCode::MintClientCommitmentMismatch => 49,
-                crate::api::WalletErrorCode::AttestationInvalidProof => 50,
-                crate::api::WalletErrorCode::AttestationDigestMismatch => 51,
-                crate::api::WalletErrorCode::AttestationUnknownBeta => 52,
-                crate::api::WalletErrorCode::AttestationVerifyNotFound => 53,
-                crate::api::WalletErrorCode::AttestationSignature => 54,
-                crate::api::WalletErrorCode::BitcoinApi => 55,
+                crate::api::WalletErrorCode::ContactMustHaveNodeId => 4,
+                crate::api::WalletErrorCode::PaymentRequestNotFound => 5,
+                crate::api::WalletErrorCode::PaymentRequestInWrongState => 6,
+                crate::api::WalletErrorCode::ContactAlreadyExists => 7,
+                crate::api::WalletErrorCode::EmptyToken => 8,
+                crate::api::WalletErrorCode::InvalidToken => 9,
+                crate::api::WalletErrorCode::CashuMintUrl => 10,
+                crate::api::WalletErrorCode::Url => 11,
+                crate::api::WalletErrorCode::Uuid => 12,
+                crate::api::WalletErrorCode::Amount => 13,
+                crate::api::WalletErrorCode::InsufficientBalance => 14,
+                crate::api::WalletErrorCode::NoActiveKeyset => 15,
+                crate::api::WalletErrorCode::UnknownKeysetId => 16,
+                crate::api::WalletErrorCode::InvalidCurrencyUnit => 17,
+                crate::api::WalletErrorCode::NoPrepareRef => 18,
+                crate::api::WalletErrorCode::InactiveKeyset => 19,
+                crate::api::WalletErrorCode::NoDebitCurrencyInMint => 20,
+                crate::api::WalletErrorCode::InvalidNetwork => 21,
+                crate::api::WalletErrorCode::InvalidBitcoinNetwork => 22,
+                crate::api::WalletErrorCode::InvalidBitcoinTxId => 23,
+                crate::api::WalletErrorCode::MissingAmount => 24,
+                crate::api::WalletErrorCode::UnknownPaymentRequest => 25,
+                crate::api::WalletErrorCode::Unsupported => 26,
+                crate::api::WalletErrorCode::TransactionCantBeReclaimed => 27,
+                crate::api::WalletErrorCode::InsufficientOnChainMeltAmount => 28,
+                crate::api::WalletErrorCode::InsufficientOnChainMintAmount => 29,
+                crate::api::WalletErrorCode::NoDevMode => 30,
+                crate::api::WalletErrorCode::MeltQuoteMismatch => 31,
+                crate::api::WalletErrorCode::SwapCommitmentMismatch => 32,
+                crate::api::WalletErrorCode::InvalidBitcoinAddress => 33,
+                crate::api::WalletErrorCode::InvalidMnemonic => 34,
+                crate::api::WalletErrorCode::InvalidTransactionId => 35,
+                crate::api::WalletErrorCode::InvalidCursor => 36,
+                crate::api::WalletErrorCode::SortMismatch => 37,
+                crate::api::WalletErrorCode::MnemonicNotFound => 38,
+                crate::api::WalletErrorCode::WalletUniqueName => 39,
+                crate::api::WalletErrorCode::WalletUniqueId => 40,
+                crate::api::WalletErrorCode::InvalidNodeId => 41,
+                crate::api::WalletErrorCode::InvalidBillId => 42,
+                crate::api::WalletErrorCode::InvalidName => 43,
+                crate::api::WalletErrorCode::EmptyName => 44,
+                crate::api::WalletErrorCode::InvalidEmail => 45,
+                crate::api::WalletErrorCode::EmptyEmail => 46,
+                crate::api::WalletErrorCode::InvalidContact => 47,
+                crate::api::WalletErrorCode::MintClientResourceNotFound => 48,
+                crate::api::WalletErrorCode::MintClientServiceUnavailable => 49,
+                crate::api::WalletErrorCode::MintClientBadRequest => 50,
+                crate::api::WalletErrorCode::MintClientKeysetNotFound => 51,
+                crate::api::WalletErrorCode::MintClientMeltOpSuspended => 52,
+                crate::api::WalletErrorCode::MintClientCommitmentMismatch => 53,
+                crate::api::WalletErrorCode::AttestationInvalidProof => 54,
+                crate::api::WalletErrorCode::AttestationDigestMismatch => 55,
+                crate::api::WalletErrorCode::AttestationUnknownBeta => 56,
+                crate::api::WalletErrorCode::AttestationVerifyNotFound => 57,
+                crate::api::WalletErrorCode::AttestationSignature => 58,
+                crate::api::WalletErrorCode::BitcoinApi => 59,
                 _ => {
                     unimplemented!("");
                 }
@@ -7816,21 +8034,6 @@ impl SseEncode for crate::api::WalletFfiConfig {
     }
 }
 
-impl SseEncode for crate::api::WalletGetContactRequest {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.wallet_id, serializer);
-        <String>::sse_encode(self.node_id, serializer);
-    }
-}
-
-impl SseEncode for crate::api::WalletGetContactResponse {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <crate::api::Contact>::sse_encode(self.contact, serializer);
-    }
-}
-
 impl SseEncode for crate::api::WalletGetPaymentRequestRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -7869,21 +8072,6 @@ impl SseEncode for crate::api::WalletInfoResponse {
         <String>::sse_encode(self.network, serializer);
         <String>::sse_encode(self.default_mint_url, serializer);
         <Vec<String>>::sse_encode(self.nostr_relays, serializer);
-    }
-}
-
-impl SseEncode for crate::api::WalletListContactsRequest {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.wallet_id, serializer);
-        <Option<String>>::sse_encode(self.search_term, serializer);
-    }
-}
-
-impl SseEncode for crate::api::WalletListContactsResponse {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <Vec<crate::api::Contact>>::sse_encode(self.contacts, serializer);
     }
 }
 
@@ -7977,6 +8165,14 @@ impl SseEncode for crate::api::WalletPayRequest {
     }
 }
 
+impl SseEncode for crate::api::WalletPaymentByContactRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.wallet_id, serializer);
+        <String>::sse_encode(self.rid, serializer);
+    }
+}
+
 impl SseEncode for crate::api::WalletPaymentByTokenRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -8017,6 +8213,16 @@ impl SseEncode for crate::api::WalletPreparePayPaymentRequestRequest {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.wallet_id, serializer);
         <String>::sse_encode(self.payment_request_id, serializer);
+    }
+}
+
+impl SseEncode for crate::api::WalletPreparePaymentByContactRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.wallet_id, serializer);
+        <String>::sse_encode(self.contact_id, serializer);
+        <u64>::sse_encode(self.amount, serializer);
+        <Option<String>>::sse_encode(self.description, serializer);
     }
 }
 
@@ -8187,7 +8393,7 @@ impl SseEncode for crate::api::WalletRequestPaymentFromContactRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.wallet_id, serializer);
-        <String>::sse_encode(self.node_id, serializer);
+        <String>::sse_encode(self.contact_id, serializer);
         <u64>::sse_encode(self.amount, serializer);
         <Option<String>>::sse_encode(self.description, serializer);
         <Option<u64>>::sse_encode(self.deadline, serializer);

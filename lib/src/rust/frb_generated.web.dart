@@ -70,10 +70,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
+  AddContactRequest dco_decode_add_contact_request(dynamic raw);
+
+  @protected
+  AddContactResponse dco_decode_add_contact_response(dynamic raw);
+
+  @protected
   AddWalletResponse dco_decode_add_wallet_response(dynamic raw);
 
   @protected
   bool dco_decode_bool(dynamic raw);
+
+  @protected
+  AddContactRequest dco_decode_box_autoadd_add_contact_request(dynamic raw);
 
   @protected
   BtcTxStatusRequest dco_decode_box_autoadd_btc_tx_status_request(dynamic raw);
@@ -82,9 +91,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   CreateWalletRequest dco_decode_box_autoadd_create_wallet_request(dynamic raw);
 
   @protected
+  DeleteContactRequest dco_decode_box_autoadd_delete_contact_request(
+    dynamic raw,
+  );
+
+  @protected
+  EditContactRequest dco_decode_box_autoadd_edit_contact_request(dynamic raw);
+
+  @protected
+  GetContactRequest dco_decode_box_autoadd_get_contact_request(dynamic raw);
+
+  @protected
   IsValidTokenRequest dco_decode_box_autoadd_is_valid_token_request(
     dynamic raw,
   );
+
+  @protected
+  ListContactsRequest dco_decode_box_autoadd_list_contacts_request(dynamic raw);
 
   @protected
   MnemonicRequest dco_decode_box_autoadd_mnemonic_request(dynamic raw);
@@ -107,26 +130,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt dco_decode_box_autoadd_u_64(dynamic raw);
 
   @protected
-  WalletAddContactRequest dco_decode_box_autoadd_wallet_add_contact_request(
-    dynamic raw,
-  );
-
-  @protected
   WalletCancelPaymentRequestRequest
   dco_decode_box_autoadd_wallet_cancel_payment_request_request(dynamic raw);
 
   @protected
   WalletCheckReceivedPaymentRequest
   dco_decode_box_autoadd_wallet_check_received_payment_request(dynamic raw);
-
-  @protected
-  WalletDeleteContactRequest
-  dco_decode_box_autoadd_wallet_delete_contact_request(dynamic raw);
-
-  @protected
-  WalletEditContactRequest dco_decode_box_autoadd_wallet_edit_contact_request(
-    dynamic raw,
-  );
 
   @protected
   WalletEditTransactionMemoRequest
@@ -141,22 +150,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletFfiConfig dco_decode_box_autoadd_wallet_ffi_config(dynamic raw);
 
   @protected
-  WalletGetContactRequest dco_decode_box_autoadd_wallet_get_contact_request(
-    dynamic raw,
-  );
-
-  @protected
   WalletGetPaymentRequestRequest
   dco_decode_box_autoadd_wallet_get_payment_request_request(dynamic raw);
 
   @protected
   WalletIdForMnemonicAndNetworkRequest
   dco_decode_box_autoadd_wallet_id_for_mnemonic_and_network_request(
-    dynamic raw,
-  );
-
-  @protected
-  WalletListContactsRequest dco_decode_box_autoadd_wallet_list_contacts_request(
     dynamic raw,
   );
 
@@ -175,6 +174,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletPayRequest dco_decode_box_autoadd_wallet_pay_request(dynamic raw);
 
   @protected
+  WalletPaymentByContactRequest
+  dco_decode_box_autoadd_wallet_payment_by_contact_request(dynamic raw);
+
+  @protected
   WalletPaymentByTokenRequest
   dco_decode_box_autoadd_wallet_payment_by_token_request(dynamic raw);
 
@@ -188,6 +191,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_wallet_prepare_pay_payment_request_request(
     dynamic raw,
   );
+
+  @protected
+  WalletPreparePaymentByContactRequest
+  dco_decode_box_autoadd_wallet_prepare_payment_by_contact_request(dynamic raw);
 
   @protected
   WalletPreparePaymentByTokenRequest
@@ -272,10 +279,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   CreateWalletRequest dco_decode_create_wallet_request(dynamic raw);
 
   @protected
+  DeleteContactRequest dco_decode_delete_contact_request(dynamic raw);
+
+  @protected
+  DeleteContactResponse dco_decode_delete_contact_response(dynamic raw);
+
+  @protected
+  EditContactRequest dco_decode_edit_contact_request(dynamic raw);
+
+  @protected
+  EditContactResponse dco_decode_edit_contact_response(dynamic raw);
+
+  @protected
   double dco_decode_f_32(dynamic raw);
 
   @protected
   FeesByMonth dco_decode_fees_by_month(dynamic raw);
+
+  @protected
+  GetContactRequest dco_decode_get_contact_request(dynamic raw);
+
+  @protected
+  GetContactResponse dco_decode_get_contact_response(dynamic raw);
 
   @protected
   int dco_decode_i_32(dynamic raw);
@@ -297,6 +322,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Contact> dco_decode_list_contact(dynamic raw);
+
+  @protected
+  ListContactsRequest dco_decode_list_contacts_request(dynamic raw);
+
+  @protected
+  ListContactsResponse dco_decode_list_contacts_response(dynamic raw);
 
   @protected
   List<FeesByMonth> dco_decode_list_fees_by_month(dynamic raw);
@@ -453,12 +484,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt dco_decode_usize(dynamic raw);
 
   @protected
-  WalletAddContactRequest dco_decode_wallet_add_contact_request(dynamic raw);
-
-  @protected
-  WalletAddContactResponse dco_decode_wallet_add_contact_response(dynamic raw);
-
-  @protected
   WalletBalanceResponse dco_decode_wallet_balance_response(dynamic raw);
 
   @protected
@@ -483,30 +508,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletDeleteContactRequest dco_decode_wallet_delete_contact_request(
-    dynamic raw,
-  );
-
-  @protected
-  WalletDeleteContactResponse dco_decode_wallet_delete_contact_response(
-    dynamic raw,
-  );
-
-  @protected
   WalletDevModeDetailedBalanceEntry
   dco_decode_wallet_dev_mode_detailed_balance_entry(dynamic raw);
 
   @protected
   WalletDevModeDetailedBalanceResponse
   dco_decode_wallet_dev_mode_detailed_balance_response(dynamic raw);
-
-  @protected
-  WalletEditContactRequest dco_decode_wallet_edit_contact_request(dynamic raw);
-
-  @protected
-  WalletEditContactResponse dco_decode_wallet_edit_contact_response(
-    dynamic raw,
-  );
 
   @protected
   WalletEditTransactionMemoRequest
@@ -544,12 +551,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletFfiConfig dco_decode_wallet_ffi_config(dynamic raw);
 
   @protected
-  WalletGetContactRequest dco_decode_wallet_get_contact_request(dynamic raw);
-
-  @protected
-  WalletGetContactResponse dco_decode_wallet_get_contact_response(dynamic raw);
-
-  @protected
   WalletGetPaymentRequestRequest dco_decode_wallet_get_payment_request_request(
     dynamic raw,
   );
@@ -568,16 +569,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletInfoResponse dco_decode_wallet_info_response(dynamic raw);
-
-  @protected
-  WalletListContactsRequest dco_decode_wallet_list_contacts_request(
-    dynamic raw,
-  );
-
-  @protected
-  WalletListContactsResponse dco_decode_wallet_list_contacts_response(
-    dynamic raw,
-  );
 
   @protected
   WalletListPaymentRequestsRequest
@@ -622,6 +613,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletPayRequest dco_decode_wallet_pay_request(dynamic raw);
 
   @protected
+  WalletPaymentByContactRequest dco_decode_wallet_payment_by_contact_request(
+    dynamic raw,
+  );
+
+  @protected
   WalletPaymentByTokenRequest dco_decode_wallet_payment_by_token_request(
     dynamic raw,
   );
@@ -641,6 +637,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletPreparePayPaymentRequestRequest
   dco_decode_wallet_prepare_pay_payment_request_request(dynamic raw);
+
+  @protected
+  WalletPreparePaymentByContactRequest
+  dco_decode_wallet_prepare_payment_by_contact_request(dynamic raw);
 
   @protected
   WalletPreparePaymentByTokenRequest
@@ -798,12 +798,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
+  AddContactRequest sse_decode_add_contact_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  AddContactResponse sse_decode_add_contact_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   AddWalletResponse sse_decode_add_wallet_response(
     SseDeserializer deserializer,
   );
 
   @protected
   bool sse_decode_bool(SseDeserializer deserializer);
+
+  @protected
+  AddContactRequest sse_decode_box_autoadd_add_contact_request(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BtcTxStatusRequest sse_decode_box_autoadd_btc_tx_status_request(
@@ -816,7 +831,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DeleteContactRequest sse_decode_box_autoadd_delete_contact_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  EditContactRequest sse_decode_box_autoadd_edit_contact_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  GetContactRequest sse_decode_box_autoadd_get_contact_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   IsValidTokenRequest sse_decode_box_autoadd_is_valid_token_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ListContactsRequest sse_decode_box_autoadd_list_contacts_request(
     SseDeserializer deserializer,
   );
 
@@ -847,11 +882,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
 
   @protected
-  WalletAddContactRequest sse_decode_box_autoadd_wallet_add_contact_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   WalletCancelPaymentRequestRequest
   sse_decode_box_autoadd_wallet_cancel_payment_request_request(
     SseDeserializer deserializer,
@@ -860,17 +890,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletCheckReceivedPaymentRequest
   sse_decode_box_autoadd_wallet_check_received_payment_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletDeleteContactRequest
-  sse_decode_box_autoadd_wallet_delete_contact_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletEditContactRequest sse_decode_box_autoadd_wallet_edit_contact_request(
     SseDeserializer deserializer,
   );
 
@@ -891,11 +910,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletGetContactRequest sse_decode_box_autoadd_wallet_get_contact_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   WalletGetPaymentRequestRequest
   sse_decode_box_autoadd_wallet_get_payment_request_request(
     SseDeserializer deserializer,
@@ -904,11 +918,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletIdForMnemonicAndNetworkRequest
   sse_decode_box_autoadd_wallet_id_for_mnemonic_and_network_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletListContactsRequest sse_decode_box_autoadd_wallet_list_contacts_request(
     SseDeserializer deserializer,
   );
 
@@ -935,6 +944,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletPaymentByContactRequest
+  sse_decode_box_autoadd_wallet_payment_by_contact_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   WalletPaymentByTokenRequest
   sse_decode_box_autoadd_wallet_payment_by_token_request(
     SseDeserializer deserializer,
@@ -948,6 +963,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletPreparePayPaymentRequestRequest
   sse_decode_box_autoadd_wallet_prepare_pay_payment_request_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletPreparePaymentByContactRequest
+  sse_decode_box_autoadd_wallet_prepare_payment_by_contact_request(
     SseDeserializer deserializer,
   );
 
@@ -1058,10 +1079,40 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DeleteContactRequest sse_decode_delete_contact_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DeleteContactResponse sse_decode_delete_contact_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  EditContactRequest sse_decode_edit_contact_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  EditContactResponse sse_decode_edit_contact_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   double sse_decode_f_32(SseDeserializer deserializer);
 
   @protected
   FeesByMonth sse_decode_fees_by_month(SseDeserializer deserializer);
+
+  @protected
+  GetContactRequest sse_decode_get_contact_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  GetContactResponse sse_decode_get_contact_response(
+    SseDeserializer deserializer,
+  );
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
@@ -1089,6 +1140,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Contact> sse_decode_list_contact(SseDeserializer deserializer);
+
+  @protected
+  ListContactsRequest sse_decode_list_contacts_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ListContactsResponse sse_decode_list_contacts_response(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<FeesByMonth> sse_decode_list_fees_by_month(SseDeserializer deserializer);
@@ -1285,16 +1346,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt sse_decode_usize(SseDeserializer deserializer);
 
   @protected
-  WalletAddContactRequest sse_decode_wallet_add_contact_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletAddContactResponse sse_decode_wallet_add_contact_response(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   WalletBalanceResponse sse_decode_wallet_balance_response(
     SseDeserializer deserializer,
   );
@@ -1327,16 +1378,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletDeleteContactRequest sse_decode_wallet_delete_contact_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletDeleteContactResponse sse_decode_wallet_delete_contact_response(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   WalletDevModeDetailedBalanceEntry
   sse_decode_wallet_dev_mode_detailed_balance_entry(
     SseDeserializer deserializer,
@@ -1345,16 +1386,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletDevModeDetailedBalanceResponse
   sse_decode_wallet_dev_mode_detailed_balance_response(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletEditContactRequest sse_decode_wallet_edit_contact_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletEditContactResponse sse_decode_wallet_edit_contact_response(
     SseDeserializer deserializer,
   );
 
@@ -1396,16 +1427,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletFfiConfig sse_decode_wallet_ffi_config(SseDeserializer deserializer);
 
   @protected
-  WalletGetContactRequest sse_decode_wallet_get_contact_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletGetContactResponse sse_decode_wallet_get_contact_response(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   WalletGetPaymentRequestRequest sse_decode_wallet_get_payment_request_request(
     SseDeserializer deserializer,
   );
@@ -1428,16 +1449,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletInfoResponse sse_decode_wallet_info_response(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletListContactsRequest sse_decode_wallet_list_contacts_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletListContactsResponse sse_decode_wallet_list_contacts_response(
     SseDeserializer deserializer,
   );
 
@@ -1494,6 +1505,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletPayRequest sse_decode_wallet_pay_request(SseDeserializer deserializer);
 
   @protected
+  WalletPaymentByContactRequest sse_decode_wallet_payment_by_contact_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   WalletPaymentByTokenRequest sse_decode_wallet_payment_by_token_request(
     SseDeserializer deserializer,
   );
@@ -1517,6 +1533,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletPreparePayPaymentRequestRequest
   sse_decode_wallet_prepare_pay_payment_request_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletPreparePaymentByContactRequest
+  sse_decode_wallet_prepare_payment_by_contact_request(
     SseDeserializer deserializer,
   );
 
@@ -1726,6 +1748,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
+  void sse_encode_add_contact_request(
+    AddContactRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_add_contact_response(
+    AddContactResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_add_wallet_response(
     AddWalletResponse self,
     SseSerializer serializer,
@@ -1733,6 +1767,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_add_contact_request(
+    AddContactRequest self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_btc_tx_status_request(
@@ -1747,8 +1787,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_delete_contact_request(
+    DeleteContactRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_edit_contact_request(
+    EditContactRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_get_contact_request(
+    GetContactRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_is_valid_token_request(
     IsValidTokenRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_list_contacts_request(
+    ListContactsRequest self,
     SseSerializer serializer,
   );
 
@@ -1786,12 +1850,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
 
   @protected
-  void sse_encode_box_autoadd_wallet_add_contact_request(
-    WalletAddContactRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_box_autoadd_wallet_cancel_payment_request_request(
     WalletCancelPaymentRequestRequest self,
     SseSerializer serializer,
@@ -1800,18 +1858,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_wallet_check_received_payment_request(
     WalletCheckReceivedPaymentRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_wallet_delete_contact_request(
-    WalletDeleteContactRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_wallet_edit_contact_request(
-    WalletEditContactRequest self,
     SseSerializer serializer,
   );
 
@@ -1834,12 +1880,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_wallet_get_contact_request(
-    WalletGetContactRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_box_autoadd_wallet_get_payment_request_request(
     WalletGetPaymentRequestRequest self,
     SseSerializer serializer,
@@ -1848,12 +1888,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_wallet_id_for_mnemonic_and_network_request(
     WalletIdForMnemonicAndNetworkRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_wallet_list_contacts_request(
-    WalletListContactsRequest self,
     SseSerializer serializer,
   );
 
@@ -1882,6 +1916,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_wallet_payment_by_contact_request(
+    WalletPaymentByContactRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_wallet_payment_by_token_request(
     WalletPaymentByTokenRequest self,
     SseSerializer serializer,
@@ -1896,6 +1936,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_wallet_prepare_pay_payment_request_request(
     WalletPreparePayPaymentRequestRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_wallet_prepare_payment_by_contact_request(
+    WalletPreparePaymentByContactRequest self,
     SseSerializer serializer,
   );
 
@@ -2017,10 +2063,46 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_delete_contact_request(
+    DeleteContactRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_delete_contact_response(
+    DeleteContactResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_edit_contact_request(
+    EditContactRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_edit_contact_response(
+    EditContactResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_f_32(double self, SseSerializer serializer);
 
   @protected
   void sse_encode_fees_by_month(FeesByMonth self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_get_contact_request(
+    GetContactRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_get_contact_response(
+    GetContactResponse self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
@@ -2051,6 +2133,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_contact(List<Contact> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_contacts_request(
+    ListContactsRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_contacts_response(
+    ListContactsResponse self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_fees_by_month(
@@ -2311,18 +2405,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_usize(BigInt self, SseSerializer serializer);
 
   @protected
-  void sse_encode_wallet_add_contact_request(
-    WalletAddContactRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_add_contact_response(
-    WalletAddContactResponse self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_wallet_balance_response(
     WalletBalanceResponse self,
     SseSerializer serializer,
@@ -2359,18 +2441,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_wallet_delete_contact_request(
-    WalletDeleteContactRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_delete_contact_response(
-    WalletDeleteContactResponse self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_wallet_dev_mode_detailed_balance_entry(
     WalletDevModeDetailedBalanceEntry self,
     SseSerializer serializer,
@@ -2379,18 +2449,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_dev_mode_detailed_balance_response(
     WalletDevModeDetailedBalanceResponse self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_edit_contact_request(
-    WalletEditContactRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_edit_contact_response(
-    WalletEditContactResponse self,
     SseSerializer serializer,
   );
 
@@ -2446,18 +2504,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_wallet_get_contact_request(
-    WalletGetContactRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_get_contact_response(
-    WalletGetContactResponse self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_wallet_get_payment_request_request(
     WalletGetPaymentRequestRequest self,
     SseSerializer serializer,
@@ -2484,18 +2530,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_info_response(
     WalletInfoResponse self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_list_contacts_request(
-    WalletListContactsRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_list_contacts_response(
-    WalletListContactsResponse self,
     SseSerializer serializer,
   );
 
@@ -2566,6 +2600,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_wallet_payment_by_contact_request(
+    WalletPaymentByContactRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_wallet_payment_by_token_request(
     WalletPaymentByTokenRequest self,
     SseSerializer serializer,
@@ -2592,6 +2632,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_prepare_pay_payment_request_request(
     WalletPreparePayPaymentRequestRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_prepare_payment_by_contact_request(
+    WalletPreparePaymentByContactRequest self,
     SseSerializer serializer,
   );
 

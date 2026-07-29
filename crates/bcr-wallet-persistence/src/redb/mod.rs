@@ -12,6 +12,7 @@ pub use ::redb::Database;
 use bcr_common::cashu::CurrencyUnit;
 use bcr_wallet_core::types::Seed;
 use bcr_wallet_core::util::keypair_from_seed;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -20,11 +21,55 @@ pub fn create_db(path: impl AsRef<Path>) -> Result<Database> {
     Ok(db)
 }
 
-pub async fn build_pursedb(_db_version: u32, db: Arc<Database>) -> Result<purse::PurseDB> {
+pub async fn build_pursedbs(
+    _db_version: u32,
+    db: Arc<Database>,
+) -> Result<(
+    purse::PurseDB,
+    HashMap<bitcoin::Network, Arc<contact::ContactDB>>,
+)> {
     // Execute Migrations for purse
     migration::migrate_purse(db.clone()).await?;
 
-    purse::PurseDB::new(db)
+    let mut contact_dbs = HashMap::new();
+    contact_dbs.insert(
+        bitcoin::Network::Testnet,
+        Arc::new(contact::ContactDB::new(
+            db.clone(),
+            bitcoin::Network::Testnet,
+        )?),
+    );
+    contact_dbs.insert(
+        bitcoin::Network::Testnet4,
+        Arc::new(contact::ContactDB::new(
+            db.clone(),
+            bitcoin::Network::Testnet4,
+        )?),
+    );
+    contact_dbs.insert(
+        bitcoin::Network::Regtest,
+        Arc::new(contact::ContactDB::new(
+            db.clone(),
+            bitcoin::Network::Regtest,
+        )?),
+    );
+    contact_dbs.insert(
+        bitcoin::Network::Signet,
+        Arc::new(contact::ContactDB::new(
+            db.clone(),
+            bitcoin::Network::Signet,
+        )?),
+    );
+    contact_dbs.insert(
+        bitcoin::Network::Bitcoin,
+        Arc::new(contact::ContactDB::new(
+            db.clone(),
+            bitcoin::Network::Bitcoin,
+        )?),
+    );
+
+    let pursedb = purse::PurseDB::new(db)?;
+    Ok((pursedb, contact_dbs))
 }
 
 pub async fn build_wallet_dbs(
@@ -38,7 +83,6 @@ pub async fn build_wallet_dbs(
     pocket::PocketDB,
     mintmelt::MintMeltDB,
     nostr::NostrDB,
-    contact::ContactDB,
     payment_request::PaymentRequestDB,
 )> {
     let keys = keypair_from_seed(seed);
@@ -52,7 +96,6 @@ pub async fn build_wallet_dbs(
     let debitdb = pocket::PocketDB::new(db.clone(), wallet_id, debit, keys)?;
     let mintmeltdb = mintmelt::MintMeltDB::new(db.clone(), wallet_id, debit)?;
     let nostrdb = nostr::NostrDB::new(db.clone(), wallet_id)?;
-    let contactdb = contact::ContactDB::new(db.clone(), wallet_id)?;
     let pending_payment_requests_db =
         payment_request::PaymentRequestDB::new(db.clone(), wallet_id)?;
     Ok((
@@ -60,7 +103,6 @@ pub async fn build_wallet_dbs(
         debitdb,
         mintmeltdb,
         nostrdb,
-        contactdb,
         pending_payment_requests_db,
     ))
 }

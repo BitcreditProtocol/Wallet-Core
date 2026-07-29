@@ -724,67 +724,108 @@ pub async fn wallet_get_ids() -> Result<WalletsIdsResponse, WalletError> {
 }
 
 #[frb]
-pub async fn wallet_add_contact(
-    req: WalletAddContactRequest,
-) -> Result<WalletAddContactResponse, WalletError> {
+pub async fn add_contact(req: AddContactRequest) -> Result<AddContactResponse, WalletError> {
     let app_state = get_app_state().await;
-    app_state
-        .wallet_add_contact(req.wallet_id, req.node_id.clone(), req.name)
+    let res = app_state
+        .purse_add_contact(
+            req.bitcoin_network,
+            req.node_id,
+            req.email,
+            req.name,
+            req.company,
+        )
         .await?;
-    Ok(WalletAddContactResponse {
-        node_id: req.node_id,
+    Ok(AddContactResponse {
+        contact_id: res.to_string(),
     })
 }
 
 #[frb]
-pub async fn wallet_edit_contact(
-    req: WalletEditContactRequest,
-) -> Result<WalletEditContactResponse, WalletError> {
+pub async fn edit_contact(req: EditContactRequest) -> Result<EditContactResponse, WalletError> {
     let app_state = get_app_state().await;
     app_state
-        .wallet_edit_contact(req.wallet_id, req.node_id.clone(), req.name)
+        .purse_edit_contact(
+            req.bitcoin_network,
+            req.contact_id.clone(),
+            req.node_id,
+            req.email,
+            req.name,
+            req.company,
+        )
         .await?;
-    Ok(WalletEditContactResponse {
-        node_id: req.node_id,
+    Ok(EditContactResponse {
+        contact_id: req.contact_id,
     })
 }
 
 #[frb]
-pub async fn wallet_delete_contact(
-    req: WalletDeleteContactRequest,
-) -> Result<WalletDeleteContactResponse, WalletError> {
+pub async fn delete_contact(
+    req: DeleteContactRequest,
+) -> Result<DeleteContactResponse, WalletError> {
     let app_state = get_app_state().await;
     app_state
-        .wallet_delete_contact(req.wallet_id, req.node_id.clone())
+        .purse_delete_contact(req.bitcoin_network, req.contact_id.clone())
         .await?;
-    Ok(WalletDeleteContactResponse {
-        node_id: req.node_id,
+    Ok(DeleteContactResponse {
+        contact_id: req.contact_id,
     })
 }
 
 #[frb]
-pub async fn wallet_get_contact(
-    req: WalletGetContactRequest,
-) -> Result<WalletGetContactResponse, WalletError> {
+pub async fn get_contact(req: GetContactRequest) -> Result<GetContactResponse, WalletError> {
     let app_state = get_app_state().await;
     let contact = app_state
-        .wallet_get_contact(req.wallet_id, req.node_id.clone())
+        .purse_get_contact(req.bitcoin_network, req.contact_id.clone())
         .await?;
-    Ok(WalletGetContactResponse {
+    Ok(GetContactResponse {
         contact: contact.into(),
     })
 }
 
 #[frb]
-pub async fn wallet_list_contacts(
-    req: WalletListContactsRequest,
-) -> Result<WalletListContactsResponse, WalletError> {
+pub async fn list_contacts(req: ListContactsRequest) -> Result<ListContactsResponse, WalletError> {
     let app_state = get_app_state().await;
     let contacts = app_state
-        .wallet_list_contacts(req.wallet_id, req.search_term.clone())
+        .purse_list_contacts(req.bitcoin_network, req.search_term.clone())
         .await?;
-    Ok(WalletListContactsResponse {
+    Ok(ListContactsResponse {
         contacts: contacts.into_iter().map(|c| c.into()).collect(),
+    })
+}
+
+#[frb]
+pub async fn wallet_prepare_pay_to_contact(
+    req: WalletPreparePaymentByContactRequest,
+) -> Result<WalletPreparePaymentResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let payment_summary = app_state
+        .wallet_prepare_pay_to_contact(req.wallet_id, req.contact_id, req.amount, req.description)
+        .await?;
+    Ok(WalletPreparePaymentResponse {
+        payment_summary: PaymentSummary {
+            request_id: payment_summary.request_id.to_string(),
+            unit: payment_summary.unit.to_string(),
+            amount: u64::from(payment_summary.amount),
+            fees: u64::from(payment_summary.fees),
+            reserved_fees: u64::from(payment_summary.reserved_fees),
+            expiry: payment_summary.expiry,
+            ptype: PaymentType::from(bcr_wallet_core::types::PaymentType::from(
+                payment_summary.ptype,
+            )),
+        },
+    })
+}
+
+#[frb]
+pub async fn wallet_pay_to_contact(
+    req: WalletPaymentByContactRequest,
+) -> Result<WalletTransactionIdResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let res = app_state
+        .wallet_pay_to_contact(req.wallet_id, req.rid)
+        .await?;
+    Ok(WalletTransactionIdResponse {
+        tx_id: res.to_string(),
     })
 }
 
@@ -796,7 +837,7 @@ pub async fn wallet_request_payment_from_contact(
     let res = app_state
         .wallet_request_payment_from_contact(
             req.wallet_id,
-            req.node_id,
+            req.contact_id,
             req.amount,
             req.description,
             req.deadline,
@@ -1457,15 +1498,21 @@ impl From<bcr_wallet_core::types::PaymentRequest> for PaymentRequest {
 
 #[derive(Debug, Clone)]
 pub struct Contact {
-    pub node_id: String,
-    pub name: String,
+    pub id: String,
+    pub node_id: Option<String>,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    pub company: Option<String>,
 }
 
 impl From<bcr_wallet_core::contact::Contact> for Contact {
     fn from(v: bcr_wallet_core::contact::Contact) -> Self {
         Self {
-            node_id: v.node_id.to_string(),
-            name: v.name.to_string(),
+            id: v.id.to_string(),
+            node_id: v.node_id.map(|n| n.to_string()),
+            email: v.email.map(|e| e.to_string()),
+            name: v.name.map(|n| n.to_string()),
+            company: v.company.map(|c| c.to_string()),
         }
     }
 }
@@ -1998,6 +2045,20 @@ pub struct WalletPayRequest {
 }
 
 #[derive(Debug, Clone)]
+pub struct WalletPreparePaymentByContactRequest {
+    pub wallet_id: String,
+    pub contact_id: String,
+    pub amount: u64,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletPaymentByContactRequest {
+    pub wallet_id: String,
+    pub rid: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct WalletPreparePaymentByTokenRequest {
     pub wallet_id: String,
     pub amount: u64,
@@ -2017,66 +2078,71 @@ pub struct WalletPaymentByTokenResponse {
 }
 
 #[derive(Debug, Clone)]
-pub struct WalletAddContactRequest {
-    pub wallet_id: String,
-    pub node_id: String,
-    pub name: String,
+pub struct AddContactRequest {
+    pub bitcoin_network: String,
+    pub email: Option<String>,
+    pub node_id: Option<String>,
+    pub name: Option<String>,
+    pub company: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct WalletAddContactResponse {
-    pub node_id: String,
+pub struct AddContactResponse {
+    pub contact_id: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct WalletEditContactRequest {
-    pub wallet_id: String,
-    pub node_id: String,
-    pub name: String,
+pub struct EditContactRequest {
+    pub bitcoin_network: String,
+    pub contact_id: String,
+    pub node_id: Option<String>,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    pub company: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct WalletEditContactResponse {
-    pub node_id: String,
+pub struct EditContactResponse {
+    pub contact_id: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct WalletDeleteContactRequest {
-    pub wallet_id: String,
-    pub node_id: String,
+pub struct DeleteContactRequest {
+    pub bitcoin_network: String,
+    pub contact_id: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct WalletDeleteContactResponse {
-    pub node_id: String,
+pub struct DeleteContactResponse {
+    pub contact_id: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct WalletGetContactRequest {
-    pub wallet_id: String,
-    pub node_id: String,
+pub struct GetContactRequest {
+    pub bitcoin_network: String,
+    pub contact_id: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct WalletGetContactResponse {
+pub struct GetContactResponse {
     pub contact: Contact,
 }
 
 #[derive(Debug, Clone)]
-pub struct WalletListContactsRequest {
-    pub wallet_id: String,
+pub struct ListContactsRequest {
+    pub bitcoin_network: String,
     pub search_term: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct WalletListContactsResponse {
+pub struct ListContactsResponse {
     pub contacts: Vec<Contact>,
 }
 
 #[derive(Debug, Clone)]
 pub struct WalletRequestPaymentFromContactRequest {
     pub wallet_id: String,
-    pub node_id: String,
+    pub contact_id: String,
     pub amount: u64,
     pub description: Option<String>,
     pub deadline: Option<u64>,
@@ -2210,6 +2276,7 @@ pub enum WalletErrorCode {
     Network,
     WalletNotFound,
     ContactNotFound,
+    ContactMustHaveNodeId,
     PaymentRequestNotFound,
     PaymentRequestInWrongState,
     ContactAlreadyExists,
@@ -2250,6 +2317,9 @@ pub enum WalletErrorCode {
     InvalidBillId,
     InvalidName,
     EmptyName,
+    InvalidEmail,
+    EmptyEmail,
+    InvalidContact,
     MintClientResourceNotFound,
     MintClientServiceUnavailable,
     MintClientBadRequest,
@@ -2472,6 +2542,18 @@ impl From<BcrWalletError> for WalletError {
             }
             BcrWalletError::BitcoinClient(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::BitcoinApi)
+            }
+            BcrWalletError::InvalidEmail => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidEmail)
+            }
+            BcrWalletError::EmptyEmail => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::EmptyEmail)
+            }
+            BcrWalletError::InvalidContact => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidContact)
+            }
+            BcrWalletError::ContactMustHaveNodeId(_) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::ContactMustHaveNodeId)
             }
         }
     }

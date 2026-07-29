@@ -358,7 +358,7 @@ dependencies = [
 
 [[package]]
 name = "bcr-wallet-api"
-version = "0.9.7"
+version = "0.9.8"
 dependencies = [
  "async-trait",
  "bcr-common",
@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "bcr-wallet-cli"
-version = "0.9.7"
+version = "0.9.8"
 dependencies = [
  "anyhow",
  "bcr-common",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "bcr-wallet-core"
-version = "0.9.7"
+version = "0.9.8"
 dependencies = [
  "ammonia",
  "bcr-common",
@@ -422,6 +422,7 @@ dependencies = [
  "borsh",
  "chrono",
  "ecies",
+ "email_address",
  "nostr",
  "serde",
  "strum",
@@ -432,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "bcr-wallet-persistence"
-version = "0.9.7"
+version = "0.9.8"
 dependencies = [
  "async-trait",
  "bcr-common",
@@ -454,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "bcr-wallet-transport"
-version = "0.9.7"
+version = "0.9.8"
 dependencies = [
  "async-trait",
  "bcr-common",
@@ -1368,6 +1369,12 @@ dependencies = [
  "subtle",
  "zeroize",
 ]
+
+[[package]]
+name = "email_address"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e079f19b08ca6239f47f8ba8509c11cf3ea30095831f7fed61441475edd8c449"
 
 [[package]]
 name = "encoding_rs"
@@ -4314,7 +4321,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "wallet_ffi"
-version = "0.9.7"
+version = "0.9.8"
 dependencies = [
  "android_logger",
  "bcr-common",

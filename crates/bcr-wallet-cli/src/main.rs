@@ -74,7 +74,7 @@ enum Commands {
     #[command(name = "pay_to_contact")]
     PayToContact {
         id: String,
-        node_id: String,
+        contact_id: String,
         amount: u64,
         description: Option<String>,
     },
@@ -126,29 +126,38 @@ enum Commands {
     },
     #[command(name = "add_contact")]
     AddContact {
-        id: String,
-        node_id: String,
+        network: bitcoin::Network,
         name: String,
+        node_id: String,
     },
     #[command(name = "edit_contact")]
     EditContact {
-        id: String,
+        network: bitcoin::Network,
+        contact_id: String,
         node_id: String,
+        email: String,
         name: String,
+        company: String,
     },
     #[command(name = "delete_contact")]
-    DeleteContact { id: String, node_id: String },
+    DeleteContact {
+        network: bitcoin::Network,
+        contact_id: String,
+    },
     #[command(name = "get_contact")]
-    GetContact { id: String, node_id: String },
+    GetContact {
+        network: bitcoin::Network,
+        contact_id: String,
+    },
     #[command(name = "list_contacts")]
     ListContacts {
-        id: String,
+        network: bitcoin::Network,
         search_term: Option<String>,
     },
     #[command(name = "req_payment_from_contact")]
     RequestPaymentFromContact {
         id: String,
-        node_id: String,
+        contact_id: String,
         amount: u64,
     },
     #[command(name = "subscribe_to_prs")]
@@ -301,18 +310,18 @@ async fn main() -> Result<()> {
         }
         Commands::PayToContact {
             id,
-            node_id,
+            contact_id,
             amount,
             description,
         } => {
             info!(
-                "Payment to Contact {node_id} for {}: {}, Amount: {amount}, Description: {description:?}",
+                "Payment to Contact {contact_id} for {}: {}, Amount: {amount}, Description: {description:?}",
                 cli.wallet,
                 command::cmd_pay_to_contact(
                     &app_state,
                     &cli.wallet,
                     &id,
-                    &node_id,
+                    &contact_id,
                     amount,
                     description.clone()
                 )
@@ -427,44 +436,74 @@ async fn main() -> Result<()> {
                 command::cmd_edit_tx_memo(&app_state, &cli.wallet, &id, &tx_id, &new_memo).await?
             );
         }
-        Commands::AddContact { id, node_id, name } => {
+        Commands::AddContact {
+            network,
+            name,
+            node_id,
+        } => {
             info!(
                 "Add Contact for {}: {}",
                 cli.wallet,
-                command::cmd_add_contact(&app_state, &cli.wallet, &id, &node_id, &name).await?
+                command::cmd_add_contact(&app_state, &cli.wallet, network, &node_id, &name).await?
             );
         }
-        Commands::EditContact { id, node_id, name } => {
+        Commands::EditContact {
+            network,
+            contact_id,
+            node_id,
+            email,
+            name,
+            company,
+        } => {
             info!(
                 "Edit Contact for {}: {}",
                 cli.wallet,
-                command::cmd_edit_contact(&app_state, &cli.wallet, &id, &node_id, &name).await?
+                command::cmd_edit_contact(
+                    &app_state,
+                    &cli.wallet,
+                    network,
+                    &contact_id,
+                    &node_id,
+                    &email,
+                    &name,
+                    &company
+                )
+                .await?
             );
         }
-        Commands::DeleteContact { id, node_id } => {
+        Commands::DeleteContact {
+            network,
+            contact_id,
+        } => {
             info!(
                 "Delete Contact for {}: {}",
                 cli.wallet,
-                command::cmd_delete_contact(&app_state, &cli.wallet, &id, &node_id).await?
+                command::cmd_delete_contact(&app_state, &cli.wallet, network, &contact_id).await?
             );
         }
-        Commands::GetContact { id, node_id } => {
+        Commands::GetContact {
+            network,
+            contact_id,
+        } => {
             info!(
                 "Get Contact for {}: {}",
                 cli.wallet,
-                command::cmd_get_contact(&app_state, &cli.wallet, &id, &node_id).await?
+                command::cmd_get_contact(&app_state, &cli.wallet, network, &contact_id).await?
             );
         }
-        Commands::ListContacts { id, search_term } => {
+        Commands::ListContacts {
+            network,
+            search_term,
+        } => {
             info!(
                 "List Contacts for {}: {}",
                 cli.wallet,
-                command::cmd_list_contacts(&app_state, &cli.wallet, &id, &search_term).await?
+                command::cmd_list_contacts(&app_state, &cli.wallet, network, &search_term).await?
             );
         }
         Commands::RequestPaymentFromContact {
             id,
-            node_id,
+            contact_id,
             amount,
         } => {
             info!(
@@ -474,7 +513,7 @@ async fn main() -> Result<()> {
                     &app_state,
                     &cli.wallet,
                     &id,
-                    &node_id,
+                    &contact_id,
                     amount
                 )
                 .await?

@@ -289,10 +289,15 @@ impl TransportApi for Transport {
         })
     }
 
-    async fn nip19_for_contact(&self, contact: &Contact) -> Result<String> {
-        let target =
-            Nip19Profile::new(contact.node_id.npub(), contact.nostr_relays.clone()).to_bech32()?;
-        Ok(target)
+    async fn nip19_for_contact(&self, contact: &Contact) -> Result<Option<String>> {
+        Ok(match contact.node_id.as_ref() {
+            Some(node_id) => {
+                let target =
+                    Nip19Profile::new(node_id.npub(), contact.nostr_relays.clone()).to_bech32()?;
+                Some(target)
+            }
+            None => None,
+        })
     }
 
     async fn shutdown(&self) {

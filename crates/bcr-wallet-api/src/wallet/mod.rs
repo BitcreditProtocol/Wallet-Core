@@ -53,7 +53,7 @@ pub struct Wallet {
     mint_keyset_infos: HashMap<cashu::Id, KeySetInfo>,
     beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>>,
     tx_repo: Box<dyn TransactionRepository>,
-    contact_repo: Box<dyn ContactStoreApi>,
+    contact_repo: Arc<dyn ContactStoreApi>,
     payment_request_repo: Box<dyn PaymentRequestStoreApi>,
     debit: Box<dyn DebitPocketApi>,
     name: String,
@@ -77,7 +77,7 @@ impl Wallet {
         client: Arc<dyn ClowderMintConnector>,
         mint_keyset_infos: HashMap<cashu::Id, KeySetInfo>,
         tx_repo: Box<dyn TransactionRepository>,
-        contact_repo: Box<dyn ContactStoreApi>,
+        contact_repo: Arc<dyn ContactStoreApi>,
         payment_request_repo: Box<dyn PaymentRequestStoreApi>,
         debit: Box<dyn DebitPocketApi>,
         name: String,
@@ -977,6 +977,9 @@ impl Wallet {
             bcr_wallet_core::event::Event::new_contact_payment(payload).try_into()?;
         let payload = base58::encode(&borsh::to_vec(&event)?);
         let target = nostr_cl.nip19_for_contact(&contact).await?;
+        let Some(target) = target else {
+            return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
+        };
 
         let event_id = match nostr_cl
             .send_private_msg(target.clone(), payload.clone())
@@ -1075,14 +1078,13 @@ impl Wallet {
     }
 
     // refresh relays for a given contact and update if necessary
-    async fn refresh_contact_relays(&self, node_id: &NodeId) {
-        if node_id.network() != self.network() {
-            tracing::warn!("Tried to ensure nostr contact for a different network {node_id}");
-            return;
-        }
-
-        let Ok(Some(existing_contact)) = self.contact_repo.get_contact(node_id.to_owned()).await
+    async fn refresh_contact_relays(&self, contact_id: &Uuid) {
+        let Ok(Some(existing_contact)) = self.contact_repo.get_contact(contact_id.to_owned()).await
         else {
+            return;
+        };
+
+        let Some(node_id) = existing_contact.node_id else {
             return;
         };
 
@@ -1099,7 +1101,7 @@ impl Wallet {
         if !fetched_relays.is_empty()
             && let Err(e) = self
                 .contact_repo
-                .edit_contact_relays(node_id.to_owned(), fetched_relays)
+                .edit_contact_relays(contact_id.to_owned(), fetched_relays)
                 .await
         {
             tracing::warn!("Could not update relays for contact {node_id}: {e}");
@@ -1163,8 +1165,11 @@ mod tests {
 
     fn test_contact() -> Contact {
         Contact {
-            node_id: node_id(NODE_ID_1),
-            name: name("Minka"),
+            id: Uuid::new_v4(),
+            node_id: Some(node_id(NODE_ID_1)),
+            email: None,
+            name: Some(name("Minka")),
+            company: None,
             nostr_relays: vec![],
         }
     }
@@ -1251,7 +1256,7 @@ mod tests {
             arc_client,
             HashMap::new(),
             Box::new(ctx.tx_repo),
-            Box::new(ctx.contact_repo),
+            Arc::new(ctx.contact_repo),
             Box::new(ctx.payment_request_repo),
             Box::new(ctx.debit),
             "wallet-1".to_owned(),
@@ -2096,13 +2101,15 @@ mod tests {
             .expect_nip19_for_contact()
             .times(1)
             .returning(|_| {
-                Ok(Nip19Profile::new(
-                    PublicKey::from_byte_array([0u8; 32]),
-                    vec![RelayUrl::from_str("wss://test.example.com").unwrap()],
-                )
-                .to_bech32()
-                .unwrap()
-                .to_string())
+                Ok(Some(
+                    Nip19Profile::new(
+                        PublicKey::from_byte_array([0u8; 32]),
+                        vec![RelayUrl::from_str("wss://test.example.com").unwrap()],
+                    )
+                    .to_bech32()
+                    .unwrap()
+                    .to_string(),
+                ))
             });
 
         ctx.nostr_transport
@@ -2136,7 +2143,7 @@ mod tests {
             unit: CurrencyUnit::Sat,
             fees: cashu::Amount::ZERO,
             ptype: WalletPaymentType::Contact {
-                node_id: node_id(NODE_ID_1),
+                contact_id: Uuid::new_v4(),
                 payment_request_id: None,
             },
             memo: Some("contact memo".to_string()),
@@ -2602,66 +2609,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_contacts() {
-        let mut ctx = wallet_ctx();
-
-        ctx.nostr_transport
-            .expect_relays()
-            .return_const(vec![RelayUrl::from_str("wss://test.example.com").unwrap()]);
-
-        ctx.nostr_transport
-            .expect_fetch_relay_list()
-            .returning(|_, _| Ok(vec![]));
-
-        ctx.contact_repo
-            .expect_add_contact()
-            .times(1)
-            .returning(|_| Ok(()));
-        ctx.contact_repo
-            .expect_edit_contact()
-            .times(1)
-            .returning(|_, _| Ok(()));
-        ctx.contact_repo
-            .expect_delete_contact()
-            .times(1)
-            .returning(|_| Ok(()));
-        ctx.contact_repo
-            .expect_get_contact()
-            .times(1)
-            .returning(|_| Ok(Some(test_contact())));
-        ctx.contact_repo
-            .expect_list_contacts()
-            .times(1)
-            .returning(|_| Ok(vec![test_contact()]));
-
-        let wlt = wallet(ctx).await;
-        wlt.read()
-            .await
-            .add_contact(node_id(NODE_ID_1), name("Minka"))
-            .await
-            .expect("create contact works");
-
-        wlt.read()
-            .await
-            .edit_contact(node_id(NODE_ID_1), name("Nala"))
-            .await
-            .expect("edit contact works");
-
-        wlt.read()
-            .await
-            .delete_contact(node_id(NODE_ID_1))
-            .await
-            .expect("delete contact works");
-        let cts = wlt
-            .read()
-            .await
-            .list_contacts(None)
-            .await
-            .expect("list contacts works");
-        assert!(cts.len() == 1);
-    }
-
-    #[tokio::test]
     async fn test_req_payment_from_contact() {
         let mut ctx = wallet_ctx();
 
@@ -2677,13 +2624,15 @@ mod tests {
             .expect_nip19_for_contact()
             .times(1)
             .returning(|_| {
-                Ok(Nip19Profile::new(
-                    PublicKey::from_byte_array([0u8; 32]),
-                    vec![RelayUrl::from_str("wss://test.example.com").unwrap()],
-                )
-                .to_bech32()
-                .unwrap()
-                .to_string())
+                Ok(Some(
+                    Nip19Profile::new(
+                        PublicKey::from_byte_array([0u8; 32]),
+                        vec![RelayUrl::from_str("wss://test.example.com").unwrap()],
+                    )
+                    .to_bech32()
+                    .unwrap()
+                    .to_string(),
+                ))
             });
         ctx.contact_repo
             .expect_get_contact()
@@ -2703,7 +2652,7 @@ mod tests {
             .read()
             .await
             .request_payment_from_contact(
-                node_id(NODE_ID_1),
+                Uuid::new_v4(),
                 Amount::from(100),
                 CurrencyUnit::Sat,
                 None,
@@ -2751,23 +2700,6 @@ mod tests {
         assert_eq!(
             wlt.read().await.node_id(),
             NodeId::new(test_pub_key(), bitcoin::Network::Testnet)
-        );
-    }
-
-    #[tokio::test]
-    async fn test_nostr_relays() {
-        let mut ctx = wallet_ctx();
-
-        ctx.nostr_transport
-            .expect_relays()
-            .times(1)
-            .return_const(vec![RelayUrl::from_str("wss://test.example.com").unwrap()]);
-
-        let wlt = wallet(ctx).await;
-
-        assert_eq!(
-            wlt.read().await.nostr_relays(),
-            vec![RelayUrl::from_str("wss://test.example.com").unwrap()]
         );
     }
 
@@ -3203,9 +3135,9 @@ mod tests {
             .returning(move |_| Ok(Some(req.clone())));
 
         ctx.contact_repo
-            .expect_get_contact()
+            .expect_get_contacts_by_node_id()
             .times(1)
-            .returning(|_| Ok(None));
+            .returning(|_| Ok(vec![]));
 
         let wlt = wallet(ctx).await;
 
@@ -3217,7 +3149,7 @@ mod tests {
             .unwrap_err();
 
         match err {
-            Error::ContactNotFound(id) => assert_eq!(id, missing_node_id),
+            Error::ContactNotFound(id) => assert_eq!(id, missing_node_id.to_string()),
             other => panic!("unexpected error: {other:?}"),
         }
     }
@@ -3225,6 +3157,7 @@ mod tests {
     #[tokio::test]
     async fn test_prepare_pay_to_contact_errors_if_contact_missing() {
         let mut ctx = wallet_ctx();
+        let contact_id = Uuid::new_v4();
 
         ctx.debit
             .expect_unit()
@@ -3241,17 +3174,12 @@ mod tests {
         let err = wlt
             .read()
             .await
-            .prepare_pay_to_contact(
-                node_id(NODE_ID_1),
-                Amount::from(321),
-                CurrencyUnit::Sat,
-                None,
-            )
+            .prepare_pay_to_contact(contact_id, Amount::from(321), CurrencyUnit::Sat, None)
             .await
             .unwrap_err();
 
         match err {
-            Error::ContactNotFound(id) => assert_eq!(id, node_id(NODE_ID_1)),
+            Error::ContactNotFound(id) => assert_eq!(id, contact_id.to_string()),
             other => panic!("unexpected error: {other:?}"),
         }
     }
@@ -3260,6 +3188,7 @@ mod tests {
     async fn test_prepare_pay_payment_request_success_sets_contact_payment_reference() {
         let mut ctx = wallet_ctx();
         let req_id = Uuid::new_v4();
+        let test_contact = test_contact();
 
         let req = payment_request_with(
             req_id,
@@ -3275,10 +3204,11 @@ mod tests {
                 Ok(Some(req.clone()))
             });
 
+        let tc_clone = test_contact.clone();
         ctx.contact_repo
-            .expect_get_contact()
+            .expect_get_contacts_by_node_id()
             .times(1)
-            .returning(|_| Ok(Some(test_contact())));
+            .returning(move |_| Ok(vec![tc_clone.clone()]));
 
         ctx.client
             .expect_get_mint_keysets()
@@ -3310,10 +3240,10 @@ mod tests {
 
         match &p.ptype {
             WalletPaymentType::Contact {
-                node_id,
+                contact_id,
                 payment_request_id,
             } => {
-                assert_eq!(node_id, &self::node_id(NODE_ID_1));
+                assert_eq!(contact_id, &test_contact.id);
                 assert_eq!(payment_request_id, &Some(req_id));
             }
             _ => panic!("unexpected payment type"),
