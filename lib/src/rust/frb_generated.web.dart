@@ -302,6 +302,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<Transaction> dco_decode_list_transaction(dynamic raw);
 
   @protected
+  List<TransactionLink> dco_decode_list_transaction_link(dynamic raw);
+
+  @protected
   List<TransactionStatus> dco_decode_list_transaction_status(dynamic raw);
 
   @protected
@@ -390,6 +393,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   TransactionFilters dco_decode_transaction_filters(dynamic raw);
+
+  @protected
+  TransactionLink dco_decode_transaction_link(dynamic raw);
+
+  @protected
+  TransactionLinkReason dco_decode_transaction_link_reason(dynamic raw);
 
   @protected
   TransactionSort dco_decode_transaction_sort(dynamic raw);
@@ -1035,6 +1044,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<Transaction> sse_decode_list_transaction(SseDeserializer deserializer);
 
   @protected
+  List<TransactionLink> sse_decode_list_transaction_link(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<TransactionStatus> sse_decode_list_transaction_status(
     SseDeserializer deserializer,
   );
@@ -1151,6 +1165,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   TransactionFilters sse_decode_transaction_filters(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TransactionLink sse_decode_transaction_link(SseDeserializer deserializer);
+
+  @protected
+  TransactionLinkReason sse_decode_transaction_link_reason(
     SseDeserializer deserializer,
   );
 
@@ -1938,6 +1960,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_transaction_link(
+    List<TransactionLink> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_transaction_status(
     List<TransactionStatus> self,
     SseSerializer serializer,
@@ -2090,6 +2118,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_transaction_filters(
     TransactionFilters self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_transaction_link(
+    TransactionLink self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_transaction_link_reason(
+    TransactionLinkReason self,
     SseSerializer serializer,
   );
 

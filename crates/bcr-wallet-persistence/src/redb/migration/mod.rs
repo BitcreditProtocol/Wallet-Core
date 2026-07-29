@@ -1,6 +1,6 @@
 use crate::{
     error::{Error, Result},
-    redb::pocket::PocketDB,
+    redb::{pocket::PocketDB, transaction::TransactionDB},
 };
 use bcr_common::cashu::CurrencyUnit;
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 mod migration_0001;
 mod migration_0002;
+mod migration_0003;
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct AppliedMigration {
@@ -71,6 +72,18 @@ fn migrate_wallet_sync(db: Arc<Database>, namespace: WalletStorageNamespace) -> 
         tracing::info!("Applied Migration 0001 for wallet {}", &namespace.wallet_id);
     }
 
+    let migration_0003_id_for_wallet =
+        migration_0003::migration_name_for_wallet(&namespace.wallet_id);
+    if !applied.contains(&migration_0003_id_for_wallet) {
+        tracing::info!(
+            "Applying Migration 0003 for wallet {}",
+            &namespace.wallet_id
+        );
+        migration_0003::migration_0003_tx_rework(&write_txn, &namespace)?;
+        mark_migration_applied(&write_txn, &migration_0003_id_for_wallet)?;
+        tracing::info!("Applied Migration 0003 for wallet {}", &namespace.wallet_id);
+    }
+
     write_txn.commit()?;
     tracing::info!(
         "Finished DB migrations for wallet {}.",
@@ -86,6 +99,7 @@ pub struct WalletStorageNamespace {
     proof_table: String,
     counter_table: String,
     commitment_table: String,
+    transaction_table: String,
     keys: bitcoin::secp256k1::Keypair,
 }
 
@@ -99,6 +113,7 @@ pub fn collect_wallet_namespace(
         proof_table: PocketDB::proof_table_name(&wallet_id, &unit),
         counter_table: PocketDB::counter_table_name(&wallet_id, &unit),
         commitment_table: PocketDB::commitment_table_name(&wallet_id, &unit),
+        transaction_table: TransactionDB::transaction_table_name(&wallet_id),
         keys,
     }
 }

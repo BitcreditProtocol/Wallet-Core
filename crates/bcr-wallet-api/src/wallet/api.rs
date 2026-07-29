@@ -5,10 +5,7 @@ use crate::{
         RandomBetaProvider,
         debit::{MeltProtestResult, ProtestResult},
     },
-    types::{
-        MintSummary, PAYMENT_TYPE_METADATA_KEY, PaymentSummary, TRANSACTION_STATUS_METADATA_KEY,
-        WalletConfig,
-    },
+    types::{MintSummary, PaymentSummary, WalletConfig},
     wallet::{
         api,
         types::{PayReference, SwapConfig, WalletInfo, WalletPaymentType, WalletProtestResult},
@@ -17,7 +14,7 @@ use crate::{
 use async_trait::async_trait;
 use bcr_common::{
     cashu::{self, Amount, CurrencyUnit, KeySet, ProofsMethods, nut00 as cdk00, nut18 as cdk18},
-    cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
+    cdk_common::wallet::TransactionDirection,
     core::NodeId,
     wallet::Token,
     wire::clowder::{self as wire_clowder},
@@ -28,9 +25,8 @@ use bcr_wallet_core::{
     event::{ContactPaymentRequestPayload, EventEnvelope},
     name::Name,
     types::{
-        BTC_TX_ID_TYPE_METADATA_KEY, CONTACT_NODE_ID_METADATA_KEY, PAYMENT_REQUEST_ID_METADATA_KEY,
         PaymentRequest, PaymentRequestDirection, PaymentRequestState, PaymentResultCallback,
-        PaymentType, PendingPaymentSubscriptionCallback, TransactionStatus,
+        PaymentType, PendingPaymentSubscriptionCallback, Transaction, TransactionStatus,
     },
     util::{from_mint_url, to_mint_url},
 };
@@ -38,7 +34,7 @@ use bcr_wallet_transport::NostrWalletEvent;
 use bitcoin::{base58, secp256k1};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use nostr::RelayUrl;
+use nostr::{RelayUrl, event::EventId};
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -90,9 +86,9 @@ pub trait WalletApi: SendSync {
         p_id: Uuid,
         http_cl: &reqwest::Client,
         tstamp: u64,
-    ) -> Result<(TransactionId, Option<Token>)>;
+    ) -> Result<(Uuid, Option<Token>)>;
     async fn mint(&self, amount: bitcoin::Amount) -> Result<MintSummary>;
-    async fn check_pending_mints(&self) -> Result<Vec<TransactionId>>;
+    async fn check_pending_mints(&self) -> Result<Vec<Uuid>>;
     async fn check_pending_commitments(&self) -> Result<()>;
     async fn protest_mint(&self, quote_id: Uuid) -> Result<WalletProtestResult>;
     async fn protest_swap(
@@ -112,8 +108,12 @@ pub trait WalletApi: SendSync {
         mint: url::Url,
         tstamp: u64,
         memo: Option<String>,
-        metadata: HashMap<String, String>,
-    ) -> Result<TransactionId>;
+        payment_type: PaymentType,
+        status: TransactionStatus,
+        payment_request_id: Option<Uuid>,
+        contact_node_id: Option<NodeId>,
+        nostr_event_id: Option<EventId>,
+    ) -> Result<Uuid>;
     async fn prepare_pay_by_token(
         &self,
         amount: Amount,
@@ -134,7 +134,7 @@ pub trait WalletApi: SendSync {
         fees: Amount,
         memo: Option<String>,
         now: u64,
-    ) -> Result<(TransactionId, Option<Token>)>;
+    ) -> Result<(Uuid, Option<Token>)>;
     async fn is_nostr_connected(&self) -> bool;
     async fn delete(&self) -> Result<()>;
     // contacts
@@ -170,11 +170,7 @@ pub trait WalletApi: SendSync {
     async fn prepare_pay_payment_request(&self, payment_req_id: Uuid) -> Result<PaymentSummary>;
     async fn reject_payment_request(&self, payment_req_id: Uuid) -> Result<()>;
     async fn cancel_payment_request(&self, payment_req_id: Uuid) -> Result<()>;
-    async fn mark_payment_request_as_paid(
-        &self,
-        payment_req_id: Uuid,
-        tx_id: TransactionId,
-    ) -> Result<()>;
+    async fn mark_payment_request_as_paid(&self, payment_req_id: Uuid, tx_id: Uuid) -> Result<()>;
 }
 
 #[async_trait]
@@ -357,7 +353,7 @@ impl WalletApi for super::Wallet {
                         },
                     };
 
-                    let NostrWalletEvent::Cdk18Payment { event_id, payload, sender } = received_evt else {
+                    let NostrWalletEvent::Cdk18Payment { event_id, payload, .. } = received_evt else {
                         continue;
                     };
 
@@ -375,19 +371,6 @@ impl WalletApi for super::Wallet {
                         );
                         continue;
                     }
-                    let meta = HashMap::from([
-                        (String::from("sender"), sender.to_string()),
-                        (String::from("payment_id"), p_id.to_string()),
-                        (String::from("nostr_event_id"), event_id.to_string()),
-                        (
-                            String::from(PAYMENT_TYPE_METADATA_KEY),
-                            PaymentType::Cdk18.to_string(),
-                        ),
-                        (
-                            String::from(TRANSACTION_STATUS_METADATA_KEY),
-                            TransactionStatus::Settled.to_string(),
-                        ),
-                    ]);
 
                     let response = <Self as api::WalletApi>::receive_proofs(
                         self,
@@ -396,7 +379,11 @@ impl WalletApi for super::Wallet {
                         from_mint_url(&payload.mint),
                         chrono::Utc::now().timestamp() as u64,
                         payload.memo,
-                        meta,
+                        PaymentType::Cdk18,
+                        TransactionStatus::Settled,
+                        Some(p_id),
+                        None,
+                        Some(event_id)
                     )
                         .await;
 
@@ -421,7 +408,7 @@ impl WalletApi for super::Wallet {
         p_id: Uuid,
         http_cl: &reqwest::Client,
         now: u64,
-    ) -> Result<(TransactionId, Option<Token>)> {
+    ) -> Result<(Uuid, Option<Token>)> {
         let p_ref = self.current_payment.lock().await.take();
         let Some(p_ref) = p_ref else {
             tracing::error!("wallet: No current payment reference found");
@@ -455,32 +442,25 @@ impl WalletApi for super::Wallet {
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
                 let amount = proofs.total_amount()?;
-                let mut metadata = HashMap::default();
-                metadata.insert(
-                    PAYMENT_TYPE_METADATA_KEY.to_owned(),
-                    PaymentType::Cdk18.to_string(),
-                );
-                metadata.insert(
-                    TRANSACTION_STATUS_METADATA_KEY.to_owned(),
-                    TransactionStatus::Pending.to_string(),
-                );
 
                 let partial_tx = Transaction {
+                    id: Uuid::new_v4(),
                     mint_url: to_mint_url(self.client.mint_url()),
-                    fee: fees,
+                    fees,
                     direction: TransactionDirection::Outgoing,
                     memo,
-                    timestamp: now,
+                    tstamp: now,
                     unit: unit.clone(),
                     ys,
                     amount,
-                    // payments might need to fill some extra metadata later
-                    metadata,
                     quote_id: None,
-                    payment_request: None,
-                    payment_proof: None,
-                    payment_method: None,
-                    saga_id: None,
+                    payment_request_id: None,
+                    payment_type: PaymentType::Cdk18,
+                    status: TransactionStatus::Pending,
+                    btc_tx_id: None,
+                    nostr_event_id: None,
+                    contact_node_id: None,
+                    linked_txs: vec![],
                 };
                 let tx_id = self
                     .pay_nut18(
@@ -529,31 +509,25 @@ impl WalletApi for super::Wallet {
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
                 let amount = proofs.total_amount()?;
-                let mut metadata = HashMap::default();
-                metadata.insert(
-                    PAYMENT_TYPE_METADATA_KEY.to_owned(),
-                    PaymentType::Token.to_string(),
-                );
-                metadata.insert(
-                    TRANSACTION_STATUS_METADATA_KEY.to_owned(),
-                    TransactionStatus::Pending.to_string(),
-                );
 
                 let partial_tx = Transaction {
+                    id: Uuid::new_v4(),
                     mint_url: to_mint_url(self.client.mint_url()),
-                    fee: fees,
+                    fees,
                     direction: TransactionDirection::Outgoing,
                     memo,
-                    timestamp: now,
+                    tstamp: now,
                     unit: unit.clone(),
                     ys,
                     amount,
-                    metadata,
                     quote_id: None,
-                    payment_request: None,
-                    payment_proof: None,
-                    payment_method: None,
-                    saga_id: None,
+                    payment_request_id: None,
+                    payment_type: PaymentType::Token,
+                    status: TransactionStatus::Pending,
+                    btc_tx_id: None,
+                    nostr_event_id: None,
+                    contact_node_id: None,
+                    linked_txs: vec![],
                 };
                 let tx_id = self.tx_repo.store_tx(partial_tx).await?;
                 Ok((tx_id, Some(token)))
@@ -566,35 +540,25 @@ impl WalletApi for super::Wallet {
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
                 let amount = proofs.total_amount()?;
-                let mut metadata = HashMap::default();
-                metadata.insert(
-                    PAYMENT_TYPE_METADATA_KEY.to_owned(),
-                    PaymentType::OnChain.to_string(),
-                );
-                metadata.insert(
-                    TRANSACTION_STATUS_METADATA_KEY.to_owned(),
-                    TransactionStatus::Settled.to_string(),
-                );
-                metadata.insert(
-                    BTC_TX_ID_TYPE_METADATA_KEY.to_owned(),
-                    btc_tx_id.to_string(),
-                );
 
                 let partial_tx = Transaction {
+                    id: Uuid::new_v4(),
                     mint_url: to_mint_url(self.client.mint_url()),
-                    fee: fees,
+                    fees,
                     direction: TransactionDirection::Outgoing,
                     memo,
-                    timestamp: now,
+                    tstamp: now,
                     unit: unit.clone(),
                     ys,
                     amount,
-                    metadata,
                     quote_id: None,
-                    payment_request: None,
-                    payment_proof: None,
-                    payment_method: None,
-                    saga_id: None,
+                    payment_type: PaymentType::OnChain,
+                    status: TransactionStatus::Settled,
+                    btc_tx_id: Some(btc_tx_id),
+                    nostr_event_id: None,
+                    contact_node_id: None,
+                    payment_request_id: None,
+                    linked_txs: vec![],
                 };
                 let tx_id = self.tx_repo.store_tx(partial_tx).await?;
                 Ok((tx_id, None))
@@ -615,40 +579,25 @@ impl WalletApi for super::Wallet {
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
                 let amount = proofs.total_amount()?;
-                let mut metadata = HashMap::default();
-                metadata.insert(
-                    PAYMENT_TYPE_METADATA_KEY.to_owned(),
-                    PaymentType::Contact.to_string(),
-                );
-                metadata.insert(
-                    TRANSACTION_STATUS_METADATA_KEY.to_owned(),
-                    TransactionStatus::Pending.to_string(),
-                );
-                metadata.insert(CONTACT_NODE_ID_METADATA_KEY.to_owned(), node_id.to_string());
-                // if there is a payment request id, set it
-                if let Some(p_req_id) = payment_request_id {
-                    metadata.insert(
-                        PAYMENT_REQUEST_ID_METADATA_KEY.to_owned(),
-                        p_req_id.to_string(),
-                    );
-                }
 
                 let partial_tx = Transaction {
+                    id: Uuid::new_v4(),
                     mint_url: to_mint_url(self.client.mint_url()),
-                    fee: fees,
+                    fees,
                     direction: TransactionDirection::Outgoing,
                     memo,
-                    timestamp: now,
+                    tstamp: now,
                     unit: unit.clone(),
                     ys,
                     amount,
-                    // payments might need to fill some extra metadata later
-                    metadata,
+                    payment_type: PaymentType::Contact,
+                    status: TransactionStatus::Pending,
+                    payment_request_id,
+                    btc_tx_id: None,
                     quote_id: None,
-                    payment_request: None,
-                    payment_proof: None,
-                    payment_method: None,
-                    saga_id: None,
+                    nostr_event_id: None,
+                    contact_node_id: Some(node_id),
+                    linked_txs: vec![],
                 };
                 let tx_id = self
                     .pay_to_contact(
@@ -681,7 +630,7 @@ impl WalletApi for super::Wallet {
         Ok(summary)
     }
 
-    async fn check_pending_mints(&self) -> Result<Vec<TransactionId>> {
+    async fn check_pending_mints(&self) -> Result<Vec<Uuid>> {
         let mut res = Vec::new();
         let keysets_info = self.get_wallet_mint_keyset_infos().await?;
         let now = chrono::Utc::now();
@@ -696,31 +645,24 @@ impl WalletApi for super::Wallet {
             .await?;
 
         for (qid, mint_result) in pending_mints_result {
-            let mut metadata = HashMap::default();
-            metadata.insert(
-                PAYMENT_TYPE_METADATA_KEY.to_owned(),
-                PaymentType::OnChain.to_string(),
-            );
-            metadata.insert(
-                TRANSACTION_STATUS_METADATA_KEY.to_owned(),
-                TransactionStatus::Settled.to_string(),
-            );
-
             let tx = Transaction {
+                id: Uuid::new_v4(),
                 mint_url: to_mint_url(self.client.mint_url()),
-                fee: mint_result.fee,
+                fees: mint_result.fee,
                 direction: TransactionDirection::Incoming,
                 memo: None,
-                timestamp: now.timestamp() as u64,
+                status: TransactionStatus::Settled,
+                payment_type: PaymentType::OnChain,
+                tstamp: now.timestamp() as u64,
                 unit: self.debit_unit(),
                 ys: mint_result.ys,
                 amount: mint_result.amount,
-                metadata,
-                quote_id: Some(qid.to_string()),
-                payment_request: None,
-                payment_proof: None,
-                payment_method: None,
-                saga_id: None,
+                quote_id: Some(qid),
+                payment_request_id: None,
+                btc_tx_id: None,
+                nostr_event_id: None,
+                contact_node_id: None,
+                linked_txs: vec![],
             };
             let tx_id = self.tx_repo.store_tx(tx).await?;
             res.push(tx_id);
@@ -747,31 +689,24 @@ impl WalletApi for super::Wallet {
 
         if let Some((amount, ref ys)) = result {
             let now = chrono::Utc::now();
-            let mut metadata = HashMap::default();
-            metadata.insert(
-                PAYMENT_TYPE_METADATA_KEY.to_owned(),
-                PaymentType::OnChain.to_string(),
-            );
-            metadata.insert(
-                TRANSACTION_STATUS_METADATA_KEY.to_owned(),
-                TransactionStatus::Settled.to_string(),
-            );
-
             let tx = Transaction {
+                id: Uuid::new_v4(),
                 mint_url: to_mint_url(self.client.mint_url()),
-                fee: cashu::Amount::ZERO,
+                fees: cashu::Amount::ZERO,
                 direction: TransactionDirection::Incoming,
                 memo: Some("Mint protest resolved".to_string()),
-                timestamp: now.timestamp() as u64,
+                tstamp: now.timestamp() as u64,
                 unit: self.debit_unit(),
                 ys: ys.clone(),
                 amount,
-                metadata,
-                quote_id: Some(quote_id.to_string()),
-                payment_request: None,
-                payment_proof: None,
-                payment_method: None,
-                saga_id: None,
+                status: TransactionStatus::Settled,
+                payment_type: PaymentType::OnChain,
+                quote_id: Some(quote_id),
+                nostr_event_id: None,
+                btc_tx_id: None,
+                contact_node_id: None,
+                payment_request_id: None,
+                linked_txs: vec![],
             };
             self.tx_repo.store_tx(tx).await?;
         }
@@ -798,31 +733,24 @@ impl WalletApi for super::Wallet {
 
         if let Some((amount, ref ys)) = result {
             let now = chrono::Utc::now();
-            let mut metadata = HashMap::default();
-            metadata.insert(
-                PAYMENT_TYPE_METADATA_KEY.to_owned(),
-                PaymentType::Swap.to_string(),
-            );
-            metadata.insert(
-                TRANSACTION_STATUS_METADATA_KEY.to_owned(),
-                TransactionStatus::Settled.to_string(),
-            );
-
             let tx = Transaction {
+                id: Uuid::new_v4(),
                 mint_url: to_mint_url(self.client.mint_url()),
-                fee: cashu::Amount::ZERO,
+                fees: cashu::Amount::ZERO,
                 direction: TransactionDirection::Incoming,
                 memo: Some("Swap protest resolved".to_string()),
-                timestamp: now.timestamp() as u64,
+                tstamp: now.timestamp() as u64,
                 unit: self.debit_unit(),
                 ys: ys.clone(),
+                payment_type: PaymentType::Swap,
+                status: TransactionStatus::Settled,
                 amount,
-                metadata,
                 quote_id: None,
-                payment_request: None,
-                payment_proof: None,
-                payment_method: None,
-                saga_id: None,
+                nostr_event_id: None,
+                btc_tx_id: None,
+                contact_node_id: None,
+                payment_request_id: None,
+                linked_txs: vec![],
             };
             self.tx_repo.store_tx(tx).await?;
         }
@@ -838,34 +766,25 @@ impl WalletApi for super::Wallet {
 
         if let Some((amount, ref ys)) = result {
             let now = chrono::Utc::now();
-            let mut metadata = HashMap::default();
-            metadata.insert(
-                PAYMENT_TYPE_METADATA_KEY.to_owned(),
-                PaymentType::OnChain.to_string(),
-            );
-            metadata.insert(
-                TRANSACTION_STATUS_METADATA_KEY.to_owned(),
-                TransactionStatus::Settled.to_string(),
-            );
-            if let Some(tx_id) = txid {
-                metadata.insert(BTC_TX_ID_TYPE_METADATA_KEY.to_owned(), tx_id.to_string());
-            }
 
             let tx = Transaction {
+                id: Uuid::new_v4(),
                 mint_url: to_mint_url(self.client.mint_url()),
-                fee: cashu::Amount::ZERO,
+                fees: cashu::Amount::ZERO,
                 direction: TransactionDirection::Outgoing,
                 memo: Some("Melt protest resolved".to_string()),
-                timestamp: now.timestamp() as u64,
+                tstamp: now.timestamp() as u64,
                 unit: self.debit_unit(),
                 ys: ys.clone(),
+                payment_type: PaymentType::OnChain,
+                status: TransactionStatus::Settled,
                 amount,
-                metadata,
-                quote_id: Some(quote_id.to_string()),
-                payment_request: None,
-                payment_proof: None,
-                payment_method: None,
-                saga_id: None,
+                quote_id: Some(quote_id),
+                nostr_event_id: None,
+                btc_tx_id: txid,
+                contact_node_id: None,
+                payment_request_id: None,
+                linked_txs: vec![],
             };
             self.tx_repo.store_tx(tx).await?;
         }
@@ -900,8 +819,12 @@ impl WalletApi for super::Wallet {
         mint: url::Url,
         tstamp: u64,
         memo: Option<String>,
-        metadata: HashMap<String, String>,
-    ) -> Result<TransactionId> {
+        payment_type: PaymentType,
+        status: TransactionStatus,
+        payment_request_id: Option<Uuid>,
+        contact_node_id: Option<NodeId>,
+        nostr_event_id: Option<EventId>,
+    ) -> Result<Uuid> {
         let (intermint_infos, local_alpha_keysets_info) =
             self.get_clowder_path_and_keysets_info(mint.clone()).await?;
         self._receive_proofs(
@@ -912,7 +835,11 @@ impl WalletApi for super::Wallet {
             intermint_infos,
             tstamp,
             memo,
-            metadata,
+            payment_type,
+            status,
+            payment_request_id,
+            contact_node_id,
+            nostr_event_id,
         )
         .await
     }
@@ -1181,7 +1108,7 @@ impl WalletApi for super::Wallet {
         fees: Amount,
         memo: Option<String>,
         now: u64,
-    ) -> Result<(TransactionId, Option<Token>)> {
+    ) -> Result<(Uuid, Option<Token>)> {
         tracing::warn!(
             "Pay by Token: Wallet mint is offline - find substitute and attempt offline exchange for tokens"
         );
@@ -1275,32 +1202,25 @@ impl WalletApi for super::Wallet {
                 self.debit.unit(),
             );
 
-            let mut metadata = HashMap::default();
-            metadata.insert(
-                PAYMENT_TYPE_METADATA_KEY.to_owned(),
-                PaymentType::Token.to_string(),
-            );
-            metadata.insert(
-                TRANSACTION_STATUS_METADATA_KEY.to_owned(),
-                TransactionStatus::Pending.to_string(),
-            );
-
             // Create Transaction
             let partial_tx = Transaction {
+                id: Uuid::new_v4(),
                 mint_url: to_mint_url(&substitute),
-                fee: fees,
+                fees,
                 direction: TransactionDirection::Outgoing,
                 memo,
-                timestamp: now,
+                tstamp: now,
                 unit: unit.clone(),
                 ys,
+                status: TransactionStatus::Pending,
+                payment_type: PaymentType::Token,
                 amount,
-                metadata,
                 quote_id: None,
-                payment_request: None,
-                payment_proof: None,
-                payment_method: None,
-                saga_id: None,
+                payment_request_id: None,
+                nostr_event_id: None,
+                btc_tx_id: None,
+                contact_node_id: None,
+                linked_txs: vec![],
             };
             let tx_id = self.tx_repo.store_tx(partial_tx).await?;
             Ok((tx_id, Some(token)))
@@ -1644,11 +1564,7 @@ impl WalletApi for super::Wallet {
         Ok(())
     }
 
-    async fn mark_payment_request_as_paid(
-        &self,
-        payment_req_id: Uuid,
-        tx_id: TransactionId,
-    ) -> Result<()> {
+    async fn mark_payment_request_as_paid(&self, payment_req_id: Uuid, tx_id: Uuid) -> Result<()> {
         if self
             .payment_request_repo
             .get_payment_request(payment_req_id)

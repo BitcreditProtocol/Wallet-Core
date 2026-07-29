@@ -11,6 +11,17 @@
 * Migrate Proofs persistence to be versioned, encrypted and borsh-serialized 
 * Migrated DB models to versioned payload, borsh serialization and in some cases encryption at rest
     * purse: versioned & borsh
+* Rework Transaction Data Model
+    * API changes:
+        * id is now a `Uuid`
+        * rename `tx_id` to `btc_tx_id`
+        * rename `contact` to `contact_node_id`
+        * add `payment_request_id`
+        * add `linked_txs` - a list of linked transactions for this transaction
+    * Use a custom `Transaction` data model internally and phase out the `cashu` one
+        * TransactionId across the whole stack is now a `Uuid`
+    * Implement database migration to this new model
+    * Rework `reclaim` code paths to create two linked transactions instead of overwriting one
 
 # 0.9.6
 

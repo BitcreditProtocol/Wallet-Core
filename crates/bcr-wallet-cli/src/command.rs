@@ -1,12 +1,10 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use bcr_common::cdk_common::wallet::TransactionId;
 use bcr_wallet_api::{AppState, config::CreateWalletConfig};
 use bcr_wallet_core::types::{
     PaymentRequestDirection, PaymentResultCallback, PendingPaymentSubscriptionCallback,
-    TransactionFilters, TransactionSort, get_btc_tx_id, get_contact_node_id,
-    get_payment_request_id, get_payment_type, get_transaction_status,
+    TransactionFilters, TransactionSort,
 };
 use chrono::{DateTime, Utc};
 use tokio::sync::oneshot;
@@ -90,19 +88,20 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
             push_break(&mut res);
 
             for tx in transactions.iter() {
-                let status = get_transaction_status(&tx.metadata);
-                let ptype = get_payment_type(&tx.metadata);
-                let btc_tx_id = get_btc_tx_id(&tx.metadata);
-                let contact = get_contact_node_id(&tx.metadata);
-                let payment_req_id = get_payment_request_id(&tx.metadata);
-                let quote_or_btc_tx_id = match (btc_tx_id, &tx.quote_id) {
+                let quote_or_btc_tx_id = match (tx.btc_tx_id, &tx.quote_id) {
                     (Some(txid), _) => txid.to_string(),
                     (None, Some(quote_id)) => quote_id.to_string(),
                     (None, None) => String::default(),
                 };
+                let tx_links = tx
+                    .linked_txs
+                    .iter()
+                    .map(|lnk| format!("{} - {}", lnk.reason, lnk.tx_id))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 res.push_str(&format!(
-                    "\t\tId: {} \t Amount: {:8} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {} \t BTC TxID/Quote ID: {} \t Contact: {} \t Payment Request ID: {}",
-                    tx.id(), tx.amount, tx.unit, tx.fee,  status, format_timestamp(tx.timestamp), format!("{:?}", ptype), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id, contact.map(|n| n.to_string()).unwrap_or_default(), payment_req_id.map(|id| id.to_string()).unwrap_or_default()
+                    "\t\tId: {} \t Amount: {:8} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {} \t BTC TxID/Quote ID: {} \t Contact: {} \t Payment Request ID: {} \t Links: {}",
+                    tx.id, tx.amount, tx.unit, tx.fees,  tx.status, format_timestamp(tx.tstamp), format!("{:?}", tx.payment_type), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id, tx.contact_node_id.as_ref().map(|n| n.to_string()).unwrap_or_default(), tx.payment_request_id.map(|id| id.to_string()).unwrap_or_default(), tx_links
                 ));
                 push_break(&mut res);
             }
@@ -217,7 +216,7 @@ pub async fn cmd_request_payment(
     //     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
     //     cancel_token_clone.cancel();
     // });
-    let (tx, rx) = oneshot::channel::<Option<TransactionId>>();
+    let (tx, rx) = oneshot::channel::<Option<Uuid>>();
 
     let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
 

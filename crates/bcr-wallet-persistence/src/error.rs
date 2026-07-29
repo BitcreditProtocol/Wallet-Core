@@ -3,6 +3,7 @@ use bcr_common::{
     cdk_common,
 };
 use thiserror::Error;
+use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -37,7 +38,9 @@ pub enum Error {
     #[error("wallet id {0} not found")]
     WalletIdNotFound(String),
     #[error("transaction not found {0}")]
-    TransactionNotFound(cdk_common::wallet::TransactionId),
+    TransactionNotFound(Uuid),
+    #[error("transaction not found for ys {0}")]
+    TransactionNotFoundForYs(cdk_common::wallet::TransactionId),
     #[error("proof not in desired state: {0}")]
     InvalidProofState(cashu::PublicKey),
     #[error("proof in local DB not found: {0}")]
@@ -64,4 +67,12 @@ pub enum Error {
     PaymentRequestNotFound(String),
     #[error("Counter Exhausted")]
     CounterExhausted,
+    #[error("Invalid Btc Tx Id {0}")]
+    InvalidBtcTxId(String),
+    #[error("Invalid Nostr Event Id {0}")]
+    InvalidNostrEventId(String),
+    #[error("Invalid Transaction Id {0}")]
+    InvalidTransactionId(String),
+    #[error("Invalid Quote Id {0}")]
+    InvalidQuoteId(String),
 }

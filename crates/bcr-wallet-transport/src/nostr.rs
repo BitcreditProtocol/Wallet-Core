@@ -96,12 +96,35 @@ impl Client {
         Ok(signer)
     }
 
+    async fn update_relays(&self, target_relays: HashSet<RelayUrl>) -> Result<()> {
+        let client = &self.client;
+
+        // Get current relays
+        let current_relays: HashSet<RelayUrl> = client.relays().await.keys().cloned().collect();
+
+        // Add new relays
+        for relay in target_relays.iter() {
+            if !current_relays.contains(relay) {
+                match client.add_relay(relay).await {
+                    Ok(_) => tracing::debug!("Added relay: {}", relay),
+                    Err(e) => tracing::warn!("Failed to add relay {}: {}", relay, e),
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     async fn fetch_events(
         &self,
         filter: Filter,
         order: Option<SortOrder>,
         relays: Option<Vec<RelayUrl>>,
     ) -> Result<Vec<Event>> {
+        if let Some(ref r) = relays {
+            // refresh relays to match target set
+            self.update_relays(r.iter().cloned().collect()).await?;
+        }
         let events = self
             .client()
             .await?
@@ -230,15 +253,30 @@ impl TransportApi for Transport {
         let signer = self.client.client.signer().await?;
         let event: Event =
             EventBuilder::private_msg(&signer, receiver.public_key, payload, []).await?;
-        let _ = self
-            .client
-            .client
-            .send_event_to(receiver.relays, &event)
-            .await
-            .map_err(|e| {
+        let relays = receiver.relays;
+
+        if !relays.is_empty() {
+            // refresh relays to match target set
+            self.client
+                .update_relays(relays.iter().cloned().collect())
+                .await?;
+            let output = self
+                .client
+                .client
+                .send_event_to(relays, &event)
+                .await
+                .map_err(|e| {
+                    tracing::error!("send_private_msg failed: {e}");
+                    Error::NostrSendPrivateMsg(event.id)
+                })?;
+            check_send_output(output, "send_private_msg")?;
+        } else {
+            let output = self.client.client.send_event(&event).await.map_err(|e| {
                 tracing::error!("send_private_msg failed: {e}");
                 Error::NostrSendPrivateMsg(event.id)
             })?;
+            check_send_output(output, "send_private_msg")?;
+        }
         Ok(event.id)
     }
 
@@ -309,12 +347,24 @@ impl TransportApi for Transport {
         {
             let result: Result<()> = match &queued_message.recipient {
                 Some(target) => {
-                    if let Err(e) = serde_json::from_str::<cdk18::PaymentRequestPayload>(
-                        &queued_message.payload,
-                    ) {
-                        tracing::error!("Failed to parse private retry payload: {e}");
-                        failed_ids.push(queued_message.id.clone());
-                        continue;
+                    // first, see if it's a cdk18 payload
+                    if serde_json::from_str::<cdk18::PaymentRequestPayload>(&queued_message.payload)
+                        .is_err()
+                    {
+                        match base58::decode(&queued_message.payload) {
+                            Ok(decoded) => {
+                                if let Err(e) = borsh::from_slice::<EventEnvelope>(&decoded) {
+                                    tracing::error!("Failed to parse private retry payload: {e}");
+                                    failed_ids.push(queued_message.id.clone());
+                                    continue;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to parse private retry payload: {e}");
+                                failed_ids.push(queued_message.id.clone());
+                                continue;
+                            }
+                        }
                     };
 
                     match self

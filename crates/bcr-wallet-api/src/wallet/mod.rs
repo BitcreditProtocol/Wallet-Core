@@ -8,7 +8,6 @@ use crate::{
     ClowderMintConnector,
     error::{Error, Result},
     pocket::debit::DebitPocketApi,
-    types::{PAYMENT_TYPE_METADATA_KEY, TRANSACTION_STATUS_METADATA_KEY},
     wallet::{
         api::WalletApi,
         types::{PayReference, SwapConfig, WalletBalance, WalletDetailedBalanceEntry},
@@ -17,7 +16,7 @@ use crate::{
 };
 use bcr_common::{
     cashu::{self, Amount, CurrencyUnit, KeySetInfo, Proof, ProofsMethods},
-    cdk_common::wallet::{Transaction, TransactionDirection, TransactionId},
+    cdk_common::wallet::TransactionDirection,
     core::NodeId,
     wallet::Token,
     wire::clowder::{ConnectedMintResponse, ConnectedMintsResponse},
@@ -26,9 +25,9 @@ use bcr_wallet_core::{
     contact::Contact,
     event::{ContactPaymentPayload, EventEnvelope},
     types::{
-        CONTACT_NODE_ID_METADATA_KEY, ListTransactionsResult, PAYMENT_REQUEST_ID_METADATA_KEY,
-        PaymentRequest, PaymentType, TransactionCursor, TransactionFilters, TransactionSort,
-        TransactionStatus, extract_fees_per_month,
+        ListTransactionsResult, PaymentRequest, PaymentType, Transaction, TransactionCursor,
+        TransactionFilters, TransactionLinkReason, TransactionSort, TransactionStatus,
+        extract_fees_per_month,
     },
     util::{from_mint_url, to_mint_url},
 };
@@ -42,6 +41,7 @@ use bitcoin::{
     secp256k1,
 };
 use chrono::Utc;
+use nostr::event::EventId;
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
@@ -239,32 +239,10 @@ impl Wallet {
                             bcr_wallet_transport::NostrWalletEvent::Cdk18Payment { .. } => {
                                 // ignore - cdk18 payments are handled by explicitly awaiting them
                             },
-                            bcr_wallet_transport::NostrWalletEvent::ContactPayment { sender, payload, event_id } => {
+                            bcr_wallet_transport::NostrWalletEvent::ContactPayment { payload, event_id, .. } => {
                                 if payload.sender.network() != wallet_network {
                                     tracing::warn!("Rejected incoming Contact payment from a different network: {}", payload.sender);
                                     continue;
-                                }
-                                let mut meta = HashMap::from([
-                                    (String::from("sender"), sender.to_string()),
-                                    (String::from("nostr_event_id"), event_id.to_string()),
-                                    (
-                                        String::from(PAYMENT_TYPE_METADATA_KEY),
-                                        PaymentType::Contact.to_string(),
-                                    ),
-                                    (
-                                        String::from(TRANSACTION_STATUS_METADATA_KEY),
-                                        TransactionStatus::Settled.to_string(),
-                                    ),
-                                    (
-                                        String::from(CONTACT_NODE_ID_METADATA_KEY),
-                                        payload.sender.to_string()
-                                    ),
-                                ]);
-                                if let Some(p_req_id) = payload.payment_request_id {
-                                    meta.insert(
-                                        PAYMENT_REQUEST_ID_METADATA_KEY.to_owned(),
-                                        p_req_id.to_string(),
-                                    );
                                 }
 
                                 let amount = payload.proofs.total_amount().unwrap_or(Amount::ZERO);
@@ -276,7 +254,11 @@ impl Wallet {
                                     from_mint_url(&payload.mint),
                                     chrono::Utc::now().timestamp() as u64,
                                     payload.memo,
-                                    meta,
+                                    PaymentType::Contact,
+                                    TransactionStatus::Settled,
+                                    payload.payment_request_id,
+                                    Some(payload.sender.clone()),
+                                    Some(event_id)
                                 ).await {
                                     Ok(tx_id) => {
                                         // if it's from a payment request - attempt to set it to paid
@@ -315,7 +297,7 @@ impl Wallet {
         }
     }
 
-    pub async fn list_tx_ids(&self) -> Result<Vec<TransactionId>> {
+    pub async fn list_tx_ids(&self) -> Result<Vec<Uuid>> {
         let res = self.tx_repo.list_tx_ids().await?;
         Ok(res)
     }
@@ -343,27 +325,19 @@ impl Wallet {
         // apply sorting
         match sort {
             TransactionSort::TimeAsc => {
-                res.sort_by(|a, b| {
-                    a.timestamp
-                        .cmp(&b.timestamp)
-                        .then_with(|| a.id().cmp(&b.id()))
-                });
+                res.sort_by(|a, b| a.tstamp.cmp(&b.tstamp).then_with(|| a.id.cmp(&b.id)));
             }
 
             TransactionSort::TimeDesc => {
-                res.sort_by(|a, b| {
-                    b.timestamp
-                        .cmp(&a.timestamp)
-                        .then_with(|| b.id().cmp(&a.id()))
-                });
+                res.sort_by(|a, b| b.tstamp.cmp(&a.tstamp).then_with(|| b.id.cmp(&a.id)));
             }
 
             TransactionSort::AmountAsc => {
-                res.sort_by(|a, b| a.amount.cmp(&b.amount).then_with(|| a.id().cmp(&b.id())));
+                res.sort_by(|a, b| a.amount.cmp(&b.amount).then_with(|| a.id.cmp(&b.id)));
             }
 
             TransactionSort::AmountDesc => {
-                res.sort_by(|a, b| b.amount.cmp(&a.amount).then_with(|| b.id().cmp(&a.id())));
+                res.sort_by(|a, b| b.amount.cmp(&a.amount).then_with(|| b.id.cmp(&a.id)));
             }
         }
         // apply limit
@@ -517,12 +491,12 @@ impl Wallet {
         Ok(())
     }
 
-    pub async fn load_tx(&self, tx_id: TransactionId) -> Result<Transaction> {
+    pub async fn load_tx(&self, tx_id: Uuid) -> Result<Transaction> {
         let tx = self.tx_repo.load_tx(tx_id).await?;
         Ok(tx)
     }
 
-    pub async fn edit_tx_memo(&self, tx_id: TransactionId, new_memo: Option<String>) -> Result<()> {
+    pub async fn edit_tx_memo(&self, tx_id: Uuid, new_memo: Option<String>) -> Result<()> {
         let _ = self.tx_repo.update_memo(tx_id, new_memo).await?;
         Ok(())
     }
@@ -530,7 +504,7 @@ impl Wallet {
     // Fetches the transaction with the given ID from the database and, if it's in a pending state
     // it attempts to get the current state from the mint and, if it's spent, changes it to spent
     // Returns whether the transaction has been updated
-    pub async fn refresh_tx(&self, tx_id: TransactionId) -> Result<bool> {
+    pub async fn refresh_tx(&self, tx_id: Uuid) -> Result<bool> {
         let mut updated = false;
         let tx = self.tx_repo.load_tx(tx_id).await?;
         if !util::tx_can_be_refreshed(&tx) {
@@ -543,11 +517,7 @@ impl Wallet {
             .any(|s| matches!(s.state, cashu::State::Spent));
         if is_any_spent {
             self.tx_repo
-                .update_metadata(
-                    tx_id,
-                    String::from(TRANSACTION_STATUS_METADATA_KEY),
-                    TransactionStatus::Settled.to_string(),
-                )
+                .update_status(tx_id, TransactionStatus::Settled)
                 .await?;
             updated = true;
         }
@@ -563,9 +533,9 @@ impl Wallet {
                 continue;
             }
 
-            let tx_id = tx.id();
+            let tx_id = tx.id;
 
-            match self.refresh_tx(tx_id).await {
+            match self.refresh_tx(tx.id).await {
                 Ok(tx_updated) => {
                     if tx_updated {
                         updated += 1;
@@ -616,7 +586,11 @@ impl Wallet {
         Ok(cleaned_up)
     }
 
-    pub async fn reclaim_tx(&self, tx_id: TransactionId) -> Result<Amount> {
+    /// Check that the transaction can be reclaimed, then
+    /// * Create a new transaction with state `Canceled`
+    /// * Set the initial transaction to `Settled`
+    /// * Link the two transactions with reason `Reclaim`
+    pub async fn reclaim_tx(&self, tx_id: Uuid) -> Result<Amount> {
         let infos = self.get_wallet_mint_keyset_infos().await?;
         self.refresh_tx(tx_id).await?;
         let tx = self.load_tx(tx_id).await?;
@@ -639,11 +613,7 @@ impl Wallet {
         // If amount is zero - this means the transaction was already claimed - we set the transaction to Settled
         if amount == Amount::ZERO {
             self.tx_repo
-                .update_metadata(
-                    tx_id,
-                    String::from(TRANSACTION_STATUS_METADATA_KEY),
-                    TransactionStatus::Settled.to_string(),
-                )
+                .update_status(tx_id, TransactionStatus::Settled)
                 .await?;
         } else {
             let fee = if tx.amount > amount {
@@ -652,18 +622,37 @@ impl Wallet {
                 Amount::ZERO
             };
 
-            // Set reclaimed transaction to canceled
+            // Create new, cancelled transaction
+            let reclaim_tx = Transaction {
+                id: Uuid::new_v4(),
+                mint_url: tx.mint_url.clone(),
+                direction: TransactionDirection::Incoming, // incoming, since we're getting back the funds
+                fees: fee,
+                amount: tx.amount,
+                memo: tx.memo.clone(),
+                tstamp: Utc::now().timestamp() as u64,
+                unit: tx.unit,
+                payment_type: tx.payment_type,
+                status: TransactionStatus::Canceled, // canceled, since it's the reclaim tx
+                ys: tx.ys.clone(),
+                quote_id: tx.quote_id,
+                contact_node_id: tx.contact_node_id.clone(),
+                payment_request_id: tx.payment_request_id,
+                nostr_event_id: tx.nostr_event_id,
+                btc_tx_id: tx.btc_tx_id,
+                linked_txs: vec![],
+            };
+            let reclaim_txid = self.tx_repo.store_tx(reclaim_tx).await?;
+
+            // Set the initial transaction to Settled
             self.tx_repo
-                .update_metadata(
-                    tx_id,
-                    String::from(TRANSACTION_STATUS_METADATA_KEY),
-                    TransactionStatus::Canceled.to_string(),
-                )
+                .update_status(tx_id, TransactionStatus::Settled)
                 .await?;
-            if fee > Amount::ZERO {
-                // Set fee in reclaimed transaction
-                self.tx_repo.update_fee(tx_id, fee).await?;
-            }
+
+            // Link the two transactions with reason Reclaim
+            self.tx_repo
+                .link_txs(tx_id, reclaim_txid, TransactionLinkReason::Reclaim)
+                .await?;
         }
 
         Ok(amount)
@@ -678,26 +667,17 @@ impl Wallet {
         intermint_infos: Option<(ConnectedMintsResponse, HashMap<cashu::Id, KeySetInfo>)>,
         tstamp: u64,
         memo: Option<String>,
-        metadata: HashMap<String, String>,
-    ) -> Result<TransactionId> {
+        payment_type: PaymentType,
+        status: TransactionStatus,
+        payment_request_id: Option<Uuid>,
+        contact_node_id: Option<NodeId>,
+        nostr_event_id: Option<EventId>,
+    ) -> Result<Uuid> {
         if unit != self.debit.unit() {
             return Err(Error::InvalidCurrencyUnit(unit.to_string()));
         }
         let initial_amount = proofs.total_amount()?;
         let mut proofs = proofs;
-
-        // check if these are proofs we created ourselves - if they are and are still outgoing and pending, we reclaim them
-        let tx_id_to_check_for_reclaim = TransactionId::new(proofs.ys()?);
-        if let Ok(tx_for_ys) = self.tx_repo.load_tx(tx_id_to_check_for_reclaim).await {
-            // if it's Outgoing and Pending, we attempt to reclaim it
-            if util::tx_can_be_refreshed(&tx_for_ys) {
-                tracing::debug!(
-                    "Detected incoming proofs from an outgoing, pending transaction of ourselves - reclaiming"
-                );
-                self.reclaim_tx(tx_id_to_check_for_reclaim).await?;
-                return Ok(tx_id_to_check_for_reclaim);
-            }
-        }
 
         let mut is_intermint = false;
         if &mint != self.client.mint_url() {
@@ -779,20 +759,23 @@ impl Wallet {
             Amount::ZERO
         };
         let tx = Transaction {
+            id: Uuid::new_v4(),
             mint_url: to_mint_url(self.client.mint_url()),
             direction: TransactionDirection::Incoming,
-            fee,
+            fees: fee,
             amount: initial_amount,
             memo,
-            metadata,
-            timestamp: tstamp,
+            tstamp,
             unit,
+            payment_type,
+            status,
             ys,
             quote_id: None,
-            payment_request: None,
-            payment_proof: None,
-            payment_method: None,
-            saga_id: None,
+            contact_node_id,
+            payment_request_id,
+            nostr_event_id,
+            btc_tx_id: None,
+            linked_txs: vec![],
         };
         let txid = self.tx_repo.store_tx(tx).await?;
         Ok(txid)
@@ -927,7 +910,7 @@ impl Wallet {
         Ok(beta_proofs)
     }
 
-    pub async fn receive_token(&self, token: Token, tstamp: u64) -> Result<TransactionId> {
+    pub async fn receive_token(&self, token: Token, tstamp: u64) -> Result<Uuid> {
         let token_teaser = token.to_string().chars().take(20).collect::<String>();
         let token_mint_url = from_mint_url(&token.mint_url());
         let (intermint_infos, keysets_info) = self
@@ -949,16 +932,6 @@ impl Wallet {
             return Err(Error::EmptyToken(token_teaser));
         }
 
-        let mut metadata = HashMap::default();
-        metadata.insert(
-            PAYMENT_TYPE_METADATA_KEY.to_owned(),
-            PaymentType::Token.to_string(),
-        );
-        metadata.insert(
-            TRANSACTION_STATUS_METADATA_KEY.to_owned(),
-            TransactionStatus::Settled.to_string(),
-        );
-
         let tx_id = if token.unit().is_some() && token.unit() == Some(self.debit.unit()) {
             tracing::debug!("import debit token");
 
@@ -970,7 +943,11 @@ impl Wallet {
                 intermint_infos,
                 tstamp,
                 token.memo().clone(),
-                metadata,
+                PaymentType::Token,
+                TransactionStatus::Settled,
+                None,
+                None,
+                None,
             )
             .await?
         } else {
@@ -986,7 +963,7 @@ impl Wallet {
         contact: Contact,
         payment_request_id: Option<Uuid>,
         mut partial_tx: Transaction,
-    ) -> Result<TransactionId> {
+    ) -> Result<Uuid> {
         let payload = ContactPaymentPayload {
             payment_request_id,
             sender: self.node_id(),
@@ -1019,9 +996,7 @@ impl Wallet {
                 }
             }
         };
-        partial_tx
-            .metadata
-            .insert(String::from("nostr::event_id"), event_id.to_string());
+        partial_tx.nostr_event_id = Some(event_id);
         let txid = self.tx_repo.store_tx(partial_tx).await?;
         Ok(txid)
     }
@@ -1034,7 +1009,7 @@ impl Wallet {
         transport: cashu::Transport,
         p_id: Option<String>,
         mut partial_tx: Transaction,
-    ) -> Result<TransactionId> {
+    ) -> Result<Uuid> {
         let payload = cashu::PaymentRequestPayload {
             id: p_id,
             memo: partial_tx.memo.clone(),
@@ -1068,9 +1043,7 @@ impl Wallet {
                         }
                     }
                 };
-                partial_tx
-                    .metadata
-                    .insert(String::from("nostr::event_id"), event_id.to_string());
+                partial_tx.nostr_event_id = Some(event_id);
             }
         }
         let txid = self.tx_repo.store_tx(partial_tx).await?;
@@ -1148,7 +1121,7 @@ mod tests {
         name::Name,
         types::{
             MintSummary, PaymentRequestDirection, PaymentRequestState, PaymentResultCallback,
-            TimeRange, get_payment_type, get_transaction_status,
+            TimeRange,
         },
     };
     use bcr_wallet_persistence::{
@@ -1310,23 +1283,23 @@ mod tests {
 
     fn reclaimable_tx(amount: Amount) -> Transaction {
         Transaction {
+            id: Uuid::new_v4(),
             mint_url: cashu::MintUrl::from_str("https://mint.example").unwrap(),
             direction: TransactionDirection::Outgoing,
-            fee: Amount::ZERO,
+            fees: Amount::ZERO,
             amount,
             memo: None,
-            metadata: HashMap::from([(
-                String::from(TRANSACTION_STATUS_METADATA_KEY),
-                TransactionStatus::Pending.to_string(),
-            )]),
-            timestamp: 123,
+            payment_type: PaymentType::Token,
+            status: TransactionStatus::Pending,
+            tstamp: 123,
             unit: CurrencyUnit::Sat,
             ys: vec![],
             quote_id: None,
-            payment_request: None,
-            payment_proof: None,
-            payment_method: None,
-            saga_id: None,
+            payment_request_id: None,
+            btc_tx_id: None,
+            nostr_event_id: None,
+            contact_node_id: None,
+            linked_txs: vec![],
         }
     }
 
@@ -1339,26 +1312,23 @@ mod tests {
         status: TransactionStatus,
     ) -> Transaction {
         Transaction {
+            id: Uuid::new_v4(),
             mint_url: cashu::MintUrl::from_str("https://mint.example").unwrap(),
             direction,
-            fee: Amount::ZERO,
+            fees: Amount::ZERO,
             amount: Amount::from(amount),
             memo: None,
-            metadata: HashMap::from([
-                (String::from(PAYMENT_TYPE_METADATA_KEY), ptype.to_string()),
-                (
-                    String::from(TRANSACTION_STATUS_METADATA_KEY),
-                    status.to_string(),
-                ),
-            ]),
-            timestamp,
+            status,
+            payment_type: ptype,
+            tstamp: timestamp,
             unit: CurrencyUnit::Sat,
             ys: vec![test_cashu_pubkey(n)],
             quote_id: None,
-            payment_request: None,
-            payment_proof: None,
-            payment_method: None,
-            saga_id: None,
+            payment_request_id: None,
+            btc_tx_id: None,
+            nostr_event_id: None,
+            contact_node_id: None,
+            linked_txs: vec![],
         }
     }
 
@@ -1426,32 +1396,24 @@ mod tests {
     fn sort_expected(mut txs: Vec<Transaction>, sort: TransactionSort) -> Vec<Transaction> {
         match sort {
             TransactionSort::TimeAsc => {
-                txs.sort_by(|a, b| {
-                    a.timestamp
-                        .cmp(&b.timestamp)
-                        .then_with(|| a.id().cmp(&b.id()))
-                });
+                txs.sort_by(|a, b| a.tstamp.cmp(&b.tstamp).then_with(|| a.id.cmp(&b.id)));
             }
             TransactionSort::TimeDesc => {
-                txs.sort_by(|a, b| {
-                    b.timestamp
-                        .cmp(&a.timestamp)
-                        .then_with(|| b.id().cmp(&a.id()))
-                });
+                txs.sort_by(|a, b| b.tstamp.cmp(&a.tstamp).then_with(|| b.id.cmp(&a.id)));
             }
             TransactionSort::AmountAsc => {
-                txs.sort_by(|a, b| a.amount.cmp(&b.amount).then_with(|| a.id().cmp(&b.id())));
+                txs.sort_by(|a, b| a.amount.cmp(&b.amount).then_with(|| a.id.cmp(&b.id)));
             }
             TransactionSort::AmountDesc => {
-                txs.sort_by(|a, b| b.amount.cmp(&a.amount).then_with(|| b.id().cmp(&a.id())));
+                txs.sort_by(|a, b| b.amount.cmp(&a.amount).then_with(|| b.id.cmp(&a.id)));
             }
         }
 
         txs
     }
 
-    fn tx_ids(txs: &[Transaction]) -> Vec<TransactionId> {
-        txs.iter().map(|tx| tx.id()).collect()
+    fn tx_ids(txs: &[Transaction]) -> Vec<Uuid> {
+        txs.iter().map(|tx| tx.id).collect()
     }
 
     #[tokio::test]
@@ -1898,7 +1860,7 @@ mod tests {
         ctx.tx_repo
             .expect_store_tx()
             .times(1)
-            .returning(|_tx| Ok(TransactionId::new(vec![])));
+            .returning(|_tx| Ok(Uuid::new_v4()));
 
         let wlt = wallet(ctx).await;
         *wlt.read().await.current_payment.lock().await = Some(PayReference {
@@ -1968,7 +1930,7 @@ mod tests {
         let mut ctx = wallet_ctx();
 
         let pid = Uuid::new_v4();
-        let tx_id = TransactionId::new(vec![]);
+        let tx_id = Uuid::new_v4();
 
         ctx.client
             .expect_get_mint_keysets()
@@ -1993,18 +1955,12 @@ mod tests {
         ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
             assert_eq!(tx.direction, TransactionDirection::Outgoing);
             assert_eq!(tx.amount, Amount::ZERO);
-            assert_eq!(tx.fee, Amount::ZERO);
+            assert_eq!(tx.fees, Amount::ZERO);
             assert_eq!(tx.unit, CurrencyUnit::Sat);
-            assert_eq!(tx.timestamp, 123);
+            assert_eq!(tx.tstamp, 123);
             assert_eq!(tx.memo, Some("melt memo".to_string()));
-            assert_eq!(
-                tx.metadata.get(PAYMENT_TYPE_METADATA_KEY),
-                Some(&PaymentType::OnChain.to_string())
-            );
-            assert_eq!(
-                tx.metadata.get(TRANSACTION_STATUS_METADATA_KEY),
-                Some(&TransactionStatus::Settled.to_string())
-            );
+            assert_eq!(tx.payment_type, PaymentType::OnChain);
+            assert_eq!(tx.status, TransactionStatus::Settled);
             Ok(tx_id)
         });
 
@@ -2031,7 +1987,7 @@ mod tests {
         let mut ctx = wallet_ctx();
 
         let pid = Uuid::new_v4();
-        let tx_id = TransactionId::new(vec![]);
+        let tx_id = Uuid::new_v4();
 
         ctx.client
             .expect_get_mint_keysets()
@@ -2061,19 +2017,13 @@ mod tests {
         ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
             assert_eq!(tx.direction, TransactionDirection::Outgoing);
             assert_eq!(tx.amount, Amount::ZERO);
-            assert_eq!(tx.fee, Amount::ZERO);
+            assert_eq!(tx.fees, Amount::ZERO);
             assert_eq!(tx.unit, CurrencyUnit::Sat);
-            assert_eq!(tx.timestamp, 123);
+            assert_eq!(tx.tstamp, 123);
             assert_eq!(tx.memo, Some("cdk18 memo".to_string()));
-            assert_eq!(
-                tx.metadata.get(PAYMENT_TYPE_METADATA_KEY),
-                Some(&PaymentType::Cdk18.to_string())
-            );
-            assert_eq!(
-                tx.metadata.get(TRANSACTION_STATUS_METADATA_KEY),
-                Some(&TransactionStatus::Pending.to_string())
-            );
-            assert!(tx.metadata.contains_key("nostr::event_id"));
+            assert_eq!(tx.payment_type, PaymentType::Cdk18,);
+            assert_eq!(tx.status, TransactionStatus::Pending,);
+            assert!(tx.nostr_event_id.is_some());
             Ok(tx_id)
         });
 
@@ -2114,7 +2064,7 @@ mod tests {
         let mut ctx = wallet_ctx();
 
         let pid = Uuid::new_v4();
-        let tx_id = TransactionId::new(vec![]);
+        let tx_id = Uuid::new_v4();
         let contact_node_id = node_id(NODE_ID_1);
 
         ctx.client
@@ -2168,23 +2118,14 @@ mod tests {
         ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
             assert_eq!(tx.direction, TransactionDirection::Outgoing);
             assert_eq!(tx.amount, Amount::ZERO);
-            assert_eq!(tx.fee, Amount::ZERO);
+            assert_eq!(tx.fees, Amount::ZERO);
             assert_eq!(tx.unit, CurrencyUnit::Sat);
-            assert_eq!(tx.timestamp, 123);
+            assert_eq!(tx.tstamp, 123);
             assert_eq!(tx.memo, Some("contact memo".to_string()));
-            assert_eq!(
-                tx.metadata.get(PAYMENT_TYPE_METADATA_KEY),
-                Some(&PaymentType::Contact.to_string())
-            );
-            assert_eq!(
-                tx.metadata.get(TRANSACTION_STATUS_METADATA_KEY),
-                Some(&TransactionStatus::Pending.to_string())
-            );
-            assert_eq!(
-                tx.metadata.get(CONTACT_NODE_ID_METADATA_KEY),
-                Some(&contact_node_id.to_string())
-            );
-            assert!(tx.metadata.contains_key("nostr::event_id"));
+            assert_eq!(tx.payment_type, PaymentType::Contact,);
+            assert_eq!(tx.status, TransactionStatus::Pending);
+            assert_eq!(tx.contact_node_id, Some(contact_node_id.clone()));
+            assert!(tx.nostr_event_id.is_some());
             Ok(tx_id)
         });
 
@@ -2268,7 +2209,7 @@ mod tests {
     #[tokio::test]
     async fn test_reclaim_tx_errors_if_transaction_cant_be_reclaimed() {
         let mut ctx = wallet_ctx();
-        let tx_id = TransactionId::new(vec![]);
+        let tx_id = Uuid::new_v4();
 
         ctx.client
             .expect_get_mint_keysets()
@@ -2276,10 +2217,7 @@ mod tests {
             .returning(|| Ok(vec![]));
 
         let tx = Transaction {
-            metadata: HashMap::from([(
-                String::from(TRANSACTION_STATUS_METADATA_KEY),
-                TransactionStatus::Settled.to_string(),
-            )]),
+            status: TransactionStatus::Settled,
             ..reclaimable_tx(Amount::from(10))
         };
 
@@ -2300,7 +2238,7 @@ mod tests {
     #[tokio::test]
     async fn test_reclaim_tx_sets_settled_if_nothing_reclaimed() {
         let mut ctx = wallet_ctx();
-        let tx_id = TransactionId::new(vec![]);
+        let tx_id = Uuid::new_v4();
         let tx = reclaimable_tx(Amount::from(10));
 
         ctx.client
@@ -2329,13 +2267,10 @@ mod tests {
             .returning(|_, _, _, _| Ok(Amount::ZERO));
 
         ctx.tx_repo
-            .expect_update_metadata()
+            .expect_update_status()
             .times(1)
-            .withf(|_, key, value| {
-                key == TRANSACTION_STATUS_METADATA_KEY
-                    && value == &TransactionStatus::Settled.to_string()
-            })
-            .returning(|_, _, _| Ok(None));
+            .withf(|_, status| *status == TransactionStatus::Settled)
+            .returning(|_, _| Ok(None));
 
         let wlt = wallet(ctx).await;
         let amount = wlt.read().await.reclaim_tx(tx_id).await.unwrap();
@@ -2344,9 +2279,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reclaim_tx_sets_canceled_without_fee_if_fully_reclaimed() {
+    async fn test_reclaim_tx_creates_second_linked_tx() {
         let mut ctx = wallet_ctx();
-        let tx_id = TransactionId::new(vec![]);
+        let tx_id = Uuid::new_v4();
         let tx = reclaimable_tx(Amount::from(10));
 
         ctx.client
@@ -2364,53 +2299,11 @@ mod tests {
             .times(2)
             .returning(move |_| Ok(tx.clone()));
 
-        ctx.debit
-            .expect_unit()
-            .times(1)
-            .returning(|| CurrencyUnit::Sat);
-
-        ctx.debit
-            .expect_reclaim_proofs()
-            .times(1)
-            .returning(|_, _, _, _| Ok(Amount::from(10)));
-
+        // store new tx
         ctx.tx_repo
-            .expect_update_metadata()
+            .expect_store_tx()
             .times(1)
-            .withf(|_, key, value| {
-                key == TRANSACTION_STATUS_METADATA_KEY
-                    && value == &TransactionStatus::Canceled.to_string()
-            })
-            .returning(|_, _, _| Ok(None));
-
-        ctx.tx_repo.expect_update_fee().times(0);
-
-        let wlt = wallet(ctx).await;
-        let amount = wlt.read().await.reclaim_tx(tx_id).await.unwrap();
-
-        assert_eq!(amount, Amount::from(10));
-    }
-
-    #[tokio::test]
-    async fn test_reclaim_tx_sets_canceled_and_fee_if_partially_reclaimed() {
-        let mut ctx = wallet_ctx();
-        let tx_id = TransactionId::new(vec![]);
-        let tx = reclaimable_tx(Amount::from(10));
-
-        ctx.client
-            .expect_get_mint_keysets()
-            .times(1)
-            .returning(|| Ok(vec![]));
-
-        ctx.client
-            .expect_post_check_state()
-            .times(1)
-            .returning(|_| Ok(vec![]));
-
-        ctx.tx_repo
-            .expect_load_tx()
-            .times(2)
-            .returning(move |_| Ok(tx.clone()));
+            .returning(move |_| Ok(Uuid::new_v4()));
 
         ctx.debit
             .expect_unit()
@@ -2422,20 +2315,18 @@ mod tests {
             .times(1)
             .returning(|_, _, _, _| Ok(Amount::from(7)));
 
+        // update status of initial transaction to Settled
         ctx.tx_repo
-            .expect_update_metadata()
+            .expect_update_status()
             .times(1)
-            .withf(|_, key, value| {
-                key == TRANSACTION_STATUS_METADATA_KEY
-                    && value == &TransactionStatus::Canceled.to_string()
-            })
-            .returning(|_, _, _| Ok(None));
+            .withf(|_, status| *status == TransactionStatus::Settled)
+            .returning(|_, _| Ok(None));
 
+        // link txs
         ctx.tx_repo
-            .expect_update_fee()
+            .expect_link_txs()
             .times(1)
-            .withf(|_, fee| *fee == Amount::from(3))
-            .returning(|_, _| Ok(()));
+            .returning(|_, _, _| Ok(()));
 
         let wlt = wallet(ctx).await;
         let amount = wlt.read().await.reclaim_tx(tx_id).await.unwrap();
@@ -2446,7 +2337,7 @@ mod tests {
     #[tokio::test]
     async fn test_edit_tx_memo() {
         let mut ctx = wallet_ctx();
-        let tx_id = TransactionId::new(vec![]);
+        let tx_id = Uuid::new_v4();
         ctx.tx_repo
             .expect_update_memo()
             .times(2)
@@ -2594,11 +2485,11 @@ mod tests {
             .clone()
             .into_iter()
             .filter(|tx| {
-                get_payment_type(&tx.metadata) == PaymentType::Token
-                    && get_transaction_status(&tx.metadata) == TransactionStatus::Pending
+                tx.payment_type == PaymentType::Token
+                    && tx.status == TransactionStatus::Pending
                     && tx.direction == TransactionDirection::Incoming
-                    && tx.timestamp >= 100
-                    && tx.timestamp <= 300
+                    && tx.tstamp >= 100
+                    && tx.tstamp <= 300
             })
             .collect();
 
@@ -2622,7 +2513,7 @@ mod tests {
 
         assert_eq!(tx_ids(&txs), tx_ids(&expected));
         assert!(next_cursor.is_none());
-        assert!(txs.iter().any(|tx| tx.timestamp == 300));
+        assert!(txs.iter().any(|tx| tx.tstamp == 300));
     }
 
     #[tokio::test]
@@ -2679,7 +2570,7 @@ mod tests {
         let cursor = TransactionCursor::from_tx(&cursor_tx, TransactionSort::TimeDesc);
 
         let mut txs_without_cursor = txs.clone();
-        txs_without_cursor.retain(|tx| tx.id() != cursor_tx.id());
+        txs_without_cursor.retain(|tx| tx.id != cursor_tx.id);
 
         let expected_after_cursor: Vec<_> =
             sort_expected(txs_without_cursor.clone(), TransactionSort::TimeDesc)
@@ -3175,7 +3066,7 @@ mod tests {
     async fn test_mark_payment_request_as_paid_sets_paid_state() {
         let mut ctx = wallet_ctx();
         let req_id = Uuid::new_v4();
-        let tx_id = TransactionId::new(vec![]);
+        let tx_id = Uuid::new_v4();
         let req = payment_request_with(
             req_id,
             PaymentRequestDirection::Incoming,
@@ -3212,7 +3103,7 @@ mod tests {
     async fn test_mark_payment_request_as_paid_errors_if_not_found() {
         let mut ctx = wallet_ctx();
         let req_id = Uuid::new_v4();
-        let tx_id = TransactionId::new(vec![]);
+        let tx_id = Uuid::new_v4();
 
         ctx.payment_request_repo
             .expect_get_payment_request()
@@ -3434,7 +3325,7 @@ mod tests {
     #[tokio::test]
     async fn test_receive_proofs_stores_incoming_tx_for_wallet_mint() {
         let mut ctx = wallet_ctx();
-        let tx_id = TransactionId::new(vec![]);
+        let tx_id = Uuid::new_v4();
         let ys = vec![test_cashu_pubkey(10)];
 
         ctx.client
@@ -3459,18 +3350,12 @@ mod tests {
             },
         );
 
-        ctx.tx_repo.expect_load_tx().times(1).returning(|_| {
-            Err(bcr_wallet_persistence::error::Error::TransactionNotFound(
-                TransactionId::new(vec![]),
-            ))
-        });
-
         ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
             assert_eq!(tx.direction, TransactionDirection::Incoming);
             assert_eq!(tx.amount, Amount::ZERO);
-            assert_eq!(tx.fee, Amount::ZERO);
+            assert_eq!(tx.fees, Amount::ZERO);
             assert_eq!(tx.unit, CurrencyUnit::Sat);
-            assert_eq!(tx.timestamp, 123);
+            assert_eq!(tx.tstamp, 123);
             assert_eq!(tx.memo, Some("memo".to_string()));
             Ok(tx_id)
         });
@@ -3486,10 +3371,11 @@ mod tests {
                 url::Url::from_str("https://mint.example").unwrap(),
                 123,
                 Some("memo".to_string()),
-                HashMap::from([(
-                    String::from(PAYMENT_TYPE_METADATA_KEY),
-                    PaymentType::Token.to_string(),
-                )]),
+                PaymentType::Token,
+                TransactionStatus::Settled,
+                None,
+                None,
+                None,
             )
             .await
             .unwrap();
@@ -3537,7 +3423,7 @@ mod tests {
     async fn test_start_nostr_event_listener_contact_payment() {
         let mut ctx = wallet_ctx();
         let req_id = Uuid::new_v4();
-        let tx_id = TransactionId::new(vec![]);
+        let tx_id = Uuid::new_v4();
         let sender = node_id(NODE_ID_1);
         let sender_for_tx = sender.clone();
         let tx_id_for_store = tx_id;
@@ -3565,11 +3451,6 @@ mod tests {
                 Ok((Amount::ZERO, ys.clone()))
             },
         );
-        ctx.tx_repo.expect_load_tx().times(1).returning(|_| {
-            Err(bcr_wallet_persistence::error::Error::TransactionNotFound(
-                TransactionId::new(vec![]),
-            ))
-        });
         ctx.tx_repo
             .expect_store_tx()
             .times(1)
@@ -3578,23 +3459,10 @@ mod tests {
                 assert_eq!(tx.amount, Amount::ZERO);
                 assert_eq!(tx.unit, CurrencyUnit::Sat);
                 assert_eq!(tx.memo, Some("payment request memo".to_string()));
-                assert_eq!(
-                    tx.metadata.get(PAYMENT_TYPE_METADATA_KEY),
-                    Some(&PaymentType::Contact.to_string())
-                );
-                assert_eq!(
-                    tx.metadata.get(TRANSACTION_STATUS_METADATA_KEY),
-                    Some(&TransactionStatus::Settled.to_string())
-                );
-                assert_eq!(
-                    tx.metadata.get(PAYMENT_REQUEST_ID_METADATA_KEY),
-                    Some(&req_id.to_string())
-                );
-                assert_eq!(
-                    tx.metadata.get(CONTACT_NODE_ID_METADATA_KEY),
-                    Some(&sender_for_tx.to_string())
-                );
-
+                assert_eq!(tx.payment_type, PaymentType::Contact);
+                assert_eq!(tx.status, TransactionStatus::Settled);
+                assert_eq!(tx.payment_request_id, Some(req_id));
+                assert_eq!(tx.contact_node_id, Some(sender_for_tx));
                 processed_tx.send(()).expect("test receiver still alive");
                 Ok(tx_id_for_store)
             });
@@ -3790,7 +3658,7 @@ mod tests {
     async fn test_receive_token_same_mint_success() {
         let mut ctx = wallet_ctx();
 
-        let tx_id = TransactionId::new(vec![]);
+        let tx_id = Uuid::new_v4();
         let mint_url = url::Url::from_str("https://mint.example").unwrap();
 
         let (info, _keyset, proofs) = test_keyset_and_proofs(&[Amount::from(8), Amount::from(16)]);
@@ -3824,31 +3692,18 @@ mod tests {
                 Ok((Amount::from(24), expected_ys))
             },
         );
-
-        ctx.tx_repo.expect_load_tx().times(1).returning(|_| {
-            Err(bcr_wallet_persistence::error::Error::TransactionNotFound(
-                TransactionId::new(vec![]),
-            ))
-        });
-
         ctx.tx_repo
             .expect_store_tx()
             .times(1)
             .return_once(move |tx| {
                 assert_eq!(tx.direction, TransactionDirection::Incoming);
                 assert_eq!(tx.amount, Amount::from(24));
-                assert_eq!(tx.fee, Amount::ZERO);
+                assert_eq!(tx.fees, Amount::ZERO);
                 assert_eq!(tx.unit, CurrencyUnit::Sat);
-                assert_eq!(tx.timestamp, 123);
+                assert_eq!(tx.tstamp, 123);
                 assert_eq!(tx.memo, Some("token memo".to_string()));
-                assert_eq!(
-                    tx.metadata.get(PAYMENT_TYPE_METADATA_KEY),
-                    Some(&PaymentType::Token.to_string())
-                );
-                assert_eq!(
-                    tx.metadata.get(TRANSACTION_STATUS_METADATA_KEY),
-                    Some(&TransactionStatus::Settled.to_string())
-                );
+                assert_eq!(tx.payment_type, PaymentType::Token);
+                assert_eq!(tx.status, TransactionStatus::Settled);
                 Ok(tx_id)
             });
 

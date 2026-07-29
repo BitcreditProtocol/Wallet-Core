@@ -1,17 +1,17 @@
 use bcr_wallet_core::types::{
     ListTransactionsResult, PaymentResultCallback, PendingPaymentSubscriptionCallback,
-    get_btc_tx_id, get_contact_node_id, get_payment_type, get_transaction_status,
 };
 use nostr::RelayUrl;
 use once_cell::sync::Lazy;
 use std::{collections::HashMap, panic, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 #[cfg(target_os = "android")]
 use android_logger::FilterBuilder;
 use bcr_common::{
     cashu::{self},
-    cdk_common::{self, wallet::TransactionId},
+    cdk_common::{self},
 };
 use bcr_wallet_api::{
     AppState,
@@ -1298,7 +1298,7 @@ impl From<bcr_common::wire::common::ProtestStatus> for ProtestStatus {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PaymentRequestState {
     Pending,
-    Paid { tx_id: TransactionId },
+    Paid { tx_id: Uuid },
     Canceled,
     Rejected,
 }
@@ -1344,7 +1344,7 @@ impl From<PaymentRequestListState> for bcr_wallet_core::types::PaymentRequestSta
                 bcr_wallet_core::types::PaymentRequestState::Pending
             }
             PaymentRequestListState::Paid => bcr_wallet_core::types::PaymentRequestState::Paid {
-                tx_id: TransactionId::new(vec![]), // use default transactionid, since we're only interested in the type for listing
+                tx_id: Uuid::default(), // use default transactionid, since we're only interested in the type for listing
             },
             PaymentRequestListState::Canceled => {
                 bcr_wallet_core::types::PaymentRequestState::Canceled
@@ -1439,9 +1439,41 @@ pub struct Transaction {
     pub memo: Option<String>,
     pub ptype: PaymentType,
     pub status: TransactionStatus,
-    pub tx_id: Option<String>,
+    pub btc_tx_id: Option<String>,
     pub quote_id: Option<String>,
-    pub contact: Option<String>,
+    pub contact_node_id: Option<String>,
+    pub payment_request_id: Option<String>,
+    pub linked_txs: Vec<TransactionLink>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TransactionLink {
+    pub tx_id: String,
+    pub reason: TransactionLinkReason,
+}
+
+impl From<bcr_wallet_core::types::TransactionLink> for TransactionLink {
+    fn from(value: bcr_wallet_core::types::TransactionLink) -> Self {
+        Self {
+            tx_id: value.tx_id.to_string(),
+            reason: value.reason.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionLinkReason {
+    Reclaim,
+}
+
+impl From<bcr_wallet_core::types::TransactionLinkReason> for TransactionLinkReason {
+    fn from(value: bcr_wallet_core::types::TransactionLinkReason) -> Self {
+        match value {
+            bcr_wallet_core::types::TransactionLinkReason::Reclaim => {
+                TransactionLinkReason::Reclaim
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1523,23 +1555,19 @@ impl TryFrom<TransactionCursor> for bcr_wallet_core::types::TransactionCursor {
         Ok(match value.sort {
             TransactionSort::TimeDesc => bcr_wallet_core::types::TransactionCursor::TimeDesc {
                 tstamp: value.tstamp.ok_or(BcrWalletError::InvalidCursor)?,
-                id: TransactionId::from_str(&value.id)
-                    .map_err(|_| BcrWalletError::InvalidTransactionId)?,
+                id: Uuid::from_str(&value.id).map_err(|_| BcrWalletError::InvalidTransactionId)?,
             },
             TransactionSort::TimeAsc => bcr_wallet_core::types::TransactionCursor::TimeAsc {
                 tstamp: value.tstamp.ok_or(BcrWalletError::InvalidCursor)?,
-                id: TransactionId::from_str(&value.id)
-                    .map_err(|_| BcrWalletError::InvalidTransactionId)?,
+                id: Uuid::from_str(&value.id).map_err(|_| BcrWalletError::InvalidTransactionId)?,
             },
             TransactionSort::AmountDesc => bcr_wallet_core::types::TransactionCursor::AmountDesc {
                 amount: cashu::Amount::from(value.amount.ok_or(BcrWalletError::InvalidCursor)?),
-                id: TransactionId::from_str(&value.id)
-                    .map_err(|_| BcrWalletError::InvalidTransactionId)?,
+                id: Uuid::from_str(&value.id).map_err(|_| BcrWalletError::InvalidTransactionId)?,
             },
             TransactionSort::AmountAsc => bcr_wallet_core::types::TransactionCursor::AmountAsc {
                 amount: cashu::Amount::from(value.amount.ok_or(BcrWalletError::InvalidCursor)?),
-                id: TransactionId::from_str(&value.id)
-                    .map_err(|_| BcrWalletError::InvalidTransactionId)?,
+                id: Uuid::from_str(&value.id).map_err(|_| BcrWalletError::InvalidTransactionId)?,
             },
         })
     }
@@ -1601,25 +1629,27 @@ impl From<bcr_wallet_core::types::FeesByMonth> for FeesByMonth {
     }
 }
 
-impl std::convert::From<cdk_common::wallet::Transaction> for Transaction {
-    fn from(tx: cdk_common::wallet::Transaction) -> Self {
-        let status = get_transaction_status(&tx.metadata);
-        let ptype = get_payment_type(&tx.metadata);
-        let tx_id = get_btc_tx_id(&tx.metadata).map(|txid| txid.to_string());
-        let contact = get_contact_node_id(&tx.metadata).map(|node_id| node_id.to_string());
+impl From<bcr_wallet_core::types::Transaction> for Transaction {
+    fn from(value: bcr_wallet_core::types::Transaction) -> Self {
         Self {
-            id: tx.id().to_string(),
-            amount: u64::from(tx.amount),
-            fees: u64::from(tx.fee),
-            unit: tx.unit.to_string(),
-            direction: TransactionDirection::from(tx.direction),
-            tstamp: tx.timestamp,
-            memo: tx.memo,
-            ptype: ptype.into(),
-            status: status.into(),
-            tx_id,
-            quote_id: tx.quote_id,
-            contact,
+            id: value.id.to_string(),
+            amount: u64::from(value.amount),
+            fees: u64::from(value.fees),
+            unit: value.unit.to_string(),
+            tstamp: value.tstamp,
+            direction: TransactionDirection::from(value.direction),
+            memo: value.memo,
+            ptype: value.payment_type.into(),
+            status: value.status.into(),
+            btc_tx_id: value.btc_tx_id.map(|tx_id| tx_id.to_string()),
+            quote_id: value.quote_id.map(|q_id| q_id.to_string()),
+            contact_node_id: value.contact_node_id.map(|node_id| node_id.to_string()),
+            payment_request_id: value.payment_request_id.map(|pr_id| pr_id.to_string()),
+            linked_txs: value
+                .linked_txs
+                .into_iter()
+                .map(|linked_tx| linked_tx.into())
+                .collect(),
         }
     }
 }
