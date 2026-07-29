@@ -12,9 +12,10 @@ use bcr_common::{
 use bcr_wallet_core::contact::Contact;
 use bcr_wallet_core::name::Name;
 use bcr_wallet_core::types::{
-    self, ListTransactionsResult, MintSummary, PaymentRequest, PaymentRequestDirection,
-    PaymentRequestState, PaymentResultCallback, PaymentSummary, PendingPaymentSubscriptionCallback,
-    Seed, Transaction, TransactionCursor, TransactionFilters, TransactionSort, WalletConfig,
+    self, BtcTxStatus, ListTransactionsResult, MeltEstimation, MintSummary, PaymentRequest,
+    PaymentRequestDirection, PaymentRequestState, PaymentResultCallback, PaymentSummary,
+    PendingPaymentSubscriptionCallback, Seed, Transaction, TransactionCursor, TransactionFilters,
+    TransactionSort, WalletConfig,
 };
 use bcr_wallet_core::util::{
     build_wallet_id, keypair_from_mnemonic, keypair_from_seed, seed_from_mnemonic,
@@ -45,11 +46,13 @@ pub struct AppState {
     db: Arc<Database>,
     cfg: AppStateConfig,
     http_cl: Arc<reqwest::Client>,
+    btc_cl: Arc<external::bitcoin::BitcoinClient>,
 }
 
 impl AppState {
     pub const DB_VERSION: u32 = 1;
-    pub const MINT_MELT_THRESHOLD_SAT: u64 = 2000;
+    pub const MINT_THRESHOLD_SAT: u64 = 2000;
+    pub const MELT_THRESHOLD_SAT: u64 = 546;
 
     pub async fn initialize(cfg: AppStateConfig) -> Result<Self> {
         tracing::debug!("Initializing API");
@@ -60,11 +63,15 @@ impl AppState {
 
         let http_cl = Arc::new(reqwest::Client::new());
         let purse = purse::Purse::new(pursedb).await?;
+        let btc_cl = Arc::new(external::bitcoin::BitcoinClient::new(
+            cfg.esplora_base_urls.clone(),
+        ));
         let mut appstate = Self {
             purse: Arc::new(purse),
             db,
             cfg,
             http_cl,
+            btc_cl,
         };
         appstate.load_wallets().await?;
         Ok(appstate)
@@ -532,19 +539,39 @@ impl AppState {
         Ok(())
     }
 
+    pub async fn wallet_estimate_melt(
+        &self,
+        wallet_id: String,
+        amount: u64,
+    ) -> Result<MeltEstimation> {
+        if amount < Self::MELT_THRESHOLD_SAT {
+            return Err(Error::InsufficientOnChainMeltAmount(amount));
+        }
+        let parsed_amount = bitcoin::Amount::from_sat(amount);
+        let wallet = self.get_wallet(&wallet_id).await?;
+        let res = wallet.read().await.estimate_melt(parsed_amount).await?;
+        Ok(res)
+    }
+
     pub async fn wallet_prepare_melt(
         &self,
         wallet_id: String,
         amount: u64,
+        network_fee: u64,
+        melt_fee: u64,
         address: String,
         description: Option<String>,
     ) -> Result<PaymentSummary> {
-        tracing::debug!("wallet_prepare_melt({wallet_id}, {amount}, {address}, {description:?})");
+        tracing::debug!(
+            "wallet_prepare_melt({wallet_id}, {amount}, {network_fee}, {melt_fee} {address}, {description:?})"
+        );
 
-        if amount < Self::MINT_MELT_THRESHOLD_SAT {
+        if amount < Self::MELT_THRESHOLD_SAT {
             return Err(Error::InsufficientOnChainMeltAmount(amount));
         }
         let parsed_amount = bitcoin::Amount::from_sat(amount);
+        let parsed_network_fee = bitcoin::Amount::from_sat(network_fee);
+        let parsed_melt_fee = bitcoin::Amount::from_sat(melt_fee);
         let parsed_address = bitcoin::Address::from_str(&address)
             .map_err(|_| Error::InvalidBitcoinAddress(address.clone()))?;
 
@@ -555,7 +582,13 @@ impl AppState {
         let summary = wallet
             .read()
             .await
-            .prepare_melt(parsed_amount, parsed_address, description)
+            .prepare_melt(
+                parsed_amount,
+                parsed_network_fee,
+                parsed_melt_fee,
+                parsed_address,
+                description,
+            )
             .await?;
 
         Ok(summary)
@@ -576,7 +609,7 @@ impl AppState {
     pub async fn wallet_mint(&self, wallet_id: String, amount: u64) -> Result<MintSummary> {
         tracing::debug!("wallet_mint({wallet_id}, {amount})");
 
-        if amount < Self::MINT_MELT_THRESHOLD_SAT {
+        if amount < Self::MINT_THRESHOLD_SAT {
             return Err(Error::InsufficientOnChainMintAmount(amount));
         }
 
@@ -931,6 +964,23 @@ impl AppState {
         }
 
         Ok(())
+    }
+
+    pub async fn check_btc_tx_status(
+        &self,
+        tx_id: String,
+        bitcoin_network: String,
+    ) -> Result<BtcTxStatus> {
+        tracing::debug!("check_btc_tx_status({tx_id}, {bitcoin_network})");
+        let parsed_network = bitcoin::Network::from_str(&bitcoin_network)
+            .map_err(|_| Error::InvalidBitcoinNetwork(bitcoin_network))?;
+        let parsed_tx_id =
+            bitcoin::Txid::from_str(&tx_id).map_err(|_| Error::InvalidBitcoinTxId(tx_id))?;
+        let res = self
+            .btc_cl
+            .check_status_for_transaction(parsed_tx_id, parsed_network)
+            .await?;
+        Ok(res)
     }
 
     pub async fn execute_regular_jobs(&self) -> bool {

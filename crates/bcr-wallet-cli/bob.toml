@@ -1,5 +1,6 @@
 log_level = "DEBUG"
 db_path = "./bob.db"
+esplora_base_urls = ["https://esplora.minibill.tech", "https://blockstream.info"]
 
 [wallets.49b81beaed5cdd051ff5070906be2d8c17508ddb01436f5d6e56216d6f634c0c]
 network = "testnet"

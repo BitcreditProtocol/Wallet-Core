@@ -14,7 +14,10 @@ use bcr_common::{
         melt as wire_melt, mint as wire_mint, swap as wire_swap,
     },
 };
-use bcr_wallet_core::SendSync;
+use bcr_wallet_core::{
+    SendSync,
+    types::{MeltEstimation, MeltFeeRateEstimate},
+};
 use bitcoin::secp256k1;
 use tracing::debug;
 
@@ -89,6 +92,8 @@ async fn post_swap_commitment_inner(
 async fn post_melt_quote_onchain_inner(
     client: &MintClient,
     inputs: Vec<cashu::Proof>,
+    amount: bitcoin::Amount,
+    network_fee: bitcoin::Amount,
     address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
     alpha_pk: secp256k1::PublicKey,
     attestation: wire_attestation::IssuanceAttestation,
@@ -106,6 +111,8 @@ async fn post_melt_quote_onchain_inner(
         .onchain_melt_quote(
             fingerprints,
             address.clone(),
+            amount,
+            network_fee,
             wallet_key,
             alpha_pk,
             attestation.clone(),
@@ -193,9 +200,12 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
         &self,
         req: wire_swap::SwapProtestRequest,
     ) -> Result<wire_swap::SwapProtestResponse>;
+    async fn post_melt_estimate_onchain(&self, amount: bitcoin::Amount) -> Result<MeltEstimation>;
     async fn post_melt_quote_onchain(
         &self,
         inputs: Vec<cashu::Proof>,
+        amount: bitcoin::Amount,
+        network_fee: bitcoin::Amount,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
@@ -426,14 +436,46 @@ impl ClowderMintConnector for HttpClientExt {
         }
     }
 
+    async fn post_melt_estimate_onchain(&self, amount: bitcoin::Amount) -> Result<MeltEstimation> {
+        debug!(
+            "HTTP call to post_melt_estimate_onchain on {}",
+            self.mint_url()
+        );
+        let estimate = self.main.onchain_melt_estimate(amount, None).await?;
+        Ok(MeltEstimation {
+            tx_vsize: estimate.tx_vsize,
+            fee_rates: estimate
+                .feerates
+                .into_iter()
+                .map(|fr| MeltFeeRateEstimate {
+                    target_blocks: fr.target_blocks,
+                    sat_per_vb: fr.sat_per_vb,
+                })
+                .collect(),
+            melt_fee: estimate.melt_fee.to_sat(),
+            melt_fee_ppk: estimate.melt_fee_ppk,
+        })
+    }
+
     async fn post_melt_quote_onchain(
         &self,
         inputs: Vec<cashu::Proof>,
+        amount: bitcoin::Amount,
+        network_fee: bitcoin::Amount,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<MeltQuoteResult> {
-        post_melt_quote_onchain_inner(&self.main, inputs, address, alpha_pk, attestation).await
+        post_melt_quote_onchain_inner(
+            &self.main,
+            inputs,
+            amount,
+            network_fee,
+            address,
+            alpha_pk,
+            attestation,
+        )
+        .await
     }
 
     async fn post_melt_onchain(
@@ -799,14 +841,46 @@ impl ClowderMintConnector for SentinelClient {
         }
     }
 
+    async fn post_melt_estimate_onchain(&self, amount: bitcoin::Amount) -> Result<MeltEstimation> {
+        debug!(
+            "HTTP call to post_melt_estimate_onchain on {}",
+            self.mint_url()
+        );
+        let estimate = self.main.onchain_melt_estimate(amount, None).await?;
+        Ok(MeltEstimation {
+            tx_vsize: estimate.tx_vsize,
+            fee_rates: estimate
+                .feerates
+                .into_iter()
+                .map(|fr| MeltFeeRateEstimate {
+                    target_blocks: fr.target_blocks,
+                    sat_per_vb: fr.sat_per_vb,
+                })
+                .collect(),
+            melt_fee: estimate.melt_fee.to_sat(),
+            melt_fee_ppk: estimate.melt_fee_ppk,
+        })
+    }
+
     async fn post_melt_quote_onchain(
         &self,
         inputs: Vec<cashu::Proof>,
+        amount: bitcoin::Amount,
+        network_fee: bitcoin::Amount,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<MeltQuoteResult> {
-        post_melt_quote_onchain_inner(&self.main, inputs, address, alpha_pk, attestation).await
+        post_melt_quote_onchain_inner(
+            &self.main,
+            inputs,
+            amount,
+            network_fee,
+            address,
+            alpha_pk,
+            attestation,
+        )
+        .await
     }
 
     async fn post_melt_onchain(

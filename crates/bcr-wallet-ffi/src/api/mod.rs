@@ -1,5 +1,6 @@
 use bcr_wallet_core::types::{
-    ListTransactionsResult, PaymentResultCallback, PendingPaymentSubscriptionCallback,
+    ListTransactionsResult, MeltEstimation, PaymentResultCallback,
+    PendingPaymentSubscriptionCallback,
 };
 use nostr::RelayUrl;
 use once_cell::sync::Lazy;
@@ -80,6 +81,9 @@ pub struct WalletFfiConfig {
     pub job_initial_delay_secs: u64,
     // The mnemonics for the existing wallets, WalletId -> Mnemonic
     pub mnemonics: HashMap<String, String>,
+    // The esplora base urls to use for bitcoin API calls in order of priority
+    // The first one will be taken, if it fails, it goes down the list as fallbacks
+    pub esplora_base_urls: Vec<String>,
     // The nostr relays to use
     pub swap_expiry_minutes: u32,
     // Dev Mode Enabled
@@ -101,6 +105,14 @@ pub async fn init_wallet_ffi(conf: WalletFfiConfig) {
             let mnemonic = bip39::Mnemonic::from_str(v).expect("Not a valid bip39 mnemonic");
             (k.to_owned(), mnemonic)
         })
+        .collect();
+    if conf.esplora_base_urls.is_empty() {
+        panic!("Esplora base urls has to have at least one valid URL");
+    }
+    let parsed_esplora_base_urls: Vec<url::Url> = conf
+        .esplora_base_urls
+        .into_iter()
+        .map(|u| url::Url::from_str(&u).expect("esplora base URLs have to be valid URLs"))
         .collect();
     let swap_expiry = chrono::TimeDelta::minutes(conf.swap_expiry_minutes as i64);
 
@@ -125,6 +137,7 @@ pub async fn init_wallet_ffi(conf: WalletFfiConfig) {
         db_path: parsed_path,
         mnemonics: parsed_mnemonics,
         swap_expiry,
+        esplora_base_urls: parsed_esplora_base_urls,
         dev_mode: conf.dev_mode.into(),
     };
 
@@ -422,12 +435,30 @@ pub async fn wallet_recover_pending_stale_proofs(
 }
 
 #[frb]
+pub async fn wallet_estimate_melt(
+    req: WalletEstimateMeltRequest,
+) -> Result<WalletEstimateMeltResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let estimate = app_state
+        .wallet_estimate_melt(req.wallet_id, req.amount)
+        .await?;
+    Ok(estimate.into())
+}
+
+#[frb]
 pub async fn wallet_prepare_melt(
     req: WalletPrepareMeltRequest,
 ) -> Result<WalletPreparePaymentResponse, WalletError> {
     let app_state = get_app_state().await;
     let payment_summary = app_state
-        .wallet_prepare_melt(req.wallet_id, req.amount, req.address, req.description)
+        .wallet_prepare_melt(
+            req.wallet_id,
+            req.amount,
+            req.network_fee,
+            req.melt_fee,
+            req.address,
+            req.description,
+        )
         .await?;
     Ok(WalletPreparePaymentResponse {
         payment_summary: PaymentSummary {
@@ -934,6 +965,17 @@ pub async fn generate_random_mnemonic(
         wallet_id,
         mnemonic,
     })
+}
+
+#[frb]
+pub async fn check_btc_tx_status(
+    req: BtcTxStatusRequest,
+) -> Result<BtcTxStatusResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let resp = app_state
+        .check_btc_tx_status(req.tx_id, req.bitcoin_network)
+        .await?;
+    Ok(resp.into())
 }
 
 #[frb]
@@ -1692,11 +1734,51 @@ pub struct WalletRefreshTransactionsResponse {
 }
 
 #[derive(Debug, Clone)]
+pub struct WalletEstimateMeltRequest {
+    pub wallet_id: String,
+    pub amount: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletEstimateMeltResponse {
+    pub tx_vsize: u64,
+    pub fee_rates: Vec<WalletEstimateMeltFeeRate>,
+    pub melt_fee: u64,
+    pub melt_fee_ppk: u64,
+}
+
+impl From<MeltEstimation> for WalletEstimateMeltResponse {
+    fn from(value: MeltEstimation) -> Self {
+        Self {
+            tx_vsize: value.tx_vsize,
+            fee_rates: value
+                .fee_rates
+                .into_iter()
+                .map(|fr| WalletEstimateMeltFeeRate {
+                    target_blocks: fr.target_blocks,
+                    sat_per_vb: fr.sat_per_vb,
+                })
+                .collect(),
+            melt_fee: value.melt_fee,
+            melt_fee_ppk: value.melt_fee_ppk,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct WalletPrepareMeltRequest {
     pub wallet_id: String,
     pub amount: u64,
+    pub network_fee: u64,
+    pub melt_fee: u64,
     pub address: String,
     pub description: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletEstimateMeltFeeRate {
+    pub target_blocks: u16,
+    pub sat_per_vb: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -1808,6 +1890,48 @@ pub struct WalletsIdsResponse {
 pub struct MnemonicRequest {
     pub length: u32,
     pub bitcoin_network: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BtcTxStatusRequest {
+    pub tx_id: String,
+    pub bitcoin_network: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BtcTxStatusResponse {
+    pub tx_id: String,
+    pub bitcoin_network: String,
+    pub receivers: Vec<BtcTxStatusReceiver>,
+    pub fee: u64,
+    pub confirmations: u64,
+    pub confirmation_tstamp: Option<u64>,
+}
+
+impl From<bcr_wallet_core::types::BtcTxStatus> for BtcTxStatusResponse {
+    fn from(value: bcr_wallet_core::types::BtcTxStatus) -> Self {
+        Self {
+            tx_id: value.tx_id.to_string(),
+            bitcoin_network: value.bitcoin_network.to_string(),
+            receivers: value
+                .receivers
+                .into_iter()
+                .map(|rec| BtcTxStatusReceiver {
+                    address: rec.address.assume_checked().to_string(),
+                    amount: rec.amount.to_sat(),
+                })
+                .collect(),
+            fee: value.fee.to_sat(),
+            confirmations: value.confirmations,
+            confirmation_tstamp: value.confirmation_tstamp,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BtcTxStatusReceiver {
+    pub address: String,
+    pub amount: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -2103,6 +2227,8 @@ pub enum WalletErrorCode {
     InactiveKeyset,
     NoDebitCurrencyInMint,
     InvalidNetwork,
+    InvalidBitcoinNetwork,
+    InvalidBitcoinTxId,
     MissingAmount,
     UnknownPaymentRequest,
     Unsupported,
@@ -2135,6 +2261,7 @@ pub enum WalletErrorCode {
     AttestationUnknownBeta,
     AttestationVerifyNotFound,
     AttestationSignature,
+    BitcoinApi,
 }
 
 impl From<BcrWalletError> for WalletError {
@@ -2219,6 +2346,12 @@ impl From<BcrWalletError> for WalletError {
             }
             BcrWalletError::InvalidNetwork(_, _) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidNetwork)
+            }
+            BcrWalletError::InvalidBitcoinNetwork(_) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidBitcoinNetwork)
+            }
+            BcrWalletError::InvalidBitcoinTxId(_) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidBitcoinTxId)
             }
             BcrWalletError::MissingAmount => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::MissingAmount)
@@ -2336,6 +2469,9 @@ impl From<BcrWalletError> for WalletError {
             ),
             BcrWalletError::AttestationSignature(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::AttestationSignature)
+            }
+            BcrWalletError::BitcoinClient(_) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::BitcoinApi)
             }
         }
     }

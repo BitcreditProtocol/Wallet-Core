@@ -415,6 +415,36 @@ pub fn extract_fees_per_month(transactions: &[Transaction]) -> Vec<FeesByMonth> 
         .collect()
 }
 
+#[derive(Debug, Clone)]
+pub struct BtcTxStatus {
+    pub tx_id: bitcoin::Txid,
+    pub bitcoin_network: bitcoin::Network,
+    pub receivers: Vec<BtcTxStatusReceiver>,
+    pub fee: bitcoin::Amount,
+    pub confirmations: u64,
+    pub confirmation_tstamp: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BtcTxStatusReceiver {
+    pub address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+    pub amount: bitcoin::Amount,
+}
+
+#[derive(Debug, Clone)]
+pub struct MeltEstimation {
+    pub tx_vsize: u64,
+    pub fee_rates: Vec<MeltFeeRateEstimate>,
+    pub melt_fee: u64,
+    pub melt_fee_ppk: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct MeltFeeRateEstimate {
+    pub target_blocks: u16,
+    pub sat_per_vb: f32,
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;

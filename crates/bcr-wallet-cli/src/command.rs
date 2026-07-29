@@ -407,10 +407,23 @@ pub async fn cmd_melt(
     description: &Option<String>,
 ) -> Result<String> {
     let mut res = String::new();
+    let melt_estimate = app_state
+        .wallet_estimate_melt(id.to_owned(), amount)
+        .await?;
+    info!("Melt Estimate for Amount: {}", amount,);
+    let selected_network_fee =
+        melt_estimate.tx_vsize * melt_estimate.fee_rates[0].sat_per_vb as u64;
+    info!(
+        "Tx Size: {}, Melt Fee: {}, FeeRates: {:?}",
+        melt_estimate.tx_vsize, melt_estimate.melt_fee, melt_estimate.fee_rates,
+    );
+    info!("Using {selected_network_fee} sat as network fee");
     let melt_summary = app_state
         .wallet_prepare_melt(
             id.to_owned(),
             amount,
+            selected_network_fee,
+            melt_estimate.melt_fee,
             address.to_owned(),
             description.to_owned(),
         )
@@ -879,6 +892,37 @@ pub async fn cmd_cancel_pr(
     res.push_str(&format!(
         "Cancel Pending Payment Request for {payment_req_id} for {name}:\n"
     ));
+    push_break(&mut res);
+    Ok(res)
+}
+
+pub async fn cmd_check_btc_tx(
+    app_state: &AppState,
+    name: &str,
+    tx_id: &bitcoin::Txid,
+    network: bitcoin::Network,
+) -> Result<String> {
+    let mut res = String::new();
+    push_break(&mut res);
+    res.push_str(&format!("Check Btc Tx for {tx_id} for {name}:\n"));
+    let status = app_state
+        .check_btc_tx_status(tx_id.to_string(), network.to_string())
+        .await?;
+    res.push_str(&format!(
+        "Confirmations: {}, Fee: {} sat, Confirmed at: {}:\n",
+        status.confirmations,
+        status.fee.to_sat(),
+        format_timestamp(status.confirmation_tstamp.unwrap_or(0))
+    ));
+    res.push_str("Receiver Addresses:\n");
+    for receiver in status.receivers {
+        res.push_str(&format!(
+            "Address: {}, Amount: {} sat",
+            receiver.address.assume_checked(),
+            receiver.amount.to_sat()
+        ));
+        push_break(&mut res);
+    }
     push_break(&mut res);
     Ok(res)
 }

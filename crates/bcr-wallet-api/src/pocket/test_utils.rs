@@ -180,6 +180,8 @@ pub mod tests {
                 &self,
                 address: String,
                 amount: u64,
+                network_fee: u64,
+                melt_fee: u64,
                 keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
