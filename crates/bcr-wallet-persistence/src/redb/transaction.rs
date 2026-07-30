@@ -20,6 +20,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub(super) enum StoredTransaction {
     V1(StoredTransactionPayloadV1),
+    V2(StoredTransactionPayloadV2),
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
@@ -82,7 +83,7 @@ impl From<bcr_wallet_core::types::Transaction> for StoredTransactionPayloadV1 {
             mint_url: value.mint_url,
             ys: value.ys,
             amount: value.amount,
-            fees: value.fees,
+            fees: value.fees.sum(),
             unit: value.unit,
             tstamp: value.tstamp,
             direction: value.direction,
@@ -102,12 +103,32 @@ impl From<bcr_wallet_core::types::Transaction> for StoredTransactionPayloadV1 {
 impl TryFrom<StoredTransactionPayloadV1> for bcr_wallet_core::types::Transaction {
     type Error = Error;
     fn try_from(value: StoredTransactionPayloadV1) -> Result<Self> {
+        // melt is melt fee, otherwise swap fee
+        let fees = match value.payment_type {
+            PaymentType::OnChain => {
+                if value.direction == TransactionDirection::Outgoing {
+                    bcr_wallet_core::types::TransactionFees {
+                        melt: value.fees,
+                        ..Default::default()
+                    }
+                } else {
+                    bcr_wallet_core::types::TransactionFees {
+                        swap: value.fees,
+                        ..Default::default()
+                    }
+                }
+            }
+            _ => bcr_wallet_core::types::TransactionFees {
+                swap: value.fees,
+                ..Default::default()
+            },
+        };
         Ok(Self {
             id: value.id,
             mint_url: value.mint_url,
             ys: value.ys,
             amount: value.amount,
-            fees: value.fees,
+            fees,
             unit: value.unit,
             tstamp: value.tstamp,
             direction: value.direction,
@@ -129,6 +150,151 @@ impl TryFrom<StoredTransactionPayloadV1> for bcr_wallet_core::types::Transaction
             payment_request_id: value.payment_request_id,
             linked_txs: value.linked_txs.into_iter().map(|ltx| ltx.into()).collect(),
         })
+    }
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct StoredTransactionPayloadV2 {
+    pub id: Uuid,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub mint_url: MintUrl,
+    #[borsh(
+        serialize_with = "serialize_vec_of_strs",
+        deserialize_with = "deserialize_vec_of_strs"
+    )]
+    pub ys: Vec<cashu::PublicKey>,
+    #[borsh(
+        serialize_with = "serialize_cashu_amount",
+        deserialize_with = "deserialize_cashu_amount"
+    )]
+    pub amount: cashu::Amount,
+    pub fees: TransactionFeesV1,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub unit: CurrencyUnit,
+    pub tstamp: u64,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub direction: TransactionDirection,
+    pub memo: Option<String>,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub payment_type: PaymentType,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub status: TransactionStatus,
+    pub btc_tx_id: Option<String>,
+    pub quote_id: Option<Uuid>,
+    pub nostr_event_id: Option<String>,
+    pub contact_node_id: Option<NodeId>,
+    pub payment_request_id: Option<Uuid>,
+    pub linked_txs: Vec<TransactionLink>,
+}
+
+impl From<bcr_wallet_core::types::Transaction> for StoredTransactionPayloadV2 {
+    fn from(value: bcr_wallet_core::types::Transaction) -> Self {
+        Self {
+            id: value.id,
+            mint_url: value.mint_url,
+            ys: value.ys,
+            amount: value.amount,
+            fees: value.fees.into(),
+            unit: value.unit,
+            tstamp: value.tstamp,
+            direction: value.direction,
+            memo: value.memo,
+            payment_type: value.payment_type,
+            status: value.status,
+            btc_tx_id: value.btc_tx_id.map(|bid| bid.to_string()),
+            quote_id: value.quote_id,
+            nostr_event_id: value.nostr_event_id.map(|nei| nei.to_string()),
+            contact_node_id: value.contact_node_id,
+            payment_request_id: value.payment_request_id,
+            linked_txs: value.linked_txs.into_iter().map(|ltx| ltx.into()).collect(),
+        }
+    }
+}
+
+impl TryFrom<StoredTransactionPayloadV2> for bcr_wallet_core::types::Transaction {
+    type Error = Error;
+    fn try_from(value: StoredTransactionPayloadV2) -> Result<Self> {
+        Ok(Self {
+            id: value.id,
+            mint_url: value.mint_url,
+            ys: value.ys,
+            amount: value.amount,
+            fees: value.fees.into(),
+            unit: value.unit,
+            tstamp: value.tstamp,
+            direction: value.direction,
+            memo: value.memo,
+            payment_type: value.payment_type,
+            status: value.status,
+            btc_tx_id: value
+                .btc_tx_id
+                .map(|bid| bitcoin::Txid::from_str(&bid))
+                .transpose()
+                .map_err(|e| Error::InvalidBtcTxId(e.to_string()))?,
+            quote_id: value.quote_id,
+            nostr_event_id: value
+                .nostr_event_id
+                .map(|nei| EventId::from_str(&nei))
+                .transpose()
+                .map_err(|e| Error::InvalidNostrEventId(e.to_string()))?,
+            contact_node_id: value.contact_node_id,
+            payment_request_id: value.payment_request_id,
+            linked_txs: value.linked_txs.into_iter().map(|ltx| ltx.into()).collect(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct TransactionFeesV1 {
+    #[borsh(
+        serialize_with = "serialize_cashu_amount",
+        deserialize_with = "deserialize_cashu_amount"
+    )]
+    pub swap: cashu::Amount,
+    #[borsh(
+        serialize_with = "serialize_cashu_amount",
+        deserialize_with = "deserialize_cashu_amount"
+    )]
+    pub network: cashu::Amount,
+    #[borsh(
+        serialize_with = "serialize_cashu_amount",
+        deserialize_with = "deserialize_cashu_amount"
+    )]
+    pub melt: cashu::Amount,
+}
+
+impl From<bcr_wallet_core::types::TransactionFees> for TransactionFeesV1 {
+    fn from(value: bcr_wallet_core::types::TransactionFees) -> Self {
+        Self {
+            swap: value.swap,
+            network: value.network,
+            melt: value.melt,
+        }
+    }
+}
+
+impl From<TransactionFeesV1> for bcr_wallet_core::types::TransactionFees {
+    fn from(value: TransactionFeesV1) -> Self {
+        Self {
+            swap: value.swap,
+            network: value.network,
+            melt: value.melt,
+        }
     }
 }
 
@@ -211,7 +377,7 @@ impl TransactionDB {
         tx: Transaction,
     ) -> Result<Uuid> {
         let id = tx.id;
-        let entry = StoredTransaction::V1(tx.into());
+        let entry = StoredTransaction::V2(tx.into());
         let write_txn = db.begin_write()?;
 
         {
@@ -241,7 +407,7 @@ impl TransactionDB {
                         let deserialized: StoredTransaction =
                             borsh::from_slice(e.value().as_slice())
                                 .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                        let StoredTransaction::V1(tx) = deserialized;
+                        let tx = stored_tx_data(deserialized)?;
                         Ok(Some(tx.try_into()?))
                     }
                     None => Ok(None),
@@ -287,7 +453,7 @@ impl TransactionDB {
                     let deserialized: StoredTransaction =
                         borsh::from_slice(v.value().as_slice())
                             .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                    let StoredTransaction::V1(tx) = deserialized;
+                    let tx = stored_tx_data(deserialized)?;
                     res.push(tx.try_into()?);
                 }
                 Ok(res)
@@ -311,11 +477,11 @@ impl TransactionDB {
             if let Some(old_value) = old_value {
                 let deserialized: StoredTransaction = borsh::from_slice(&old_value)
                     .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                let StoredTransaction::V1(mut tx) = deserialized;
+                let mut tx = stored_tx_data(deserialized)?;
                 let old = tx.status;
                 tx.status = status;
 
-                let serialized = borsh::to_vec(&StoredTransaction::V1(tx))
+                let serialized = borsh::to_vec(&StoredTransaction::V2(tx))
                     .map_err(|e| Error::BorshSerialization(e.to_string()))?;
                 table.insert(tx_id.as_bytes().as_slice(), serialized)?;
                 Some(old)
@@ -342,12 +508,12 @@ impl TransactionDB {
             if let Some(old_value) = old_value {
                 let deserialized: StoredTransaction = borsh::from_slice(&old_value)
                     .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                let StoredTransaction::V1(mut tx) = deserialized;
+                let mut tx = stored_tx_data(deserialized)?;
 
                 let old = tx.memo.clone();
                 tx.memo = new_memo;
 
-                let serialized = borsh::to_vec(&StoredTransaction::V1(tx))
+                let serialized = borsh::to_vec(&StoredTransaction::V2(tx))
                     .map_err(|e| Error::BorshSerialization(e.to_string()))?;
                 table.insert(tx_id.as_bytes().as_slice(), serialized)?;
                 old
@@ -382,11 +548,11 @@ impl TransactionDB {
 
             let deserialized_1: StoredTransaction = borsh::from_slice(&entry_1)
                 .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-            let StoredTransaction::V1(mut tx_1) = deserialized_1;
+            let mut tx_1 = stored_tx_data(deserialized_1)?;
 
             let deserialized_2: StoredTransaction = borsh::from_slice(&entry_2)
                 .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-            let StoredTransaction::V1(mut tx_2) = deserialized_2;
+            let mut tx_2 = stored_tx_data(deserialized_2)?;
 
             let link_1_to_2 = TransactionLink {
                 tx_id: tx_id_2,
@@ -401,11 +567,11 @@ impl TransactionDB {
             tx_1.linked_txs.push(link_1_to_2);
             tx_2.linked_txs.push(link_2_to_1);
 
-            let serialized_1 = borsh::to_vec(&StoredTransaction::V1(tx_1))
+            let serialized_1 = borsh::to_vec(&StoredTransaction::V2(tx_1))
                 .map_err(|e| Error::BorshSerialization(e.to_string()))?;
             table.insert(tx_id_1.as_bytes().as_slice(), serialized_1)?;
 
-            let serialized_2 = borsh::to_vec(&StoredTransaction::V1(tx_2))
+            let serialized_2 = borsh::to_vec(&StoredTransaction::V2(tx_2))
                 .map_err(|e| Error::BorshSerialization(e.to_string()))?;
             table.insert(tx_id_2.as_bytes().as_slice(), serialized_2)?;
         }
@@ -497,6 +663,14 @@ impl TransactionRepository for TransactionDB {
     }
 }
 
+// after migrations, everything has to be v2
+fn stored_tx_data(stored_tx: StoredTransaction) -> Result<StoredTransactionPayloadV2> {
+    match stored_tx {
+        StoredTransaction::V1(_) => Err(Error::InvalidTransactionData("v1".to_string())),
+        StoredTransaction::V2(data) => Ok(data),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -527,7 +701,12 @@ mod tests {
             mint_url,
             direction: TransactionDirection::Outgoing,
             amount: Amount::from(42u64),
-            fees: Amount::ZERO,
+            fees: TransactionFeesV1 {
+                swap: Amount::ZERO,
+                network: Amount::ZERO,
+                melt: Amount::ZERO,
+            }
+            .into(),
             unit: CurrencyUnit::Sat,
             ys: vec![cashu::PublicKey::from(test_pub_key())],
             tstamp: Utc::now().timestamp() as u64,

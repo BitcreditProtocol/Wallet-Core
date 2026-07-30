@@ -22,6 +22,10 @@
 * Expose functionality to send a private, encrypted payment to an existing contact via Nostr
     * `wallet_prepare_pay_to_contact` - taking a contact_id, amount and description
     * `wallet_pay_to_contact` - taking a payment request id
+* Separate `fees` in `Transaction` and `PaymentSummary` to contain different types of fees
+    * `swap` - swap fee
+    * `network` - network fee (e.g. bitcoin miner fee)
+    * `melt` - melt fee
 
 # 0.9.7
 

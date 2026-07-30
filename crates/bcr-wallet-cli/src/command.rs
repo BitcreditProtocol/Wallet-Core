@@ -1,18 +1,17 @@
-use std::sync::Arc;
-
+use crate::WalletSettings;
 use anyhow::Result;
+use bcr_common::cashu;
 use bcr_wallet_api::{AppState, config::CreateWalletConfig};
 use bcr_wallet_core::types::{
     PaymentRequestDirection, PaymentResultCallback, PendingPaymentSubscriptionCallback,
-    TransactionFilters, TransactionSort,
+    TransactionFees, TransactionFilters, TransactionSort,
 };
 use chrono::{DateTime, Utc};
+use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use uuid::Uuid;
-
-use crate::WalletSettings;
 
 pub async fn cmd_info(app_state: &AppState) -> Result<String> {
     let mut res = String::new();
@@ -100,8 +99,8 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 res.push_str(&format!(
-                    "\t\tId: {} \t Amount: {:8} {} \t Fees: {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {} \t BTC TxID/Quote ID: {} \t Contact: {} \t Payment Request ID: {} \t Links: {}",
-                    tx.id, tx.amount, tx.unit, tx.fees,  tx.status, format_timestamp(tx.tstamp), format!("{:?}", tx.payment_type), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id, tx.contact_node_id.as_ref().map(|n| n.to_string()).unwrap_or_default(), tx.payment_request_id.map(|id| id.to_string()).unwrap_or_default(), tx_links
+                    "\t\tId: {} \t Amount: {:8} {} \t {}  \t Status: {:?} \t {} \tType: {:<10} \t {:?} \t Memo: {} \t BTC TxID/Quote ID: {} \t Contact: {} \t Payment Request ID: {} \t Links: {}",
+                    tx.id, tx.amount, tx.unit, format_fees(tx.fees),  tx.status, format_timestamp(tx.tstamp), format!("{:?}", tx.payment_type), tx.direction, tx.memo.clone().unwrap_or_default(), quote_or_btc_tx_id, tx.contact_node_id.as_ref().map(|n| n.to_string()).unwrap_or_default(), tx.payment_request_id.map(|id| id.to_string()).unwrap_or_default(), tx_links
                 ));
                 push_break(&mut res);
             }
@@ -262,8 +261,10 @@ pub async fn cmd_pay_by_token(
         .await?;
 
     info!(
-        "Payment Summary: Amount: {}, Unit: {}, Fees: {}",
-        payment_summary.amount, payment_summary.unit, payment_summary.fees,
+        "Payment Summary: Amount: {}, Unit: {}, {}",
+        payment_summary.amount,
+        payment_summary.unit,
+        format_fees(payment_summary.fees),
     );
     let result = app_state
         .wallet_pay_by_token(id.to_owned(), payment_summary.request_id.to_string())
@@ -275,8 +276,10 @@ pub async fn cmd_pay_by_token(
     push_break(&mut res);
     res.push_str(&format!("Payment Summary: {}", payment_summary.request_id));
     res.push_str(&format!(
-        "Unit: {}, Amount: {}, Fees: {}",
-        payment_summary.unit, payment_summary.amount, payment_summary.fees
+        "Unit: {}, Amount: {}, {}",
+        payment_summary.unit,
+        payment_summary.amount,
+        format_fees(payment_summary.fees)
     ));
     push_break(&mut res);
     res.push_str(&format!("Transaction ID: {}", result.tx_id));
@@ -301,8 +304,10 @@ pub async fn cmd_pay_to_contact(
         .await?;
 
     info!(
-        "Payment Summary: Amount: {}, Unit: {}, Fees: {}",
-        payment_summary.amount, payment_summary.unit, payment_summary.fees,
+        "Payment Summary: Amount: {}, Unit: {}, {}",
+        payment_summary.amount,
+        payment_summary.unit,
+        format_fees(payment_summary.fees),
     );
     let result = app_state
         .wallet_pay_to_contact(id.to_owned(), payment_summary.request_id.to_string())
@@ -316,8 +321,10 @@ pub async fn cmd_pay_to_contact(
     push_break(&mut res);
     res.push_str(&format!("Payment Summary: {}", payment_summary.request_id));
     res.push_str(&format!(
-        "Unit: {}, Amount: {}, Fees: {}",
-        payment_summary.unit, payment_summary.amount, payment_summary.fees
+        "Unit: {}, Amount: {}, {}",
+        payment_summary.unit,
+        payment_summary.amount,
+        format_fees(payment_summary.fees)
     ));
     push_break(&mut res);
     res.push_str(&format!("Transaction ID: {}", result));
@@ -337,8 +344,10 @@ pub async fn cmd_send_payment(
         .await?;
 
     info!(
-        "Payment Summary: Amount: {}, Unit: {}, Fees: {}",
-        payment_summary.amount, payment_summary.unit, payment_summary.fees,
+        "Payment Summary: Amount: {}, Unit: {}, {}",
+        payment_summary.amount,
+        payment_summary.unit,
+        format_fees(payment_summary.fees),
     );
 
     let tx_id = app_state
@@ -353,8 +362,10 @@ pub async fn cmd_send_payment(
     push_break(&mut res);
     res.push_str(&format!("Payment Summary: {}", payment_summary.request_id));
     res.push_str(&format!(
-        "Unit: {}, Amount: {}, Fees: {}",
-        payment_summary.unit, payment_summary.amount, payment_summary.fees
+        "Unit: {}, Amount: {}, {}",
+        payment_summary.unit,
+        payment_summary.amount,
+        format_fees(payment_summary.fees)
     ));
     push_break(&mut res);
     res.push_str(&format!("Transaction ID: {tx_id}"));
@@ -430,8 +441,10 @@ pub async fn cmd_melt(
         .await?;
 
     info!(
-        "Melt Summary: Amount: {}, Unit: {}, Fees: {}",
-        &melt_summary.amount, &melt_summary.unit, &melt_summary.fees
+        "Melt Summary: Amount: {}, Unit: {}, {}",
+        &melt_summary.amount,
+        &melt_summary.unit,
+        &format_fees(melt_summary.fees)
     );
 
     let tx_id = app_state
@@ -888,8 +901,10 @@ pub async fn cmd_pay_pr(
         .wallet_prepare_pay_payment_request(id.to_owned(), payment_req_id.to_owned())
         .await?;
     info!(
-        "Payment Summary: Amount: {}, Unit: {}, Fees: {}",
-        payment_summary.amount, payment_summary.unit, payment_summary.fees,
+        "Payment Summary: Amount: {}, Unit: {}, {}",
+        payment_summary.amount,
+        payment_summary.unit,
+        format_fees(payment_summary.fees),
     );
     let result = app_state
         .wallet_pay_payment_request(id.to_owned(), payment_summary.request_id.to_string())
@@ -900,8 +915,10 @@ pub async fn cmd_pay_pr(
         "Pay Payment Request {payment_req_id} for {name}, Wallet ID: {id}.\n"
     ));
     res.push_str(&format!(
-        "Unit: {}, Amount: {}, Fees: {}",
-        payment_summary.unit, payment_summary.amount, payment_summary.fees
+        "Unit: {}, Amount: {}, {}",
+        payment_summary.unit,
+        payment_summary.amount,
+        format_fees(payment_summary.fees)
     ));
     push_break(&mut res);
     res.push_str(&format!("Transaction ID: {}", result));
@@ -990,4 +1007,22 @@ fn format_timestamp(ts: u64) -> String {
     let datetime: DateTime<Utc> = DateTime::from_timestamp(ts as i64, 0).expect("valid timestamp");
 
     datetime.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn format_fees(fees: TransactionFees) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if fees.swap > cashu::Amount::ZERO {
+        parts.push(format!("swap = {}", fees.swap));
+    }
+    if fees.network > cashu::Amount::ZERO {
+        parts.push(format!("network = {}", fees.network));
+    }
+    if fees.melt > cashu::Amount::ZERO {
+        parts.push(format!("melt = {}", fees.melt));
+    }
+    if parts.is_empty() {
+        "Fees: 0".to_string()
+    } else {
+        format!("Fees: {}", parts.join(", "))
+    }
 }

@@ -7,7 +7,7 @@ use bcr_common::{
     cdk_common::wallet::TransactionDirection,
     core::NodeId,
 };
-use bcr_wallet_core::types::{PaymentType, Transaction, TransactionStatus};
+use bcr_wallet_core::types::{PaymentType, Transaction, TransactionFees, TransactionStatus};
 use nostr::event::EventId;
 use redb::{ReadableTable, TableDefinition};
 use std::{collections::HashMap, str::FromStr};
@@ -101,18 +101,39 @@ impl TryFrom<TransactionEntry> for Transaction {
     type Error = Error;
 
     fn try_from(entry: TransactionEntry) -> Result<Self> {
+        let pt = get_payment_type(&entry.metadata);
+        let fees = match pt {
+            PaymentType::OnChain => {
+                // melt
+                if entry.direction == TransactionDirection::Outgoing {
+                    TransactionFees {
+                        melt: entry.fee,
+                        ..Default::default()
+                    }
+                } else {
+                    TransactionFees {
+                        swap: entry.fee,
+                        ..Default::default()
+                    }
+                }
+            }
+            _ => TransactionFees {
+                swap: entry.fee,
+                ..Default::default()
+            },
+        };
         Ok(Transaction {
             id: Uuid::new_v4(),
             mint_url: entry.mint_url,
             direction: entry.direction,
             amount: entry.amount,
-            fees: entry.fee,
+            fees,
             unit: entry.unit,
             ys: entry.ys,
             tstamp: entry.timestamp,
             memo: entry.memo,
             status: get_transaction_status(&entry.metadata),
-            payment_type: get_payment_type(&entry.metadata),
+            payment_type: pt,
             quote_id: entry
                 .quote_id
                 .map(|qid| Uuid::from_str(&qid))
@@ -254,7 +275,9 @@ mod tests {
             let (key, value) = item.expect("read transaction entry");
             let envelope: StoredTransaction = borsh::from_slice(value.value().as_slice())
                 .expect("deserialize transaction envelope");
-            let StoredTransaction::V1(payload) = envelope;
+            let StoredTransaction::V1(payload) = envelope else {
+                panic!("invalid version")
+            };
             transactions.push((key.value().to_vec(), payload));
         }
         transactions

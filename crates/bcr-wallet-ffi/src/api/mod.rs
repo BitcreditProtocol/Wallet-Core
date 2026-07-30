@@ -465,7 +465,7 @@ pub async fn wallet_prepare_melt(
             request_id: payment_summary.request_id.to_string(),
             unit: payment_summary.unit.to_string(),
             amount: u64::from(payment_summary.amount),
-            fees: u64::from(payment_summary.fees),
+            fees: payment_summary.fees.into(),
             reserved_fees: u64::from(payment_summary.reserved_fees),
             expiry: payment_summary.expiry,
             ptype: PaymentType::from(bcr_wallet_core::types::PaymentType::from(
@@ -511,7 +511,7 @@ pub async fn wallet_prepare_payment(
             request_id: payment_summary.request_id.to_string(),
             unit: payment_summary.unit.to_string(),
             amount: u64::from(payment_summary.amount),
-            fees: u64::from(payment_summary.fees),
+            fees: payment_summary.fees.into(),
             reserved_fees: u64::from(payment_summary.reserved_fees),
             expiry: payment_summary.expiry,
             ptype: PaymentType::from(bcr_wallet_core::types::PaymentType::from(
@@ -543,7 +543,7 @@ pub async fn wallet_prepare_pay_by_token(
             request_id: payment_summary.request_id.to_string(),
             unit: payment_summary.unit.to_string(),
             amount: u64::from(payment_summary.amount),
-            fees: u64::from(payment_summary.fees),
+            fees: payment_summary.fees.into(),
             reserved_fees: u64::from(payment_summary.reserved_fees),
             expiry: payment_summary.expiry,
             ptype: PaymentType::from(bcr_wallet_core::types::PaymentType::from(
@@ -806,7 +806,7 @@ pub async fn wallet_prepare_pay_to_contact(
             request_id: payment_summary.request_id.to_string(),
             unit: payment_summary.unit.to_string(),
             amount: u64::from(payment_summary.amount),
-            fees: u64::from(payment_summary.fees),
+            fees: payment_summary.fees.into(),
             reserved_fees: u64::from(payment_summary.reserved_fees),
             expiry: payment_summary.expiry,
             ptype: PaymentType::from(bcr_wallet_core::types::PaymentType::from(
@@ -891,7 +891,7 @@ pub async fn wallet_prepare_pay_payment_request(
             request_id: payment_summary.request_id.to_string(),
             unit: payment_summary.unit.to_string(),
             amount: u64::from(payment_summary.amount),
-            fees: u64::from(payment_summary.fees),
+            fees: payment_summary.fees.into(),
             reserved_fees: u64::from(payment_summary.reserved_fees),
             expiry: payment_summary.expiry,
             ptype: PaymentType::from(bcr_wallet_core::types::PaymentType::from(
@@ -1521,7 +1521,7 @@ impl From<bcr_wallet_core::contact::Contact> for Contact {
 pub struct Transaction {
     pub id: String,
     pub amount: u64,
-    pub fees: u64,
+    pub fees: TransactionFees,
     pub unit: String,
     pub tstamp: u64,
     pub direction: TransactionDirection,
@@ -1533,6 +1533,23 @@ pub struct Transaction {
     pub contact_node_id: Option<String>,
     pub payment_request_id: Option<String>,
     pub linked_txs: Vec<TransactionLink>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TransactionFees {
+    pub swap: u64,
+    pub network: u64,
+    pub melt: u64,
+}
+
+impl From<bcr_wallet_core::types::TransactionFees> for TransactionFees {
+    fn from(value: bcr_wallet_core::types::TransactionFees) -> Self {
+        Self {
+            swap: u64::from(value.swap),
+            network: u64::from(value.network),
+            melt: u64::from(value.melt),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1701,11 +1718,11 @@ impl From<bcr_wallet_core::types::TransactionCursor> for TransactionCursor {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct FeesByMonth {
     pub year: i32,
     pub month: u32,
-    pub fees: u64,
+    pub fees: TransactionFees,
 }
 
 impl From<bcr_wallet_core::types::FeesByMonth> for FeesByMonth {
@@ -1713,7 +1730,7 @@ impl From<bcr_wallet_core::types::FeesByMonth> for FeesByMonth {
         FeesByMonth {
             year: value.year,
             month: value.month,
-            fees: u64::from(value.fees),
+            fees: value.fees.into(),
         }
     }
 }
@@ -1723,7 +1740,7 @@ impl From<bcr_wallet_core::types::Transaction> for Transaction {
         Self {
             id: value.id.to_string(),
             amount: u64::from(value.amount),
-            fees: u64::from(value.fees),
+            fees: value.fees.into(),
             unit: value.unit.to_string(),
             tstamp: value.tstamp,
             direction: TransactionDirection::from(value.direction),
@@ -1912,7 +1929,7 @@ pub struct PaymentSummary {
     pub request_id: String,
     pub unit: String,
     pub amount: u64,
-    pub fees: u64,
+    pub fees: TransactionFees,
     pub reserved_fees: u64,
     pub expiry: u64,
     pub ptype: PaymentType,

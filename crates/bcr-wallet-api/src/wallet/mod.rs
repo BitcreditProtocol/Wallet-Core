@@ -26,8 +26,8 @@ use bcr_wallet_core::{
     event::{ContactPaymentPayload, EventEnvelope},
     types::{
         ListTransactionsResult, PaymentRequest, PaymentType, Transaction, TransactionCursor,
-        TransactionFilters, TransactionLinkReason, TransactionSort, TransactionStatus,
-        extract_fees_per_month,
+        TransactionFees, TransactionFilters, TransactionLinkReason, TransactionSort,
+        TransactionStatus, extract_fees_per_month,
     },
     util::{from_mint_url, to_mint_url},
 };
@@ -627,7 +627,10 @@ impl Wallet {
                 id: Uuid::new_v4(),
                 mint_url: tx.mint_url.clone(),
                 direction: TransactionDirection::Incoming, // incoming, since we're getting back the funds
-                fees: fee,
+                fees: TransactionFees {
+                    swap: fee,
+                    ..Default::default()
+                },
                 amount: tx.amount,
                 memo: tx.memo.clone(),
                 tstamp: Utc::now().timestamp() as u64,
@@ -762,7 +765,10 @@ impl Wallet {
             id: Uuid::new_v4(),
             mint_url: to_mint_url(self.client.mint_url()),
             direction: TransactionDirection::Incoming,
-            fees: fee,
+            fees: TransactionFees {
+                swap: fee,
+                ..Default::default()
+            },
             amount: initial_amount,
             memo,
             tstamp,
@@ -1123,7 +1129,7 @@ mod tests {
         name::Name,
         types::{
             MintSummary, PaymentRequestDirection, PaymentRequestState, PaymentResultCallback,
-            TimeRange,
+            TimeRange, TransactionFees,
         },
     };
     use bcr_wallet_persistence::{
@@ -1291,7 +1297,7 @@ mod tests {
             id: Uuid::new_v4(),
             mint_url: cashu::MintUrl::from_str("https://mint.example").unwrap(),
             direction: TransactionDirection::Outgoing,
-            fees: Amount::ZERO,
+            fees: TransactionFees::default(),
             amount,
             memo: None,
             payment_type: PaymentType::Token,
@@ -1320,7 +1326,7 @@ mod tests {
             id: Uuid::new_v4(),
             mint_url: cashu::MintUrl::from_str("https://mint.example").unwrap(),
             direction,
-            fees: Amount::ZERO,
+            fees: TransactionFees::default(),
             amount: Amount::from(amount),
             memo: None,
             status,
@@ -1824,7 +1830,7 @@ mod tests {
             .offline_pay_by_token(
                 Uuid::new_v4(),
                 CurrencyUnit::Sat,
-                cashu::Amount::ZERO,
+                TransactionFees::default(),
                 None,
                 123,
             )
@@ -1871,7 +1877,7 @@ mod tests {
         *wlt.read().await.current_payment.lock().await = Some(PayReference {
             request_id: pid,
             unit: CurrencyUnit::Sat,
-            fees: cashu::Amount::ZERO,
+            fees: TransactionFees::default(),
             ptype: WalletPaymentType::Token,
             memo: Some("memo".to_string()),
         });
@@ -1910,7 +1916,7 @@ mod tests {
         *wlt.read().await.current_payment.lock().await = Some(PayReference {
             request_id: prepared_pid,
             unit: CurrencyUnit::Sat,
-            fees: cashu::Amount::ZERO,
+            fees: TransactionFees::default(),
             ptype: WalletPaymentType::Token,
             memo: None,
         });
@@ -1960,7 +1966,9 @@ mod tests {
         ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
             assert_eq!(tx.direction, TransactionDirection::Outgoing);
             assert_eq!(tx.amount, Amount::ZERO);
-            assert_eq!(tx.fees, Amount::ZERO);
+            assert_eq!(tx.fees.swap, Amount::ZERO);
+            assert_eq!(tx.fees.melt, Amount::ZERO);
+            assert_eq!(tx.fees.network, Amount::ZERO);
             assert_eq!(tx.unit, CurrencyUnit::Sat);
             assert_eq!(tx.tstamp, 123);
             assert_eq!(tx.memo, Some("melt memo".to_string()));
@@ -1974,7 +1982,7 @@ mod tests {
         *wlt.read().await.current_payment.lock().await = Some(PayReference {
             request_id: pid,
             unit: CurrencyUnit::Sat,
-            fees: cashu::Amount::ZERO,
+            fees: TransactionFees::default(),
             ptype: WalletPaymentType::OnChain,
             memo: Some("melt memo".to_string()),
         });
@@ -2022,7 +2030,9 @@ mod tests {
         ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
             assert_eq!(tx.direction, TransactionDirection::Outgoing);
             assert_eq!(tx.amount, Amount::ZERO);
-            assert_eq!(tx.fees, Amount::ZERO);
+            assert_eq!(tx.fees.swap, Amount::ZERO);
+            assert_eq!(tx.fees.melt, Amount::ZERO);
+            assert_eq!(tx.fees.network, Amount::ZERO);
             assert_eq!(tx.unit, CurrencyUnit::Sat);
             assert_eq!(tx.tstamp, 123);
             assert_eq!(tx.memo, Some("cdk18 memo".to_string()));
@@ -2048,7 +2058,7 @@ mod tests {
         *wlt.read().await.current_payment.lock().await = Some(PayReference {
             request_id: pid,
             unit: CurrencyUnit::Sat,
-            fees: cashu::Amount::ZERO,
+            fees: TransactionFees::default(),
             ptype: WalletPaymentType::Cdk18 {
                 transport,
                 id: Some("payment-id".to_string()),
@@ -2125,7 +2135,9 @@ mod tests {
         ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
             assert_eq!(tx.direction, TransactionDirection::Outgoing);
             assert_eq!(tx.amount, Amount::ZERO);
-            assert_eq!(tx.fees, Amount::ZERO);
+            assert_eq!(tx.fees.swap, Amount::ZERO);
+            assert_eq!(tx.fees.melt, Amount::ZERO);
+            assert_eq!(tx.fees.network, Amount::ZERO);
             assert_eq!(tx.unit, CurrencyUnit::Sat);
             assert_eq!(tx.tstamp, 123);
             assert_eq!(tx.memo, Some("contact memo".to_string()));
@@ -2141,7 +2153,7 @@ mod tests {
         *wlt.read().await.current_payment.lock().await = Some(PayReference {
             request_id: pid,
             unit: CurrencyUnit::Sat,
-            fees: cashu::Amount::ZERO,
+            fees: TransactionFees::default(),
             ptype: WalletPaymentType::Contact {
                 contact_id: Uuid::new_v4(),
                 payment_request_id: None,
@@ -3283,7 +3295,9 @@ mod tests {
         ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
             assert_eq!(tx.direction, TransactionDirection::Incoming);
             assert_eq!(tx.amount, Amount::ZERO);
-            assert_eq!(tx.fees, Amount::ZERO);
+            assert_eq!(tx.fees.swap, Amount::ZERO);
+            assert_eq!(tx.fees.melt, Amount::ZERO);
+            assert_eq!(tx.fees.network, Amount::ZERO);
             assert_eq!(tx.unit, CurrencyUnit::Sat);
             assert_eq!(tx.tstamp, 123);
             assert_eq!(tx.memo, Some("memo".to_string()));
@@ -3628,7 +3642,9 @@ mod tests {
             .return_once(move |tx| {
                 assert_eq!(tx.direction, TransactionDirection::Incoming);
                 assert_eq!(tx.amount, Amount::from(24));
-                assert_eq!(tx.fees, Amount::ZERO);
+                assert_eq!(tx.fees.swap, Amount::ZERO);
+                assert_eq!(tx.fees.melt, Amount::ZERO);
+                assert_eq!(tx.fees.network, Amount::ZERO);
                 assert_eq!(tx.unit, CurrencyUnit::Sat);
                 assert_eq!(tx.tstamp, 123);
                 assert_eq!(tx.memo, Some("token memo".to_string()));

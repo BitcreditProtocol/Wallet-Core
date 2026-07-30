@@ -24,8 +24,7 @@ pub struct SendSummary {
     pub request_id: Uuid,
     pub amount: Amount,
     pub unit: CurrencyUnit,
-    pub swap_fees: Amount,
-    pub send_fees: Amount,
+    pub fees: TransactionFees,
 }
 
 impl SendSummary {
@@ -56,7 +55,7 @@ pub struct MeltSummary {
     pub request_id: Uuid,
     pub amount: Amount,
     pub unit: CurrencyUnit,
-    pub fees: Amount,
+    pub fees: TransactionFees,
     pub reserved_fees: Amount,
     pub expiry: u64,
 }
@@ -170,7 +169,7 @@ pub struct Transaction {
     pub mint_url: MintUrl,
     pub ys: Vec<cashu::PublicKey>,
     pub amount: cashu::Amount,
-    pub fees: cashu::Amount,
+    pub fees: TransactionFees,
     pub unit: CurrencyUnit,
     pub tstamp: u64,
     pub direction: TransactionDirection,
@@ -183,6 +182,19 @@ pub struct Transaction {
     pub contact_node_id: Option<NodeId>,
     pub payment_request_id: Option<Uuid>,
     pub linked_txs: Vec<TransactionLink>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TransactionFees {
+    pub swap: cashu::Amount,
+    pub network: cashu::Amount,
+    pub melt: cashu::Amount,
+}
+
+impl TransactionFees {
+    pub fn sum(&self) -> cashu::Amount {
+        self.swap + self.network + self.melt
+    }
 }
 
 /// A link to another transaction with a reason, e.g. linking a payment transaction with a reclaim of the payment
@@ -213,7 +225,7 @@ pub struct PaymentSummary {
     pub request_id: Uuid,
     pub unit: CurrencyUnit,
     pub amount: Amount,
-    pub fees: Amount,
+    pub fees: TransactionFees,
     pub reserved_fees: Amount,
     pub expiry: u64,
     pub ptype: PaymentType,
@@ -234,7 +246,7 @@ impl std::convert::From<SendSummary> for PaymentSummary {
             request_id: value.request_id,
             unit: value.unit,
             amount: value.amount,
-            fees: value.send_fees + value.swap_fees,
+            fees: value.fees,
             reserved_fees: Amount::ZERO,
             expiry: 0,
             ptype: PaymentType::Token,
@@ -387,12 +399,12 @@ pub struct ListTransactionsResult {
 pub struct FeesByMonth {
     pub year: i32,
     pub month: u32,
-    pub fees: Amount,
+    pub fees: TransactionFees,
 }
 
 // Sums up fees per month for a given set of transactions
 pub fn extract_fees_per_month(transactions: &[Transaction]) -> Vec<FeesByMonth> {
-    let mut fees_by_month: BTreeMap<(i32, u32), Amount> = BTreeMap::new();
+    let mut fees_by_month: BTreeMap<(i32, u32), TransactionFees> = BTreeMap::new();
 
     for tx in transactions {
         let Some(dt) = DateTime::<Utc>::from_timestamp(tx.tstamp as i64, 0) else {
@@ -404,7 +416,11 @@ pub fn extract_fees_per_month(transactions: &[Transaction]) -> Vec<FeesByMonth> 
 
         fees_by_month
             .entry((year, month))
-            .and_modify(|fees| *fees += tx.fees)
+            .and_modify(|fees| {
+                fees.swap += tx.fees.swap;
+                fees.network += tx.fees.network;
+                fees.melt += tx.fees.melt;
+            })
             .or_insert(tx.fees);
     }
 
@@ -464,7 +480,11 @@ mod tests {
             mint_url: cashu::MintUrl::from_str("https://mint.example").unwrap(),
             direction: TransactionDirection::Incoming,
             amount: Amount::from(0),
-            fees: fee,
+            fees: TransactionFees {
+                swap: fee,
+                network: cashu::Amount::ZERO,
+                melt: cashu::Amount::ZERO,
+            },
             unit: CurrencyUnit::Sat,
             ys: vec![],
             tstamp: timestamp,
@@ -497,10 +517,10 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].year, 2025);
         assert_eq!(result[0].month, 3);
-        assert_eq!(result[0].fees, Amount::from(5));
+        assert_eq!(result[0].fees.swap, Amount::from(5));
         assert_eq!(result[1].year, 2025);
         assert_eq!(result[1].month, 2);
-        assert_eq!(result[1].fees, Amount::from(30));
+        assert_eq!(result[1].fees.swap, Amount::from(30));
     }
 
     #[test]

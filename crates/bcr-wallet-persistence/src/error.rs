@@ -75,4 +75,6 @@ pub enum Error {
     InvalidTransactionId(String),
     #[error("Invalid Quote Id {0}")]
     InvalidQuoteId(String),
+    #[error("Invalid Transaction Data Version {0}")]
+    InvalidTransactionData(String),
 }
