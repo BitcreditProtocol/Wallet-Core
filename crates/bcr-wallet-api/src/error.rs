@@ -144,6 +144,8 @@ pub enum Error {
     Unsupported(String),
     #[error("insufficient amount for melting {0}")]
     InsufficientOnChainMeltAmount(u64),
+    #[error("insufficient network fee for melting {0}")]
+    InsufficientOnChainNetworkFee(u64),
     #[error("insufficient amount for minting {0}")]
     InsufficientOnChainMintAmount(u64),
     #[error("Database Error: {0}")]

@@ -67,17 +67,12 @@ pub trait DebitPocketApi: super::PocketApi {
     ) -> Result<MintSummary>;
     async fn check_pending_mints(
         &self,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
-        tstamp: u64,
-        swap_config: SwapConfig,
     ) -> Result<HashMap<Uuid, CheckPendingMintResult>>;
     async fn protest_mint(
         &self,
         qid: Uuid,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
-        swap_config: SwapConfig,
     ) -> Result<ProtestResult>;
     async fn check_pending_commitments(&self, tstamp: u64) -> Result<()>;
     async fn protest_swap(
@@ -289,42 +284,44 @@ impl Pocket {
         Ok((pocket_summary, send_ref))
     }
 
-    /// Construct proofs from blind signatures, swap them into the wallet, and return the result.
+    /// Construct proofs from blind signatures, persist into the wallet, and return the result.
     async fn finalize_mint_proofs(
         &self,
         signatures: Vec<cdk00::BlindSignature>,
         premint: &cdk00::PreMintSecrets,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
-        swap_config: SwapConfig,
     ) -> Result<(cashu::Amount, Vec<cashu::PublicKey>)> {
         let active_keyset = client.get_mint_keyset(premint.keyset_id).await?;
 
-        let inputs = cashu::dhke::construct_proofs(
+        let proofs = cashu::dhke::construct_proofs(
             signatures,
             premint.rs(),
             premint.secrets(),
             &active_keyset.keys,
         )?;
 
-        let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
-            HashMap::with_capacity(inputs.len());
-        for input in inputs.into_iter() {
-            let y = input.y()?;
-            proofs.insert(y, input);
+        let mut total_cashed_in = Amount::ZERO;
+        let mut ys = Vec::with_capacity(proofs.len());
+        for proof in proofs.into_iter() {
+            let amount = proof.amount;
+            let y = proof.y()?;
+            let kid = proof.keyset_id;
+            let response = self.pdb.store_new(proof).await;
+            if let Err(e) = response {
+                tracing::error!("failed at storing new proof: {kid}, {amount}, {e}");
+                continue;
+            }
+            ys.push(y);
+            total_cashed_in += amount;
         }
 
-        self.digest_proofs(client, keysets_info, proofs, swap_config)
-            .await
+        Ok((total_cashed_in, ys))
     }
 
     async fn check_pending_mint(
         &self,
         qid: Uuid,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
-        _tstamp: u64,
-        swap_config: SwapConfig,
     ) -> Result<Option<CheckPendingMintResult>> {
         let record = self.mdb.load_mint(qid).await?;
         let mint_amount = Amount::from(record.summary.amount.to_sat());
@@ -338,13 +335,7 @@ impl Pocket {
         match client.post_mint_onchain(mint_req).await {
             Ok(mint_response) => {
                 let (amount, ys) = self
-                    .finalize_mint_proofs(
-                        mint_response.signatures,
-                        &premint,
-                        keysets_info,
-                        client,
-                        swap_config,
-                    )
+                    .finalize_mint_proofs(mint_response.signatures, &premint, client)
                     .await?;
 
                 self.mdb.delete_mint(qid).await?;
@@ -1011,26 +1002,14 @@ impl DebitPocketApi for Pocket {
 
     async fn check_pending_mints(
         &self,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
-        tstamp: u64,
-        swap_config: SwapConfig,
     ) -> Result<HashMap<Uuid, CheckPendingMintResult>> {
         let mint_ids = self.mdb.list_mints().await?;
         let mut res = HashMap::with_capacity(mint_ids.len());
 
         tracing::debug!("check pending mints for {} mints", mint_ids.len());
         for qid in mint_ids {
-            match self
-                .check_pending_mint(
-                    qid,
-                    keysets_info,
-                    client.clone(),
-                    tstamp,
-                    swap_config.clone(),
-                )
-                .await
-            {
+            match self.check_pending_mint(qid, client.clone()).await {
                 Ok(Some(mint_res)) => {
                     res.insert(qid, mint_res);
                 }
@@ -1065,9 +1044,7 @@ impl DebitPocketApi for Pocket {
     async fn protest_mint(
         &self,
         qid: Uuid,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
-        swap_config: SwapConfig,
     ) -> Result<ProtestResult> {
         let record = self.mdb.load_mint(qid).await?;
 
@@ -1092,13 +1069,7 @@ impl DebitPocketApi for Pocket {
                 ))?;
 
                 let (amount, ys) = self
-                    .finalize_mint_proofs(
-                        signatures,
-                        &record.premint,
-                        keysets_info,
-                        client,
-                        swap_config,
-                    )
+                    .finalize_mint_proofs(signatures, &record.premint, client)
                     .await?;
 
                 self.mdb.delete_mint(qid).await?;
@@ -1929,8 +1900,7 @@ mod tests {
     async fn check_pending_mints() {
         let uuid = Uuid::new_v4();
         let amount = bitcoin::Amount::from_sat(24);
-        let (info, keyset) = core_tests::generate_random_ecash_keyset();
-        let k_infos = test_kinfos(info);
+        let (_, keyset) = core_tests::generate_random_ecash_keyset();
 
         let mut mdb = MockMintMeltRepository::new();
         let pdb = MockPocketRepository::new();
@@ -1986,12 +1956,7 @@ mod tests {
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
 
         let res = pocket
-            .check_pending_mints(
-                &k_infos,
-                Arc::new(connector),
-                chrono::Utc::now().timestamp() as u64,
-                test_swap_config(),
-            )
+            .check_pending_mints(Arc::new(connector))
             .await
             .expect("check pending mint works");
         assert_eq!(res.len(), 0);
@@ -2003,7 +1968,6 @@ mod tests {
         let amount = bitcoin::Amount::from_sat(24);
         let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
-        let k_infos = test_kinfos(info);
         let premint = cdk00::PreMintSecrets::random(
             kid,
             Amount::from(amount.to_sat()),
@@ -2063,28 +2027,9 @@ mod tests {
         let keyset_clone = mintkeyset.clone();
         connector
             .expect_get_mint_keyset()
-            .times(2)
+            .times(1)
             .with(eq(kid))
             .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
-
-        pdb.expect_counter()
-            .times(1)
-            .with(eq(kid))
-            .returning(|_| Ok(0));
-        pdb.expect_increment_counter()
-            .times(1)
-            .returning(|_, _, _| Ok(()));
-
-        setup_commitment_mocks(&mut connector, &mut pdb);
-        let swap_keyset = mintkeyset.clone();
-        connector
-            .expect_post_swap_committed()
-            .times(1)
-            .returning(move |_, outp, _| {
-                let amounts: Vec<_> = outp.iter().map(|b| b.amount).collect();
-                let signatures = core_tests::generate_ecash_signatures(&swap_keyset, &amounts);
-                Ok(signatures)
-            });
 
         pdb.expect_store_new().returning(|p| {
             let y = p.y().expect("Hash to curve should not fail");
@@ -2095,7 +2040,7 @@ mod tests {
 
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
         let ProtestResult { status, result } = pocket
-            .protest_mint(uuid, &k_infos, Arc::new(connector), test_swap_config())
+            .protest_mint(uuid, Arc::new(connector))
             .await
             .expect("protest_mint resolved works");
 
@@ -2111,7 +2056,6 @@ mod tests {
         let amount = bitcoin::Amount::from_sat(24);
         let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
-        let k_infos = test_kinfos(info);
 
         let premint = cdk00::PreMintSecrets::random(
             kid,
@@ -2161,7 +2105,7 @@ mod tests {
 
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
         let ProtestResult { status, result } = pocket
-            .protest_mint(uuid, &k_infos, Arc::new(connector), test_swap_config())
+            .protest_mint(uuid, Arc::new(connector))
             .await
             .expect("protest_mint rabid works");
 
@@ -2562,7 +2506,6 @@ mod tests {
 
         let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
-        let k_infos = test_kinfos(info);
 
         let premint = cdk00::PreMintSecrets::random(
             kid,
@@ -2616,30 +2559,9 @@ mod tests {
         let keyset_clone = mintkeyset.clone();
         connector
             .expect_get_mint_keyset()
-            .times(2)
+            .times(1)
             .with(eq(kid))
             .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
-
-        pdb.expect_counter()
-            .times(1)
-            .with(eq(kid))
-            .returning(|_| Ok(0));
-
-        pdb.expect_increment_counter()
-            .times(1)
-            .returning(|_, _, _| Ok(()));
-
-        setup_commitment_mocks(&mut connector, &mut pdb);
-
-        let swap_keyset = mintkeyset.clone();
-        connector
-            .expect_post_swap_committed()
-            .times(1)
-            .returning(move |_, out, _| {
-                let amounts: Vec<_> = out.iter().map(|b| b.amount).collect();
-                let signatures = core_tests::generate_ecash_signatures(&swap_keyset, &amounts);
-                Ok(signatures)
-            });
 
         pdb.expect_store_new().returning(|p| {
             let y = p.y().unwrap();
@@ -2651,13 +2573,7 @@ mod tests {
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
 
         let result = pocket
-            .check_pending_mint(
-                qid,
-                &k_infos,
-                Arc::new(connector),
-                chrono::Utc::now().timestamp() as u64,
-                test_swap_config(),
-            )
+            .check_pending_mint(qid, Arc::new(connector))
             .await
             .unwrap()
             .unwrap();
@@ -2674,7 +2590,6 @@ mod tests {
 
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
-        let k_infos = test_kinfos(info);
 
         let premint = cdk00::PreMintSecrets::random(
             kid,
@@ -2717,15 +2632,7 @@ mod tests {
 
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
 
-        let result = pocket
-            .check_pending_mint(
-                qid,
-                &k_infos,
-                Arc::new(connector),
-                chrono::Utc::now().timestamp() as u64,
-                test_swap_config(),
-            )
-            .await;
+        let result = pocket.check_pending_mint(qid, Arc::new(connector)).await;
 
         assert!(matches!(result, Err(Error::MintingError(_))));
     }

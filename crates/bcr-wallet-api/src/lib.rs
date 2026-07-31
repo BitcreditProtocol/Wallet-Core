@@ -662,6 +662,11 @@ impl AppState {
         if amount < Self::MELT_THRESHOLD_SAT {
             return Err(Error::InsufficientOnChainMeltAmount(amount));
         }
+
+        if network_fee == 0 {
+            return Err(Error::InsufficientOnChainNetworkFee(network_fee));
+        }
+
         let parsed_amount = bitcoin::Amount::from_sat(amount);
         let parsed_network_fee = bitcoin::Amount::from_sat(network_fee);
         let parsed_melt_fee = bitcoin::Amount::from_sat(melt_fee);

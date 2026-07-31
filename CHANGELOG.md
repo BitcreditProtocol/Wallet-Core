@@ -1,3 +1,8 @@
+# 0.9.9
+
+* Fix Onchain Mint to not accrue swap fees (just unblind signatures and store them)
+* Add validation to disallow 0 network fee for melting
+
 # 0.9.8
 
 * Rework Contacts

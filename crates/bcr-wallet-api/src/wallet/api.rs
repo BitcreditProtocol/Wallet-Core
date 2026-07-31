@@ -642,17 +642,8 @@ impl WalletApi for super::Wallet {
 
     async fn check_pending_mints(&self) -> Result<Vec<Uuid>> {
         let mut res = Vec::new();
-        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
         let now = chrono::Utc::now();
-        let pending_mints_result = self
-            .debit
-            .check_pending_mints(
-                &keysets_info,
-                self.client.clone(),
-                now.timestamp() as u64,
-                self.swap_config(),
-            )
-            .await?;
+        let pending_mints_result = self.debit.check_pending_mints(self.client.clone()).await?;
 
         for (qid, mint_result) in pending_mints_result {
             let tx = Transaction {
@@ -689,15 +680,9 @@ impl WalletApi for super::Wallet {
     }
 
     async fn protest_mint(&self, quote_id: Uuid) -> Result<WalletProtestResult> {
-        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
         let ProtestResult { status, result } = self
             .debit
-            .protest_mint(
-                quote_id,
-                &keysets_info,
-                self.client.clone(),
-                self.swap_config(),
-            )
+            .protest_mint(quote_id, self.client.clone())
             .await?;
 
         if let Some((amount, ref ys)) = result {

@@ -1476,6 +1476,7 @@ enum WalletErrorCode {
   unsupported,
   transactionCantBeReclaimed,
   insufficientOnChainMeltAmount,
+  insufficientOnChainNetworkFee,
   insufficientOnChainMintAmount,
   noDevMode,
   meltQuoteMismatch,

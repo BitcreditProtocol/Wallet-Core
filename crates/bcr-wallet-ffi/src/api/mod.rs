@@ -2318,6 +2318,7 @@ pub enum WalletErrorCode {
     Unsupported,
     TransactionCantBeReclaimed,
     InsufficientOnChainMeltAmount,
+    InsufficientOnChainNetworkFee,
     InsufficientOnChainMintAmount,
     NoDevMode,
     MeltQuoteMismatch,
@@ -2493,6 +2494,10 @@ impl From<BcrWalletError> for WalletError {
                 WalletErrorCode::TransactionCantBeReclaimed,
             ),
             BcrWalletError::MintingError(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::InsufficientOnChainNetworkFee(_) => WalletError::bad_request(
+                value.to_string(),
+                WalletErrorCode::InsufficientOnChainNetworkFee,
+            ),
             BcrWalletError::InsufficientOnChainMeltAmount(_) => WalletError::bad_request(
                 value.to_string(),
                 WalletErrorCode::InsufficientOnChainMeltAmount,
