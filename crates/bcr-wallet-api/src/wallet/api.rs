@@ -544,7 +544,9 @@ impl WalletApi for super::Wallet {
                     .await?;
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
-                let amount = proofs.total_amount()?;
+                let mut amount = proofs.total_amount()?;
+                // the proofs are for amount + network_fee + melt_fee, so we need to subtract them
+                amount = amount - fees.network - fees.melt;
 
                 let partial_tx = Transaction {
                     id: Uuid::new_v4(),

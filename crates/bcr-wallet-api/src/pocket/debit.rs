@@ -821,7 +821,7 @@ impl DebitPocketApi for Pocket {
 
         // inputs need to cover amount + network_fee + melt_fee
         let full_amount = amount + network_fee + melt_fee;
-        let (_, send_ref) = self
+        let (send_summary, send_ref) = self
             .compute_send_costs(Amount::from(full_amount), keysets_info)
             .await?;
 
@@ -885,7 +885,7 @@ impl DebitPocketApi for Pocket {
         summary.fees = TransactionFees {
             network: cashu::Amount::from(network_fee),
             melt: cashu::Amount::from(melt_fee),
-            ..Default::default()
+            swap: send_summary.fees.swap,
         };
         let melt_ref = MeltReference {
             rid: summary.request_id,
