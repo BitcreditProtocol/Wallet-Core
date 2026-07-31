@@ -3344,7 +3344,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return FeesByMonth(
       year: dco_decode_i_32(arr[0]),
       month: dco_decode_u_32(arr[1]),
-      fees: dco_decode_u_64(arr[2]),
+      fees: dco_decode_transaction_fees(arr[2]),
     );
   }
 
@@ -3656,7 +3656,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       requestId: dco_decode_String(arr[0]),
       unit: dco_decode_String(arr[1]),
       amount: dco_decode_u_64(arr[2]),
-      fees: dco_decode_u_64(arr[3]),
+      fees: dco_decode_transaction_fees(arr[3]),
       reservedFees: dco_decode_u_64(arr[4]),
       expiry: dco_decode_u_64(arr[5]),
       ptype: dco_decode_payment_type(arr[6]),
@@ -3755,7 +3755,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return Transaction(
       id: dco_decode_String(arr[0]),
       amount: dco_decode_u_64(arr[1]),
-      fees: dco_decode_u_64(arr[2]),
+      fees: dco_decode_transaction_fees(arr[2]),
       unit: dco_decode_String(arr[3]),
       tstamp: dco_decode_u_64(arr[4]),
       direction: dco_decode_transaction_direction(arr[5]),
@@ -3788,6 +3788,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TransactionDirection dco_decode_transaction_direction(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return TransactionDirection.values[raw as int];
+  }
+
+  @protected
+  TransactionFees dco_decode_transaction_fees(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return TransactionFees(
+      swap: dco_decode_u_64(arr[0]),
+      network: dco_decode_u_64(arr[1]),
+      melt: dco_decode_u_64(arr[2]),
+    );
   }
 
   @protected
@@ -5386,7 +5399,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_year = sse_decode_i_32(deserializer);
     var var_month = sse_decode_u_32(deserializer);
-    var var_fees = sse_decode_u_64(deserializer);
+    var var_fees = sse_decode_transaction_fees(deserializer);
     return FeesByMonth(year: var_year, month: var_month, fees: var_fees);
   }
 
@@ -5820,7 +5833,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_requestId = sse_decode_String(deserializer);
     var var_unit = sse_decode_String(deserializer);
     var var_amount = sse_decode_u_64(deserializer);
-    var var_fees = sse_decode_u_64(deserializer);
+    var var_fees = sse_decode_transaction_fees(deserializer);
     var var_reservedFees = sse_decode_u_64(deserializer);
     var var_expiry = sse_decode_u_64(deserializer);
     var var_ptype = sse_decode_payment_type(deserializer);
@@ -5918,7 +5931,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_id = sse_decode_String(deserializer);
     var var_amount = sse_decode_u_64(deserializer);
-    var var_fees = sse_decode_u_64(deserializer);
+    var var_fees = sse_decode_transaction_fees(deserializer);
     var var_unit = sse_decode_String(deserializer);
     var var_tstamp = sse_decode_u_64(deserializer);
     var var_direction = sse_decode_transaction_direction(deserializer);
@@ -5972,6 +5985,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
     return TransactionDirection.values[inner];
+  }
+
+  @protected
+  TransactionFees sse_decode_transaction_fees(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_swap = sse_decode_u_64(deserializer);
+    var var_network = sse_decode_u_64(deserializer);
+    var var_melt = sse_decode_u_64(deserializer);
+    return TransactionFees(
+      swap: var_swap,
+      network: var_network,
+      melt: var_melt,
+    );
   }
 
   @protected
@@ -7573,7 +7599,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.year, serializer);
     sse_encode_u_32(self.month, serializer);
-    sse_encode_u_64(self.fees, serializer);
+    sse_encode_transaction_fees(self.fees, serializer);
   }
 
   @protected
@@ -7967,7 +7993,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.requestId, serializer);
     sse_encode_String(self.unit, serializer);
     sse_encode_u_64(self.amount, serializer);
-    sse_encode_u_64(self.fees, serializer);
+    sse_encode_transaction_fees(self.fees, serializer);
     sse_encode_u_64(self.reservedFees, serializer);
     sse_encode_u_64(self.expiry, serializer);
     sse_encode_payment_type(self.ptype, serializer);
@@ -8054,7 +8080,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.id, serializer);
     sse_encode_u_64(self.amount, serializer);
-    sse_encode_u_64(self.fees, serializer);
+    sse_encode_transaction_fees(self.fees, serializer);
     sse_encode_String(self.unit, serializer);
     sse_encode_u_64(self.tstamp, serializer);
     sse_encode_transaction_direction(self.direction, serializer);
@@ -8087,6 +8113,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_transaction_fees(
+    TransactionFees self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.swap, serializer);
+    sse_encode_u_64(self.network, serializer);
+    sse_encode_u_64(self.melt, serializer);
   }
 
   @protected

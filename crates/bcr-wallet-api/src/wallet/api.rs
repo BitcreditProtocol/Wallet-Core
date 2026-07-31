@@ -25,7 +25,7 @@ use bcr_wallet_core::{
     types::{
         MeltEstimation, PaymentRequest, PaymentRequestDirection, PaymentRequestState,
         PaymentResultCallback, PaymentType, PendingPaymentSubscriptionCallback, Transaction,
-        TransactionStatus,
+        TransactionFees, TransactionStatus,
     },
     util::{from_mint_url, to_mint_url},
 };
@@ -132,7 +132,7 @@ pub trait WalletApi: SendSync {
         &self,
         request_id: Uuid,
         unit: CurrencyUnit,
-        fees: Amount,
+        fees: TransactionFees,
         memo: Option<String>,
         now: u64,
     ) -> Result<(Uuid, Option<Token>)>;
@@ -544,7 +544,9 @@ impl WalletApi for super::Wallet {
                     .await?;
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
-                let amount = proofs.total_amount()?;
+                let mut amount = proofs.total_amount()?;
+                // the proofs are for amount + network_fee + melt_fee, so we need to subtract them
+                amount = amount - fees.network - fees.melt;
 
                 let partial_tx = Transaction {
                     id: Uuid::new_v4(),
@@ -573,8 +575,7 @@ impl WalletApi for super::Wallet {
                 payment_request_id,
             } => {
                 self.refresh_contact_relays(&contact_id).await;
-                let Ok(Some(contact)) = self.contact_repo.get_contact(contact_id).await
-                else {
+                let Ok(Some(contact)) = self.contact_repo.get_contact(contact_id).await else {
                     return Err(Error::ContactNotFound(contact_id.to_string()));
                 };
                 if contact.node_id.is_none() {
@@ -657,7 +658,10 @@ impl WalletApi for super::Wallet {
             let tx = Transaction {
                 id: Uuid::new_v4(),
                 mint_url: to_mint_url(self.client.mint_url()),
-                fees: mint_result.fee,
+                fees: TransactionFees {
+                    swap: mint_result.fee, // when minting, we only accrue swap fees
+                    ..Default::default()
+                },
                 direction: TransactionDirection::Incoming,
                 memo: None,
                 status: TransactionStatus::Settled,
@@ -701,7 +705,7 @@ impl WalletApi for super::Wallet {
             let tx = Transaction {
                 id: Uuid::new_v4(),
                 mint_url: to_mint_url(self.client.mint_url()),
-                fees: cashu::Amount::ZERO,
+                fees: TransactionFees::default(),
                 direction: TransactionDirection::Incoming,
                 memo: Some("Mint protest resolved".to_string()),
                 tstamp: now.timestamp() as u64,
@@ -745,7 +749,7 @@ impl WalletApi for super::Wallet {
             let tx = Transaction {
                 id: Uuid::new_v4(),
                 mint_url: to_mint_url(self.client.mint_url()),
-                fees: cashu::Amount::ZERO,
+                fees: TransactionFees::default(),
                 direction: TransactionDirection::Incoming,
                 memo: Some("Swap protest resolved".to_string()),
                 tstamp: now.timestamp() as u64,
@@ -779,7 +783,7 @@ impl WalletApi for super::Wallet {
             let tx = Transaction {
                 id: Uuid::new_v4(),
                 mint_url: to_mint_url(self.client.mint_url()),
-                fees: cashu::Amount::ZERO,
+                fees: TransactionFees::default(),
                 direction: TransactionDirection::Outgoing,
                 memo: Some("Melt protest resolved".to_string()),
                 tstamp: now.timestamp() as u64,
@@ -1112,7 +1116,7 @@ impl WalletApi for super::Wallet {
         &self,
         request_id: Uuid,
         unit: CurrencyUnit,
-        fees: Amount,
+        fees: TransactionFees,
         memo: Option<String>,
         now: u64,
     ) -> Result<(Uuid, Option<Token>)> {

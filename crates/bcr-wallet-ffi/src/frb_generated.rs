@@ -2946,7 +2946,7 @@ impl SseDecode for crate::api::FeesByMonth {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_year = <i32>::sse_decode(deserializer);
         let mut var_month = <u32>::sse_decode(deserializer);
-        let mut var_fees = <u64>::sse_decode(deserializer);
+        let mut var_fees = <crate::api::TransactionFees>::sse_decode(deserializer);
         return crate::api::FeesByMonth {
             year: var_year,
             month: var_month,
@@ -3384,7 +3384,7 @@ impl SseDecode for crate::api::PaymentSummary {
         let mut var_requestId = <String>::sse_decode(deserializer);
         let mut var_unit = <String>::sse_decode(deserializer);
         let mut var_amount = <u64>::sse_decode(deserializer);
-        let mut var_fees = <u64>::sse_decode(deserializer);
+        let mut var_fees = <crate::api::TransactionFees>::sse_decode(deserializer);
         let mut var_reservedFees = <u64>::sse_decode(deserializer);
         let mut var_expiry = <u64>::sse_decode(deserializer);
         let mut var_ptype = <crate::api::PaymentType>::sse_decode(deserializer);
@@ -3507,7 +3507,7 @@ impl SseDecode for crate::api::Transaction {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_id = <String>::sse_decode(deserializer);
         let mut var_amount = <u64>::sse_decode(deserializer);
-        let mut var_fees = <u64>::sse_decode(deserializer);
+        let mut var_fees = <crate::api::TransactionFees>::sse_decode(deserializer);
         let mut var_unit = <String>::sse_decode(deserializer);
         let mut var_tstamp = <u64>::sse_decode(deserializer);
         let mut var_direction = <crate::api::TransactionDirection>::sse_decode(deserializer);
@@ -3562,6 +3562,20 @@ impl SseDecode for crate::api::TransactionDirection {
             0 => crate::api::TransactionDirection::Incoming,
             1 => crate::api::TransactionDirection::Outgoing,
             _ => unreachable!("Invalid variant for TransactionDirection: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::TransactionFees {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_swap = <u64>::sse_decode(deserializer);
+        let mut var_network = <u64>::sse_decode(deserializer);
+        let mut var_melt = <u64>::sse_decode(deserializer);
+        return crate::api::TransactionFees {
+            swap: var_swap,
+            network: var_network,
+            melt: var_melt,
         };
     }
 }
@@ -5487,6 +5501,25 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::TransactionDirection>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::TransactionFees {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.swap.into_into_dart().into_dart(),
+            self.network.into_into_dart().into_dart(),
+            self.melt.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::TransactionFees {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::TransactionFees>
+    for crate::api::TransactionFees
+{
+    fn into_into_dart(self) -> crate::api::TransactionFees {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::TransactionFilters {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -7198,7 +7231,7 @@ impl SseEncode for crate::api::FeesByMonth {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i32>::sse_encode(self.year, serializer);
         <u32>::sse_encode(self.month, serializer);
-        <u64>::sse_encode(self.fees, serializer);
+        <crate::api::TransactionFees>::sse_encode(self.fees, serializer);
     }
 }
 
@@ -7556,7 +7589,7 @@ impl SseEncode for crate::api::PaymentSummary {
         <String>::sse_encode(self.request_id, serializer);
         <String>::sse_encode(self.unit, serializer);
         <u64>::sse_encode(self.amount, serializer);
-        <u64>::sse_encode(self.fees, serializer);
+        <crate::api::TransactionFees>::sse_encode(self.fees, serializer);
         <u64>::sse_encode(self.reserved_fees, serializer);
         <u64>::sse_encode(self.expiry, serializer);
         <crate::api::PaymentType>::sse_encode(self.ptype, serializer);
@@ -7658,7 +7691,7 @@ impl SseEncode for crate::api::Transaction {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.id, serializer);
         <u64>::sse_encode(self.amount, serializer);
-        <u64>::sse_encode(self.fees, serializer);
+        <crate::api::TransactionFees>::sse_encode(self.fees, serializer);
         <String>::sse_encode(self.unit, serializer);
         <u64>::sse_encode(self.tstamp, serializer);
         <crate::api::TransactionDirection>::sse_encode(self.direction, serializer);
@@ -7696,6 +7729,15 @@ impl SseEncode for crate::api::TransactionDirection {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::api::TransactionFees {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u64>::sse_encode(self.swap, serializer);
+        <u64>::sse_encode(self.network, serializer);
+        <u64>::sse_encode(self.melt, serializer);
     }
 }
 

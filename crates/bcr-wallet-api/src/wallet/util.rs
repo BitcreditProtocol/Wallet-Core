@@ -196,7 +196,7 @@ mod tests {
     };
     use bcr_wallet_core::{
         name::Name,
-        types::{PaymentType, TransactionStatus},
+        types::{PaymentType, TransactionFees, TransactionStatus},
         util::to_mint_url,
     };
     use std::str::FromStr;
@@ -334,7 +334,7 @@ mod tests {
         Transaction {
             id: Uuid::new_v4(),
             mint_url: to_mint_url(&url::Url::from_str("https://mint.example").unwrap()),
-            fees: cashu::Amount::from(0),
+            fees: TransactionFees::default(),
             direction,
             memo: None,
             tstamp: 5,

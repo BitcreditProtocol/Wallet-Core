@@ -13,7 +13,7 @@ use bcr_common::{
     core::swap::wallet::{PaymentPlan, prepare_payment},
     wire::{common as wire_common, melt as wire_melt, mint as wire_mint, swap as wire_swap},
 };
-use bcr_wallet_core::types::{MeltSummary, MintSummary, Seed, SendSummary};
+use bcr_wallet_core::types::{MeltSummary, MintSummary, Seed, SendSummary, TransactionFees};
 use bcr_wallet_persistence::{MeltCommitmentRecord, MintMeltRepository, PocketRepository};
 use bitcoin::secp256k1;
 use std::{
@@ -263,7 +263,10 @@ impl Pocket {
                 let mut pocket_summary = SendSummary::new();
                 pocket_summary.amount = target_amount;
                 pocket_summary.unit = self.unit.clone();
-                pocket_summary.swap_fees = estimated_fee;
+                pocket_summary.fees = TransactionFees {
+                    swap: estimated_fee,
+                    ..Default::default()
+                };
                 let SplitTarget::Value(target_amount) = target else {
                     return Err(Error::InvalidSplitTarget);
                 };
@@ -818,7 +821,7 @@ impl DebitPocketApi for Pocket {
 
         // inputs need to cover amount + network_fee + melt_fee
         let full_amount = amount + network_fee + melt_fee;
-        let (_, send_ref) = self
+        let (send_summary, send_ref) = self
             .compute_send_costs(Amount::from(full_amount), keysets_info)
             .await?;
 
@@ -876,12 +879,14 @@ impl DebitPocketApi for Pocket {
             }
         };
 
-        let fee = Amount::from(network_fee + melt_fee);
-
         let mut summary = MeltSummary::new();
         summary.amount = Amount::from(amount);
         summary.expiry = expiry;
-        summary.fees = fee;
+        summary.fees = TransactionFees {
+            network: cashu::Amount::from(network_fee),
+            melt: cashu::Amount::from(melt_fee),
+            swap: send_summary.fees.swap,
+        };
         let melt_ref = MeltReference {
             rid: summary.request_id,
             quote_id,
@@ -2476,7 +2481,7 @@ mod tests {
             } => {
                 assert_eq!(inputs.len(), amounts.len());
                 assert_eq!(target, Amount::from(41u64));
-                assert_eq!(summary.swap_fees, estimated_fee);
+                assert_eq!(summary.fees.swap, estimated_fee);
             }
             SendPlan::Ready { .. } => panic!("expected swap send plan"),
         }
@@ -2524,7 +2529,7 @@ mod tests {
             } => {
                 assert_eq!(inputs.len(), amounts.len());
                 assert_eq!(target, Amount::from(23u64));
-                assert_eq!(summary.swap_fees, estimated_fee);
+                assert_eq!(summary.fees.swap, estimated_fee);
             }
             SendPlan::Ready { .. } => panic!("expected swap send plan"),
         }
@@ -2799,7 +2804,9 @@ mod tests {
 
         assert_eq!(summary.amount, Amount::from(amount));
         assert_eq!(summary.expiry, expiry);
-        assert_eq!(summary.fees, Amount::from(network_fee + melt_fee));
+        assert_eq!(summary.fees.network, Amount::from(network_fee));
+        assert_eq!(summary.fees.melt, Amount::from(melt_fee));
+        assert_eq!(summary.fees.swap, Amount::ZERO);
 
         let current_melt = pocket.current_melt.lock().unwrap();
         let melt_ref = current_melt.as_ref().unwrap();

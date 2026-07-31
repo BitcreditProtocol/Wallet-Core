@@ -1,8 +1,9 @@
 use bcr_common::{
-    cashu::{self, Amount, CurrencyUnit},
+    cashu::{self, CurrencyUnit},
     core::NodeId,
     wire::common as wire_common,
 };
+use bcr_wallet_core::types::TransactionFees;
 use bitcoin::secp256k1;
 use nostr::types::RelayUrl;
 use uuid::Uuid;
@@ -29,7 +30,7 @@ pub enum WalletPaymentType {
 pub struct PayReference {
     pub request_id: Uuid,
     pub unit: CurrencyUnit,
-    pub fees: Amount,
+    pub fees: TransactionFees,
     pub ptype: WalletPaymentType,
     pub memo: Option<String>,
 }
