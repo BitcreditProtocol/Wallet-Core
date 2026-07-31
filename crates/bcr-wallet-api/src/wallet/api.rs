@@ -21,9 +21,7 @@ use bcr_common::{
 };
 use bcr_wallet_core::{
     SendSync,
-    contact::Contact,
     event::{ContactPaymentRequestPayload, EventEnvelope},
-    name::Name,
     types::{
         MeltEstimation, PaymentRequest, PaymentRequestDirection, PaymentRequestState,
         PaymentResultCallback, PaymentType, PendingPaymentSubscriptionCallback, Transaction,
@@ -54,7 +52,6 @@ pub trait WalletApi: SendSync {
     fn node_id(&self) -> NodeId;
     fn id(&self) -> String;
     fn mint_url(&self) -> url::Url;
-    fn nostr_relays(&self) -> Vec<RelayUrl>;
     fn betas(&self) -> Vec<url::Url>;
     #[allow(dead_code)]
     fn clowder_id(&self) -> secp256k1::PublicKey;
@@ -126,7 +123,7 @@ pub trait WalletApi: SendSync {
     ) -> Result<PaymentSummary>;
     async fn prepare_pay_to_contact(
         &self,
-        node_id: NodeId,
+        contact_id: Uuid,
         amount: Amount,
         unit: CurrencyUnit,
         description: Option<String>,
@@ -140,17 +137,16 @@ pub trait WalletApi: SendSync {
         now: u64,
     ) -> Result<(Uuid, Option<Token>)>;
     async fn is_nostr_connected(&self) -> bool;
+    async fn fetch_nostr_relays(
+        &self,
+        npub: nostr::PublicKey,
+        relays: Vec<RelayUrl>,
+    ) -> Result<Vec<RelayUrl>>;
     async fn delete(&self) -> Result<()>;
-    // contacts
-    async fn add_contact(&self, node_id: NodeId, name: Name) -> Result<()>;
-    async fn edit_contact(&self, node_id: NodeId, name: Name) -> Result<()>;
-    async fn delete_contact(&self, node_id: NodeId) -> Result<()>;
-    async fn get_contact(&self, node_id: NodeId) -> Result<Option<Contact>>;
-    async fn list_contacts(&self, search_term: Option<String>) -> Result<Vec<Contact>>;
     // pending payment requests
     async fn request_payment_from_contact(
         &self,
-        node_id: NodeId,
+        contact_id: Uuid,
         amount: Amount,
         unit: CurrencyUnit,
         description: Option<String>,
@@ -218,10 +214,6 @@ impl WalletApi for super::Wallet {
 
     fn mint_url(&self) -> url::Url {
         self.client.mint_url().to_owned()
-    }
-
-    fn nostr_relays(&self) -> Vec<RelayUrl> {
-        self.nostr_transport.relays().to_owned()
     }
 
     async fn estimate_melt(&self, amount: bitcoin::Amount) -> Result<MeltEstimation> {
@@ -577,13 +569,17 @@ impl WalletApi for super::Wallet {
                 Ok((tx_id, None))
             }
             WalletPaymentType::Contact {
-                node_id,
+                contact_id,
                 payment_request_id,
             } => {
-                self.refresh_contact_relays(&node_id).await;
-                let Ok(Some(contact)) = self.contact_repo.get_contact(node_id.clone()).await else {
-                    return Err(Error::ContactNotFound(node_id));
+                self.refresh_contact_relays(&contact_id).await;
+                let Ok(Some(contact)) = self.contact_repo.get_contact(contact_id).await
+                else {
+                    return Err(Error::ContactNotFound(contact_id.to_string()));
                 };
+                if contact.node_id.is_none() {
+                    return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
+                }
 
                 let proofs = self
                     .debit
@@ -609,7 +605,7 @@ impl WalletApi for super::Wallet {
                     btc_tx_id: None,
                     quote_id: None,
                     nostr_event_id: None,
-                    contact_node_id: Some(node_id),
+                    contact_node_id: contact.node_id.clone(),
                     linked_txs: vec![],
                 };
                 let tx_id = self
@@ -1066,7 +1062,7 @@ impl WalletApi for super::Wallet {
 
     async fn prepare_pay_to_contact(
         &self,
-        node_id: NodeId,
+        contact_id: Uuid,
         amount: Amount,
         unit: CurrencyUnit,
         description: Option<String>,
@@ -1075,15 +1071,13 @@ impl WalletApi for super::Wallet {
             return Err(Error::InvalidCurrencyUnit(unit.to_string()));
         }
 
-        if self
-            .contact_repo
-            .get_contact(node_id.clone())
-            .await?
-            .is_none()
-        {
-            return Err(Error::ContactNotFound(node_id));
+        let Some(contact) = self.contact_repo.get_contact(contact_id).await? else {
+            return Err(Error::ContactNotFound(contact_id.to_string()));
+        };
+        if contact.node_id.is_none() {
+            return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
         }
-        self.refresh_contact_relays(&node_id).await;
+        self.refresh_contact_relays(&contact.id).await;
 
         let infos = self.get_wallet_mint_keyset_infos().await?;
 
@@ -1095,7 +1089,7 @@ impl WalletApi for super::Wallet {
             unit: summary.unit.clone(),
             fees: summary.fees,
             ptype: WalletPaymentType::Contact {
-                node_id,
+                contact_id,
                 payment_request_id: None,
             },
             memo: description,
@@ -1247,6 +1241,15 @@ impl WalletApi for super::Wallet {
             && *self.nostr_consumer_running.lock().await
     }
 
+    async fn fetch_nostr_relays(
+        &self,
+        npub: nostr::PublicKey,
+        relays: Vec<RelayUrl>,
+    ) -> Result<Vec<RelayUrl>> {
+        let res = self.nostr_transport.fetch_relay_list(npub, relays).await?;
+        Ok(res)
+    }
+
     async fn delete(&self) -> Result<()> {
         // shut down nostr client
         self.nostr_transport.shutdown().await;
@@ -1286,78 +1289,20 @@ impl WalletApi for super::Wallet {
         Ok(())
     }
 
-    async fn add_contact(&self, node_id: NodeId, name: Name) -> Result<()> {
-        let my_relays = self.nostr_relays();
-        // fetch relay list for the contact from nostr, falling back to our relays
-        let mut fetched_relay_list = self
-            .nostr_transport
-            .fetch_relay_list(node_id.npub(), my_relays.clone())
-            .await
-            .unwrap_or(my_relays.clone());
-
-        if fetched_relay_list.is_empty() {
-            fetched_relay_list = my_relays;
-        }
-
-        let contact = Contact {
-            node_id: node_id.clone(),
-            name,
-            nostr_relays: fetched_relay_list,
-        };
-        match self.contact_repo.add_contact(contact).await {
-            Ok(()) => Ok(()),
-            Err(bcr_wallet_persistence::error::Error::ContactAlreadyExists(_)) => {
-                Err(Error::ContactAlreadyExists(node_id))
-            }
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    async fn edit_contact(&self, node_id: NodeId, name: Name) -> Result<()> {
-        match self.contact_repo.edit_contact(node_id.clone(), name).await {
-            Ok(()) => Ok(()),
-            Err(bcr_wallet_persistence::error::Error::ContactNotFound(_)) => {
-                Err(Error::ContactNotFound(node_id))
-            }
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    async fn delete_contact(&self, node_id: NodeId) -> Result<()> {
-        if self
-            .contact_repo
-            .get_contact(node_id.clone())
-            .await?
-            .is_some()
-        {
-            self.contact_repo.delete_contact(node_id).await?;
-        } else {
-            return Err(Error::ContactNotFound(node_id));
-        }
-        Ok(())
-    }
-
-    async fn get_contact(&self, node_id: NodeId) -> Result<Option<Contact>> {
-        let contact = self.contact_repo.get_contact(node_id).await?;
-        Ok(contact)
-    }
-
-    async fn list_contacts(&self, search_term: Option<String>) -> Result<Vec<Contact>> {
-        let contacts = self.contact_repo.list_contacts(search_term).await?;
-        Ok(contacts)
-    }
-
     async fn request_payment_from_contact(
         &self,
-        node_id: NodeId,
+        contact_id: Uuid,
         amount: Amount,
         unit: CurrencyUnit,
         description: Option<String>,
         deadline: Option<u64>,
     ) -> Result<Uuid> {
-        self.refresh_contact_relays(&node_id).await;
-        let Ok(Some(contact)) = self.contact_repo.get_contact(node_id.clone()).await else {
-            return Err(Error::ContactNotFound(node_id));
+        self.refresh_contact_relays(&contact_id).await;
+        let Ok(Some(contact)) = self.contact_repo.get_contact(contact_id).await else {
+            return Err(Error::ContactNotFound(contact_id.to_string()));
+        };
+        let Some(ref node_id) = contact.node_id else {
+            return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
         };
         let payload = ContactPaymentRequestPayload::new(
             self.node_id(),
@@ -1373,6 +1318,9 @@ impl WalletApi for super::Wallet {
             bcr_wallet_core::event::Event::new_contact_payment_request(payload).try_into()?;
         let payload = base58::encode(&borsh::to_vec(&event)?);
         let target = self.nostr_transport.nip19_for_contact(&contact).await?;
+        let Some(target) = target else {
+            return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
+        };
         match self
             .nostr_transport
             .send_private_msg(target.clone(), payload.clone())
@@ -1398,7 +1346,7 @@ impl WalletApi for super::Wallet {
         };
         let outgoing_payment_request = PaymentRequest {
             id: payment_req_id,
-            node_id,
+            node_id: node_id.to_owned(),
             amount,
             unit,
             description,
@@ -1510,14 +1458,13 @@ impl WalletApi for super::Wallet {
             return Err(Error::PaymentRequestInWrongState(payment_req_id));
         }
         // has to be added to contacts to pay the payment request
-        if self
+        let contacts_by_node_id = self
             .contact_repo
-            .get_contact(req.node_id.clone())
-            .await?
-            .is_none()
-        {
-            return Err(Error::ContactNotFound(req.node_id));
-        }
+            .get_contacts_by_node_id(req.node_id.clone())
+            .await?;
+        let Some(first_node_id_contact) = contacts_by_node_id.first() else {
+            return Err(Error::ContactNotFound(req.node_id.to_string()));
+        };
         let infos = self.get_wallet_mint_keyset_infos().await?;
 
         let s_summary = self.debit.prepare_send(req.amount, &infos).await?;
@@ -1528,7 +1475,7 @@ impl WalletApi for super::Wallet {
             unit: summary.unit.clone(),
             fees: summary.fees,
             ptype: WalletPaymentType::Contact {
-                node_id: req.node_id,
+                contact_id: first_node_id_contact.id,
                 payment_request_id: Some(req.id),
             },
             memo: req.description,

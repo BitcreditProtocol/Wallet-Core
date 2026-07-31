@@ -1,3 +1,28 @@
+# 0.9.8
+
+* Rework Contacts
+    * Fields
+        * id is now a `Uuid`
+        * node_id is an `Option<NodeId>`
+        * add email as an `Option<Email>`
+        * name is an `Option<Name>`
+        * add company as an `Option<Name>`
+        * Either company, or name have to be set
+        * Either node_id, or email have to be set
+        * For `edit_contact`
+            * All fields have to be provided
+            * To delete a field, send it as `None`
+            * To set a field, send it as `Some(new_value)`
+    * Contacts are now on `purse` level instead of on `wallet` level and are persisted per `btc_network`
+        * there is a contact book for each btc network
+    * DB migration & versioning for contacts
+    * It would be good to add all clowder-relays (wildcat0-n) to the wallet config
+* Payment Request functions and pay by contact take a `Uuid` (the contact id) now
+    * Contacts have to have a `node_id` to be eligible for `pay_to_contact` or `request_payment_from_contact`
+* Expose functionality to send a private, encrypted payment to an existing contact via Nostr
+    * `wallet_prepare_pay_to_contact` - taking a contact_id, amount and description
+    * `wallet_pay_to_contact` - taking a payment request id
+
 # 0.9.7
 
 * Wallet name is now only unique per btc network

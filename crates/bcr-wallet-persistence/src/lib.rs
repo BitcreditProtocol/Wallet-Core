@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07};
 use bcr_common::core::NodeId;
 use bcr_wallet_core::contact::Contact;
-use bcr_wallet_core::name::Name;
 use bcr_wallet_core::types::{
     PaymentRequestDirection, PaymentRequestState, Transaction, TransactionLinkReason,
     TransactionStatus,
@@ -195,11 +194,12 @@ pub trait NostrRepository: SendSync {
 #[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
 #[async_trait]
 pub trait ContactStoreApi: SendSync {
-    async fn add_contact(&self, contact: Contact) -> Result<()>;
-    async fn edit_contact(&self, node_id: NodeId, name: Name) -> Result<()>;
-    async fn edit_contact_relays(&self, node_id: NodeId, relays: Vec<RelayUrl>) -> Result<()>;
-    async fn delete_contact(&self, node_id: NodeId) -> Result<()>;
-    async fn get_contact(&self, node_id: NodeId) -> Result<Option<Contact>>;
+    async fn add_contact(&self, contact: Contact) -> Result<Uuid>;
+    async fn edit_contact(&self, id: Uuid, contact: Contact) -> Result<()>;
+    async fn edit_contact_relays(&self, id: Uuid, relays: Vec<RelayUrl>) -> Result<()>;
+    async fn delete_contact(&self, id: Uuid) -> Result<()>;
+    async fn get_contact(&self, id: Uuid) -> Result<Option<Contact>>;
+    async fn get_contacts_by_node_id(&self, node_id: NodeId) -> Result<Vec<Contact>>;
     async fn list_contacts(&self, search_term: Option<String>) -> Result<Vec<Contact>>;
     async fn delete_repo(&self) -> Result<()>;
 }

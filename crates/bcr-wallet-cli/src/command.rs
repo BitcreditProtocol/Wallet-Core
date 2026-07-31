@@ -291,13 +291,13 @@ pub async fn cmd_pay_to_contact(
     app_state: &AppState,
     name: &str,
     id: &str,
-    node_id: &str,
+    contact_id: &str,
     amount: u64,
     description: Option<String>,
 ) -> Result<String> {
     let mut res = String::new();
     let payment_summary = app_state
-        .wallet_prepare_pay_to_contact(id.to_owned(), node_id.to_owned(), amount, description)
+        .wallet_prepare_pay_to_contact(id.to_owned(), contact_id.to_owned(), amount, description)
         .await?;
 
     info!(
@@ -311,7 +311,7 @@ pub async fn cmd_pay_to_contact(
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!(
-        "Pay to Contact {node_id} for {name}, Wallet ID: {id}.\n"
+        "Pay to Contact {contact_id} for {name}, Wallet ID: {id}.\n"
     ));
     push_break(&mut res);
     res.push_str(&format!("Payment Summary: {}", payment_summary.request_id));
@@ -620,17 +620,23 @@ pub async fn cmd_edit_tx_memo(
 pub async fn cmd_add_contact(
     app_state: &AppState,
     name: &str,
-    id: &str,
-    node_id: &str,
+    network: bitcoin::Network,
     contact_name: &str,
+    contact_node_id: &str,
 ) -> Result<String> {
     let mut res = String::new();
-    app_state
-        .wallet_add_contact(id.to_owned(), node_id.to_owned(), contact_name.to_owned())
+    let contact_id = app_state
+        .purse_add_contact(
+            network.to_string(),
+            Some(contact_node_id.to_owned()),
+            None,
+            Some(contact_name.to_owned()),
+            None,
+        )
         .await?;
     push_break(&mut res);
     push_break(&mut res);
-    res.push_str(&format!("Added Contact for {node_id} for {name}:\n"));
+    res.push_str(&format!("Added Contact for {contact_id} for {name}:\n"));
     push_break(&mut res);
     Ok(res)
 }
@@ -638,17 +644,43 @@ pub async fn cmd_add_contact(
 pub async fn cmd_edit_contact(
     app_state: &AppState,
     name: &str,
-    id: &str,
-    node_id: &str,
+    network: bitcoin::Network,
+    contact_id: &str,
+    contact_node_id: &str,
+    contact_email: &str,
     contact_name: &str,
+    contact_company: &str,
 ) -> Result<String> {
     let mut res = String::new();
     app_state
-        .wallet_edit_contact(id.to_owned(), node_id.to_owned(), contact_name.to_owned())
+        .purse_edit_contact(
+            network.to_string(),
+            contact_id.to_owned(),
+            if contact_node_id == "None" {
+                None
+            } else {
+                Some(contact_node_id.to_owned())
+            },
+            if contact_email == "None" {
+                None
+            } else {
+                Some(contact_email.to_owned())
+            },
+            if contact_name == "None" {
+                None
+            } else {
+                Some(contact_name.to_owned())
+            },
+            if contact_company == "None" {
+                None
+            } else {
+                Some(contact_company.to_owned())
+            },
+        )
         .await?;
     push_break(&mut res);
     push_break(&mut res);
-    res.push_str(&format!("Edited Contact for {node_id} for {name}:\n"));
+    res.push_str(&format!("Edited Contact for {contact_id} for {name}:\n"));
     push_break(&mut res);
     Ok(res)
 }
@@ -656,16 +688,16 @@ pub async fn cmd_edit_contact(
 pub async fn cmd_delete_contact(
     app_state: &AppState,
     name: &str,
-    id: &str,
-    node_id: &str,
+    network: bitcoin::Network,
+    contact_id: &str,
 ) -> Result<String> {
     let mut res = String::new();
     app_state
-        .wallet_delete_contact(id.to_owned(), node_id.to_owned())
+        .purse_delete_contact(network.to_string(), contact_id.to_owned())
         .await?;
     push_break(&mut res);
     push_break(&mut res);
-    res.push_str(&format!("Deleted Contact for {node_id} for {name}:\n"));
+    res.push_str(&format!("Deleted Contact for {contact_id} for {name}:\n"));
     push_break(&mut res);
     Ok(res)
 }
@@ -673,19 +705,25 @@ pub async fn cmd_delete_contact(
 pub async fn cmd_get_contact(
     app_state: &AppState,
     name: &str,
-    id: &str,
-    node_id: &str,
+    network: bitcoin::Network,
+    contact_id: &str,
 ) -> Result<String> {
     let mut res = String::new();
     let contact = app_state
-        .wallet_get_contact(id.to_owned(), node_id.to_owned())
+        .purse_get_contact(network.to_string(), contact_id.to_owned())
         .await?;
     push_break(&mut res);
     push_break(&mut res);
-    res.push_str(&format!("Contact for node_id: {node_id} for {name}:\n"));
     res.push_str(&format!(
-        "NodeId: {} Name: {}\n",
-        contact.node_id, contact.name
+        "Contact for contact_id: {contact_id} for {name}:\n"
+    ));
+    res.push_str(&format!(
+        "ContactId: {} Name: {:?}, Node_id: {}, Email: {:?}, Company: {:?}\n",
+        contact.id,
+        contact.name,
+        contact.node_id.map(|n| n.to_string()).unwrap_or_default(),
+        contact.email,
+        contact.company
     ));
     push_break(&mut res);
     Ok(res)
@@ -694,12 +732,12 @@ pub async fn cmd_get_contact(
 pub async fn cmd_list_contacts(
     app_state: &AppState,
     name: &str,
-    id: &str,
+    network: bitcoin::Network,
     search_term: &Option<String>,
 ) -> Result<String> {
     let mut res = String::new();
     let contacts = app_state
-        .wallet_list_contacts(id.to_owned(), search_term.to_owned())
+        .purse_list_contacts(network.to_string(), search_term.to_owned())
         .await?;
     push_break(&mut res);
     push_break(&mut res);
@@ -708,7 +746,14 @@ pub async fn cmd_list_contacts(
     ));
     push_break(&mut res);
     for c in contacts {
-        res.push_str(&format!("NodeId: {} Name: {}\n", c.node_id, c.name));
+        res.push_str(&format!(
+            "ContactId: {} Name: {:?}, Node_id: {}, Email: {:?}, Company: {:?}\n",
+            c.id,
+            c.name,
+            c.node_id.map(|n| n.to_string()).unwrap_or_default(),
+            c.email,
+            c.company
+        ));
         push_break(&mut res);
     }
     push_break(&mut res);
@@ -719,17 +764,23 @@ pub async fn cmd_request_payment_from_contact(
     app_state: &AppState,
     name: &str,
     id: &str,
-    node_id: &str,
+    contact_id: &str,
     amount: u64,
 ) -> Result<String> {
     let mut res = String::new();
     app_state
-        .wallet_request_payment_from_contact(id.to_owned(), node_id.to_owned(), amount, None, None)
+        .wallet_request_payment_from_contact(
+            id.to_owned(),
+            contact_id.to_owned(),
+            amount,
+            None,
+            None,
+        )
         .await?;
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!(
-        "Request Payment over {amount} from Contact {node_id} for {name}:\n"
+        "Request Payment over {amount} from Contact {contact_id} for {name}:\n"
     ));
     push_break(&mut res);
     Ok(res)

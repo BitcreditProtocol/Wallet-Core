@@ -58,6 +58,19 @@ impl From<Name> for String {
     }
 }
 
+impl borsh::BorshSerialize for Name {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        borsh::BorshSerialize::serialize(&self.0, writer)
+    }
+}
+
+impl borsh::BorshDeserialize for Name {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let name_str: String = borsh::BorshDeserialize::deserialize_reader(reader)?;
+        Name::new(&name_str).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,7 +1,6 @@
 use bcr_common::{
     cashu::{self},
     cdk_common,
-    core::NodeId,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -91,6 +90,12 @@ pub enum Error {
     InvalidName,
     #[error("empty name")]
     EmptyName,
+    #[error("invalid email")]
+    InvalidEmail,
+    #[error("empty email")]
+    EmptyEmail,
+    #[error("invalid contact - need one of name/company and one of node_id/email")]
+    InvalidContact,
     #[error("invalid node id")]
     InvalidNodeId,
     #[error("invalid bill id")]
@@ -124,9 +129,11 @@ pub enum Error {
     #[error("Invalid Clowder Path for foreign eCash")]
     InvalidClowderPath,
     #[error("No contact found for {0}")]
-    ContactNotFound(NodeId),
+    ContactNotFound(String),
+    #[error("Contact must have node id for payment request for contact {0}")]
+    ContactMustHaveNodeId(String),
     #[error("Contact {0} already exists")]
-    ContactAlreadyExists(NodeId),
+    ContactAlreadyExists(Uuid),
     #[error("Beta not found")]
     BetaNotFound(url::Url),
     #[error("No Substitute could be determined")]
@@ -305,6 +312,9 @@ impl From<bcr_wallet_core::ValidationError> for Error {
         match err {
             bcr_wallet_core::ValidationError::EmptyName => Error::EmptyName,
             bcr_wallet_core::ValidationError::InvalidName => Error::InvalidName,
+            bcr_wallet_core::ValidationError::EmptyEmail => Error::EmptyEmail,
+            bcr_wallet_core::ValidationError::InvalidEmail => Error::InvalidEmail,
+            bcr_wallet_core::ValidationError::InvalidContact(_) => Error::InvalidContact,
         }
     }
 }

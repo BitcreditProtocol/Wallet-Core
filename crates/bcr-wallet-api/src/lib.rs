@@ -10,6 +10,7 @@ use bcr_common::{
     wallet::Token,
 };
 use bcr_wallet_core::contact::Contact;
+use bcr_wallet_core::email::Email;
 use bcr_wallet_core::name::Name;
 use bcr_wallet_core::types::{
     self, BtcTxStatus, ListTransactionsResult, MeltEstimation, MintSummary, PaymentRequest,
@@ -20,7 +21,8 @@ use bcr_wallet_core::types::{
 use bcr_wallet_core::util::{
     build_wallet_id, keypair_from_mnemonic, keypair_from_seed, seed_from_mnemonic,
 };
-use bcr_wallet_persistence::redb::{Database, build_pursedb, build_wallet_dbs, create_db};
+use bcr_wallet_persistence::ContactStoreApi;
+use bcr_wallet_persistence::redb::{Database, build_pursedbs, build_wallet_dbs, create_db};
 use bcr_wallet_transport::NostrEventChannel;
 use bcr_wallet_transport::nostr;
 use error::{Error, Result};
@@ -59,10 +61,15 @@ impl AppState {
 
         // Open Database file - only allowed to do once!
         let db = Arc::new(create_db(&cfg.db_path)?);
-        let pursedb = build_pursedb(AppState::DB_VERSION, db.clone()).await?;
+
+        let (pursedb, contactdbs) = build_pursedbs(AppState::DB_VERSION, db.clone()).await?;
+        let contact_repos: HashMap<bitcoin::Network, Arc<dyn ContactStoreApi>> = contactdbs
+            .into_iter()
+            .map(|(network, db)| (network, db as Arc<dyn ContactStoreApi>))
+            .collect();
 
         let http_cl = Arc::new(reqwest::Client::new());
-        let purse = purse::Purse::new(pursedb).await?;
+        let purse = purse::Purse::new(pursedb, contact_repos).await?;
         let btc_cl = Arc::new(external::bitcoin::BitcoinClient::new(
             cfg.esplora_base_urls.clone(),
         ));
@@ -135,12 +142,14 @@ impl AppState {
                 }
             };
 
+            let network = w_cfg.network;
             let wallet = build_wallet(
                 w_cfg,
                 client,
                 Self::DB_VERSION,
                 self.cfg.swap_expiry,
                 db.clone(),
+                purse.get_contact_repo(network),
                 seed,
                 nostr_cl,
             )
@@ -188,11 +197,13 @@ impl AppState {
         let purse = self.get_purse();
 
         self.validate_add_wallet(&cfg).await?;
+        let network = cfg.network;
         let wallet = create_new_wallet(
             cfg,
             AppState::DB_VERSION,
             self.cfg.swap_expiry,
             self.get_db(),
+            purse.get_contact_repo(network),
         )
         .await?;
 
@@ -209,12 +220,14 @@ impl AppState {
         );
         let purse = self.get_purse();
 
+        let network = cfg.network;
         self.validate_add_wallet(&cfg).await?;
         let wallet = create_new_wallet(
             cfg,
             AppState::DB_VERSION,
             self.cfg.swap_expiry,
             self.get_db(),
+            purse.get_contact_repo(network),
         )
         .await?;
         wallet.read().await.restore_local_proofs().await?;
@@ -258,6 +271,94 @@ impl AppState {
         let migrated = purse.migrate_rabid_wallets().await?;
 
         Ok(migrated)
+    }
+
+    pub async fn purse_add_contact(
+        &self,
+        bitcoin_network: String,
+        node_id: Option<String>,
+        email: Option<String>,
+        name: Option<String>,
+        company: Option<String>,
+    ) -> Result<Uuid> {
+        let parsed_network = bitcoin::Network::from_str(&bitcoin_network)
+            .map_err(|_| Error::InvalidBitcoinNetwork(bitcoin_network))?;
+        let node_id = node_id.map(|n| NodeId::from_str(&n)).transpose()?;
+        let name = name.map(|n| Name::from_str(&n)).transpose()?;
+        let company = company.map(|c| Name::from_str(&c)).transpose()?;
+        let email = email.map(|e| Email::from_str(&e)).transpose()?;
+        let purse = self.get_purse();
+        let id = purse
+            .add_contact(parsed_network, node_id, email, name, company)
+            .await?;
+        Ok(id)
+    }
+
+    pub async fn purse_edit_contact(
+        &self,
+        bitcoin_network: String,
+        contact_id: String,
+        node_id: Option<String>,
+        email: Option<String>,
+        name: Option<String>,
+        company: Option<String>,
+    ) -> Result<()> {
+        let parsed_network = bitcoin::Network::from_str(&bitcoin_network)
+            .map_err(|_| Error::InvalidBitcoinNetwork(bitcoin_network))?;
+        let contact_id = Uuid::from_str(&contact_id)?;
+        let node_id = node_id
+            .map(|node_id| NodeId::from_str(&node_id))
+            .transpose()?;
+        let email = email.map(|email| Email::from_str(&email)).transpose()?;
+        let name = name.map(|name| Name::from_str(&name)).transpose()?;
+        let company = company
+            .map(|company| Name::from_str(&company))
+            .transpose()?;
+        let purse = self.get_purse();
+        purse
+            .edit_contact(parsed_network, contact_id, node_id, email, name, company)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn purse_delete_contact(
+        &self,
+        bitcoin_network: String,
+        contact_id: String,
+    ) -> Result<()> {
+        let parsed_network = bitcoin::Network::from_str(&bitcoin_network)
+            .map_err(|_| Error::InvalidBitcoinNetwork(bitcoin_network))?;
+        let contact_id = Uuid::from_str(&contact_id)?;
+        let purse = self.get_purse();
+        purse.delete_contact(parsed_network, contact_id).await?;
+        Ok(())
+    }
+
+    pub async fn purse_get_contact(
+        &self,
+        bitcoin_network: String,
+        contact_id: String,
+    ) -> Result<Contact> {
+        let parsed_network = bitcoin::Network::from_str(&bitcoin_network)
+            .map_err(|_| Error::InvalidBitcoinNetwork(bitcoin_network))?;
+        let contact_id = Uuid::from_str(&contact_id)?;
+        let purse = self.get_purse();
+        match purse.get_contact(parsed_network, contact_id).await? {
+            Some(c) => Ok(c),
+            None => Err(Error::ContactNotFound(contact_id.to_string())),
+        }
+    }
+
+    pub async fn purse_list_contacts(
+        &self,
+        bitcoin_network: String,
+        search_term: Option<String>,
+    ) -> Result<Vec<Contact>> {
+        let parsed_network = bitcoin::Network::from_str(&bitcoin_network)
+            .map_err(|_| Error::InvalidBitcoinNetwork(bitcoin_network))?;
+        let purse = self.get_purse();
+        let contacts = purse.list_contacts(parsed_network, search_term).await?;
+        Ok(contacts)
     }
 
     ////////////////////////////////////////////////////  Wallet-Level API methods
@@ -368,26 +469,22 @@ impl AppState {
     pub async fn wallet_prepare_pay_to_contact(
         &self,
         wallet_id: String,
-        node_id: String,
+        contact_id: String,
         amount: u64,
         description: Option<String>,
     ) -> Result<PaymentSummary> {
         tracing::debug!(
-            "wallet_prepare_pay_to_contact({wallet_id}, {node_id}, {amount}, {description:?})"
+            "wallet_prepare_pay_to_contact({wallet_id}, {contact_id}, {amount}, {description:?})"
         );
         let amount = cashu::Amount::from(amount);
         let wallet = self.get_wallet(&wallet_id).await?;
         let unit = wallet.read().await.debit_unit();
-        let node_id = NodeId::from_str(&node_id)?;
-        let wallet_network = wallet.read().await.network();
-        if node_id.network() != wallet_network {
-            return Err(Error::InvalidNetwork(wallet_network, node_id.network()));
-        }
+        let contact_id = Uuid::from_str(&contact_id)?;
 
         let summary = wallet
             .read()
             .await
-            .prepare_pay_to_contact(node_id, amount, unit, description)
+            .prepare_pay_to_contact(contact_id, amount, unit, description)
             .await?;
 
         Ok(summary)
@@ -407,26 +504,22 @@ impl AppState {
     pub async fn wallet_request_payment_from_contact(
         &self,
         wallet_id: String,
-        node_id: String,
+        contact_id: String,
         amount: u64,
         description: Option<String>,
         deadline: Option<u64>,
     ) -> Result<Uuid> {
         tracing::debug!(
-            "wallet_request_payment_from_contact({wallet_id}, {node_id}, {amount}, {description:?}, {deadline:?})"
+            "wallet_request_payment_from_contact({wallet_id}, {contact_id}, {amount}, {description:?}, {deadline:?})"
         );
-        let node_id = NodeId::from_str(&node_id)?;
+        let contact_id = Uuid::from_str(&contact_id)?;
         let amount = cashu::Amount::from(amount);
         let wallet = self.get_wallet(&wallet_id).await?;
-        let wallet_network = wallet.read().await.network();
-        if node_id.network() != wallet_network {
-            return Err(Error::InvalidNetwork(wallet_network, node_id.network()));
-        }
         let unit = wallet.read().await.debit_unit();
         let payment_req_id = wallet
             .read()
             .await
-            .request_payment_from_contact(node_id, amount, unit, description, deadline)
+            .request_payment_from_contact(contact_id, amount, unit, description, deadline)
             .await?;
         Ok(payment_req_id)
     }
@@ -815,74 +908,6 @@ impl AppState {
         Ok(amount)
     }
 
-    pub async fn wallet_add_contact(
-        &self,
-        wallet_id: String,
-        node_id: String,
-        name: String,
-    ) -> Result<()> {
-        let node_id = NodeId::from_str(&node_id)?;
-        let name = Name::from_str(&name)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
-        let wallet_network = wallet.read().await.network();
-        if node_id.network() != wallet_network {
-            return Err(Error::InvalidNetwork(wallet_network, node_id.network()));
-        }
-        wallet.read().await.add_contact(node_id, name).await?;
-        Ok(())
-    }
-
-    pub async fn wallet_edit_contact(
-        &self,
-        wallet_id: String,
-        node_id: String,
-        name: String,
-    ) -> Result<()> {
-        let node_id = NodeId::from_str(&node_id)?;
-        let name = Name::from_str(&name)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
-        let wallet_network = wallet.read().await.network();
-        if node_id.network() != wallet_network {
-            return Err(Error::InvalidNetwork(wallet_network, node_id.network()));
-        }
-        wallet.read().await.edit_contact(node_id, name).await?;
-        Ok(())
-    }
-
-    pub async fn wallet_delete_contact(&self, wallet_id: String, node_id: String) -> Result<()> {
-        let node_id = NodeId::from_str(&node_id)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
-        let wallet_network = wallet.read().await.network();
-        if node_id.network() != wallet_network {
-            return Err(Error::InvalidNetwork(wallet_network, node_id.network()));
-        }
-        wallet.read().await.delete_contact(node_id).await?;
-        Ok(())
-    }
-
-    pub async fn wallet_get_contact(&self, wallet_id: String, node_id: String) -> Result<Contact> {
-        let node_id = NodeId::from_str(&node_id)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
-        let wallet_network = wallet.read().await.network();
-        if node_id.network() != wallet_network {
-            return Err(Error::InvalidNetwork(wallet_network, node_id.network()));
-        }
-        match wallet.read().await.get_contact(node_id.clone()).await? {
-            Some(c) => Ok(c),
-            None => Err(Error::ContactNotFound(node_id)),
-        }
-    }
-
-    pub async fn wallet_list_contacts(
-        &self,
-        wallet_id: String,
-        search_term: Option<String>,
-    ) -> Result<Vec<Contact>> {
-        let wallet = self.get_wallet(&wallet_id).await?;
-        let contacts = wallet.read().await.list_contacts(search_term).await?;
-        Ok(contacts)
-    }
-
     // Recover pending stale proofs
     pub async fn wallet_recover_pending_stale_proofs(
         &self,
@@ -1149,6 +1174,7 @@ async fn create_new_wallet(
     db_version: u32,
     swap_expiry: chrono::TimeDelta,
     db: Arc<Database>,
+    contact_repo: Arc<dyn ContactStoreApi>,
 ) -> Result<Arc<RwLock<wallet::Wallet>>> {
     let seed = seed_from_mnemonic(&cfg.mnemonic);
     let keypair = keypair_from_mnemonic(&cfg.mnemonic);
@@ -1197,7 +1223,17 @@ async fn create_new_wallet(
         betas,
         nostr_relays: cfg.nostr_relays,
     };
-    build_wallet(w_cfg, client, db_version, swap_expiry, db, seed, nostr_cl).await
+    build_wallet(
+        w_cfg,
+        client,
+        db_version,
+        swap_expiry,
+        db,
+        contact_repo,
+        seed,
+        nostr_cl,
+    )
+    .await
 }
 
 async fn build_wallet(
@@ -1206,11 +1242,12 @@ async fn build_wallet(
     db_version: u32,
     swap_expiry: chrono::TimeDelta,
     db: Arc<Database>,
+    contactdb: Arc<dyn ContactStoreApi>,
     seed: Seed,
     nostr_cl: Arc<nostr::Client>,
 ) -> Result<Arc<RwLock<wallet::Wallet>>> {
     // building wallet dbs
-    let (tx_repo, debitdb, mintmeltdb, nostrdb, contactdb, pending_incoming_payment_request_db) =
+    let (tx_repo, debitdb, mintmeltdb, nostrdb, pending_incoming_payment_request_db) =
         build_wallet_dbs(db_version, &w_cfg.wallet_id, &w_cfg.debit, db, seed).await?;
 
     let nostr_repo = Arc::new(nostrdb);
@@ -1252,7 +1289,7 @@ async fn build_wallet(
         client,
         w_cfg.mint_keyset_infos,
         Box::new(tx_repo),
-        Box::new(contactdb),
+        contactdb,
         Box::new(pending_incoming_payment_request_db),
         debit_pocket,
         w_cfg.name,
