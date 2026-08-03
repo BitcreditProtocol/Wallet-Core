@@ -143,7 +143,16 @@ pub trait WalletApi: SendSync {
         relays: Vec<RelayUrl>,
     ) -> Result<Vec<RelayUrl>>;
     async fn delete(&self) -> Result<()>;
-    // pending payment requests
+    async fn create_shareable_remote_payment_request(
+        &self,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+    ) -> Result<String>;
+    async fn prepare_pay_shared_payment_request(
+        &self,
+        payment_req: String,
+    ) -> Result<PaymentSummary>;
     async fn request_payment_from_contact(
         &self,
         contact_id: Uuid,
@@ -626,6 +635,52 @@ impl WalletApi for super::Wallet {
                         "Could not mark payment request {p_req_id} as paid after successful payment: {e}"
                     );
                 }
+                Ok((tx_id, None))
+            }
+            WalletPaymentType::SharedPaymentRequest { node_id } => {
+                let existing_relays = self.nostr_transport.relays().to_owned();
+                let receiver_relays = self
+                    .nostr_transport
+                    .fetch_relay_list(node_id.npub(), existing_relays)
+                    .await?;
+
+                let proofs = self
+                    .debit
+                    .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
+                    .await?;
+                let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
+                    proofs.into_iter().unzip();
+                let amount = proofs.total_amount()?;
+
+                let partial_tx = Transaction {
+                    id: Uuid::new_v4(),
+                    mint_url: to_mint_url(self.client.mint_url()),
+                    fees,
+                    direction: TransactionDirection::Outgoing,
+                    memo,
+                    tstamp: now,
+                    unit: unit.clone(),
+                    ys,
+                    amount,
+                    payment_type: PaymentType::Contact,
+                    status: TransactionStatus::Pending,
+                    payment_request_id: None,
+                    btc_tx_id: None,
+                    quote_id: None,
+                    nostr_event_id: None,
+                    contact_node_id: Some(node_id.clone()),
+                    linked_txs: vec![],
+                };
+                let tx_id = self
+                    .pay_shared_payment_request(
+                        node_id,
+                        receiver_relays,
+                        proofs,
+                        &self.nostr_transport,
+                        partial_tx,
+                    )
+                    .await?;
+
                 Ok((tx_id, None))
             }
         }
@@ -1276,6 +1331,79 @@ impl WalletApi for super::Wallet {
         }
 
         Ok(())
+    }
+
+    async fn create_shareable_remote_payment_request(
+        &self,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+    ) -> Result<String> {
+        let payload = ContactPaymentRequestPayload::new(
+            self.node_id(),
+            amount,
+            unit.clone(),
+            description.clone(),
+            None,
+            to_mint_url(self.client.mint_url()),
+        );
+        let event: EventEnvelope =
+            bcr_wallet_core::event::Event::new_contact_payment_request(payload).try_into()?;
+        let encoded_payload = base58::encode(&borsh::to_vec(&event)?);
+        Ok(encoded_payload)
+    }
+
+    async fn prepare_pay_shared_payment_request(
+        &self,
+        payment_req: String,
+    ) -> Result<PaymentSummary> {
+        let infos = self.get_wallet_mint_keyset_infos().await?;
+
+        if let Ok(decoded_event) = base58::decode(&payment_req)
+            && let Ok(deserialized_event) = borsh::from_slice::<EventEnvelope>(&decoded_event)
+        {
+            match deserialized_event.event_type {
+                bcr_wallet_core::event::EventType::ContactPaymentRequest => {
+                    if let Ok(deserialized_payload) =
+                        borsh::from_slice::<ContactPaymentRequestPayload>(&deserialized_event.data)
+                    {
+                        if deserialized_payload.unit != self.debit.unit() {
+                            return Err(Error::InvalidCurrencyUnit(
+                                deserialized_payload.unit.to_string(),
+                            ));
+                        }
+                        if deserialized_payload.sender.network() != self.network() {
+                            return Err(Error::InvalidNetwork(
+                                self.network(),
+                                deserialized_payload.sender.network(),
+                            ));
+                        }
+                        let s_summary = self
+                            .debit
+                            .prepare_send(deserialized_payload.amount, &infos)
+                            .await?;
+                        let mut summary = PaymentSummary::from(s_summary);
+                        summary.ptype = PaymentType::Contact;
+                        let pref = PayReference {
+                            request_id: summary.request_id,
+                            unit: summary.unit.clone(),
+                            fees: summary.fees,
+                            ptype: WalletPaymentType::SharedPaymentRequest {
+                                node_id: deserialized_payload.sender,
+                            },
+                            memo: deserialized_payload.memo,
+                        };
+                        *self.current_payment.lock().await = Some(pref);
+                        Ok(summary)
+                    } else {
+                        Err(Error::UnknownPaymentRequest(payment_req))
+                    }
+                }
+                _ => Err(Error::UnknownPaymentRequest(payment_req)),
+            }
+        } else {
+            Err(Error::UnknownPaymentRequest(payment_req))
+        }
     }
 
     async fn request_payment_from_contact(

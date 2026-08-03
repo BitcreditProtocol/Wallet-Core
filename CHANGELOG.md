@@ -2,6 +2,18 @@
 
 * Fix Onchain Mint to not accrue swap fees (just unblind signatures and store them)
 * Add validation to disallow 0 network fee for melting
+* Add endpoints to create a shareable payment request and to pay such a request
+    * `wallet_create_shareable_remote_payment_request`
+        * takes `wallet_id`, `amount`, `description`
+        * returns a string (base58 encoded, borsh-serialized payment request)
+    * `wallet_prepare_pay_shared_payment_request`
+        * takes `wallet_id`, `payment_request` (the string from above)
+        * parses the request and prepares the given payment
+        * returns `payment_summary`
+    * `wallet_pay_shared_payment_request`
+        * takes `wallet_id`, `payment_request_id` (the string from above)
+        * executes the payment
+    * In the case of a shareable payment request, no payment request is actually persisted in the wallet
 
 # 0.9.8
 

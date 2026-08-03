@@ -41,7 +41,11 @@ use bitcoin::{
     secp256k1,
 };
 use chrono::Utc;
-use nostr::event::EventId;
+use nostr::{
+    event::EventId,
+    nips::nip19::{Nip19Profile, ToBech32},
+    types::RelayUrl,
+};
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
@@ -986,6 +990,53 @@ impl Wallet {
         let Some(target) = target else {
             return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
         };
+
+        let event_id = match nostr_cl
+            .send_private_msg(target.clone(), payload.clone())
+            .await
+        {
+            Ok(event_id) => event_id,
+            Err(e) => {
+                tracing::error!("Failed to send contact payment, queuing for retry: {e}");
+                match e {
+                    bcr_wallet_transport::error::Error::NostrSendPrivateMsg(event_id) => {
+                        self.nostr_transport
+                            .queue_retry_message(Some(target), payload)
+                            .await?;
+                        event_id
+                    }
+                    e => return Err(e.into()),
+                }
+            }
+        };
+        partial_tx.nostr_event_id = Some(event_id);
+        let txid = self.tx_repo.store_tx(partial_tx).await?;
+        Ok(txid)
+    }
+
+    async fn pay_shared_payment_request(
+        &self,
+        node_id: NodeId,
+        relays: Vec<RelayUrl>,
+        proofs: Vec<cashu::Proof>,
+        nostr_cl: &Arc<dyn TransportApi>,
+        mut partial_tx: Transaction,
+    ) -> Result<Uuid> {
+        let payload = ContactPaymentPayload {
+            payment_request_id: None,
+            sender: self.node_id(),
+            proofs,
+            memo: partial_tx.memo.clone(),
+            unit: partial_tx.unit.clone(),
+            mint: to_mint_url(self.client.mint_url()),
+            created_at: Utc::now().timestamp() as u64,
+        };
+        let event: EventEnvelope =
+            bcr_wallet_core::event::Event::new_contact_payment(payload).try_into()?;
+        let payload = base58::encode(&borsh::to_vec(&event)?);
+        let target = Nip19Profile::new(node_id.npub(), relays.clone())
+            .to_bech32()
+            .map_err(|_| Error::Unsupported(node_id.to_string()))?;
 
         let event_id = match nostr_cl
             .send_private_msg(target.clone(), payload.clone())
@@ -3827,5 +3878,215 @@ mod tests {
         assert_eq!(res[0].amount, Amount::from(8));
 
         assert!(res[0].witness.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_create_shareable_remote_payment_request_can_be_prepared() {
+        let mut ctx = wallet_ctx();
+        let relays = vec![RelayUrl::from_str("wss://relay.example.com").unwrap()];
+
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+
+        ctx.client
+            .expect_mint_url()
+            .times(1)
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
+
+        ctx.nostr_transport
+            .expect_relays()
+            .times(1)
+            .return_const(relays);
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        ctx.debit
+            .expect_prepare_send()
+            .times(1)
+            .returning(|amount, _infos| {
+                assert_eq!(amount, Amount::from(42));
+                Ok(Default::default())
+            });
+
+        let wlt = wallet(ctx).await;
+
+        let shared_request = wlt
+            .read()
+            .await
+            .create_shareable_remote_payment_request(
+                Amount::from(42),
+                CurrencyUnit::Sat,
+                Some("shared request memo".to_string()),
+            )
+            .await
+            .unwrap();
+
+        assert!(!shared_request.is_empty());
+
+        let summary = wlt
+            .read()
+            .await
+            .prepare_pay_shared_payment_request(shared_request)
+            .await
+            .unwrap();
+
+        assert_eq!(summary.ptype, PaymentType::Contact);
+    }
+
+    #[tokio::test]
+    async fn test_prepare_pay_shared_payment_request_sets_payment_reference() {
+        let mut ctx = wallet_ctx();
+        let relays = vec![RelayUrl::from_str("wss://relay.example.com").unwrap()];
+        let expected_node_id = NodeId::new(test_pub_key(), bitcoin::Network::Testnet);
+
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+
+        ctx.nostr_transport
+            .expect_relays()
+            .times(1)
+            .return_const(relays);
+
+        ctx.client
+            .expect_mint_url()
+            .times(1)
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        ctx.debit
+            .expect_prepare_send()
+            .times(1)
+            .returning(|amount, _infos| {
+                assert_eq!(amount, Amount::from(42));
+                Ok(Default::default())
+            });
+
+        let wlt = wallet(ctx).await;
+
+        let shared_request = wlt
+            .read()
+            .await
+            .create_shareable_remote_payment_request(
+                Amount::from(42),
+                CurrencyUnit::Sat,
+                Some("shared request memo".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let summary = wlt
+            .read()
+            .await
+            .prepare_pay_shared_payment_request(shared_request)
+            .await
+            .unwrap();
+
+        assert_eq!(summary.ptype, PaymentType::Contact);
+
+        let wallet_guard = wlt.read().await;
+        let payment_guard = wallet_guard.current_payment.lock().await;
+        let payment = payment_guard.as_ref().expect("payment reference is set");
+
+        assert_eq!(payment.unit, CurrencyUnit::Sat);
+        assert_eq!(payment.memo, Some("shared request memo".to_string()));
+
+        match &payment.ptype {
+            WalletPaymentType::SharedPaymentRequest { node_id } => {
+                assert_eq!(node_id, &expected_node_id);
+            }
+            other => panic!("unexpected payment type: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pay_shared_payment_request() {
+        let mut ctx = wallet_ctx();
+
+        let pid = Uuid::new_v4();
+        let tx_id = Uuid::new_v4();
+        let receiver_node_id = node_id(NODE_ID_1);
+        let expected_receiver_node_id = receiver_node_id.clone();
+        let relays = vec![RelayUrl::from_str("wss://relay.example.com").unwrap()];
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        ctx.client
+            .expect_mint_url()
+            .times(2)
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
+
+        ctx.nostr_transport
+            .expect_relays()
+            .return_const(vec![RelayUrl::from_str("wss://test.example.com").unwrap()]);
+
+        let relays_clone = relays.clone();
+        ctx.nostr_transport
+            .expect_fetch_relay_list()
+            .times(1)
+            .returning(move |_, _| Ok(relays_clone.clone()));
+
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+
+        ctx.debit
+            .expect_send_proofs()
+            .times(1)
+            .returning(|_rid, _infos, _client, _swap| Ok(HashMap::default()));
+
+        ctx.nostr_transport
+            .expect_send_private_msg()
+            .times(1)
+            .returning(|_, _| Ok(EventId::all_zeros()));
+
+        ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
+            assert_eq!(tx.direction, TransactionDirection::Outgoing);
+            assert_eq!(tx.amount, Amount::ZERO);
+            assert_eq!(tx.fees.swap, Amount::ZERO);
+            assert_eq!(tx.fees.melt, Amount::ZERO);
+            assert_eq!(tx.fees.network, Amount::ZERO);
+            assert_eq!(tx.unit, CurrencyUnit::Sat);
+            assert_eq!(tx.tstamp, 123);
+            assert_eq!(tx.memo, Some("shared request memo".to_string()));
+            assert_eq!(tx.payment_type, PaymentType::Contact);
+            assert_eq!(tx.status, TransactionStatus::Pending);
+            assert_eq!(tx.contact_node_id, Some(expected_receiver_node_id.clone()));
+            assert!(tx.payment_request_id.is_none());
+            assert_eq!(tx.nostr_event_id, Some(EventId::all_zeros()));
+            Ok(tx_id)
+        });
+
+        let wlt = wallet(ctx).await;
+
+        *wlt.read().await.current_payment.lock().await = Some(PayReference {
+            request_id: pid,
+            unit: CurrencyUnit::Sat,
+            fees: TransactionFees::default(),
+            ptype: WalletPaymentType::SharedPaymentRequest {
+                node_id: receiver_node_id,
+            },
+            memo: Some("shared request memo".to_string()),
+        });
+
+        let http_cl = reqwest::Client::new();
+        let (res_tx_id, token) = wlt.read().await.pay(pid, &http_cl, 123).await.unwrap();
+
+        assert_eq!(res_tx_id, tx_id);
+        assert!(token.is_none());
     }
 }

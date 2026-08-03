@@ -154,6 +154,10 @@ enum Commands {
         network: bitcoin::Network,
         search_term: Option<String>,
     },
+    #[command(name = "create_shareable_payment_req")]
+    CreateShareablePaymentRequest { id: String, amount: u64 },
+    #[command(name = "pay_shared_payment_req")]
+    PaySharedPaymentRequest { id: String, payment_req: String },
     #[command(name = "req_payment_from_contact")]
     RequestPaymentFromContact {
         id: String,
@@ -499,6 +503,22 @@ async fn main() -> Result<()> {
                 "List Contacts for {}: {}",
                 cli.wallet,
                 command::cmd_list_contacts(&app_state, &cli.wallet, network, &search_term).await?
+            );
+        }
+        Commands::CreateShareablePaymentRequest { id, amount } => {
+            info!(
+                "Create Shareable Payment Request for {}: {}",
+                cli.wallet,
+                command::cmd_create_shareable_payment_request(&app_state, &cli.wallet, &id, amount)
+                    .await?
+            );
+        }
+        Commands::PaySharedPaymentRequest { id, payment_req } => {
+            info!(
+                "Pay Shared Payment Request for {}: {}",
+                cli.wallet,
+                command::cmd_pay_shared_payment_request(&app_state, &cli.wallet, &id, &payment_req)
+                    .await?
             );
         }
         Commands::RequestPaymentFromContact {

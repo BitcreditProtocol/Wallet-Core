@@ -14,6 +14,7 @@ pub struct SwapConfig {
     pub alpha_pk: secp256k1::PublicKey,
 }
 
+#[derive(Debug, Clone)]
 pub enum WalletPaymentType {
     Cdk18 {
         transport: cashu::Transport,
@@ -24,6 +25,9 @@ pub enum WalletPaymentType {
     Contact {
         contact_id: Uuid,
         payment_request_id: Option<Uuid>,
+    },
+    SharedPaymentRequest {
+        node_id: NodeId,
     },
 }
 
