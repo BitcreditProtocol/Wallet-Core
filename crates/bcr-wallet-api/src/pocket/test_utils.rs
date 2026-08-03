@@ -199,18 +199,13 @@ pub mod tests {
             ) -> Result<MintSummary>;
             async fn check_pending_mints(
                 &self,
-                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
-                tstamp: u64,
-                swap_config: SwapConfig,
             ) -> Result<HashMap<Uuid, crate::pocket::debit::CheckPendingMintResult>>;
             async fn check_pending_commitments(&self, tstamp: u64) -> Result<()>;
             async fn protest_mint(
                 &self,
                 qid: Uuid,
-                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
-                swap_config: SwapConfig,
             ) -> Result<ProtestResult>;
             async fn protest_swap(
                 &self,
