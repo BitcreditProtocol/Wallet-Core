@@ -16,7 +16,7 @@ use bcr_common::{
 };
 use bcr_wallet_core::{
     SendSync,
-    types::{MeltEstimation, MeltFeeRateEstimate},
+    types::{ClowderBeta, MeltEstimation, MeltFeeRateEstimate},
 };
 use bitcoin::secp256k1;
 use tracing::debug;
@@ -151,7 +151,7 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
     ) -> MintResult<Vec<cashu::ProofState>>;
     async fn get_mint_keyset(&self, keyset_id: cashu::Id) -> MintResult<cashu::KeySet>;
     async fn get_mint_keysets(&self) -> MintResult<Vec<cashu::KeySetInfo>>;
-    async fn get_clowder_betas(&self) -> MintResult<Vec<url::Url>>;
+    async fn get_clowder_betas(&self) -> MintResult<Vec<ClowderBeta>>;
     async fn post_online_exchange(
         &self,
         alpha_proofs: Vec<Proof>,
@@ -326,10 +326,17 @@ impl ClowderMintConnector for HttpClientExt {
         self.main.get_substitute(&alpha_id).await
     }
 
-    async fn get_clowder_betas(&self) -> MintResult<Vec<url::Url>> {
+    async fn get_clowder_betas(&self) -> MintResult<Vec<ClowderBeta>> {
         debug!("Clowder client call to get_clowder_betas");
         let response = self.main.get_betas().await?;
-        Ok(response.mints.into_iter().map(|m| m.mint).collect())
+        Ok(response
+            .mints
+            .into_iter()
+            .map(|m| ClowderBeta {
+                url: m.mint,
+                clowder_id: m.node_id,
+            })
+            .collect())
     }
 
     async fn post_offline_exchange(
@@ -728,10 +735,17 @@ impl ClowderMintConnector for SentinelClient {
         self.main.get_substitute(&alpha_id).await
     }
 
-    async fn get_clowder_betas(&self) -> MintResult<Vec<url::Url>> {
+    async fn get_clowder_betas(&self) -> MintResult<Vec<ClowderBeta>> {
         debug!("Clowder client call to get_clowder_betas on sentinel");
         let response = self.main.get_betas().await?;
-        Ok(response.mints.into_iter().map(|m| m.mint).collect())
+        Ok(response
+            .mints
+            .into_iter()
+            .map(|m| ClowderBeta {
+                url: m.mint,
+                clowder_id: m.node_id,
+            })
+            .collect())
     }
 
     async fn post_offline_exchange(

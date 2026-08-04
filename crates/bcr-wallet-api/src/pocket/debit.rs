@@ -13,7 +13,10 @@ use bcr_common::{
     core::swap::wallet::{PaymentPlan, prepare_payment},
     wire::{common as wire_common, melt as wire_melt, mint as wire_mint, swap as wire_swap},
 };
-use bcr_wallet_core::types::{MeltSummary, MintSummary, Seed, SendSummary, TransactionFees};
+use bcr_wallet_core::types::{
+    ForeignMintProof, ForeignMintProofReason, MeltSummary, MintSummary, Seed, SendSummary,
+    TransactionFees,
+};
 use bcr_wallet_persistence::{MeltCommitmentRecord, MintMeltRepository, PocketRepository};
 use bitcoin::secp256k1;
 use std::{
@@ -44,6 +47,12 @@ pub trait DebitPocketApi: super::PocketApi {
     ) -> Result<Amount>;
     /// Checks and cleans up spent proofs
     async fn clean_up_spent_proofs(&self, client: Arc<dyn ClowderMintConnector>) -> Result<usize>;
+    async fn fetch_foreign_mint_proofs(&self) -> Result<Vec<ForeignMintProof>>;
+    async fn delete_foreign_mint_proofs(
+        &self,
+        clowder_id: secp256k1::PublicKey,
+        ys: Vec<cdk01::PublicKey>,
+    );
     async fn prepare_onchain_melt(
         &self,
         address: String,
@@ -526,7 +535,8 @@ impl super::PocketApi for Pocket {
         proofs: Vec<cdk00::Proof>,
         keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         keysets: HashMap<cashu::Id, KeySet>,
-        client: Arc<dyn ClowderMintConnector>,
+        substitute_client: Arc<dyn ClowderMintConnector>,
+        substitute_clowder_id: secp256k1::PublicKey,
         beta_provider: RandomBetaProvider,
         send_amount: Amount,
         swap_config: SwapConfig,
@@ -536,7 +546,7 @@ impl super::PocketApi for Pocket {
 
         let swap_plan: Vec<_> = prepare_swap(&proofs, keysets_info)?.into_iter().collect();
         tracing::debug!(
-            "Swapping to unlocked substitute proofs {swap_plan:?} - {change_amount} will be used for fees and/or lost."
+            "Swapping to unlocked substitute proofs {swap_plan:?} - {change_amount} will be used for fees and stored temporarily as foreign mint proofs."
         );
 
         // prepare the premints
@@ -581,7 +591,7 @@ impl super::PocketApi for Pocket {
 
         let attestation = beta_provider.attest(&proofs).await?;
         let signatures = super::committed_swap(
-            client.as_ref(),
+            substitute_client.as_ref(),
             None,
             proofs,
             blinds,
@@ -592,6 +602,8 @@ impl super::PocketApi for Pocket {
         .await?;
 
         let mut on_target: Vec<cdk00::Proof> = Vec::new();
+        let mut change_proofs: Vec<cdk00::Proof> = Vec::new();
+
         let mut sigs_by_kid: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
         for signature in signatures {
             sigs_by_kid
@@ -617,6 +629,8 @@ impl super::PocketApi for Pocket {
                     selected_amount_per_keyset += amount;
                     selected_amount += amount;
                     on_target.push(proof);
+                } else {
+                    change_proofs.push(proof);
                 }
             }
 
@@ -624,6 +638,28 @@ impl super::PocketApi for Pocket {
                 return Err(Error::Swap(format!(
                     "did not select exact payment proofs for keyset {kid}: {selected_amount_per_keyset} / {keyset_target_amount}"
                 )));
+            }
+        }
+
+        if !change_proofs.is_empty() {
+            let stored_change_amount = change_proofs.total_amount()?;
+
+            tracing::debug!(
+                "Storing {} unlocked change proofs for {stored_change_amount} for substitute {}",
+                change_proofs.len(),
+                substitute_client.mint_url()
+            );
+            for change_proof in change_proofs {
+                let fmp = ForeignMintProof {
+                    clowder_id: substitute_clowder_id,
+                    proof: change_proof,
+                    reason: ForeignMintProofReason::MintOffline,
+                };
+                if let Err(e) = self.pdb.store_foreign_mint_proof(fmp).await {
+                    tracing::error!(
+                        "Could not persist foreign mint proof for clowder_id {substitute_clowder_id}: {e}"
+                    );
+                }
             }
         }
 
@@ -794,6 +830,21 @@ impl DebitPocketApi for Pocket {
             }
         }
         Ok(cleaned_up)
+    }
+
+    async fn fetch_foreign_mint_proofs(&self) -> Result<Vec<ForeignMintProof>> {
+        let foreign_mint_proofs = self.pdb.load_foreign_mint_proofs().await?;
+        Ok(foreign_mint_proofs)
+    }
+
+    async fn delete_foreign_mint_proofs(
+        &self,
+        clowder_id: secp256k1::PublicKey,
+        ys: Vec<cdk01::PublicKey>,
+    ) {
+        if let Err(e) = self.pdb.delete_foreign_mint_proofs(clowder_id, ys).await {
+            tracing::error!("Could not delete foreign mint proof for {clowder_id}: {e}");
+        }
     }
 
     async fn prepare_onchain_melt(
@@ -1257,7 +1308,11 @@ mod tests {
     use super::*;
     use crate::{
         external::mint::{MeltQuoteResult, MockClowderMintConnector},
-        pocket::{PocketApi, debit::DebitPocketApi, test_utils::tests::test_kinfos},
+        pocket::{
+            PocketApi,
+            debit::DebitPocketApi,
+            test_utils::tests::{mock_commitment_result, test_kinfos},
+        },
     };
     use bcr_common::{core_tests, wire::mint::OnchainMintResponse};
     use bcr_wallet_persistence::{
@@ -2790,5 +2845,134 @@ mod tests {
             .unwrap();
 
         assert_eq!(cleaned, 2);
+    }
+
+    #[tokio::test]
+    async fn swap_to_unlocked_substitute_proofs_returns_payment_and_stores_change() {
+        let (info, mint_keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+
+        let keysets_info = test_kinfos(info);
+        let keyset = bcr_wallet_core::util::to_keyset(&mint_keyset, None);
+        let keysets = HashMap::from([(kid, keyset)]);
+
+        // 24 total, 16 payment, 8 change
+        let input_proofs = core_tests::generate_random_ecash_proofs(
+            &mint_keyset,
+            &[Amount::from(8u64), Amount::from(16u64)],
+        );
+
+        let send_amount = Amount::from(16u64);
+        let expected_change_amount = Amount::from(8u64);
+
+        let substitute_keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let substitute_clowder_id = secp256k1::PublicKey::from_keypair(&substitute_keypair);
+        let mdb = MockMintMeltRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        let mut substitute_client = MockClowderMintConnector::new();
+
+        substitute_client
+            .expect_post_swap_commitment()
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(mock_commitment_result()));
+
+        let signing_keyset = mint_keyset.clone();
+        substitute_client
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(move |_inputs, outputs, _commitment| {
+                let amounts = outputs
+                    .iter()
+                    .map(|output| output.amount)
+                    .collect::<Vec<_>>();
+
+                Ok(core_tests::generate_ecash_signatures(
+                    &signing_keyset,
+                    &amounts,
+                ))
+            });
+
+        // collect stored changed proofs
+        let stored_foreign_proofs = Arc::new(Mutex::new(Vec::<ForeignMintProof>::new()));
+        let stored_foreign_proofs_clone = stored_foreign_proofs.clone();
+        let expected_clowder_id = substitute_clowder_id;
+
+        pdb.expect_store_foreign_mint_proof()
+            .times(1)
+            .returning(move |foreign_proof| {
+                assert_eq!(foreign_proof.clowder_id, expected_clowder_id);
+                assert!(matches!(
+                    foreign_proof.reason,
+                    ForeignMintProofReason::MintOffline
+                ));
+                assert!(foreign_proof.proof.witness.is_none());
+
+                let y = foreign_proof
+                    .proof
+                    .y()
+                    .expect("stored change proof has valid y");
+
+                stored_foreign_proofs_clone
+                    .lock()
+                    .expect("stored proof mutex")
+                    .push(foreign_proof);
+
+                Ok(y)
+            });
+
+        let swap_config = test_swap_config();
+        let mut beta_connector = MockClowderMintConnector::new();
+        setup_attestation_mock(&mut beta_connector);
+        let beta_provider = RandomBetaProvider::new(
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
+            swap_config.alpha_pk,
+        )
+        .expect("can create beta provider");
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let payment_proofs = pocket
+            .swap_to_unlocked_substitute_proofs(
+                input_proofs,
+                &keysets_info,
+                keysets,
+                Arc::new(substitute_client),
+                substitute_clowder_id,
+                beta_provider,
+                send_amount,
+                swap_config,
+            )
+            .await
+            .expect("swap to unlocked substitute proofs works");
+
+        assert_eq!(payment_proofs.total_amount().unwrap(), send_amount);
+        assert!(
+            payment_proofs
+                .iter()
+                .all(|proof| { proof.witness.is_none() && proof.p2pk_e.is_none() })
+        );
+
+        let stored_foreign_proofs = stored_foreign_proofs.lock().expect("stored proof mutex");
+        assert_eq!(stored_foreign_proofs.len(), 1);
+        assert_eq!(
+            stored_foreign_proofs
+                .iter()
+                .map(|entry| entry.proof.clone())
+                .collect::<Vec<_>>()
+                .total_amount()
+                .unwrap(),
+            expected_change_amount
+        );
+
+        // payment_proofs + stored_foreign_proofs = total amount
+        assert_eq!(
+            payment_proofs.total_amount().unwrap()
+                + stored_foreign_proofs
+                    .iter()
+                    .map(|fmp| fmp.proof.clone())
+                    .collect::<Vec<_>>()
+                    .total_amount()
+                    .unwrap(),
+            Amount::from(24u64)
+        );
     }
 }
