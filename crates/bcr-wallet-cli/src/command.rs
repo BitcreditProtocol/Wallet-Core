@@ -773,6 +773,63 @@ pub async fn cmd_list_contacts(
     Ok(res)
 }
 
+pub async fn cmd_create_shareable_payment_request(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    amount: u64,
+) -> Result<String> {
+    let mut res = String::new();
+    let req = app_state
+        .wallet_create_shareable_remote_payment_request(id.to_owned(), amount, None)
+        .await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Create Shareable Payment Request for {amount} for {name}:\n"
+    ));
+    res.push_str("Payment Request: ");
+    res.push_str(&req);
+    push_break(&mut res);
+    Ok(res)
+}
+
+pub async fn cmd_pay_shared_payment_request(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    payment_request: &str,
+) -> Result<String> {
+    let mut res = String::new();
+    let payment_summary = app_state
+        .wallet_prepare_pay_shared_payment_request(id.to_owned(), payment_request.to_owned())
+        .await?;
+    info!(
+        "Payment Summary: Amount: {}, Unit: {}, {}",
+        payment_summary.amount,
+        payment_summary.unit,
+        format_fees(payment_summary.fees),
+    );
+    push_break(&mut res);
+    push_break(&mut res);
+    let result = app_state
+        .wallet_pay_shared_payment_request(id.to_owned(), payment_summary.request_id.to_string())
+        .await?;
+    res.push_str(&format!(
+        "Pay Shared Payment Request {payment_request} for {name}, Wallet ID: {id}.\n"
+    ));
+    res.push_str(&format!(
+        "Unit: {}, Amount: {}, {}",
+        payment_summary.unit,
+        payment_summary.amount,
+        format_fees(payment_summary.fees)
+    ));
+    push_break(&mut res);
+    res.push_str(&format!("Transaction ID: {}", result));
+    push_break(&mut res);
+    Ok(res)
+}
+
 pub async fn cmd_request_payment_from_contact(
     app_state: &AppState,
     name: &str,

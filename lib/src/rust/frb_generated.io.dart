@@ -136,6 +136,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_wallet_check_received_payment_request(dynamic raw);
 
   @protected
+  WalletCreateShareableRemotePaymentRequest
+  dco_decode_box_autoadd_wallet_create_shareable_remote_payment_request(
+    dynamic raw,
+  );
+
+  @protected
   WalletEditTransactionMemoRequest
   dco_decode_box_autoadd_wallet_edit_transaction_memo_request(dynamic raw);
 
@@ -187,6 +193,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletPreparePayPaymentRequestRequest
   dco_decode_box_autoadd_wallet_prepare_pay_payment_request_request(
+    dynamic raw,
+  );
+
+  @protected
+  WalletPreparePaySharedPaymentRequestRequest
+  dco_decode_box_autoadd_wallet_prepare_pay_shared_payment_request_request(
     dynamic raw,
   );
 
@@ -504,6 +516,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_wallet_check_received_payment_request(dynamic raw);
 
   @protected
+  WalletCreateShareableRemotePaymentRequest
+  dco_decode_wallet_create_shareable_remote_payment_request(dynamic raw);
+
+  @protected
+  WalletCreateShareableRemotePaymentResponse
+  dco_decode_wallet_create_shareable_remote_payment_response(dynamic raw);
+
+  @protected
   WalletCurrencyUnitResponse dco_decode_wallet_currency_unit_response(
     dynamic raw,
   );
@@ -638,6 +658,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletPreparePayPaymentRequestRequest
   dco_decode_wallet_prepare_pay_payment_request_request(dynamic raw);
+
+  @protected
+  WalletPreparePaySharedPaymentRequestRequest
+  dco_decode_wallet_prepare_pay_shared_payment_request_request(dynamic raw);
 
   @protected
   WalletPreparePaymentByContactRequest
@@ -895,6 +919,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletCreateShareableRemotePaymentRequest
+  sse_decode_box_autoadd_wallet_create_shareable_remote_payment_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   WalletEditTransactionMemoRequest
   sse_decode_box_autoadd_wallet_edit_transaction_memo_request(
     SseDeserializer deserializer,
@@ -964,6 +994,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletPreparePayPaymentRequestRequest
   sse_decode_box_autoadd_wallet_prepare_pay_payment_request_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletPreparePaySharedPaymentRequestRequest
+  sse_decode_box_autoadd_wallet_prepare_pay_shared_payment_request_request(
     SseDeserializer deserializer,
   );
 
@@ -1377,6 +1413,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletCreateShareableRemotePaymentRequest
+  sse_decode_wallet_create_shareable_remote_payment_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletCreateShareableRemotePaymentResponse
+  sse_decode_wallet_create_shareable_remote_payment_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   WalletCurrencyUnitResponse sse_decode_wallet_currency_unit_response(
     SseDeserializer deserializer,
   );
@@ -1537,6 +1585,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletPreparePayPaymentRequestRequest
   sse_decode_wallet_prepare_pay_payment_request_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletPreparePaySharedPaymentRequestRequest
+  sse_decode_wallet_prepare_pay_shared_payment_request_request(
     SseDeserializer deserializer,
   );
 
@@ -1866,6 +1920,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_wallet_create_shareable_remote_payment_request(
+    WalletCreateShareableRemotePaymentRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_wallet_edit_transaction_memo_request(
     WalletEditTransactionMemoRequest self,
     SseSerializer serializer,
@@ -1940,6 +2000,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_wallet_prepare_pay_payment_request_request(
     WalletPreparePayPaymentRequestRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_wallet_prepare_pay_shared_payment_request_request(
+    WalletPreparePaySharedPaymentRequestRequest self,
     SseSerializer serializer,
   );
 
@@ -2445,6 +2511,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_wallet_create_shareable_remote_payment_request(
+    WalletCreateShareableRemotePaymentRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_create_shareable_remote_payment_response(
+    WalletCreateShareableRemotePaymentResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_wallet_currency_unit_response(
     WalletCurrencyUnitResponse self,
     SseSerializer serializer,
@@ -2642,6 +2720,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_prepare_pay_payment_request_request(
     WalletPreparePayPaymentRequestRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_prepare_pay_shared_payment_request_request(
+    WalletPreparePaySharedPaymentRequestRequest self,
     SseSerializer serializer,
   );
 

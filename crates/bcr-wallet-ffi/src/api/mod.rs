@@ -879,6 +879,53 @@ pub async fn wallet_get_payment_request(
 }
 
 #[frb]
+pub async fn wallet_create_shareable_remote_payment_request(
+    req: WalletCreateShareableRemotePaymentRequest,
+) -> Result<WalletCreateShareableRemotePaymentResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let payment_request = app_state
+        .wallet_create_shareable_remote_payment_request(req.wallet_id, req.amount, req.description)
+        .await?;
+    Ok(WalletCreateShareableRemotePaymentResponse { payment_request })
+}
+
+#[frb]
+pub async fn wallet_prepare_pay_shared_payment_request(
+    req: WalletPreparePaySharedPaymentRequestRequest,
+) -> Result<WalletPreparePaymentResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let payment_summary = app_state
+        .wallet_prepare_pay_shared_payment_request(req.wallet_id, req.payment_request)
+        .await?;
+    Ok(WalletPreparePaymentResponse {
+        payment_summary: PaymentSummary {
+            request_id: payment_summary.request_id.to_string(),
+            unit: payment_summary.unit.to_string(),
+            amount: u64::from(payment_summary.amount),
+            fees: payment_summary.fees.into(),
+            reserved_fees: u64::from(payment_summary.reserved_fees),
+            expiry: payment_summary.expiry,
+            ptype: PaymentType::from(bcr_wallet_core::types::PaymentType::from(
+                payment_summary.ptype,
+            )),
+        },
+    })
+}
+
+#[frb]
+pub async fn wallet_pay_shared_payment_request(
+    req: WalletPayRequest,
+) -> Result<WalletTransactionIdResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let res = app_state
+        .wallet_pay_shared_payment_request(req.wallet_id, req.rid)
+        .await?;
+    Ok(WalletTransactionIdResponse {
+        tx_id: res.to_string(),
+    })
+}
+
+#[frb]
 pub async fn wallet_prepare_pay_payment_request(
     req: WalletPreparePayPaymentRequestRequest,
 ) -> Result<WalletPreparePaymentResponse, WalletError> {
@@ -1879,6 +1926,18 @@ pub struct WalletPreparePaymentReqRequest {
 }
 
 #[derive(Debug, Clone)]
+pub struct WalletCreateShareableRemotePaymentRequest {
+    pub wallet_id: String,
+    pub amount: u64,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletCreateShareableRemotePaymentResponse {
+    pub payment_request: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct WalletPreparePaymentReqResponse {
     pub payment_request: Cdk18PaymentRequest,
 }
@@ -2196,6 +2255,12 @@ pub struct WalletGetPaymentRequestRequest {
 #[derive(Debug, Clone)]
 pub struct WalletGetPaymentRequestResponse {
     pub payment_request: PaymentRequest,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletPreparePaySharedPaymentRequestRequest {
+    pub wallet_id: String,
+    pub payment_request: String,
 }
 
 #[derive(Debug, Clone)]
