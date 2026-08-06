@@ -1,5 +1,7 @@
 # 0.9.11
 
+* Implement v5 token validation for network
+
 # 0.9.10
 
 * Store change from offline-tokens into a temporary-foreign-mint-proof-storage

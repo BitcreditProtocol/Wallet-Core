@@ -1003,6 +1003,13 @@ impl Wallet {
         let token_mint_url = match token {
             Token::BitcrV4(ref bitcr_token_v4) => from_mint_url(&bitcr_token_v4.mint_url),
             Token::BitcrV5(ref bitcr_token_v5) => {
+                if bitcr_token_v5.mint_id.network() != self.network() {
+                    return Err(Error::InvalidNetwork(
+                        self.network(),
+                        bitcr_token_v5.mint_id.network(),
+                    ));
+                }
+
                 let clowder_node_id = bitcr_token_v5.mint_id.clone();
                 if clowder_node_id == self.clowder_node_id() {
                     self.mint_url()
