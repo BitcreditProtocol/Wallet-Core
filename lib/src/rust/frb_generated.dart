@@ -3529,14 +3529,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   IsValidTokenResponse dco_decode_is_valid_token_response(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return IsValidTokenResponse(
       amount: dco_decode_u_64(arr[0]),
       memo: dco_decode_opt_String(arr[1]),
       mintUrl: dco_decode_opt_String(arr[2]),
       mintNodeId: dco_decode_opt_String(arr[3]),
-      unit: dco_decode_opt_String(arr[4]),
+      bitcoinNetwork: dco_decode_opt_String(arr[4]),
+      unit: dco_decode_opt_String(arr[5]),
     );
   }
 
@@ -5652,12 +5653,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_memo = sse_decode_opt_String(deserializer);
     var var_mintUrl = sse_decode_opt_String(deserializer);
     var var_mintNodeId = sse_decode_opt_String(deserializer);
+    var var_bitcoinNetwork = sse_decode_opt_String(deserializer);
     var var_unit = sse_decode_opt_String(deserializer);
     return IsValidTokenResponse(
       amount: var_amount,
       memo: var_memo,
       mintUrl: var_mintUrl,
       mintNodeId: var_mintNodeId,
+      bitcoinNetwork: var_bitcoinNetwork,
       unit: var_unit,
     );
   }
@@ -7914,6 +7917,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.memo, serializer);
     sse_encode_opt_String(self.mintUrl, serializer);
     sse_encode_opt_String(self.mintNodeId, serializer);
+    sse_encode_opt_String(self.bitcoinNetwork, serializer);
     sse_encode_opt_String(self.unit, serializer);
   }
 

@@ -664,6 +664,7 @@ class IsValidTokenResponse {
   final String? memo;
   final String? mintUrl;
   final String? mintNodeId;
+  final String? bitcoinNetwork;
   final String? unit;
 
   const IsValidTokenResponse({
@@ -671,6 +672,7 @@ class IsValidTokenResponse {
     this.memo,
     this.mintUrl,
     this.mintNodeId,
+    this.bitcoinNetwork,
     this.unit,
   });
 
@@ -680,6 +682,7 @@ class IsValidTokenResponse {
       memo.hashCode ^
       mintUrl.hashCode ^
       mintNodeId.hashCode ^
+      bitcoinNetwork.hashCode ^
       unit.hashCode;
 
   @override
@@ -691,6 +694,7 @@ class IsValidTokenResponse {
           memo == other.memo &&
           mintUrl == other.mintUrl &&
           mintNodeId == other.mintNodeId &&
+          bitcoinNetwork == other.bitcoinNetwork &&
           unit == other.unit;
 }
 
