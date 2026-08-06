@@ -1085,7 +1085,8 @@ pub async fn is_valid_token(req: IsValidTokenRequest) -> Result<IsValidTokenResp
     Ok(IsValidTokenResponse {
         amount: u64::from(token.value().unwrap_or(cashu::Amount::ZERO)),
         memo: token.memo().to_owned(),
-        mint_url: token.mint_url().to_string(),
+        mint_url: token.mint_url().map(|mu| mu.to_string()),
+        mint_node_id: token.mint_id().map(|mi| mi.to_string()),
         unit: token.unit().map(|cu| cu.to_string()),
     })
 }
@@ -2077,7 +2078,8 @@ pub struct IsValidTokenRequest {
 pub struct IsValidTokenResponse {
     pub amount: u64,
     pub memo: Option<String>,
-    pub mint_url: String,
+    pub mint_url: Option<String>,
+    pub mint_node_id: Option<String>,
     pub unit: Option<String>,
 }
 
@@ -2364,6 +2366,7 @@ pub enum WalletErrorCode {
     ContactAlreadyExists,
     EmptyToken,
     InvalidToken,
+    Token,
     CashuMintUrl,
     Url,
     Uuid,
@@ -2478,6 +2481,9 @@ impl From<BcrWalletError> for WalletError {
             }
             BcrWalletError::InvalidToken(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidToken)
+            }
+            BcrWalletError::Token(_) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::Token)
             }
             BcrWalletError::NoActiveKeyset => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::NoActiveKeyset)

@@ -662,19 +662,25 @@ class IsValidTokenRequest {
 class IsValidTokenResponse {
   final BigInt amount;
   final String? memo;
-  final String mintUrl;
+  final String? mintUrl;
+  final String? mintNodeId;
   final String? unit;
 
   const IsValidTokenResponse({
     required this.amount,
     this.memo,
-    required this.mintUrl,
+    this.mintUrl,
+    this.mintNodeId,
     this.unit,
   });
 
   @override
   int get hashCode =>
-      amount.hashCode ^ memo.hashCode ^ mintUrl.hashCode ^ unit.hashCode;
+      amount.hashCode ^
+      memo.hashCode ^
+      mintUrl.hashCode ^
+      mintNodeId.hashCode ^
+      unit.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -684,6 +690,7 @@ class IsValidTokenResponse {
           amount == other.amount &&
           memo == other.memo &&
           mintUrl == other.mintUrl &&
+          mintNodeId == other.mintNodeId &&
           unit == other.unit;
 }
 
@@ -1516,6 +1523,7 @@ enum WalletErrorCode {
   contactAlreadyExists,
   emptyToken,
   invalidToken,
+  token,
   cashuMintUrl,
   url,
   uuid,

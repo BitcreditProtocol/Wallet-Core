@@ -36,7 +36,7 @@ impl SendSummary {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug)]
 pub struct WalletConfig {
     pub wallet_id: String,
     pub name: String,

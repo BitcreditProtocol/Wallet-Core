@@ -18,7 +18,7 @@ use bcr_common::{
     cashu::{self, Amount, CurrencyUnit, KeySetInfo, Proof, ProofsMethods},
     cdk_common::wallet::TransactionDirection,
     core::NodeId,
-    wallet::Token,
+    wallet::{BitcrTokenV5, Token},
     wire::clowder::{ConnectedMintResponse, ConnectedMintsResponse},
 };
 use bcr_wallet_core::{
@@ -398,7 +398,7 @@ impl Wallet {
             } else {
                 self.beta_clients
                     .get(&beta_mint)
-                    .ok_or(Error::BetaNotFound(beta_mint))?
+                    .ok_or(Error::BetaNotFound(beta_mint.to_string()))?
             };
 
             // In the offline case we can only ask the substitute, in the online case we can ask the mint
@@ -629,11 +629,15 @@ impl Wallet {
                     .map(|proof| proof.y().expect("proof has valid y"))
                     .collect();
                 let amount = proofs.total_amount()?;
-                let token = Token::new_bitcr(
-                    to_mint_url(&mint.url),
-                    proofs,
-                    Some(format!("Reclaimed Foreign Mint Funds from {}", mint.url)),
-                    self.debit_unit(),
+                let clowder_node_id = NodeId::new(mint.clowder_id, self.network());
+                let token = Token::BitcrV5(
+                    BitcrTokenV5::new(
+                        clowder_node_id,
+                        self.debit_unit(),
+                        proofs.into_iter().map(|p| p.into()).collect(),
+                    )
+                    .with_mint_url(to_mint_url(&mint.url).to_string())
+                    .with_memo(format!("Reclaimed Foreign Mint Funds from {}", mint.url)),
                 );
                 match self
                     .receive_token(token, Utc::now().timestamp() as u64)
@@ -772,7 +776,9 @@ impl Wallet {
                 } else {
                     self.beta_clients
                         .get(&substitute_beta_mint)
-                        .ok_or(Error::BetaNotFound(substitute_beta_mint.clone()))?
+                        .ok_or(Error::BetaNotFound(
+                            substitute_beta_mint.clone().to_string(),
+                        ))?
                 };
                 tracing::debug!("Using substitute {}", substitute_beta_mint.to_string());
 
@@ -994,16 +1000,58 @@ impl Wallet {
 
     pub async fn receive_token(&self, token: Token, tstamp: u64) -> Result<Uuid> {
         let token_teaser = token.to_string().chars().take(20).collect::<String>();
-        let token_mint_url = from_mint_url(&token.mint_url());
+        let token_mint_url = match token {
+            Token::BitcrV4(ref bitcr_token_v4) => from_mint_url(&bitcr_token_v4.mint_url),
+            Token::BitcrV5(ref bitcr_token_v5) => {
+                let clowder_node_id = bitcr_token_v5.mint_id.clone();
+                if clowder_node_id == self.clowder_node_id() {
+                    self.mint_url()
+                } else {
+                    match bitcr_token_v5
+                        .mint_url
+                        .as_deref()
+                        .and_then(|mint_url| url::Url::parse(mint_url).ok())
+                    {
+                        Some(mint_url) => mint_url,
+                        None => {
+                            let betas: HashMap<NodeId, url::Url> = self
+                                .client
+                                .get_clowder_betas()
+                                .await?
+                                .iter()
+                                .map(|cb| {
+                                    (
+                                        NodeId::new(cb.clowder_id, self.network()),
+                                        cb.url.to_owned(),
+                                    )
+                                })
+                                .collect();
+                            betas
+                                .get(&clowder_node_id)
+                                .ok_or(Error::BetaNotFound(clowder_node_id.to_string()))?
+                                .to_owned()
+                        }
+                    }
+                }
+            }
+        };
         let (intermint_infos, keysets_info) = self
-            .get_clowder_path_and_keysets_info(from_mint_url(&token.mint_url()))
+            .get_clowder_path_and_keysets_info(token_mint_url.clone())
             .await?;
 
-        let proofs = if &token_mint_url == self.client.mint_url() {
-            let keysets: Vec<KeySetInfo> = keysets_info.values().cloned().collect();
+        let is_same_mint = &token_mint_url == self.client.mint_url();
+
+        let proofs = if is_same_mint {
+            let keysets: Vec<bcr_common::ecash::KeySetInfo> = keysets_info
+                .values()
+                .map(|ks| ks.to_owned().into())
+                .collect();
             token.proofs(&keysets)?
         } else if let Some((_, ref intermint_alpha_infos)) = intermint_infos {
-            let keysets: Vec<KeySetInfo> = intermint_alpha_infos.values().cloned().collect();
+            let keysets: Vec<bcr_common::ecash::KeySetInfo> = intermint_alpha_infos
+                .values()
+                .map(|ks| ks.to_owned().into())
+                .collect();
             token.proofs(&keysets)?
         } else {
             // different mint, but no clowder-path set
@@ -1019,7 +1067,7 @@ impl Wallet {
 
             self._receive_proofs(
                 &keysets_info,
-                proofs,
+                proofs.into_iter().map(|p| p.into()).collect(),
                 self.debit.unit(),
                 token_mint_url,
                 intermint_infos,
@@ -1246,7 +1294,12 @@ mod tests {
         nips::nip19::{Nip19Profile, ToBech32},
         types::RelayUrl,
     };
-    use bcr_common::{cashu::nut18 as cdk18, core_tests, wire::clowder as wire_clowder};
+    use bcr_common::{
+        cashu::{ProofsMethods as CashuProofsMethods, nut18 as cdk18},
+        core_tests,
+        ecash::ProofsMethods,
+        wire::clowder as wire_clowder,
+    };
     use bcr_wallet_core::{
         event::ContactPaymentRequestPayload,
         name::Name,
@@ -1637,13 +1690,6 @@ mod tests {
         assert!(urls.contains(&b2));
         assert!(urls.contains(&url::Url::from_str("https://mint.example").unwrap()));
         assert_eq!(urls.len(), 3);
-    }
-
-    #[tokio::test]
-    async fn test_clowder_id() {
-        let ctx = wallet_ctx();
-        let wlt = wallet(ctx).await;
-        assert_eq!(wlt.read().await.clowder_id(), test_pub_key());
     }
 
     #[tokio::test]
@@ -3722,7 +3768,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_receive_token_same_mint_success() {
+    async fn test_receive_token_v4_same_mint_success() {
         let mut ctx = wallet_ctx();
 
         let tx_id = Uuid::new_v4();
@@ -3778,9 +3824,80 @@ mod tests {
 
         let token = Token::new_bitcr(
             to_mint_url(&mint_url),
-            proofs,
+            proofs.into_iter().map(|p| p.into()).collect(),
             Some("token memo".to_string()),
             CurrencyUnit::Sat,
+        );
+
+        let wlt = wallet(ctx).await;
+
+        let res = wlt.read().await.receive_token(token, 123).await.unwrap();
+
+        assert_eq!(res, tx_id);
+    }
+
+    #[tokio::test]
+    async fn test_receive_token_v5_same_mint_success() {
+        let mut ctx = wallet_ctx();
+
+        let tx_id = Uuid::new_v4();
+        let mint_url = url::Url::from_str("https://mint.example").unwrap();
+
+        let (info, _keyset, proofs) = test_keyset_and_proofs(&[Amount::from(8), Amount::from(16)]);
+        let k_infos = HashMap::from([(info.id, info.clone())]);
+
+        let expected_ys: Vec<_> = proofs
+            .iter()
+            .map(|p| p.y().expect("valid proof y"))
+            .collect();
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(move || Ok(k_infos.values().cloned().collect()));
+
+        ctx.client
+            .expect_mint_url()
+            .times(5)
+            .return_const(mint_url.clone());
+
+        ctx.debit
+            .expect_unit()
+            .times(3)
+            .returning(|| CurrencyUnit::Sat);
+
+        ctx.debit.expect_receive_proofs().times(1).return_once(
+            move |_client, keysets_info, received_proofs, _swap_config| {
+                assert!(keysets_info.contains_key(&info.id));
+                assert_eq!(received_proofs.len(), 2);
+                assert_eq!(received_proofs.total_amount().unwrap(), Amount::from(24));
+                Ok((Amount::from(24), expected_ys))
+            },
+        );
+        ctx.tx_repo
+            .expect_store_tx()
+            .times(1)
+            .return_once(move |tx| {
+                assert_eq!(tx.direction, TransactionDirection::Incoming);
+                assert_eq!(tx.amount, Amount::from(24));
+                assert_eq!(tx.fees.swap, Amount::ZERO);
+                assert_eq!(tx.fees.melt, Amount::ZERO);
+                assert_eq!(tx.fees.network, Amount::ZERO);
+                assert_eq!(tx.unit, CurrencyUnit::Sat);
+                assert_eq!(tx.tstamp, 123);
+                assert_eq!(tx.memo, Some("token memo".to_string()));
+                assert_eq!(tx.payment_type, PaymentType::Token);
+                assert_eq!(tx.status, TransactionStatus::Settled);
+                Ok(tx_id)
+            });
+
+        let token = Token::BitcrV5(
+            BitcrTokenV5::new(
+                NodeId::new(test_pub_key(), bitcoin::Network::Testnet),
+                CurrencyUnit::Sat,
+                proofs.into_iter().map(|p| p.into()).collect(),
+            )
+            .with_memo("token memo".to_string()),
         );
 
         let wlt = wallet(ctx).await;
@@ -4469,11 +4586,11 @@ mod tests {
             .expect("offline token payment works");
         assert_eq!(result_tx_id, tx_id);
         let token = token.expect("offline token payment returns a token");
-        assert_eq!(from_mint_url(&token.mint_url()), substitute_url);
+        assert_eq!(from_mint_url(&token.mint_url().unwrap()), substitute_url);
         assert_eq!(token.unit(), Some(CurrencyUnit::Sat));
         assert_eq!(token.memo().as_deref(), memo.as_deref());
         let token_proofs = token
-            .proofs(&[substitute_info])
+            .proofs(&[substitute_info.into()])
             .expect("returned token contains valid substitute proofs");
         assert_eq!(token_proofs.total_amount().unwrap(), send_amount);
         assert_eq!(token_proofs.len(), 1);
