@@ -3529,13 +3529,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   IsValidTokenResponse dco_decode_is_valid_token_response(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return IsValidTokenResponse(
       amount: dco_decode_u_64(arr[0]),
       memo: dco_decode_opt_String(arr[1]),
-      mintUrl: dco_decode_String(arr[2]),
-      unit: dco_decode_opt_String(arr[3]),
+      mintUrl: dco_decode_opt_String(arr[2]),
+      mintNodeId: dco_decode_opt_String(arr[3]),
+      unit: dco_decode_opt_String(arr[4]),
     );
   }
 
@@ -5649,12 +5650,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_amount = sse_decode_u_64(deserializer);
     var var_memo = sse_decode_opt_String(deserializer);
-    var var_mintUrl = sse_decode_String(deserializer);
+    var var_mintUrl = sse_decode_opt_String(deserializer);
+    var var_mintNodeId = sse_decode_opt_String(deserializer);
     var var_unit = sse_decode_opt_String(deserializer);
     return IsValidTokenResponse(
       amount: var_amount,
       memo: var_memo,
       mintUrl: var_mintUrl,
+      mintNodeId: var_mintNodeId,
       unit: var_unit,
     );
   }
@@ -7909,7 +7912,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_64(self.amount, serializer);
     sse_encode_opt_String(self.memo, serializer);
-    sse_encode_String(self.mintUrl, serializer);
+    sse_encode_opt_String(self.mintUrl, serializer);
+    sse_encode_opt_String(self.mintNodeId, serializer);
     sse_encode_opt_String(self.unit, serializer);
   }
 

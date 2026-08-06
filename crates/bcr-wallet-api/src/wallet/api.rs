@@ -16,7 +16,7 @@ use bcr_common::{
     cashu::{self, Amount, CurrencyUnit, KeySet, ProofsMethods, nut00 as cdk00, nut18 as cdk18},
     cdk_common::wallet::TransactionDirection,
     core::NodeId,
-    wallet::Token,
+    wallet::{BitcrTokenV5, Token},
     wire::clowder::{self as wire_clowder},
 };
 use bcr_wallet_core::{
@@ -30,7 +30,7 @@ use bcr_wallet_core::{
     util::{from_mint_url, to_mint_url},
 };
 use bcr_wallet_transport::NostrWalletEvent;
-use bitcoin::{base58, secp256k1};
+use bitcoin::base58;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use nostr::{RelayUrl, event::EventId};
@@ -53,8 +53,7 @@ pub trait WalletApi: SendSync {
     fn id(&self) -> String;
     fn mint_url(&self) -> url::Url;
     fn betas(&self) -> Vec<url::Url>;
-    #[allow(dead_code)]
-    fn clowder_id(&self) -> secp256k1::PublicKey;
+    fn clowder_node_id(&self) -> NodeId;
     fn mint_urls(&self) -> Vec<url::Url>;
     async fn estimate_melt(&self, amount: bitcoin::Amount) -> Result<MeltEstimation>;
     async fn prepare_melt(
@@ -510,15 +509,16 @@ impl WalletApi for super::Wallet {
                         .debit
                         .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
                         .await?;
-                    (
-                        p.clone(),
-                        Token::new_bitcr(
-                            to_mint_url(self.client.mint_url()),
-                            p.into_values().collect(),
-                            memo.clone(),
-                            self.debit.unit(),
-                        ),
+                    let mut token = BitcrTokenV5::new(
+                        self.clowder_node_id(),
+                        self.debit.unit(),
+                        p.values().map(|p| p.to_owned().into()).collect(),
                     )
+                    .with_mint_url(to_mint_url(self.client.mint_url()).to_string());
+                    if let Some(ref m) = memo {
+                        token = token.with_memo(m.to_string());
+                    }
+                    (p.clone(), Token::BitcrV5(token))
                 };
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
@@ -905,7 +905,7 @@ impl WalletApi for super::Wallet {
             let beta_client = self
                 .beta_clients
                 .get(&beta)
-                .ok_or(Error::BetaNotFound(beta))?;
+                .ok_or(Error::BetaNotFound(beta.to_string()))?;
 
             futures.push(async move {
                 let status = beta_client.get_alpha_status(self.clowder_id).await?.state;
@@ -938,7 +938,7 @@ impl WalletApi for super::Wallet {
             let beta_client = self
                 .beta_clients
                 .get(&beta)
-                .ok_or(Error::BetaNotFound(beta))?;
+                .ok_or(Error::BetaNotFound(beta.to_string()))?;
 
             futures.push(async move {
                 let status = beta_client.get_alpha_status(self.clowder_id).await?.state;
@@ -972,7 +972,7 @@ impl WalletApi for super::Wallet {
             let beta_client = self
                 .beta_clients
                 .get(&beta)
-                .ok_or(Error::BetaNotFound(beta))?;
+                .ok_or(Error::BetaNotFound(beta.to_string()))?;
 
             futures.push(async move {
                 let mint = beta_client.get_alpha_substitute(mint_id).await?.mint;
@@ -1005,8 +1005,8 @@ impl WalletApi for super::Wallet {
         self.beta_clients.keys().cloned().collect()
     }
 
-    fn clowder_id(&self) -> secp256k1::PublicKey {
-        self.clowder_id
+    fn clowder_node_id(&self) -> NodeId {
+        NodeId::new(self.clowder_id, self.network)
     }
 
     async fn migrate_pockets_substitute(
@@ -1169,7 +1169,7 @@ impl WalletApi for super::Wallet {
             let substitute_client = self
                 .beta_clients
                 .get(&substitute)
-                .ok_or(Error::BetaNotFound(substitute.clone()))?;
+                .ok_or(Error::BetaNotFound(substitute.to_string()))?;
             let substitute_clowder_id = substitute_client.get_clowder_id().await?;
 
             // Create beta provider for substitute to do attestation
@@ -1195,11 +1195,13 @@ impl WalletApi for super::Wallet {
             // TODO: just for demo - remove afterwards
             tracing::warn!(
                 "Offline Pay by Token - Local Token: {}",
-                Token::new_bitcr(
-                    to_mint_url(self.client.mint_url()),
-                    local_proofs.clone().into_values().collect(),
-                    None,
-                    self.debit.unit(),
+                Token::BitcrV5(
+                    BitcrTokenV5::new(
+                        self.clowder_node_id(),
+                        self.debit.unit(),
+                        local_proofs.values().map(|p| p.to_owned().into()).collect()
+                    )
+                    .with_mint_url(to_mint_url(self.client.mint_url()).to_string())
                 )
             );
             tracing::debug!("Offline Pay by Token: Offline Exchange");
@@ -1253,13 +1255,17 @@ impl WalletApi for super::Wallet {
                 .map(|proof| (proof.y().expect("Hash to curve should not fail"), proof))
                 .unzip();
             tracing::debug!("Offline Pay by Token: Create Token");
+            let substitute_clowder_node_id = NodeId::new(substitute_clowder_id, self.network());
             let amount = proofs.total_amount()?;
-            let token = Token::new_bitcr(
-                to_mint_url(&substitute.clone()),
-                proofs,
-                memo.clone(),
+            let mut token = BitcrTokenV5::new(
+                substitute_clowder_node_id,
                 self.debit.unit(),
-            );
+                proofs.into_iter().map(|p| p.into()).collect(),
+            )
+            .with_mint_url(to_mint_url(&substitute.clone()).to_string());
+            if let Some(ref m) = memo {
+                token = token.with_memo(m.to_string());
+            }
 
             // Create Transaction
             let partial_tx = Transaction {
@@ -1282,7 +1288,7 @@ impl WalletApi for super::Wallet {
                 linked_txs: vec![],
             };
             let tx_id = self.tx_repo.store_tx(partial_tx).await?;
-            Ok((tx_id, Some(token)))
+            Ok((tx_id, Some(Token::BitcrV5(token))))
         } else {
             Err(Error::NoSubstitute)
         }

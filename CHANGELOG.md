@@ -2,6 +2,7 @@
 
 * Store change from offline-tokens into a temporary-foreign-mint-proof-storage
     * these foreign-mint-proofs are regularly attempted to reclaim in a job
+* Use new Token format from bcr-common and use latest bcr-common
 
 # 0.9.9
 

@@ -60,6 +60,8 @@ pub enum Error {
     WalletUniqueId(String),
     #[error("mnemonic for id {0} not found")]
     MnemonicNotFound(String),
+    #[error("Token Error: {0}")]
+    Token(#[from] bcr_common::wallet::Error),
     #[error("empty token: {0}")]
     EmptyToken(String),
     #[error("invalid token: {0}")]
@@ -135,7 +137,7 @@ pub enum Error {
     #[error("Contact {0} already exists")]
     ContactAlreadyExists(Uuid),
     #[error("Beta not found")]
-    BetaNotFound(url::Url),
+    BetaNotFound(String),
     #[error("No Substitute could be determined")]
     NoSubstitute,
     #[error("No beta mints available")]
