@@ -65,13 +65,13 @@ pub trait PocketApi: SendSync {
         &self,
         rid: Uuid,
     ) -> Result<(Amount, HashMap<cashu::PublicKey, cashu::Proof>)>;
-    /// WARN: Only used for hacky offline pay by token - will be removed
     async fn swap_to_unlocked_substitute_proofs(
         &self,
         proofs: Vec<cashu::Proof>,
         keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         keysets: HashMap<cashu::Id, KeySet>,
-        client: Arc<dyn ClowderMintConnector>,
+        substitute_client: Arc<dyn ClowderMintConnector>,
+        substitute_clowder_id: secp256k1::PublicKey,
         beta_provider: RandomBetaProvider,
         send_amount: Amount,
         swap_config: SwapConfig,

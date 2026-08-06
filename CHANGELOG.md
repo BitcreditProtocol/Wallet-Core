@@ -1,3 +1,8 @@
+# 0.9.10
+
+* Store change from offline-tokens into a temporary-foreign-mint-proof-storage
+    * these foreign-mint-proofs are regularly attempted to reclaim in a job
+
 # 0.9.9
 
 * Fix Onchain Mint to not accrue swap fees (just unblind signatures and store them)

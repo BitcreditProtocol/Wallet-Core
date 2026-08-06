@@ -128,7 +128,7 @@ impl AppState {
             };
             match client.get_clowder_betas().await {
                 Ok(betas) => {
-                    w_cfg.betas = betas;
+                    w_cfg.betas = betas.into_iter().map(|b| b.url).collect();
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -983,6 +983,14 @@ impl AppState {
         Ok(cleaned_up)
     }
 
+    pub async fn wallet_reclaim_foreign_mint_proofs(&self, wallet_id: String) -> Result<u64> {
+        tracing::debug!("wallet_reclaim_foreign_mint_proofs({wallet_id})");
+        let wallet = self.get_wallet(&wallet_id).await?;
+        let wlt = wallet.read().await;
+        let reclaimed = wlt.reclaim_foreign_mint_proofs().await?;
+        Ok(reclaimed.to_u64())
+    }
+
     // Retry Nostr Messages
     pub async fn wallet_retry_nostr_messages(&self, wallet_id: String) -> Result<usize> {
         tracing::debug!("wallet_retry_nostr_messages({wallet_id})");
@@ -1153,6 +1161,22 @@ impl AppState {
                     );
                 }
             }
+            match self
+                .wallet_reclaim_foreign_mint_proofs(wallet_id.to_owned())
+                .await
+            {
+                Ok(sum) => {
+                    tracing::info!(
+                        "Reclaimed {sum} from foreign mint proofs for wallet {wallet_id}"
+                    );
+                }
+                Err(e) => {
+                    job_failed = true;
+                    tracing::error!(
+                        "Error running wallet_reclaim_foreign_mint_proofs job for wallet {wallet_id}: {e}"
+                    );
+                }
+            }
             match self.wallet_retry_nostr_messages(wallet_id.to_owned()).await {
                 Ok(retried) => {
                     tracing::info!("Retried {retried} nostr messages for wallet {wallet_id}");
@@ -1241,7 +1265,12 @@ async fn create_new_wallet(
         .into_iter()
         .map(|k| (k.id, k))
         .collect();
-    let betas = client.get_clowder_betas().await?;
+    let betas = client
+        .get_clowder_betas()
+        .await?
+        .into_iter()
+        .map(|b| b.url)
+        .collect();
     // Attempt to find debit unit in the given keysets
     let currencies = keyset_infos
         .values()

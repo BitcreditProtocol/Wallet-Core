@@ -461,6 +461,25 @@ pub struct MeltFeeRateEstimate {
     pub sat_per_vb: f32,
 }
 
+#[derive(Debug, Clone)]
+pub struct ForeignMintProof {
+    pub clowder_id: secp256k1::PublicKey,
+    pub proof: cashu::Proof,
+    pub reason: ForeignMintProofReason,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ForeignMintProofReason {
+    MintOffline,
+    WalletOffline,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClowderBeta {
+    pub url: url::Url,
+    pub clowder_id: secp256k1::PublicKey,
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;

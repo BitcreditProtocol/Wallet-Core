@@ -10,8 +10,8 @@ use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07};
 use bcr_common::core::NodeId;
 use bcr_wallet_core::contact::Contact;
 use bcr_wallet_core::types::{
-    PaymentRequestDirection, PaymentRequestState, Transaction, TransactionLinkReason,
-    TransactionStatus,
+    ForeignMintProof, PaymentRequestDirection, PaymentRequestState, Transaction,
+    TransactionLinkReason, TransactionStatus,
 };
 use bcr_wallet_core::{
     SendSync,
@@ -80,6 +80,17 @@ pub trait PocketRepository: SendSync {
     async fn delete_commitment(&self, commitment: secp256k1::schnorr::Signature) -> Result<()>;
     async fn list_commitments(&self) -> Result<Vec<SwapCommitmentRecord>>;
     async fn delete_repo(&self) -> Result<()>;
+
+    async fn store_foreign_mint_proof(
+        &self,
+        foreign_mint_proof: ForeignMintProof,
+    ) -> Result<cdk01::PublicKey>;
+    async fn load_foreign_mint_proofs(&self) -> Result<Vec<ForeignMintProof>>;
+    async fn delete_foreign_mint_proofs(
+        &self,
+        clowder_id: secp256k1::PublicKey,
+        ys: Vec<cdk01::PublicKey>,
+    ) -> Result<()>;
 }
 
 ///////////////////////////////////////////// PurseRepository

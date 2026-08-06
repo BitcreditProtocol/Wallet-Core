@@ -1050,8 +1050,8 @@ impl WalletApi for super::Wallet {
         let mut beta_clients = HashMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
 
         for beta in self.client.as_ref().get_clowder_betas().await? {
-            let beta_client = (self.client_factory)(beta.clone());
-            beta_clients.insert(beta, beta_client);
+            let beta_client = (self.client_factory)(beta.url.clone());
+            beta_clients.insert(beta.url, beta_client);
         }
         self.beta_clients = beta_clients;
 
@@ -1142,15 +1142,12 @@ impl WalletApi for super::Wallet {
         Ok(summary)
     }
 
-    // This is a temporary solution for demoing the concept, which has some gaping holes
-    // The process is:
     // * Check if our alpha is offline
     // * If it is, determine the substitute
     // * Get proofs for the given amount (including the swap proof), mark them as pendingspent
     // * Do an offline-exchange from our alpha to the substitute (for all the fetched proofs)
     // * Swap the substitute proofs against the substitute beta, to the target amount
-    //   * => This means, that overlap from swapping to target is currently lost, since there's no good way to store other-mint-proofs in the Wallet for now
-    //   * => In the future, we could persist them in a special storage and, once our alpha is back online, attempt to swap them back
+    //   * Change is persisted as foreign mint proofs and attempted to be reclaimed regularly
     // * Create Token from swapped target proofs and return Token
     async fn offline_pay_by_token(
         &self,
@@ -1179,8 +1176,8 @@ impl WalletApi for super::Wallet {
             let mut beta_clients = HashMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
 
             for beta in substitute_client.as_ref().get_clowder_betas().await? {
-                let beta_client = (self.client_factory)(beta.clone());
-                beta_clients.insert(beta, beta_client);
+                let beta_client = (self.client_factory)(beta.url.clone());
+                beta_clients.insert(beta.url, beta_client);
             }
 
             let beta_provider = RandomBetaProvider::new(
@@ -1195,6 +1192,16 @@ impl WalletApi for super::Wallet {
                 .debit
                 .return_proofs_to_send_for_offline_payment(request_id)
                 .await?;
+            // TODO: just for demo - remove afterwards
+            tracing::warn!(
+                "Offline Pay by Token - Local Token: {}",
+                Token::new_bitcr(
+                    to_mint_url(self.client.mint_url()),
+                    local_proofs.clone().into_values().collect(),
+                    None,
+                    self.debit.unit(),
+                )
+            );
             tracing::debug!("Offline Pay by Token: Offline Exchange");
             // Do offline exchange
             let substitute_proofs = self
@@ -1233,6 +1240,7 @@ impl WalletApi for super::Wallet {
                     &keysets_info,
                     keysets,
                     substitute_client.clone(),
+                    substitute_clowder_id,
                     beta_provider,
                     send_amount,
                     swap_config,

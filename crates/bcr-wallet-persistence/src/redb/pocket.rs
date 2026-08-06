@@ -16,12 +16,120 @@ use bcr_common::wire::borsh::{
 use bcr_wallet_core::{
     borsh::{deserialize_premints, serialize_premints},
     crypto,
+    types::{ForeignMintProof, ForeignMintProofReason},
 };
 use bitcoin::secp256k1;
 use borsh::{BorshDeserialize, BorshSerialize};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
 use std::{collections::HashMap, sync::Arc};
 use tokio::task::spawn_blocking;
+
+/// Foreign Mint Proof Key is a composite of the clowder_id and the proof y
+const COMPRESSED_PUBLIC_KEY_LEN: usize = 33;
+const FOREIGN_MINT_PROOF_KEY_LEN: usize = COMPRESSED_PUBLIC_KEY_LEN * 2;
+
+type ForeignMintProofKey = [u8; FOREIGN_MINT_PROOF_KEY_LEN];
+
+fn foreign_mint_proof_key(
+    clowder_id: &secp256k1::PublicKey,
+    y: &cdk01::PublicKey,
+) -> ForeignMintProofKey {
+    let mut key = [0u8; FOREIGN_MINT_PROOF_KEY_LEN];
+    key[..COMPRESSED_PUBLIC_KEY_LEN].copy_from_slice(&clowder_id.serialize());
+    key[COMPRESSED_PUBLIC_KEY_LEN..].copy_from_slice(y.to_bytes().as_slice());
+    key
+}
+
+/// StoredForeignMintProof is a versioned, encrypted, borsh-serialized foreign mint proof
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) enum StoredForeignMintProof {
+    V1(EncryptedForeignMintProofPayloadV1),
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct EncryptedForeignMintProofPayloadV1 {
+    pub ciphertext: Vec<u8>,
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredForeignMintProofPayloadV1 {
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub clowder_id: secp256k1::PublicKey,
+    pub proof: StoredProofPayloadV1,
+    pub reason: ForeignMintProofReasonV1,
+}
+
+impl From<ForeignMintProof> for StoredForeignMintProofPayloadV1 {
+    fn from(value: ForeignMintProof) -> Self {
+        Self {
+            clowder_id: value.clowder_id,
+            proof: value.proof.into(),
+            reason: value.reason.into(),
+        }
+    }
+}
+
+impl From<StoredForeignMintProofPayloadV1> for ForeignMintProof {
+    fn from(value: StoredForeignMintProofPayloadV1) -> Self {
+        Self {
+            clowder_id: value.clowder_id,
+            proof: value.proof.into(),
+            reason: value.reason.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum ForeignMintProofReasonV1 {
+    MintOffline,
+    WalletOffline,
+}
+
+impl From<ForeignMintProofReason> for ForeignMintProofReasonV1 {
+    fn from(value: ForeignMintProofReason) -> Self {
+        match value {
+            ForeignMintProofReason::MintOffline => ForeignMintProofReasonV1::MintOffline,
+            ForeignMintProofReason::WalletOffline => ForeignMintProofReasonV1::WalletOffline,
+        }
+    }
+}
+
+impl From<ForeignMintProofReasonV1> for ForeignMintProofReason {
+    fn from(value: ForeignMintProofReasonV1) -> Self {
+        match value {
+            ForeignMintProofReasonV1::MintOffline => ForeignMintProofReason::MintOffline,
+            ForeignMintProofReasonV1::WalletOffline => ForeignMintProofReason::WalletOffline,
+        }
+    }
+}
+
+pub(super) fn to_stored_foreign_mint_proof_v1(
+    proof: ForeignMintProof,
+    keys: bitcoin::secp256k1::Keypair,
+) -> Result<StoredForeignMintProof> {
+    let payload = StoredForeignMintProofPayloadV1::from(proof);
+    let encoded = borsh::to_vec(&payload).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+    let encrypted = crypto::encrypt_ecies(&encoded, &keys.public_key())?;
+    Ok(StoredForeignMintProof::V1(
+        EncryptedForeignMintProofPayloadV1 {
+            ciphertext: encrypted,
+        },
+    ))
+}
+
+pub(super) fn from_stored_foreign_mint_proof_v1(
+    proof: StoredForeignMintProof,
+    keys: bitcoin::secp256k1::Keypair,
+) -> Result<ForeignMintProof> {
+    let StoredForeignMintProof::V1(encrypted_payload) = proof;
+    let decrypted = crypto::decrypt_ecies(&encrypted_payload.ciphertext, &keys.secret_key())?;
+    let decoded: StoredForeignMintProofPayloadV1 =
+        borsh::from_slice(&decrypted).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+    Ok(decoded.into())
+}
 
 /// StoredCommitment is a versioned, encrypted, borsh-serialized commitment
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
@@ -245,11 +353,13 @@ pub struct PocketDB {
     proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    foreign_mint_proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     keys: bitcoin::secp256k1::Keypair,
 }
 
 impl PocketDB {
     const PROOF_BASE_DB_NAME: &'static str = "proofs";
+    const FOREIGN_MINT_PROOF_BASE_DB_NAME: &'static str = "foreign_mint_proofs";
     const COUNTER_BASE_DB_NAME: &'static str = "counters";
     const COMMITMENT_BASE_DB_NAME: &'static str = "commitments";
 
@@ -265,6 +375,13 @@ impl PocketDB {
         format!("{wallet_id}_{unit}_{}", Self::COMMITMENT_BASE_DB_NAME)
     }
 
+    pub fn foreign_mint_proof_table_name(wallet_id: &str, unit: &CurrencyUnit) -> String {
+        format!(
+            "{wallet_id}_{unit}_{}",
+            Self::FOREIGN_MINT_PROOF_BASE_DB_NAME
+        )
+    }
+
     pub fn new(
         db: Arc<Database>,
         wallet_id: &str,
@@ -278,15 +395,20 @@ impl PocketDB {
             Box::leak(Self::counter_table_name(wallet_id, unit).into_boxed_str());
         let commitment_name: &'static str =
             Box::leak(Self::commitment_table_name(wallet_id, unit).into_boxed_str());
+        let foreign_mint_proof_name: &'static str =
+            Box::leak(Self::foreign_mint_proof_table_name(wallet_id, unit).into_boxed_str());
 
         let proof_table = TableDefinition::new(proof_name);
         let counter_table = TableDefinition::new(counter_name);
         let commitment_table = TableDefinition::new(commitment_name);
+        let foreign_mint_proof_table = TableDefinition::new(foreign_mint_proof_name);
+
         Ok(Self {
             db,
             proof_table,
             counter_table,
             commitment_table,
+            foreign_mint_proof_table,
             keys,
         })
     }
@@ -686,11 +808,78 @@ impl PocketDB {
         Ok(())
     }
 
+    fn store_foreign_mint_proof_sync(
+        db: Arc<Database>,
+        foreign_mint_proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        keys: bitcoin::secp256k1::Keypair,
+        foreign_mint_proof: ForeignMintProof,
+    ) -> Result<cdk01::PublicKey> {
+        let y = foreign_mint_proof.proof.y().expect("valid y");
+        let key = foreign_mint_proof_key(&foreign_mint_proof.clowder_id, &y);
+        let entry = to_stored_foreign_mint_proof_v1(foreign_mint_proof, keys)?;
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(foreign_mint_proof_table)?;
+            let serialized =
+                borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            table.insert(key.as_slice(), serialized)?;
+        }
+
+        write_txn.commit()?;
+        Ok(y)
+    }
+
+    fn load_foreign_mint_proofs_sync(
+        db: Arc<Database>,
+        foreign_mint_proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        keys: bitcoin::secp256k1::Keypair,
+    ) -> Result<Vec<ForeignMintProof>> {
+        let read_txn = db.begin_read()?;
+        match read_txn.open_table(foreign_mint_proof_table) {
+            Ok(table) => {
+                let mut res = Vec::new();
+                for item in table.range::<&[u8]>(..)? {
+                    let (_, v) = item?;
+                    let deserialized: StoredForeignMintProof =
+                        borsh::from_slice(v.value().as_slice())
+                            .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                    let fmp = from_stored_foreign_mint_proof_v1(deserialized, keys)?;
+                    res.push(fmp)
+                }
+                Ok(res)
+            }
+            Err(TableError::TableDoesNotExist(_)) => Ok(vec![]),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn delete_foreign_mint_proofs_sync(
+        db: Arc<Database>,
+        foreign_mint_proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        clowder_id: secp256k1::PublicKey,
+        ys: Vec<cdk01::PublicKey>,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(foreign_mint_proof_table)?;
+            for y in ys.iter() {
+                let key = foreign_mint_proof_key(&clowder_id, y);
+                table.remove(key.as_slice())?;
+            }
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
+
     fn delete_repo(
         db: Arc<Database>,
         proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        foreign_mint_proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
 
@@ -705,6 +894,10 @@ impl PocketDB {
 
             if write_txn.open_table(counter_table).is_ok() {
                 write_txn.delete_table(counter_table)?;
+            }
+
+            if write_txn.open_table(foreign_mint_proof_table).is_ok() {
+                write_txn.delete_table(foreign_mint_proof_table)?;
             }
         }
 
@@ -959,10 +1152,55 @@ impl PocketRepository for PocketDB {
         let proof_table = self.proof_table;
         let commitment_table = self.commitment_table;
         let counter_table = self.counter_table;
+        let foreign_mint_proof_table = self.foreign_mint_proof_table;
         spawn_blocking(move || {
-            Self::delete_repo(db_clone, proof_table, commitment_table, counter_table)
+            Self::delete_repo(
+                db_clone,
+                proof_table,
+                commitment_table,
+                counter_table,
+                foreign_mint_proof_table,
+            )
         })
         .await?
+    }
+
+    async fn store_foreign_mint_proof(
+        &self,
+        foreign_mint_proof: ForeignMintProof,
+    ) -> Result<cdk01::PublicKey> {
+        let db_clone = self.db.clone();
+        let table = self.foreign_mint_proof_table;
+        let keys = self.keys;
+        let y = spawn_blocking(move || {
+            Self::store_foreign_mint_proof_sync(db_clone, table, keys, foreign_mint_proof)
+        })
+        .await??;
+        Ok(y)
+    }
+
+    async fn load_foreign_mint_proofs(&self) -> Result<Vec<ForeignMintProof>> {
+        let db_clone = self.db.clone();
+        let table = self.foreign_mint_proof_table;
+        let keys = self.keys;
+        let res =
+            spawn_blocking(move || Self::load_foreign_mint_proofs_sync(db_clone, table, keys))
+                .await??;
+        Ok(res)
+    }
+
+    async fn delete_foreign_mint_proofs(
+        &self,
+        clowder_id: secp256k1::PublicKey,
+        ys: Vec<cdk01::PublicKey>,
+    ) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.foreign_mint_proof_table;
+        spawn_blocking(move || {
+            Self::delete_foreign_mint_proofs_sync(db_clone, table, clowder_id, ys)
+        })
+        .await??;
+        Ok(())
     }
 }
 
@@ -1175,5 +1413,168 @@ mod tests {
             .await
             .expect("delete_commitment works");
         assert!(repo.load_commitment(sig).await.is_err());
+    }
+
+    fn test_clowder_id() -> secp256k1::PublicKey {
+        let keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+
+        secp256k1::PublicKey::from_keypair(&keypair)
+    }
+
+    #[tokio::test]
+    async fn test_store_foreign_mint_proof() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+
+        let clowder_id = test_clowder_id();
+        let proof = test_proof();
+        let expected_y = proof.y().expect("proof has valid y");
+
+        let stored_y = repo
+            .store_foreign_mint_proof(ForeignMintProof {
+                clowder_id,
+                proof: proof.clone(),
+                reason: ForeignMintProofReason::MintOffline,
+            })
+            .await
+            .expect("store_foreign_mint_proof works");
+        assert_eq!(stored_y, expected_y);
+
+        let loaded = repo
+            .load_foreign_mint_proofs()
+            .await
+            .expect("load_foreign_mint_proofs works");
+        assert_eq!(loaded.len(), 1);
+
+        let stored = &loaded[0];
+        assert_eq!(stored.clowder_id, clowder_id);
+        assert_eq!(stored.proof, proof);
+        assert!(matches!(stored.reason, ForeignMintProofReason::MintOffline));
+    }
+
+    #[tokio::test]
+    async fn test_load_foreign_mint_proofs() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+
+        let clowder_id_a = test_clowder_id();
+        let clowder_id_b = test_clowder_id();
+
+        let proof_a1 = test_proof();
+        let proof_a2 = test_proof();
+        let proof_b1 = test_proof();
+
+        repo.store_foreign_mint_proof(ForeignMintProof {
+            clowder_id: clowder_id_a,
+            proof: proof_a1.clone(),
+            reason: ForeignMintProofReason::MintOffline,
+        })
+        .await
+        .expect("store first foreign mint proof");
+
+        repo.store_foreign_mint_proof(ForeignMintProof {
+            clowder_id: clowder_id_a,
+            proof: proof_a2.clone(),
+            reason: ForeignMintProofReason::WalletOffline,
+        })
+        .await
+        .expect("store second foreign mint proof");
+
+        repo.store_foreign_mint_proof(ForeignMintProof {
+            clowder_id: clowder_id_b,
+            proof: proof_b1.clone(),
+            reason: ForeignMintProofReason::MintOffline,
+        })
+        .await
+        .expect("store third foreign mint proof");
+
+        let loaded = repo
+            .load_foreign_mint_proofs()
+            .await
+            .expect("load_foreign_mint_proofs works");
+
+        assert_eq!(loaded.len(), 3);
+        assert!(loaded.iter().any(|entry| {
+            entry.clowder_id == clowder_id_a
+                && entry.proof == proof_a1
+                && matches!(entry.reason, ForeignMintProofReason::MintOffline)
+        }));
+        assert!(loaded.iter().any(|entry| {
+            entry.clowder_id == clowder_id_a
+                && entry.proof == proof_a2
+                && matches!(entry.reason, ForeignMintProofReason::WalletOffline)
+        }));
+        assert!(loaded.iter().any(|entry| {
+            entry.clowder_id == clowder_id_b
+                && entry.proof == proof_b1
+                && matches!(entry.reason, ForeignMintProofReason::MintOffline)
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_delete_foreign_mint_proof() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+
+        let clowder_id_a = test_clowder_id();
+        let clowder_id_b = test_clowder_id();
+
+        let proof = test_proof();
+        let y = proof.y().unwrap();
+        let proof_2 = test_proof();
+        let y_2 = proof_2.y().unwrap();
+
+        repo.store_foreign_mint_proof(ForeignMintProof {
+            clowder_id: clowder_id_a,
+            proof: proof.clone(),
+            reason: ForeignMintProofReason::MintOffline,
+        })
+        .await
+        .expect("store proof for first clowder");
+
+        repo.store_foreign_mint_proof(ForeignMintProof {
+            clowder_id: clowder_id_a,
+            proof: proof_2.clone(),
+            reason: ForeignMintProofReason::MintOffline,
+        })
+        .await
+        .expect("store proof_2 for first clowder");
+
+        repo.store_foreign_mint_proof(ForeignMintProof {
+            clowder_id: clowder_id_b,
+            proof: proof.clone(),
+            reason: ForeignMintProofReason::WalletOffline,
+        })
+        .await
+        .expect("store proof for second clowder");
+
+        let loaded = repo
+            .load_foreign_mint_proofs()
+            .await
+            .expect("load before delete");
+        assert_eq!(loaded.len(), 3);
+
+        repo.delete_foreign_mint_proofs(clowder_id_a, vec![y, y_2])
+            .await
+            .expect("delete_foreign_mint_proofs works");
+
+        let loaded = repo
+            .load_foreign_mint_proofs()
+            .await
+            .expect("load after delete");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].clowder_id, clowder_id_b);
+        assert_eq!(loaded[0].proof, proof);
+        assert!(matches!(
+            loaded[0].reason,
+            ForeignMintProofReason::WalletOffline
+        ));
+
+        repo.delete_foreign_mint_proofs(clowder_id_b, vec![y])
+            .await
+            .expect("delete remaining foreign mint proof");
+
+        let loaded = repo
+            .load_foreign_mint_proofs()
+            .await
+            .expect("load after deleting all records");
+        assert!(loaded.is_empty());
     }
 }

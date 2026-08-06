@@ -147,7 +147,8 @@ pub mod tests {
                 proofs: Vec<cashu::Proof>,
                 keysets_info: &HashMap<cashu::Id, KeySetInfo>,
                 keysets: HashMap<cashu::Id, cashu::KeySet>,
-                client: Arc<dyn ClowderMintConnector>,
+                substitute_client: Arc<dyn ClowderMintConnector>,
+                substitute_clowder_id: secp256k1::PublicKey,
                 beta_provider: crate::pocket::RandomBetaProvider,
                 send_amount: Amount,
                 swap_config: SwapConfig,
@@ -176,6 +177,8 @@ pub mod tests {
                 swap_config: SwapConfig,
             ) -> Result<Amount>;
             async fn clean_up_spent_proofs(&self, client: Arc<dyn ClowderMintConnector>) -> Result<usize>;
+            async fn fetch_foreign_mint_proofs(&self) -> Result<Vec<bcr_wallet_core::types::ForeignMintProof>>;
+            async fn delete_foreign_mint_proofs(&self, clowder_id: secp256k1::PublicKey, ys: Vec<cashu::PublicKey>);
             async fn prepare_onchain_melt(
                 &self,
                 address: String,

@@ -25,9 +25,9 @@ use bcr_wallet_core::{
     contact::Contact,
     event::{ContactPaymentPayload, EventEnvelope},
     types::{
-        ListTransactionsResult, PaymentRequest, PaymentType, Transaction, TransactionCursor,
-        TransactionFees, TransactionFilters, TransactionLinkReason, TransactionSort,
-        TransactionStatus, extract_fees_per_month,
+        ClowderBeta, ForeignMintProof, ListTransactionsResult, PaymentRequest, PaymentType,
+        Transaction, TransactionCursor, TransactionFees, TransactionFilters, TransactionLinkReason,
+        TransactionSort, TransactionStatus, extract_fees_per_month,
     },
     util::{from_mint_url, to_mint_url},
 };
@@ -590,6 +590,78 @@ impl Wallet {
         Ok(cleaned_up)
     }
 
+    pub async fn reclaim_foreign_mint_proofs(&self) -> Result<Amount> {
+        // if our mint is offline, we can't reclaim
+        if self.is_wallet_mint_offline().await? {
+            tracing::warn!(
+                "Attempting to reclaim foreign mint proofs, but wallet mint is offline - trying again on the next run."
+            );
+            return Ok(Amount::ZERO);
+        }
+        // we treat all foreign mint proofs the same - it's possible we have foreign mint proofs from our own mint in case we migrated
+        let mut all_mints = self.client.get_clowder_betas().await?;
+        all_mints.push(ClowderBeta {
+            clowder_id: self.clowder_id,
+            url: self.client.mint_url().to_owned(),
+        });
+        // get foreign mint proofs and collect by clowder id
+        let foreign_mint_proofs = self.debit.fetch_foreign_mint_proofs().await?;
+        let fmps_by_clowder_id: HashMap<secp256k1::PublicKey, Vec<ForeignMintProof>> =
+            foreign_mint_proofs
+                .into_iter()
+                .fold(HashMap::new(), |mut map, item| {
+                    map.entry(item.clowder_id).or_default().push(item);
+                    map
+                });
+
+        let mut reclaimed = Amount::ZERO;
+
+        // create tokens and attempt to reclaim
+        // if it's from our own mint, create a token and swap it to be safe
+        // if it's from another mint, create a token and do an intermint swap
+        for mint in all_mints.iter() {
+            if let Some(fmps) = fmps_by_clowder_id.get(&mint.clowder_id)
+                && !fmps.is_empty()
+            {
+                let proofs: Vec<Proof> = fmps.iter().map(|fmp| fmp.proof.clone()).collect();
+                let ys: Vec<cashu::PublicKey> = proofs
+                    .iter()
+                    .map(|proof| proof.y().expect("proof has valid y"))
+                    .collect();
+                let amount = proofs.total_amount()?;
+                let token = Token::new_bitcr(
+                    to_mint_url(&mint.url),
+                    proofs,
+                    Some(format!("Reclaimed Foreign Mint Funds from {}", mint.url)),
+                    self.debit_unit(),
+                );
+                match self
+                    .receive_token(token, Utc::now().timestamp() as u64)
+                    .await
+                {
+                    Ok(tx_id) => {
+                        tracing::info!(
+                            "Reclaimed {amount} from foreign mint proofs from {}, tx_id: {tx_id}",
+                            mint.url
+                        );
+                        reclaimed += amount;
+                        // if everything went well, delete the foreign mint proofs
+                        self.debit
+                            .delete_foreign_mint_proofs(mint.clowder_id, ys)
+                            .await;
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Could not reclaim foreign mint proofs from mint {}: {e}",
+                            mint.url
+                        );
+                    }
+                }
+            }
+        }
+        Ok(reclaimed)
+    }
+
     /// Check that the transaction can be reclaimed, then
     /// * Create a new transaction with state `Canceled`
     /// * Set the initial transaction to `Settled`
@@ -864,7 +936,7 @@ impl Wallet {
         let alpha_betas = alpha_client.get_clowder_betas().await?;
         let alpha_beta_clients: Vec<_> = alpha_betas
             .iter()
-            .map(|url| (self.client_factory)(url.clone()))
+            .map(|b| (self.client_factory)(b.url.clone()))
             .collect();
         let alpha_beta =
             crate::pocket::RandomBetaProvider::new(alpha_beta_clients, path[0].node_id)?;
@@ -1179,8 +1251,8 @@ mod tests {
         event::ContactPaymentRequestPayload,
         name::Name,
         types::{
-            MintSummary, PaymentRequestDirection, PaymentRequestState, PaymentResultCallback,
-            TimeRange, TransactionFees,
+            ClowderBeta, ForeignMintProofReason, MintSummary, PaymentRequestDirection,
+            PaymentRequestState, PaymentResultCallback, TimeRange, TransactionFees,
         },
     };
     use bcr_wallet_persistence::{
@@ -3753,7 +3825,12 @@ mod tests {
         alpha_client
             .expect_get_clowder_betas()
             .times(1)
-            .returning(move || Ok(vec![url_clone.clone()]));
+            .returning(move || {
+                Ok(vec![ClowderBeta {
+                    url: url_clone.clone(),
+                    clowder_id: test_pub_key(),
+                }])
+            });
 
         alpha_client
             .expect_get_mint_keysets()
@@ -4088,5 +4165,317 @@ mod tests {
 
         assert_eq!(res_tx_id, tx_id);
         assert!(token.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_reclaim_foreign_mint_proofs_success() {
+        let mut ctx = wallet_ctx();
+
+        let mint_url = url::Url::from_str("https://mint.example").unwrap();
+        let clowder_id = test_pub_key();
+        let tx_id = Uuid::new_v4();
+
+        let (info, _keyset, proofs) = test_keyset_and_proofs(&[Amount::from(8), Amount::from(16)]);
+
+        let keyset_infos = HashMap::from([(info.id, info.clone())]);
+
+        let expected_ys: Vec<cashu::PublicKey> = proofs
+            .iter()
+            .map(|proof| proof.y().expect("valid proof y"))
+            .collect();
+
+        let foreign_mint_proofs = vec![
+            ForeignMintProof {
+                clowder_id,
+                proof: proofs[0].clone(),
+                reason: ForeignMintProofReason::MintOffline,
+            },
+            ForeignMintProof {
+                clowder_id,
+                proof: proofs[1].clone(),
+                reason: ForeignMintProofReason::WalletOffline,
+            },
+        ];
+
+        ctx.client
+            .expect_get_clowder_betas()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        ctx.client.expect_mint_url().return_const(mint_url.clone());
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(move || Ok(keyset_infos.values().cloned().collect()));
+
+        ctx.debit
+            .expect_fetch_foreign_mint_proofs()
+            .times(1)
+            .return_once(move || Ok(foreign_mint_proofs));
+
+        ctx.debit.expect_unit().returning(|| CurrencyUnit::Sat);
+
+        let received_ys = expected_ys.clone();
+
+        ctx.debit.expect_receive_proofs().times(1).return_once(
+            move |_client, received_keysets, received_proofs, _swap_config| {
+                assert!(received_keysets.contains_key(&info.id));
+                assert_eq!(received_proofs.len(), 2);
+                assert_eq!(received_proofs.total_amount().unwrap(), Amount::from(24),);
+
+                Ok((Amount::from(24), received_ys))
+            },
+        );
+
+        let deleted_ys = expected_ys.clone();
+        ctx.debit
+            .expect_delete_foreign_mint_proofs()
+            .times(1)
+            .withf(move |actual_clowder_id, actual_ys| {
+                *actual_clowder_id == clowder_id && *actual_ys == deleted_ys
+            })
+            .returning(|_, _| ());
+
+        ctx.tx_repo
+            .expect_store_tx()
+            .times(1)
+            .return_once(move |tx| {
+                assert_eq!(tx.direction, TransactionDirection::Incoming,);
+                assert_eq!(tx.amount, Amount::from(24));
+                assert_eq!(tx.fees.swap, Amount::ZERO);
+                assert_eq!(tx.unit, CurrencyUnit::Sat);
+                assert_eq!(tx.payment_type, PaymentType::Token);
+                assert_eq!(tx.status, TransactionStatus::Settled,);
+
+                Ok(tx_id)
+            });
+
+        let wlt = wallet(ctx).await;
+        let reclaimed = wlt
+            .read()
+            .await
+            .reclaim_foreign_mint_proofs()
+            .await
+            .expect("reclaim_foreign_mint_proofs works");
+        assert_eq!(reclaimed, Amount::from(24));
+    }
+
+    #[tokio::test]
+    async fn test_offline_pay_by_token() {
+        let mut ctx = wallet_ctx();
+
+        let request_id = Uuid::new_v4();
+        let tx_id = Uuid::new_v4();
+        let now = 123;
+        let send_amount = Amount::from(16u64);
+        let fees = TransactionFees {
+            swap: Amount::from(1u64),
+            ..Default::default()
+        };
+        let memo = Some("offline token payment".to_string());
+        let wallet_mint_url = url::Url::from_str("https://wallet-mint.example").unwrap();
+        let substitute_url = url::Url::from_str("https://substitute.example").unwrap();
+        let substitute_beta_url = url::Url::from_str("https://substitute-beta.example").unwrap();
+
+        let substitute_keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let substitute_clowder_id = secp256k1::PublicKey::from_keypair(&substitute_keypair);
+
+        // 24 total, 16 payment, 8 change
+        let (_local_info, _local_keyset, mut local_proofs) =
+            test_keyset_and_proofs(&[Amount::from(8u64), Amount::from(16u64)]);
+
+        add_test_dleqs(&mut local_proofs);
+        let local_proofs_by_y: HashMap<_, _> = local_proofs
+            .iter()
+            .cloned()
+            .map(|proof| (proof.y().unwrap(), proof))
+            .collect();
+
+        let (substitute_info, substitute_mint_keyset, mut substitute_proofs) =
+            test_keyset_and_proofs(&[Amount::from(8u64), Amount::from(16u64)]);
+        let substitute_kid = substitute_info.id;
+        add_test_dleqs(&mut substitute_proofs);
+        let unlocked_payment_proofs =
+            core_tests::generate_random_ecash_proofs(&substitute_mint_keyset, &[send_amount]);
+        assert!(
+            unlocked_payment_proofs
+                .iter()
+                .all(|proof| { proof.witness.is_none() && proof.p2pk_e.is_none() })
+        );
+
+        let expected_payment_ys: Vec<_> = unlocked_payment_proofs
+            .iter()
+            .map(|proof| proof.y().unwrap())
+            .collect();
+
+        ctx.client
+            .expect_mint_url()
+            .return_const(wallet_mint_url.clone());
+
+        ctx.debit.expect_unit().returning(|| CurrencyUnit::Sat);
+
+        let local_proofs_for_mock = local_proofs_by_y.clone();
+
+        ctx.debit
+            .expect_return_proofs_to_send_for_offline_payment()
+            .times(1)
+            .return_once(move |actual_request_id| {
+                assert_eq!(actual_request_id, request_id);
+
+                Ok((send_amount, local_proofs_for_mock))
+            });
+
+        let unlocked_payment_proofs_for_mock = unlocked_payment_proofs.clone();
+        ctx.debit
+            .expect_swap_to_unlocked_substitute_proofs()
+            .times(1)
+            .return_once(
+                move |received_substitute_proofs,
+                      received_keyset_infos,
+                      received_keysets,
+                      _substitute_client,
+                      received_clowder_id,
+                      _beta_provider,
+                      received_send_amount,
+                      received_swap_config| {
+                    assert_eq!(
+                        received_substitute_proofs.total_amount().unwrap(),
+                        Amount::from(24u64)
+                    );
+                    assert!(
+                        received_substitute_proofs
+                            .iter()
+                            .all(|proof| proof.witness.is_some())
+                    );
+                    assert_eq!(received_clowder_id, substitute_clowder_id);
+                    assert_eq!(received_send_amount, send_amount);
+                    assert_eq!(received_swap_config.alpha_pk, substitute_clowder_id);
+                    assert_eq!(received_swap_config.expiry, chrono::TimeDelta::seconds(60));
+                    assert!(received_keyset_infos.contains_key(&substitute_kid));
+                    assert!(received_keysets.contains_key(&substitute_kid));
+                    Ok(unlocked_payment_proofs_for_mock)
+                },
+            );
+
+        let expected_ys_for_tx = expected_payment_ys.clone();
+        let expected_memo_for_tx = memo.clone();
+        let expected_substitute_url_for_tx = substitute_url.clone();
+
+        ctx.tx_repo
+            .expect_store_tx()
+            .times(1)
+            .return_once(move |tx| {
+                assert_eq!(tx.mint_url, to_mint_url(&expected_substitute_url_for_tx));
+                assert_eq!(tx.direction, TransactionDirection::Outgoing);
+                assert_eq!(tx.amount, send_amount);
+                assert_eq!(tx.fees.swap, Amount::from(1u64));
+                assert_eq!(tx.fees.melt, Amount::ZERO);
+                assert_eq!(tx.fees.network, Amount::ZERO);
+                assert_eq!(tx.unit, CurrencyUnit::Sat);
+                assert_eq!(tx.tstamp, now);
+                assert_eq!(tx.memo, expected_memo_for_tx);
+                assert_eq!(tx.payment_type, PaymentType::Token);
+                assert_eq!(tx.status, TransactionStatus::Pending);
+                assert_eq!(tx.ys, expected_ys_for_tx);
+                assert!(tx.quote_id.is_none());
+                assert!(tx.payment_request_id.is_none());
+                assert!(tx.nostr_event_id.is_none());
+                assert!(tx.btc_tx_id.is_none());
+                assert!(tx.contact_node_id.is_none());
+
+                Ok(tx_id)
+            });
+
+        let mut substitute_client = MockClowderMintConnector::new();
+        let voted_substitute_url = substitute_url.clone();
+        substitute_client
+            .expect_get_alpha_substitute()
+            .times(1)
+            .return_once(move |_wallet_clowder_id| {
+                Ok(wire_clowder::ConnectedMintResponse {
+                    mint: voted_substitute_url,
+                    clowder: url::Url::from_str("https://substitute-clowder.example").unwrap(),
+                    node_id: substitute_clowder_id,
+                })
+            });
+        substitute_client
+            .expect_get_clowder_id()
+            .times(1)
+            .returning(move || Ok(substitute_clowder_id));
+
+        let beta_url_for_response = substitute_beta_url.clone();
+        substitute_client
+            .expect_get_clowder_betas()
+            .times(1)
+            .return_once(move || {
+                Ok(vec![ClowderBeta {
+                    url: beta_url_for_response,
+                    clowder_id: test_pub_key(),
+                }])
+            });
+        let exchanged_proofs_for_mock = substitute_proofs.clone();
+        substitute_client
+            .expect_post_offline_exchange()
+            .times(1)
+            .return_once(
+                move |fingerprints,
+                      hash_locks,
+                      _wallet_public_key,
+                      received_substitute_clowder_id| {
+                    assert_eq!(fingerprints.len(), 2);
+                    assert_eq!(hash_locks.len(), 2);
+                    assert_eq!(received_substitute_clowder_id, substitute_clowder_id);
+
+                    Ok(exchanged_proofs_for_mock)
+                },
+            );
+        let substitute_info_for_mock = substitute_info.clone();
+        substitute_client
+            .expect_get_mint_keysets()
+            .times(1)
+            .return_once(move || Ok(vec![substitute_info_for_mock]));
+
+        let substitute_keyset_for_mock = substitute_mint_keyset.clone();
+        substitute_client
+            .expect_get_mint_keyset()
+            .times(1)
+            .return_once(move |received_kid| {
+                assert_eq!(received_kid, substitute_kid);
+
+                Ok(bcr_wallet_core::util::to_keyset(
+                    &substitute_keyset_for_mock,
+                    None,
+                ))
+            });
+
+        let substitute_client: Arc<dyn ClowderMintConnector> = Arc::new(substitute_client);
+        let substitute_beta: Arc<dyn ClowderMintConnector> =
+            Arc::new(MockClowderMintConnector::new());
+
+        let mut wlt = wallet(ctx).await;
+        wlt = wallet_with_betas(wlt, vec![(substitute_url.clone(), substitute_client)]).await;
+        let expected_factory_url = substitute_beta_url.clone();
+        wlt.write().await.client_factory = Box::new(move |actual_url| {
+            assert_eq!(actual_url, expected_factory_url);
+            substitute_beta.clone()
+        });
+
+        let (result_tx_id, token) = wlt
+            .read()
+            .await
+            .offline_pay_by_token(request_id, CurrencyUnit::Sat, fees, memo.clone(), now)
+            .await
+            .expect("offline token payment works");
+        assert_eq!(result_tx_id, tx_id);
+        let token = token.expect("offline token payment returns a token");
+        assert_eq!(from_mint_url(&token.mint_url()), substitute_url);
+        assert_eq!(token.unit(), Some(CurrencyUnit::Sat));
+        assert_eq!(token.memo().as_deref(), memo.as_deref());
+        let token_proofs = token
+            .proofs(&[substitute_info])
+            .expect("returned token contains valid substitute proofs");
+        assert_eq!(token_proofs.total_amount().unwrap(), send_amount);
+        assert_eq!(token_proofs.len(), 1);
     }
 }
