@@ -1,3 +1,5 @@
+# 0.9.12
+
 # 0.9.11
 
 * Implement v5 token validation for network
