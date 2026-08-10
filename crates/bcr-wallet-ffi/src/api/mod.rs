@@ -1087,6 +1087,7 @@ pub async fn is_valid_token(req: IsValidTokenRequest) -> Result<IsValidTokenResp
         memo: token.memo().to_owned(),
         mint_url: token.mint_url().map(|mu| mu.to_string()),
         mint_node_id: token.mint_id().map(|mi| mi.to_string()),
+        bitcoin_network: token.mint_id().map(|mi| mi.network().to_string()),
         unit: token.unit().map(|cu| cu.to_string()),
     })
 }
@@ -2080,6 +2081,7 @@ pub struct IsValidTokenResponse {
     pub memo: Option<String>,
     pub mint_url: Option<String>,
     pub mint_node_id: Option<String>,
+    pub bitcoin_network: Option<String>,
     pub unit: Option<String>,
 }
 

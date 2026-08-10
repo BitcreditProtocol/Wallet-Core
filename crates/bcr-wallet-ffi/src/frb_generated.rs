@@ -3115,12 +3115,14 @@ impl SseDecode for crate::api::IsValidTokenResponse {
         let mut var_memo = <Option<String>>::sse_decode(deserializer);
         let mut var_mintUrl = <Option<String>>::sse_decode(deserializer);
         let mut var_mintNodeId = <Option<String>>::sse_decode(deserializer);
+        let mut var_bitcoinNetwork = <Option<String>>::sse_decode(deserializer);
         let mut var_unit = <Option<String>>::sse_decode(deserializer);
         return crate::api::IsValidTokenResponse {
             amount: var_amount,
             memo: var_memo,
             mint_url: var_mintUrl,
             mint_node_id: var_mintNodeId,
+            bitcoin_network: var_bitcoinNetwork,
             unit: var_unit,
         };
     }
@@ -5262,6 +5264,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::IsValidTokenResponse {
             self.memo.into_into_dart().into_dart(),
             self.mint_url.into_into_dart().into_dart(),
             self.mint_node_id.into_into_dart().into_dart(),
+            self.bitcoin_network.into_into_dart().into_dart(),
             self.unit.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -7508,6 +7511,7 @@ impl SseEncode for crate::api::IsValidTokenResponse {
         <Option<String>>::sse_encode(self.memo, serializer);
         <Option<String>>::sse_encode(self.mint_url, serializer);
         <Option<String>>::sse_encode(self.mint_node_id, serializer);
+        <Option<String>>::sse_encode(self.bitcoin_network, serializer);
         <Option<String>>::sse_encode(self.unit, serializer);
     }
 }
