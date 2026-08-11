@@ -1,5 +1,7 @@
 # 0.9.12
 
+* Fix `wallet_subscribe_to_payment_requests` holding on to it's read-lock during the whole period
+
 # 0.9.11
 
 * Implement v5 token validation for network

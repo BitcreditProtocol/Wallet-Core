@@ -24,12 +24,11 @@ use bcr_wallet_core::{
     event::{ContactPaymentRequestPayload, EventEnvelope},
     types::{
         MeltEstimation, PaymentRequest, PaymentRequestDirection, PaymentRequestState,
-        PaymentResultCallback, PaymentType, PendingPaymentSubscriptionCallback, Transaction,
-        TransactionFees, TransactionStatus,
+        PaymentResultCallback, PaymentType, Transaction, TransactionFees, TransactionStatus,
     },
     util::{from_mint_url, to_mint_url},
 };
-use bcr_wallet_transport::NostrWalletEvent;
+use bcr_wallet_transport::{NostrEventChannel, NostrWalletEvent};
 use bitcoin::base58;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -160,11 +159,7 @@ pub trait WalletApi: SendSync {
         description: Option<String>,
         deadline: Option<u64>,
     ) -> Result<Uuid>;
-    async fn subscribe_to_payment_requests(
-        &self,
-        cancel_token: CancellationToken,
-        item_callback: PendingPaymentSubscriptionCallback,
-    ) -> Result<()>;
+    fn nostr_event_channel(&self) -> NostrEventChannel;
     async fn list_payment_requests(
         &self,
         direction: PaymentRequestDirection,
@@ -1493,53 +1488,8 @@ impl WalletApi for super::Wallet {
         Ok(payment_req_id)
     }
 
-    async fn subscribe_to_payment_requests(
-        &self,
-        cancel_token: CancellationToken,
-        item_callback: PendingPaymentSubscriptionCallback,
-    ) -> Result<()> {
-        tracing::debug!("Subscribing to payment requests from Nostr...");
-        let mut nostr_receiver = self.nostr_event_channel.subscribe();
-        loop {
-            tokio::select! {
-                _ = cancel_token.cancelled() => {
-                    tracing::info!("subscribe_to_payment_requests cancelled");
-                    return Ok(());
-                },
-                evt = nostr_receiver.recv() => {
-                    let received_evt = match evt {
-                        Ok(e) => e,
-                        Err(broadcast::error::RecvError::Lagged(_)) => {
-                            tracing::warn!("subscribe_to_payment_requests channel lagged behind");
-                            continue;
-                        },
-                        Err(broadcast::error::RecvError::Closed) => {
-                            tracing::warn!("subscribe_to_payment_requests channel closed");
-                            return Ok(());
-                        },
-                    };
-
-                    let NostrWalletEvent::ContactPaymentRequest { event_id, payload, sender } = received_evt else {
-                        continue;
-                    };
-                    tracing::info!("Received contact payment request {} from {sender}, event_id: {event_id}", payload.id);
-                    let pending_incoming_payment_request: PaymentRequest = payload.into();
-                    let payment_request_id = pending_incoming_payment_request.id;
-                    match self.payment_request_repo.add_payment_request(pending_incoming_payment_request).await {
-                        Ok(_) => {
-                            item_callback(payment_request_id);
-                        },
-                        Err(bcr_wallet_persistence::error::Error::PaymentRequestAlreadyExists(_)) => {
-                            // already had it - either sent again, or already processed - sending it either way and the caller can choose to ignore it
-                            item_callback(payment_request_id);
-                        },
-                        Err(e) => {
-                            tracing::error!("Could not store payment request: {e}");
-                        }
-                    };
-                }
-            }
-        }
+    fn nostr_event_channel(&self) -> NostrEventChannel {
+        self.nostr_event_channel.clone()
     }
 
     async fn list_payment_requests(
