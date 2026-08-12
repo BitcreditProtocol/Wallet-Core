@@ -783,8 +783,8 @@ impl Wallet {
                 tracing::debug!("Using substitute {}", substitute_beta_mint.to_string());
 
                 // check if alpha is offline
-                let is_alpha_offline = substitute_client.get_alpha_offline(alpha_id).await?;
-                if !is_alpha_offline {
+                let alpha_offline = substitute_client.get_alpha_offline(alpha_id).await?;
+                if !alpha_offline.offline {
                     tracing::debug!("Online exchange from {}", mint.to_string());
                     proofs = self
                         .online_exchange(
@@ -798,8 +798,17 @@ impl Wallet {
                 } else {
                     tracing::debug!("Offline exchange from {}", mint.to_string());
                     let substitute_clowder_id = substitute_client.get_clowder_id().await?;
+                    let evidence_digest = alpha_offline
+                        .evidence_digest
+                        .ok_or_else(|| Error::Swap("alpha not offline at substitute".into()))?;
                     let substitute_proofs = self
-                        .offline_exchange(substitute_client.as_ref(), proofs, substitute_clowder_id)
+                        .offline_exchange(
+                            substitute_client.as_ref(),
+                            proofs,
+                            substitute_clowder_id,
+                            alpha_id,
+                            evidence_digest,
+                        )
                         .await?;
 
                     // Alpha proofs -> Substitute Beta proofs is done, so we only need the path from
@@ -874,6 +883,8 @@ impl Wallet {
         substitute_client: &dyn ClowderMintConnector,
         proofs: Vec<Proof>,
         substitute_clowder_id: secp256k1::PublicKey,
+        alpha_id: secp256k1::PublicKey,
+        evidence_digest: [u8; 32],
     ) -> Result<Vec<Proof>> {
         // Ephemeral P2PK secret
         let wallet_pk = cashu::SecretKey::generate();
@@ -884,16 +895,38 @@ impl Wallet {
             .iter()
             .map(|secret| Sha256::hash(&secret.to_bytes()))
             .collect();
+        let exchange_digest = bcr_common::wire::exchange::exchange_digest(
+            &alpha_id,
+            &evidence_digest,
+            &fingerprints,
+            &hash_locks,
+            &wallet_pk.public_key(),
+        );
+        let keypair = secp256k1::Keypair::from_secret_key(secp256k1::global::SECP256K1, &wallet_pk);
+        let wallet_signature = secp256k1::global::SECP256K1.sign_schnorr(
+            &bcr_common::wire::exchange::exchange_message(&exchange_digest),
+            &keypair,
+        );
         let mut beta_proofs = substitute_client
             .post_offline_exchange(
                 fingerprints.clone(),
                 hash_locks.clone(),
                 *wallet_pk.public_key(),
+                wallet_signature,
                 substitute_clowder_id,
             )
             .await?;
-        for (p, s) in beta_proofs.iter_mut().zip(secrets) {
-            util::sign_htlc_proof(p, &s.to_string(), &wallet_pk)?;
+        let by_hash_lock: HashMap<Sha256, cashu::secret::Secret> = secrets
+            .into_iter()
+            .map(|s| (Sha256::hash(&s.to_bytes()), s))
+            .collect();
+        for p in beta_proofs.iter_mut() {
+            let hash_lock = util::htlc_hash_lock(p)
+                .ok_or_else(|| Error::Swap("issued proof is not HTLC locked".into()))?;
+            let secret = by_hash_lock
+                .get(&hash_lock)
+                .ok_or_else(|| Error::Swap("issued proof carries an unknown hash lock".into()))?;
+            util::sign_htlc_proof(p, &secret.to_string(), &wallet_pk)?;
         }
         Ok(beta_proofs)
     }
@@ -4049,6 +4082,9 @@ mod tests {
         let mut beta_proofs =
             core_tests::generate_random_ecash_proofs(&beta_keyset, &[Amount::from(8)]);
         add_test_dleqs(&mut beta_proofs);
+        let hash_lock = Sha256::hash(&alpha_proofs[0].secret.to_bytes());
+        let htlc = cashu::SpendingConditions::new_htlc_hash(&hash_lock.to_string(), None).unwrap();
+        beta_proofs[0].secret = htlc.try_into().unwrap();
 
         let mut substitute = MockClowderMintConnector::new();
 
@@ -4056,14 +4092,14 @@ mod tests {
             .expect_post_offline_exchange()
             .times(1)
             .withf(
-                |fingerprints, hash_locks, _wallet_pk, substitute_clowder_id| {
+                |fingerprints, hash_locks, _wallet_pk, _wallet_signature, substitute_clowder_id| {
                     fingerprints.len() == 1
                         && hash_locks.len() == 1
                         && *substitute_clowder_id == test_pub_key()
                 },
             )
             .return_once(
-                move |_fingerprints, _hash_locks, _wallet_pk, _substitute_clowder_id| {
+                move |_fingerprints, _hash_locks, _wallet_pk, _wallet_signature, _substitute_clowder_id| {
                     Ok(beta_proofs)
                 },
             );
@@ -4071,7 +4107,13 @@ mod tests {
         let res = wlt
             .read()
             .await
-            .offline_exchange(&substitute, alpha_proofs, test_pub_key())
+            .offline_exchange(
+                &substitute,
+                alpha_proofs,
+                test_pub_key(),
+                test_pub_key(),
+                [7u8; 32],
+            )
             .await
             .unwrap();
 
@@ -4420,6 +4462,12 @@ mod tests {
             test_keyset_and_proofs(&[Amount::from(8u64), Amount::from(16u64)]);
         let substitute_kid = substitute_info.id;
         add_test_dleqs(&mut substitute_proofs);
+        for (sp, lp) in substitute_proofs.iter_mut().zip(local_proofs.iter()) {
+            let hash_lock = Sha256::hash(&lp.secret.to_bytes());
+            let htlc =
+                cashu::SpendingConditions::new_htlc_hash(&hash_lock.to_string(), None).unwrap();
+            sp.secret = htlc.try_into().unwrap();
+        }
         let unlocked_payment_proofs =
             core_tests::generate_random_ecash_proofs(&substitute_mint_keyset, &[send_amount]);
         assert!(
@@ -4527,6 +4575,15 @@ mod tests {
             .expect_get_clowder_id()
             .times(1)
             .returning(move || Ok(substitute_clowder_id));
+        substitute_client
+            .expect_get_alpha_offline()
+            .times(1)
+            .returning(|_| {
+                Ok(wire_clowder::OfflineResponse {
+                    offline: true,
+                    evidence_digest: Some([7u8; 32]),
+                })
+            });
 
         let beta_url_for_response = substitute_beta_url.clone();
         substitute_client
@@ -4546,6 +4603,7 @@ mod tests {
                 move |fingerprints,
                       hash_locks,
                       _wallet_public_key,
+                      _wallet_signature,
                       received_substitute_clowder_id| {
                     assert_eq!(fingerprints.len(), 2);
                     assert_eq!(hash_locks.len(), 2);
