@@ -44,3 +44,28 @@ updates:
       semver-patch-days: 3
     assignees:
       - "zupzup"
+
+  - package-ecosystem: "pub"
+    directory: "/"
+    groups:
+      dart-patch:
+        update-types:
+          - "patch"
+      dart-minor:
+        update-types:
+          - "minor"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:30"
+      timezone: "Europe/Vienna"
+    open-pull-requests-limit: 7
+    labels:
+      - "dependencies"
+      - "dart"
+    cooldown:
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
+    assignees:
+      - "zupzup"
