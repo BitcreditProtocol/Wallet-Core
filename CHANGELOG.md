@@ -1,5 +1,10 @@
 # 0.9.12
 
+* Sign offline exchange requests with the ephemeral wallet key, binding alpha id, offline evidence digest, proof fingerprints, hash locks and wallet pubkey
+* Match issued substitute proofs to their secret by hash lock instead of response order
+* Offline exchange requires a mint on the same bcr-common revision (breaking API change)
+    * The wallet needs `evidence_digest` in the offline response, older mints don't send it
+    * `OfflineExchangeRequest` now carries a required `wallet_signature`, older wallets can't call newer mints
 * Fix `wallet_subscribe_to_payment_requests` holding on to it's read-lock during the whole period
 * Fix melt URL after migrate rabid (#302)
 

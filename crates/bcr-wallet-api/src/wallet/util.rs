@@ -66,6 +66,14 @@ pub fn sign_htlc_proof(
     Ok(())
 }
 
+/// The hash lock a proof's HTLC spending condition names, if it has one.
+pub fn htlc_hash_lock(proof: &Proof) -> Option<Sha256> {
+    match (&proof.secret).try_into().ok()? {
+        cashu::SpendingConditions::HTLCConditions { data, .. } => Some(data),
+        cashu::SpendingConditions::P2PKConditions { .. } => None,
+    }
+}
+
 pub async fn htlc_lock(
     tstamp: u64,
     client: &dyn ClowderMintConnector,

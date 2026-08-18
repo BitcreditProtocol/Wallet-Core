@@ -1009,6 +1009,11 @@ impl WalletApi for super::Wallet {
         substitute: Arc<dyn ClowderMintConnector>,
     ) -> Result<url::Url> {
         let substitute_clowder_id = substitute.get_clowder_id().await?;
+        let evidence_digest = substitute
+            .get_alpha_offline(self.clowder_id)
+            .await?
+            .evidence_digest
+            .ok_or_else(|| Error::Swap("alpha not offline at substitute".into()))?;
         let debit_proofs = self.debit.delete_proofs().await?;
 
         // Exchange debit
@@ -1025,7 +1030,13 @@ impl WalletApi for super::Wallet {
                 let proof_y = proof.y();
                 let proof_amount = proof.amount;
                 match self
-                    .offline_exchange(substitute.as_ref(), vec![proof], substitute_clowder_id)
+                    .offline_exchange(
+                        substitute.as_ref(),
+                        vec![proof],
+                        substitute_clowder_id,
+                        self.clowder_id,
+                        evidence_digest,
+                    )
                     .await
                 {
                     Ok(exchanged) => {
@@ -1166,6 +1177,11 @@ impl WalletApi for super::Wallet {
                 .get(&substitute)
                 .ok_or(Error::BetaNotFound(substitute.to_string()))?;
             let substitute_clowder_id = substitute_client.get_clowder_id().await?;
+            let evidence_digest = substitute_client
+                .get_alpha_offline(self.clowder_id)
+                .await?
+                .evidence_digest
+                .ok_or_else(|| Error::Swap("alpha not offline at substitute".into()))?;
 
             // Create beta provider for substitute to do attestation
             let mut beta_clients = HashMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
@@ -1206,6 +1222,8 @@ impl WalletApi for super::Wallet {
                     substitute_client.as_ref(),
                     local_proofs.into_values().collect(),
                     substitute_clowder_id,
+                    self.clowder_id,
+                    evidence_digest,
                 )
                 .await?;
 

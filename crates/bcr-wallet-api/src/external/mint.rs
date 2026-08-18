@@ -166,7 +166,10 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
         &self,
         alpha_id: secp256k1::PublicKey,
     ) -> MintResult<Vec<cashu::KeySet>>;
-    async fn get_alpha_offline(&self, alpha_id: secp256k1::PublicKey) -> MintResult<bool>;
+    async fn get_alpha_offline(
+        &self,
+        alpha_id: secp256k1::PublicKey,
+    ) -> MintResult<wire_clowder::OfflineResponse>;
     async fn get_alpha_status(
         &self,
         alpha_id: secp256k1::PublicKey,
@@ -180,6 +183,7 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
         proofs: Vec<wire_keys::ProofFingerprint>,
         locks: Vec<bitcoin::hashes::sha256::Hash>,
         wallet_pubkey: secp256k1::PublicKey,
+        wallet_signature: secp256k1::schnorr::Signature,
         mint_pk: secp256k1::PublicKey,
     ) -> MintResult<Vec<Proof>>;
     async fn post_swap_commitment(
@@ -296,10 +300,12 @@ impl ClowderMintConnector for HttpClientExt {
     }
 
     /// Is Alpha Offline
-    async fn get_alpha_offline(&self, alpha_id: secp256k1::PublicKey) -> MintResult<bool> {
+    async fn get_alpha_offline(
+        &self,
+        alpha_id: secp256k1::PublicKey,
+    ) -> MintResult<wire_clowder::OfflineResponse> {
         debug!("Clowder client call to get_alpha_offline for {alpha_id}");
-        let response = self.main.get_offline(&alpha_id).await?;
-        Ok(response.offline)
+        self.main.get_offline(&alpha_id).await
     }
 
     /// Determines the status of a mint from the view of the requested Beta
@@ -344,6 +350,7 @@ impl ClowderMintConnector for HttpClientExt {
         proofs: Vec<wire_keys::ProofFingerprint>,
         locks: Vec<bitcoin::hashes::sha256::Hash>,
         wallet_pubkey: secp256k1::PublicKey,
+        wallet_signature: secp256k1::schnorr::Signature,
         mint_pk: secp256k1::PublicKey,
     ) -> MintResult<Vec<Proof>> {
         debug!("Clowder client call to post_offline_exchange");
@@ -351,7 +358,7 @@ impl ClowderMintConnector for HttpClientExt {
             .map_err(|e| MintError::Internal(e.to_string()))?;
         let response = self
             .main
-            .exchange_offline(proofs, locks, wallet_pk, mint_pk)
+            .exchange_offline(proofs, locks, wallet_pk, wallet_signature, mint_pk)
             .await?;
         Ok(response.0)
     }
@@ -711,10 +718,12 @@ impl ClowderMintConnector for SentinelClient {
     }
 
     /// Is Alpha Offline
-    async fn get_alpha_offline(&self, alpha_id: secp256k1::PublicKey) -> MintResult<bool> {
+    async fn get_alpha_offline(
+        &self,
+        alpha_id: secp256k1::PublicKey,
+    ) -> MintResult<wire_clowder::OfflineResponse> {
         debug!("Clowder client call to get_alpha_offline on sentinel for {alpha_id}");
-        let response = self.main.get_offline(&alpha_id).await?;
-        Ok(response.offline)
+        self.main.get_offline(&alpha_id).await
     }
 
     /// Determines the status of a mint from the view of the requested Beta
@@ -753,6 +762,7 @@ impl ClowderMintConnector for SentinelClient {
         proofs: Vec<wire_keys::ProofFingerprint>,
         locks: Vec<bitcoin::hashes::sha256::Hash>,
         wallet_pubkey: secp256k1::PublicKey,
+        wallet_signature: secp256k1::schnorr::Signature,
         mint_pk: secp256k1::PublicKey,
     ) -> MintResult<Vec<Proof>> {
         debug!("Clowder client call to post_offline_exchange on sentinel");
@@ -760,7 +770,7 @@ impl ClowderMintConnector for SentinelClient {
             .map_err(|e| MintError::Internal(e.to_string()))?;
         let response = self
             .main
-            .exchange_offline(proofs, locks, wallet_pk, mint_pk)
+            .exchange_offline(proofs, locks, wallet_pk, wallet_signature, mint_pk)
             .await?;
         Ok(response.0)
     }
