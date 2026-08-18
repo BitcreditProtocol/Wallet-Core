@@ -373,7 +373,7 @@ dependencies = [
  "mockall",
  "mockito",
  "nostr",
- "rand 0.9.5",
+ "rand 0.10.2",
  "reqwest",
  "secp256k1",
  "serde",
