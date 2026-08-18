@@ -23,8 +23,8 @@ use bcr_wallet_core::util::{
 };
 use bcr_wallet_persistence::ContactStoreApi;
 use bcr_wallet_persistence::redb::{Database, build_pursedbs, build_wallet_dbs, create_db};
-use bcr_wallet_transport::NostrEventChannel;
 use bcr_wallet_transport::nostr;
+use bcr_wallet_transport::{NostrEventChannel, NostrWalletEvent};
 use error::{Error, Result};
 use std::sync::atomic::Ordering;
 use std::{
@@ -33,6 +33,7 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::RwLock;
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -580,12 +581,51 @@ impl AppState {
     ) -> Result<()> {
         tracing::debug!("wallet_subscribe_to_payment_requests({wallet_id})");
         let wallet = self.get_wallet(&wallet_id).await?;
-        wallet
-            .read()
-            .await
-            .subscribe_to_payment_requests(cancel_token, item_callback)
-            .await?;
-        Ok(())
+        // don't hold lock for longer than necessary
+        let nostr_event_channel = wallet.read().await.nostr_event_channel();
+
+        tracing::debug!("Subscribing to payment requests from Nostr...");
+        let mut nostr_receiver = nostr_event_channel.subscribe();
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    tracing::info!("subscribe_to_payment_requests cancelled");
+                    return Ok(());
+                },
+                evt = nostr_receiver.recv() => {
+                    let received_evt = match evt {
+                        Ok(e) => e,
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            tracing::warn!("subscribe_to_payment_requests channel lagged behind");
+                            continue;
+                        },
+                        Err(broadcast::error::RecvError::Closed) => {
+                            tracing::warn!("subscribe_to_payment_requests channel closed");
+                            return Ok(());
+                        },
+                    };
+
+                    let NostrWalletEvent::ContactPaymentRequest { event_id, payload, sender } = received_evt else {
+                        continue;
+                    };
+                    tracing::info!("Received contact payment request {} from {sender}, event_id: {event_id}", payload.id);
+                    let pending_incoming_payment_request: PaymentRequest = payload.into();
+                    let payment_request_id = pending_incoming_payment_request.id;
+                    match wallet.read().await.add_payment_request(pending_incoming_payment_request).await {
+                        Ok(_) => {
+                            item_callback(payment_request_id);
+                        },
+                        Err(Error::Database(bcr_wallet_persistence::error::Error::PaymentRequestAlreadyExists(_))) => {
+                            // already had it - either sent again, or already processed - sending it either way and the caller can choose to ignore it
+                            item_callback(payment_request_id);
+                        },
+                        Err(e) => {
+                            tracing::error!("Could not store payment request: {e}");
+                        }
+                    };
+                }
+            }
+        }
     }
 
     pub async fn wallet_list_payment_requests(

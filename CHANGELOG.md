@@ -5,6 +5,8 @@
 * Offline exchange requires a mint on the same bcr-common revision (breaking API change)
     * The wallet needs `evidence_digest` in the offline response, older mints don't send it
     * `OfflineExchangeRequest` now carries a required `wallet_signature`, older wallets can't call newer mints
+* Fix `wallet_subscribe_to_payment_requests` holding on to it's read-lock during the whole period
+* Fix melt URL after migrate rabid (#302)
 
 # 0.9.11
 

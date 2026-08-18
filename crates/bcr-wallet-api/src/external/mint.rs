@@ -498,7 +498,7 @@ impl ClowderMintConnector for HttpClientExt {
     ) -> Result<wire_melt::MeltOnchainResponse> {
         let url = self
             .mint_url()
-            .join("v1/melt/onchain")
+            .join(TreasuryEp::MELT_ONCHAIN_V1_EXT)
             .expect("melt_onchain url error");
         debug!("HTTP call to melt_onchain on {url}");
 
