@@ -19,6 +19,7 @@ env:
 jobs:
   precompile:
     name: Precompile ${{ matrix.platform }}
+    timeout-minutes: 30
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
