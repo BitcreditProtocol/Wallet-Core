@@ -23,11 +23,9 @@ updates:
   - package-ecosystem: "cargo"
     directory: "/"
     groups:
-      rust-patch:
+      rust:
         update-types:
           - "patch"
-      rust-minor:
-        update-types:
           - "minor"
     schedule:
       interval: "weekly"
@@ -48,11 +46,9 @@ updates:
   - package-ecosystem: "pub"
     directory: "/"
     groups:
-      dart-patch:
+      dart:
         update-types:
           - "patch"
-      dart-minor:
-        update-types:
           - "minor"
     schedule:
       interval: "weekly"
