@@ -29,7 +29,7 @@ ciborium = {version="0.2"}
 ecies = { version = "0.2", default-features = false, features = ["pure"] }
 futures = {version = "0.3"}
 mockall = {version  = "0.13"}
-nostr = {version = "0.43"}
+nostr = {version = "0.45"}
 nostr-sdk = {version = "0.43", features = ["nip59"]}
 rand = {version = "0.9"}
 reqwest = {version = "0.12", default-features = false, features = ["json", "rustls-tls"]}
