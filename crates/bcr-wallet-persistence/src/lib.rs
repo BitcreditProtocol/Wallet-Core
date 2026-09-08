@@ -18,7 +18,7 @@ use bcr_wallet_core::{
     types::{PaymentRequest, WalletConfig},
 };
 use bitcoin::secp256k1;
-use nostr::{RelayUrl, types::Timestamp};
+use nostr::{types::RelayUrl, types::Timestamp};
 use std::collections::HashMap;
 use uuid::Uuid;
 

@@ -127,7 +127,7 @@ mod tests {
     use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
     use cashu::{Amount, nut07 as cdk07};
     use mockall::predicate::eq;
-    use rand::Rng;
+    use rand::RngExt;
 
     #[tokio::test]
     async fn restore_batch_empty_response() {

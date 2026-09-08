@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use bcr_common::cashu::{self, CurrencyUnit};
+use bcr_common::ecash;
 use bcr_wallet_core::types::WalletConfig;
 use nostr::types::RelayUrl;
 use redb::ReadableTable;
@@ -57,7 +58,7 @@ struct WalletEntry {
     name: String,
     network: bitcoin::Network,
     mint: url::Url,
-    mint_keyset_infos: HashMap<cashu::Id, cashu::KeySetInfo>,
+    mint_keyset_infos: HashMap<cashu::Id, ecash::KeySetInfo>,
     clowder_id: bitcoin::secp256k1::PublicKey,
     pub_key: bitcoin::secp256k1::PublicKey,
     debit: CurrencyUnit,

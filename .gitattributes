@@ -1,2 +1,3 @@
 lib/src/rust/** linguist-generated=true
+cargokit/** linguist-generated=true
 crates/bcr-wallet-ffi/src/frb_generated.rs linguist-generated=true

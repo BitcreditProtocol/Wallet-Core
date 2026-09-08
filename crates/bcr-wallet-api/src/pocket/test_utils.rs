@@ -8,17 +8,17 @@ pub mod tests {
     use crate::types::{MeltSummary, MintSummary, SendSummary};
     use crate::wallet::types::SwapConfig;
     use async_trait::async_trait;
-    use bcr_common::cdk_common::mint::MintKeySetInfo;
     use std::collections::HashMap;
     use std::sync::Arc;
     use uuid::Uuid;
 
-    use bcr_common::cashu::{self, Amount, CurrencyUnit, KeySetInfo};
+    use bcr_common::cashu::{self, Amount, CurrencyUnit};
+    use bcr_common::ecash::{KeySetInfo, MintKeySetInfo};
     use bitcoin::secp256k1;
 
     pub fn test_kinfos(info: MintKeySetInfo) -> HashMap<cashu::Id, KeySetInfo> {
         let mut map = HashMap::new();
-        map.insert(info.id, KeySetInfo::from(info));
+        map.insert(info.id, cashu::KeySetInfo::from(info).into());
         map
     }
 
@@ -146,7 +146,7 @@ pub mod tests {
                 &self,
                 proofs: Vec<cashu::Proof>,
                 keysets_info: &HashMap<cashu::Id, KeySetInfo>,
-                keysets: HashMap<cashu::Id, cashu::KeySet>,
+                keysets: HashMap<cashu::Id, bcr_common::ecash::KeySet>,
                 substitute_client: Arc<dyn ClowderMintConnector>,
                 substitute_clowder_id: secp256k1::PublicKey,
                 beta_provider: crate::pocket::RandomBetaProvider,

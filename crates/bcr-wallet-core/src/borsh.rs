@@ -1,4 +1,5 @@
 use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, secret::Secret};
+use bcr_common::ecash;
 use bcr_common::wire::borsh::{
     deserialize_blindedmessage, deserialize_cashu_amount, deserialize_from_str, serialize_as_str,
     serialize_blindedmessage, serialize_cashu_amount,
@@ -20,7 +21,7 @@ struct MintKeysetInfo {
 }
 
 pub fn serialize_mint_keyset_infos(
-    infos: &HashMap<cashu::Id, cashu::KeySetInfo>,
+    infos: &HashMap<cashu::Id, ecash::KeySetInfo>,
     writer: &mut impl Write,
 ) -> Result<()> {
     let mut stored: Vec<(String, MintKeysetInfo)> = infos
@@ -43,7 +44,7 @@ pub fn serialize_mint_keyset_infos(
 
 pub fn deserialize_mint_keyset_infos(
     reader: &mut impl Read,
-) -> Result<HashMap<cashu::Id, cashu::KeySetInfo>> {
+) -> Result<HashMap<cashu::Id, ecash::KeySetInfo>> {
     let stored: Vec<(String, MintKeysetInfo)> = BorshDeserialize::deserialize_reader(reader)?;
 
     let mut infos = HashMap::with_capacity(stored.len());
@@ -55,7 +56,7 @@ pub fn deserialize_mint_keyset_infos(
         let unit = cashu::CurrencyUnit::from_str(&info.unit)
             .map_err(|e| BorshError::new(ErrorKind::InvalidData, e))?;
 
-        let keyset_info = cashu::KeySetInfo {
+        let keyset_info = ecash::KeySetInfo {
             id,
             unit,
             active: info.active,
@@ -183,11 +184,11 @@ mod tests {
         active: bool,
         input_fee_ppk: u64,
         final_expiry: Option<u64>,
-    ) -> cashu::KeySetInfo {
+    ) -> ecash::KeySetInfo {
         let id = cashu::Id::from_str(id).expect("valid test keyset ID");
         let unit = cashu::CurrencyUnit::from_str(unit).expect("valid test currency unit");
 
-        cashu::KeySetInfo {
+        ecash::KeySetInfo {
             id,
             unit,
             active,
@@ -196,18 +197,18 @@ mod tests {
         }
     }
 
-    fn serialize_mint_ks_infos(infos: &HashMap<cashu::Id, cashu::KeySetInfo>) -> Vec<u8> {
+    fn serialize_mint_ks_infos(infos: &HashMap<cashu::Id, ecash::KeySetInfo>) -> Vec<u8> {
         let mut bytes = Vec::new();
         serialize_mint_keyset_infos(infos, &mut bytes).expect("serialization should succeed");
         bytes
     }
 
-    fn deserialize_mint_ks_infos(bytes: &[u8]) -> Result<HashMap<cashu::Id, cashu::KeySetInfo>> {
+    fn deserialize_mint_ks_infos(bytes: &[u8]) -> Result<HashMap<cashu::Id, ecash::KeySetInfo>> {
         let mut reader = Cursor::new(bytes);
         deserialize_mint_keyset_infos(&mut reader)
     }
 
-    fn assert_keyset_info_eq(actual: &cashu::KeySetInfo, expected: &cashu::KeySetInfo) {
+    fn assert_keyset_info_eq(actual: &ecash::KeySetInfo, expected: &ecash::KeySetInfo) {
         assert_eq!(actual.id.to_string(), expected.id.to_string());
         assert_eq!(actual.unit.to_string(), expected.unit.to_string());
         assert_eq!(actual.active, expected.active);

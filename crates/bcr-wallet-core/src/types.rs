@@ -1,11 +1,12 @@
 use bcr_common::{
-    cashu::{self, Amount, CurrencyUnit, KeySetInfo, MintUrl},
+    cashu::{self, Amount, CurrencyUnit, MintUrl},
     cdk_common::wallet::TransactionDirection,
     core::NodeId,
+    ecash::KeySetInfo,
 };
 use bitcoin::{address::NetworkUnchecked, secp256k1};
 use chrono::{DateTime, Datelike, Utc};
-use nostr::{RelayUrl, event::EventId};
+use nostr::{event::EventId, types::RelayUrl};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,

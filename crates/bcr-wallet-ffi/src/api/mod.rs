@@ -2,7 +2,7 @@ use bcr_wallet_core::types::{
     ListTransactionsResult, MeltEstimation, PaymentResultCallback,
     PendingPaymentSubscriptionCallback,
 };
-use nostr::RelayUrl;
+use nostr::types::RelayUrl;
 use once_cell::sync::Lazy;
 use std::{collections::HashMap, panic, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;

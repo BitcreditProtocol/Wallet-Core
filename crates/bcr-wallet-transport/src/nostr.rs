@@ -9,21 +9,24 @@ use bcr_wallet_core::{
     event::{ContactPaymentPayload, ContactPaymentRequestPayload, EventEnvelope},
 };
 use bcr_wallet_persistence::{NostrEventOffset, NostrQueuedMessage, NostrRepository};
+use bitcoin::secp256k1::Keypair;
+use futures::StreamExt;
 use nostr::{
-    PublicKey,
-    event::{Event, EventBuilder, EventId, Kind, TagKind, TagStandard},
-    filter::{Alphabet, Filter, SingleLetterTag},
+    event::{Event, EventId, FinalizeEvent, Kind},
+    filter::Filter,
+    key::{Keys, PublicKey},
     nips::{
+        nip17::PrivateDirectMessageBuilder,
         nip19::{FromBech32, Nip19Profile, ToBech32},
         nip59::UnwrappedGift,
-        nip65::RelayMetadata,
+        nip65::{RelayList, RelayMetadata, extract_relay_list},
     },
-    secp256k1::Keypair,
-    signer::NostrSigner,
     types::{RelayUrl, Timestamp},
 };
 use nostr_sdk::{
-    Client as NostrClient, ClientOptions, Keys, RelayPoolNotification, RelayStatus, pool::Output,
+    authenticator::SignerAuthenticator,
+    client::{Client as NostrClient, ClientNotification, ReqTarget, SendEventOutput},
+    relay::RelayStatus,
 };
 use std::{
     collections::HashSet,
@@ -46,13 +49,14 @@ pub struct Client {
 
 impl Client {
     pub async fn new(keypair: &Keypair, relays: Vec<RelayUrl>) -> Result<Self> {
-        let signer = Keys::new(keypair.secret_key().into());
+        let signer = Keys::new(
+            nostr::key::SecretKey::from_slice(&keypair.secret_key().secret_bytes())
+                .expect("valid secret key"),
+        );
 
         let default_timeout = Duration::from_secs(1);
-        let options = ClientOptions::new();
         let client = NostrClient::builder()
-            .signer(signer.clone())
-            .opts(options)
+            .authenticator(SignerAuthenticator::new(signer.clone()))
             .build();
 
         for nostr_relay in relays.iter() {
@@ -82,7 +86,7 @@ impl Client {
     async fn subscribe(&self, subscription: Filter) -> Result<()> {
         self.client()
             .await?
-            .subscribe(subscription, None)
+            .subscribe(subscription)
             .await
             .map_err(|e| {
                 tracing::error!("Failed to subscribe to Nostr events: {e}");
@@ -91,9 +95,8 @@ impl Client {
         Ok(())
     }
 
-    async fn signer(&self) -> Result<Arc<dyn NostrSigner>> {
-        let signer = self.client.signer().await?;
-        Ok(signer)
+    fn signer(&self) -> Keys {
+        self.signer.clone()
     }
 
     async fn update_relays(&self, target_relays: HashSet<RelayUrl>) -> Result<()> {
@@ -125,14 +128,23 @@ impl Client {
             // refresh relays to match target set
             self.update_relays(r.iter().cloned().collect()).await?;
         }
+
+        let relays = match relays {
+            Some(relays) => relays,
+            None => self.relays.clone(),
+        };
+
+        let target = ReqTarget::manual(
+            relays
+                .into_iter()
+                .map(|relay| (relay, vec![filter.clone()])),
+        );
+
         let events = self
             .client()
             .await?
-            .fetch_events_from(
-                relays.unwrap_or(self.relays.clone()),
-                filter,
-                self.default_timeout.to_owned(),
-            )
+            .fetch_events(target)
+            .timeout(self.default_timeout)
             .await
             .map_err(|e| {
                 tracing::error!("Failed to fetch Nostr events: {e}");
@@ -155,14 +167,8 @@ impl Client {
         Ok(events
             .first()
             .map(|e| {
-                e.tags
-                    .filter_standardized(TagKind::SingleLetter(SingleLetterTag::lowercase(
-                        Alphabet::R,
-                    )))
-                    .filter_map(|f| match f {
-                        TagStandard::RelayMetadata { relay_url, .. } => Some(relay_url.clone()),
-                        _ => None,
-                    })
+                extract_relay_list(e)
+                    .map(|(relay_url, _metadata)| relay_url)
                     .collect()
             })
             .unwrap_or_default())
@@ -173,14 +179,10 @@ impl Client {
         let relay_list: Vec<(RelayUrl, Option<RelayMetadata>)> =
             relays.into_iter().map(|r| (r, None)).collect();
 
-        let event = EventBuilder::relay_list(relay_list)
-            .build(signer.public_key())
-            .sign(&signer)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to sign relay list event: {e}");
-                Error::Crypto("Failed to sign relay list event".to_string())
-            })?;
+        let event = RelayList::new(relay_list).finalize(&signer).map_err(|e| {
+            tracing::error!("Failed to sign relay list event: {e}");
+            Error::Crypto("Failed to sign relay list event".to_string())
+        })?;
 
         let output = self.client().await?.send_event(&event).await.map_err(|e| {
             tracing::error!("Failed to send relay list with Nostr client: {e}");
@@ -218,7 +220,7 @@ impl ClientApi for Client {
                 if let Err(e) = self_clone.sync_relay_list(self_clone.relays.clone()).await {
                     tracing::error!(
                         "Failed to publish relay list for {}: {}",
-                        self_clone.signer.public_key,
+                        self_clone.signer.public_key(),
                         e
                     );
                 }
@@ -250,9 +252,15 @@ impl TransportApi for Transport {
     async fn send_private_msg(&self, target: String, payload: String) -> Result<EventId> {
         let receiver = Nip19Profile::from_bech32(&target)?;
 
-        let signer = self.client.client.signer().await?;
-        let event: Event =
-            EventBuilder::private_msg(&signer, receiver.public_key, payload, []).await?;
+        let signer = self.client.signer();
+
+        let event = PrivateDirectMessageBuilder::new(receiver.public_key, payload)
+            .finalize(&signer)
+            .map_err(|e| {
+                tracing::error!("Failed to create NIP-17 event: {e}");
+                Error::Nostr(e)
+            })?;
+
         let relays = receiver.relays;
 
         if !relays.is_empty() {
@@ -263,7 +271,8 @@ impl TransportApi for Transport {
             let output = self
                 .client
                 .client
-                .send_event_to(relays, &event)
+                .send_event(&event)
+                .to(relays)
                 .await
                 .map_err(|e| {
                     tracing::error!("send_private_msg failed: {e}");
@@ -283,7 +292,7 @@ impl TransportApi for Transport {
     async fn cdk18_transport(&self) -> Result<cdk18::Transport> {
         Ok(cdk18::Transport {
             _type: cdk18::TransportType::Nostr,
-            target: Nip19Profile::new(self.client.signer.public_key, self.client.relays.clone())
+            target: Nip19Profile::new(self.client.signer.public_key(), self.client.relays.clone())
                 .to_bech32()?,
             tags: vec![vec![String::from("n"), String::from("17")]],
         })
@@ -454,8 +463,8 @@ impl ConsumerApi for Consumer {
             earliest_offset = offset;
         }
 
-        let nostr_filter = nostr_sdk::Filter::new()
-            .kind(nostr_sdk::Kind::GiftWrap)
+        let nostr_filter = nostr::filter::Filter::new()
+            .kind(nostr::event::Kind::GiftWrap)
             .pubkey(client.signer.public_key());
 
         client.subscribe(nostr_filter).await.map_err(|e| {
@@ -464,31 +473,35 @@ impl ConsumerApi for Consumer {
         })?;
 
         let offset_store_clone = self.nostr_store.clone();
-        let signer = self.client.signer().await?;
+        let signer = Arc::new(self.client.signer());
         let event_channel = self.event_channel.clone();
         tasks.spawn(async move {
-            client
-                .client
-                .handle_notifications(move |note| {
+            let result: Result<()> = async {
+                let mut notifications = client.client.notifications();
+                while let Some(note) = notifications.next().await {
                     let offset_store = offset_store_clone.clone();
                     let signer = signer.clone();
                     let event_channel = event_channel.clone();
-                    async move {
-                        if let RelayPoolNotification::Event { event, .. } = note
-                            && should_process(event.clone(), &offset_store, earliest_offset).await
-                        {
-                            let (success, time) =
-                                process_event(event.clone(), signer.clone(), event_channel.clone())
-                                    .await?;
-                            add_offset(&offset_store, event.id, time, success).await;
-                        }
-                        Ok(false) // keep looping
+
+                    let ClientNotification::Event { event, .. } = note else {
+                        continue;
+                    };
+
+                    if !should_process(event.clone(), &offset_store, earliest_offset).await {
+                        continue;
                     }
-                })
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::error!("Nostr notification handler failed: {e}");
-                });
+                    let (success, time) =
+                        process_event(event.clone(), signer.clone(), event_channel.clone()).await?;
+                    add_offset(&offset_store, event.id, time, success).await;
+                }
+
+                Ok(())
+            }
+            .await;
+
+            if let Err(e) = result {
+                tracing::error!("Nostr notification handler failed: {e}");
+            }
         });
 
         Ok(tasks)
@@ -518,7 +531,7 @@ async fn get_offset(db: &Arc<dyn NostrRepository>) -> Timestamp {
     })
 }
 
-fn check_send_output(output: Output<EventId>, context: &str) -> Result<()> {
+fn check_send_output(output: SendEventOutput, context: &str) -> Result<()> {
     for (relay, error) in &output.failed {
         tracing::warn!("{context}: relay {relay} failed: {error}");
     }
@@ -533,7 +546,7 @@ fn check_send_output(output: Output<EventId>, context: &str) -> Result<()> {
 
 async fn process_event(
     event: Box<Event>,
-    signer: Arc<dyn NostrSigner>,
+    signer: Arc<Keys>,
     event_channel: NostrEventChannel,
 ) -> Result<(bool, Timestamp)> {
     let (success, time) = match event.kind {
@@ -556,15 +569,16 @@ async fn process_event(
     Ok((success, time))
 }
 
-async fn handle_nip17_direct_message<T: NostrSigner>(
+async fn handle_nip17_direct_message(
     event: Box<Event>,
-    signer: &T,
+    signer: &Keys,
     event_channel: NostrEventChannel,
 ) -> Result<()> {
-    let UnwrappedGift { rumor, sender } = UnwrappedGift::from_gift_wrap(signer, &event).await?;
+    let UnwrappedGift { rumor, sender } =
+        UnwrappedGift::from_gift_wrap_async(signer, &event).await?;
     let sender_npub = sender.to_bech32();
     let sender_pub_key = sender.to_hex();
-    if rumor.kind == nostr_sdk::Kind::PrivateDirectMessage {
+    if rumor.kind == nostr::event::Kind::PrivateDirectMessage {
         if let Ok(data) = base58::decode(rumor.content.as_str())
             && let Ok(envelope) = borsh::from_slice::<EventEnvelope>(&data)
         {

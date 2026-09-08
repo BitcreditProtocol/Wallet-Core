@@ -1,5 +1,5 @@
 use crate::error::Result;
-use ::nostr::{PublicKey, event::EventId, types::RelayUrl};
+use ::nostr::{event::EventId, key::PublicKey, types::RelayUrl};
 use async_trait::async_trait;
 use bcr_common::cashu::nut18 as cdk18;
 use bcr_wallet_core::{

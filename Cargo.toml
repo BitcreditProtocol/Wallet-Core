@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.9.12"
+version = "0.9.13"
 edition = "2024"
 license = "MIT"
 
@@ -16,7 +16,7 @@ strip = "symbols"
 
 [workspace.dependencies]
 async-trait = {version = "0.1"}
-bcr-common = {git = "https://github.com/BitcreditProtocol/bcr-common.git",  rev= "035bae791445ee243c2f53f846945519f1ea3ce1"}
+bcr-common = {git = "https://github.com/BitcreditProtocol/bcr-common.git",  rev= "dcb318c40c2f69ecb5aef135aff10a101743b473", features = ["webpki-roots"]}
 bcr-wallet-core = {path = "./crates/bcr-wallet-core"}
 bcr-wallet-api = {path = "./crates/bcr-wallet-api"}
 bcr-wallet-persistence = {path = "./crates/bcr-wallet-persistence"}
@@ -28,15 +28,14 @@ chrono = {version  = "0.4"}
 ciborium = {version="0.2"}
 ecies = { version = "0.2", default-features = false, features = ["pure"] }
 futures = {version = "0.3"}
-mockall = {version  = "0.13"}
-nostr = {version = "0.43"}
-nostr-sdk = {version = "0.43", features = ["nip59"]}
-rand = {version = "0.9"}
-reqwest = {version = "0.12", default-features = false, features = ["json", "rustls-tls"]}
-secp256k1 = {version = "0.29"}
+mockall = {version  = "0.15"}
+nostr = {version = "0.45", features = ["nip59"]}
+nostr-sdk = {version = "0.45"}
+rand = {version = "0.10"}
+reqwest = {version = "0.13", default-features = false, features = ["json", "rustls"]}
 serde = {version = "1"}
 serde_json = {version = "1"}
-strum = {version = "0.27"}
+strum = {version = "0.28"}
 thiserror = {version = "2"}
 tokio = {version = "1", features = ["macros", "rt-multi-thread", "time", "rt"]}
 tokio-util = {version = "0.7"}

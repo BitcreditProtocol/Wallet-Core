@@ -3,7 +3,7 @@ pub mod tests {
     use bcr_common::cashu::nut18 as cdk18;
     use bcr_wallet_core::contact::Contact;
     use bcr_wallet_transport::{ConsumerApi, TransportApi, error::Result};
-    use nostr::{PublicKey, RelayUrl, event::EventId};
+    use nostr::{event::EventId, key::PublicKey, types::RelayUrl};
 
     mockall::mock! {
         pub Transport {}

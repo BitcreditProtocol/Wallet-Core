@@ -1,7 +1,6 @@
 /// This is copied from Cargokit (which is the official way to use it currently)
 /// Details: https://fzyzcjy.github.io/flutter_rust_bridge/manual/integrate/builtin
 
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:ed25519_edwards/ed25519_edwards.dart';
@@ -26,12 +25,11 @@ class PrecompileBinaries {
     required this.repositorySlug,
     required this.manifestDir,
     required this.targets,
-    this.targetCommitish,
-    required this.prerelease,
     this.androidSdkLocation,
     this.androidNdkVersion,
     this.androidMinSdkVersion,
     this.tempDir,
+    this.glibcVersion,
   });
 
   final PrivateKey privateKey;
@@ -39,12 +37,11 @@ class PrecompileBinaries {
   final RepositorySlug repositorySlug;
   final String manifestDir;
   final List<Target> targets;
-  final String? targetCommitish;
-  final bool prerelease;
   final String? androidSdkLocation;
   final String? androidNdkVersion;
   final int? androidMinSdkVersion;
   final String? tempDir;
+  final String? glibcVersion;
 
   static String fileName(Target target, String name) {
     return '${target.rust}_$name';
@@ -74,12 +71,11 @@ class PrecompileBinaries {
 
     final github = GitHub(auth: Authentication.withToken(githubToken));
     final repo = github.repositories;
-    var release = await _getOrCreateRelease(
+    final release = await _getOrCreateRelease(
       repo: repo,
       tagName: tagName,
       packageName: crateInfo.packageName,
       hash: hash,
-      github: github,
     );
 
     final tempDir = this.tempDir != null
@@ -102,10 +98,10 @@ class PrecompileBinaries {
       androidSdkPath: androidSdkLocation,
       androidNdkVersion: androidNdkVersion,
       androidMinSdkVersion: androidMinSdkVersion,
+      glibcVersion: glibcVersion,
     );
 
     final rustup = Rustup();
-    final releaseAssets = await _releaseAssetsByName(repo, release);
 
     for (final target in targets) {
       final artifactNames = getArtifactNames(
@@ -113,33 +109,13 @@ class PrecompileBinaries {
         libraryName: crateInfo.packageName,
         remote: true,
       );
-      final requiredAssetNames = artifactNames
-          .expand((name) => [
-                PrecompileBinaries.fileName(target, name),
-                signatureFileName(target, name),
-              ])
-          .toList(growable: false);
 
-      final uploadedRequiredAssetNames = requiredAssetNames
-          .where((name) => _assetIsUploaded(releaseAssets[name]))
-          .toList(growable: false);
-
-      if (uploadedRequiredAssetNames.length == requiredAssetNames.length) {
-        _log.info('All artifacts for $target already exist - skipping');
+      if (artifactNames.every((name) {
+        final fileName = PrecompileBinaries.fileName(target, name);
+        return (release.assets ?? []).any((e) => e.name == fileName);
+      })) {
+        _log.info("All artifacts for $target already exist - skipping");
         continue;
-      }
-
-      final existingRequiredAssetNames = requiredAssetNames
-          .where((name) => releaseAssets.containsKey(name))
-          .toList(growable: false);
-      if (existingRequiredAssetNames.isNotEmpty) {
-        _log.warning(
-            'Found partial artifacts for $target - deleting and rebuilding: '
-            '$existingRequiredAssetNames');
-        for (final name in existingRequiredAssetNames) {
-          final asset = releaseAssets.remove(name)!;
-          await repo.deleteReleaseAsset(repositorySlug, asset);
-        }
       }
 
       _log.info('Building for $target');
@@ -181,13 +157,7 @@ class PrecompileBinaries {
         int retryCount = 0;
         while (true) {
           try {
-            final uploaded = await repo.uploadReleaseAssets(release, [asset]);
-            for (final uploadedAsset in uploaded) {
-              final name = uploadedAsset.name;
-              if (name != null) {
-                releaseAssets[name] = uploadedAsset;
-              }
-            }
+            await repo.uploadReleaseAssets(release, [asset]);
             break;
           } on Exception catch (e) {
             if (retryCount == 10) {
@@ -200,37 +170,10 @@ class PrecompileBinaries {
           }
         }
       }
-
-      final missingAssetNames = requiredAssetNames
-          .where((name) => !_assetIsUploaded(releaseAssets[name]))
-          .toList(growable: false);
-      if (missingAssetNames.isNotEmpty) {
-        throw Exception('Missing uploaded assets for $target: '
-            '${missingAssetNames.join(', ')}');
-      }
     }
 
     _log.info('Cleaning up');
     tempDir.deleteSync(recursive: true);
-  }
-
-  Future<Map<String, ReleaseAsset>> _releaseAssetsByName(
-    RepositoriesService repo,
-    Release release,
-  ) async {
-    if (release.id == null) {
-      return {};
-    }
-    final assets =
-        await repo.listReleaseAssets(repositorySlug, release).toList();
-    return {
-      for (final asset in assets)
-        if (asset.name != null) asset.name!: asset,
-    };
-  }
-
-  bool _assetIsUploaded(ReleaseAsset? asset) {
-    return asset?.state == 'uploaded';
   }
 
   Future<Release> _getOrCreateRelease({
@@ -238,7 +181,6 @@ class PrecompileBinaries {
     required String tagName,
     required String packageName,
     required String hash,
-    required GitHub github,
   }) async {
     Release release;
     try {
@@ -246,42 +188,18 @@ class PrecompileBinaries {
       release = await repo.getReleaseByTagName(repositorySlug, tagName);
     } on ReleaseNotFound {
       _log.info('Release not found - creating release $tagName');
-      release = await github.postJSON<Map<String, dynamic>, Release>(
-        '/repos/${repositorySlug.fullName}/releases',
-        statusCode: 201,
-        convert: Release.fromJson,
-        body: jsonEncode({
-          'tag_name': tagName,
-          'name': 'Precompiled binaries ${hash.substring(0, 8)}',
-          if (targetCommitish != null) 'target_commitish': targetCommitish,
-          'draft': false,
-          'prerelease': prerelease,
-          'make_latest': 'false',
-          'body': 'Precompiled binaries for crate $packageName, '
-              'crate hash $hash.',
-        }),
-      );
+      release = await repo.createRelease(
+          repositorySlug,
+          CreateRelease.from(
+            tagName: tagName,
+            name: 'Precompiled binaries ${hash.substring(0, 8)}',
+            targetCommitish: null,
+            isDraft: false,
+            isPrerelease: false,
+            body: 'Precompiled binaries for crate $packageName, '
+                'crate hash $hash.',
+          ));
     }
-    return _updateReleaseMetadata(github, release);
-  }
-
-  Future<Release> _updateReleaseMetadata(
-    GitHub github,
-    Release release,
-  ) async {
-    final releaseId = release.id;
-    if (releaseId == null) {
-      return release;
-    }
-    return github.patchJSON<Map<String, dynamic>, Release>(
-      '/repos/${repositorySlug.fullName}/releases/$releaseId',
-      statusCode: 200,
-      convert: Release.fromJson,
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'prerelease': prerelease,
-        'make_latest': 'false',
-      }),
-    );
+    return release;
   }
 }
