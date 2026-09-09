@@ -142,6 +142,7 @@ pub trait WalletApi: SendSync {
         relays: Vec<RelayUrl>,
     ) -> Result<Vec<RelayUrl>>;
     async fn delete(&self) -> Result<()>;
+    fn rename(&mut self, new_name: String);
     async fn create_shareable_remote_payment_request(
         &self,
         amount: Amount,
@@ -1320,6 +1321,10 @@ impl WalletApi for super::Wallet {
     ) -> Result<Vec<RelayUrl>> {
         let res = self.nostr_transport.fetch_relay_list(npub, relays).await?;
         Ok(res)
+    }
+
+    fn rename(&mut self, new_name: String) {
+        self.name = new_name;
     }
 
     async fn delete(&self) -> Result<()> {

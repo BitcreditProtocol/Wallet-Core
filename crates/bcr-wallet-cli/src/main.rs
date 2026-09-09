@@ -55,6 +55,8 @@ enum Commands {
     DeleteWallet { id: String },
     #[command(name = "restore_wallet")]
     RestoreWallet { id: String },
+    #[command(name = "rename_wallet")]
+    RenameWallet { id: String, new_name: String },
     #[command(name = "receive")]
     Receive { id: String, token: String },
     #[command(name = "request_payment")]
@@ -259,6 +261,13 @@ async fn main() -> Result<()> {
                 "Deleting wallet for {}: {}",
                 cli.wallet,
                 command::cmd_delete_wallet(&app_state, &cli.wallet, &id).await?
+            );
+        }
+        Commands::RenameWallet { id, new_name } => {
+            info!(
+                "Renaming wallet for {}: {}",
+                cli.wallet,
+                command::cmd_rename_wallet(&app_state, &cli.wallet, &id, &new_name).await?
             );
         }
         Commands::RestoreWallet { id } => {

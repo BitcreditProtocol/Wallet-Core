@@ -386,6 +386,15 @@ impl AppState {
         Ok(wallet.read().await.name())
     }
 
+    pub async fn wallet_rename(&self, wallet_id: String, new_name: String) -> Result<()> {
+        tracing::debug!("rename for wallet {wallet_id} to {new_name}");
+
+        let purse = self.get_purse();
+        purse.rename_wallet(&wallet_id, new_name).await?;
+
+        Ok(())
+    }
+
     pub async fn wallet_mint_url(&self, wallet_id: String) -> Result<String> {
         tracing::debug!("mint_url for wallet {wallet_id}");
         let wallet = self.get_wallet(&wallet_id).await?;

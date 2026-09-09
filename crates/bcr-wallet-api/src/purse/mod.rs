@@ -97,6 +97,26 @@ where
         Ok(())
     }
 
+    pub async fn rename_wallet(&self, id: &str, new_name: String) -> Result<()> {
+        let Some(wlt) = self.get_wallet(id).await else {
+            return Err(Error::WalletNotFound(id.to_owned()));
+        };
+        let info = wlt.read().await.info();
+        // renaming to the same name is a no-op
+        if info.name == new_name {
+            return Ok(());
+        }
+
+        let network = info.network;
+        if self.names_by_network(network).await.contains(&new_name) {
+            return Err(Error::WalletUniqueName(new_name.clone(), network));
+        }
+
+        self.repo.rename(id, new_name.clone()).await?;
+        wlt.write().await.rename(new_name);
+        Ok(())
+    }
+
     pub async fn migrate_rabid_wallets(&self) -> Result<HashMap<String, url::Url>> {
         let mut res = HashMap::new();
         let wlts = self.wallets.read().await;
@@ -329,9 +349,10 @@ mod tests {
     use bcr_wallet_persistence::{
         MockContactStoreApi, MockPurseRepository, test_utils::tests::test_pub_key,
     };
+    use mockall::predicate::eq;
 
     use super::*;
-    use crate::wallet::api::MockWalletApi;
+    use crate::wallet::{api::MockWalletApi, types::WalletInfo};
 
     fn purse(db: Box<dyn PurseRepository>) -> super::Purse<MockWalletApi> {
         let mut contact_dbs = HashMap::new();
@@ -387,6 +408,7 @@ mod tests {
         db.expect_load().times(1).returning(|_| Ok(wlt_cfg()));
         db.expect_store().times(1).returning(|_| Ok(()));
         db.expect_delete().times(1).returning(|_| Ok(()));
+        db.expect_rename().times(1).returning(|_, _| Ok(()));
         db.expect_list_ids()
             .times(1)
             .returning(|| Ok(vec!["wallet-1".to_owned()]));
@@ -394,6 +416,17 @@ mod tests {
 
         let mut wlt = MockWalletApi::new();
         wlt.expect_id().returning(|| "wlt-1".to_owned());
+        wlt.expect_rename()
+            .with(eq("new_name".to_owned()))
+            .once()
+            .return_const(());
+        wlt.expect_info().returning(|| WalletInfo {
+            name: wlt_cfg().name,
+            node_id: NodeId::new(wlt_cfg().pub_key, wlt_cfg().network),
+            network: wlt_cfg().network,
+            default_mint_url: wlt_cfg().mint,
+            nostr_relays: vec![],
+        });
         wlt.expect_config().times(1).returning(|| Ok(wlt_cfg()));
         wlt.expect_delete().times(1).returning(|| Ok(()));
 
@@ -412,6 +445,11 @@ mod tests {
         assert_eq!(ids[0], wlt_id);
         let gotten = purse.get_wallet(&wlt_id).await.expect("get wallet works");
         assert_eq!(gotten.read().await.id(), new_wlt_id);
+
+        purse
+            .rename_wallet(&wlt_id, "new_name".to_owned())
+            .await
+            .expect("rename works");
 
         purse.delete_wallet(&wlt_id).await.expect("delete works");
     }

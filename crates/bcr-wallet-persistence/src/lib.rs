@@ -99,6 +99,7 @@ pub trait PocketRepository: SendSync {
 pub trait PurseRepository: SendSync {
     async fn store(&self, wallet: WalletConfig) -> Result<()>;
     async fn load(&self, wallet_id: &str) -> Result<WalletConfig>;
+    async fn rename(&self, wallet_id: &str, new_name: String) -> Result<()>;
     async fn delete(&self, wallet_id: &str) -> Result<()>;
     async fn list_ids(&self) -> Result<Vec<String>>;
 }

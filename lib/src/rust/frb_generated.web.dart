@@ -253,6 +253,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_wallet_reject_payment_request_request(dynamic raw);
 
   @protected
+  WalletRenameRequest dco_decode_box_autoadd_wallet_rename_request(dynamic raw);
+
+  @protected
   WalletRequest dco_decode_box_autoadd_wallet_request(dynamic raw);
 
   @protected
@@ -754,6 +757,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_wallet_reject_payment_request_response(dynamic raw);
 
   @protected
+  WalletRenameRequest dco_decode_wallet_rename_request(dynamic raw);
+
+  @protected
   WalletRequest dco_decode_wallet_request(dynamic raw);
 
   @protected
@@ -1064,6 +1070,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletRejectPaymentRequestRequest
   sse_decode_box_autoadd_wallet_reject_payment_request_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletRenameRequest sse_decode_box_autoadd_wallet_rename_request(
     SseDeserializer deserializer,
   );
 
@@ -1703,6 +1714,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletRenameRequest sse_decode_wallet_rename_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   WalletRequest sse_decode_wallet_request(SseDeserializer deserializer);
 
   @protected
@@ -2074,6 +2090,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_wallet_reject_payment_request_request(
     WalletRejectPaymentRequestRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_wallet_rename_request(
+    WalletRenameRequest self,
     SseSerializer serializer,
   );
 
@@ -2854,6 +2876,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_reject_payment_request_response(
     WalletRejectPaymentRequestResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_rename_request(
+    WalletRenameRequest self,
     SseSerializer serializer,
   );
 

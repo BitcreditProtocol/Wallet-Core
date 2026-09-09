@@ -4,6 +4,9 @@
     * nostr, reqwest, bcr-common most notably
 * Upgrade gradle version and cargokit
 * Upgrade flutter-rust-bridge codegen
+* Add API to rename existing Wallets
+    * Add endpoint `wallet_rename` with `WalletRenameRequest` as input
+* Expose `run_jobs` API to ffi
 
 # 0.9.12
 
