@@ -61,6 +61,17 @@ jobs:
         if: matrix.platform == 'ios'
         working-directory: cargokit/build_tool
         run: |
+          echo "Deployment target: $IPHONEOS_DEPLOYMENT_TARGET"
+
+          rustc --target aarch64-apple-ios \
+          --print deployment-target
+
+          rustc --target aarch64-apple-ios-sim \
+          --print deployment-target
+
+          rustc --target x86_64-apple-ios \
+          --print deployment-target
+
           dart run build_tool precompile-binaries -v \
             --manifest-dir=../../crates/bcr-wallet-ffi \
             --repository="$GITHUB_REPOSITORY" \
@@ -72,6 +83,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PRIVATE_KEY: ${{ secrets.PRECOMPILED_BINARIES_SIG_PRIVATE_KEY }}
+          IPHONEOS_DEPLOYMENT_TARGET: "13.0"
 
       - name: Precompile Android
         if: matrix.platform == 'android'
