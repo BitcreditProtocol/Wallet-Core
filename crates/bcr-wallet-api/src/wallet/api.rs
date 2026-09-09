@@ -387,7 +387,7 @@ impl WalletApi for super::Wallet {
                         payload.proofs,
                         payload.unit,
                         from_mint_url(&payload.mint),
-                        chrono::Utc::now().timestamp() as u64,
+                        time::OffsetDateTime::now_utc().unix_timestamp() as u64,
                         payload.memo,
                         PaymentType::Cdk18,
                         TransactionStatus::Settled,
@@ -694,7 +694,7 @@ impl WalletApi for super::Wallet {
 
     async fn check_pending_mints(&self) -> Result<Vec<Uuid>> {
         let mut res = Vec::new();
-        let now = chrono::Utc::now();
+        let now = time::OffsetDateTime::now_utc();
         let pending_mints_result = self.debit.check_pending_mints(self.client.clone()).await?;
 
         for (qid, mint_result) in pending_mints_result {
@@ -709,7 +709,7 @@ impl WalletApi for super::Wallet {
                 memo: None,
                 status: TransactionStatus::Settled,
                 payment_type: PaymentType::OnChain,
-                tstamp: now.timestamp() as u64,
+                tstamp: now.unix_timestamp() as u64,
                 unit: self.debit_unit(),
                 ys: mint_result.ys,
                 amount: mint_result.amount,
@@ -727,7 +727,7 @@ impl WalletApi for super::Wallet {
     }
 
     async fn check_pending_commitments(&self) -> Result<()> {
-        let now = chrono::Utc::now().timestamp() as u64;
+        let now = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         self.debit.check_pending_commitments(now).await
     }
 
@@ -738,14 +738,14 @@ impl WalletApi for super::Wallet {
             .await?;
 
         if let Some((amount, ref ys)) = result {
-            let now = chrono::Utc::now();
+            let now = time::OffsetDateTime::now_utc();
             let tx = Transaction {
                 id: Uuid::new_v4(),
                 mint_url: to_mint_url(self.client.mint_url()),
                 fees: TransactionFees::default(),
                 direction: TransactionDirection::Incoming,
                 memo: Some("Mint protest resolved".to_string()),
-                tstamp: now.timestamp() as u64,
+                tstamp: now.unix_timestamp() as u64,
                 unit: self.debit_unit(),
                 ys: ys.clone(),
                 amount,
@@ -782,14 +782,14 @@ impl WalletApi for super::Wallet {
             .await?;
 
         if let Some((amount, ref ys)) = result {
-            let now = chrono::Utc::now();
+            let now = time::OffsetDateTime::now_utc();
             let tx = Transaction {
                 id: Uuid::new_v4(),
                 mint_url: to_mint_url(self.client.mint_url()),
                 fees: TransactionFees::default(),
                 direction: TransactionDirection::Incoming,
                 memo: Some("Swap protest resolved".to_string()),
-                tstamp: now.timestamp() as u64,
+                tstamp: now.unix_timestamp() as u64,
                 unit: self.debit_unit(),
                 ys: ys.clone(),
                 payment_type: PaymentType::Swap,
@@ -815,7 +815,7 @@ impl WalletApi for super::Wallet {
         } = self.debit.protest_melt(quote_id).await?;
 
         if let Some((amount, ref ys)) = result {
-            let now = chrono::Utc::now();
+            let now = time::OffsetDateTime::now_utc();
 
             let tx = Transaction {
                 id: Uuid::new_v4(),
@@ -823,7 +823,7 @@ impl WalletApi for super::Wallet {
                 fees: TransactionFees::default(),
                 direction: TransactionDirection::Outgoing,
                 memo: Some("Melt protest resolved".to_string()),
-                tstamp: now.timestamp() as u64,
+                tstamp: now.unix_timestamp() as u64,
                 unit: self.debit_unit(),
                 ys: ys.clone(),
                 payment_type: PaymentType::OnChain,
@@ -844,7 +844,7 @@ impl WalletApi for super::Wallet {
 
     async fn check_pending_melt_commitments(&self) -> Result<()> {
         const PROTEST_WINDOW_SECS: u64 = 3600;
-        let now_ts = chrono::Utc::now().timestamp() as u64;
+        let now_ts = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         let commitments = self.debit.list_melt_commitments().await?;
         tracing::debug!(
             "check pending melt commitments for {} entries",

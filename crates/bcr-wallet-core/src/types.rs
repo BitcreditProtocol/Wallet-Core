@@ -5,7 +5,6 @@ use bcr_common::{
     ecash::KeySetInfo,
 };
 use bitcoin::{address::NetworkUnchecked, secp256k1};
-use chrono::{DateTime, Datelike, Utc};
 use nostr::{event::EventId, types::RelayUrl};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -120,7 +119,7 @@ impl PaymentRequest {
             unit,
             description,
             deadline,
-            created_at: Utc::now().timestamp() as u64,
+            created_at: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
             state: PaymentRequestState::Pending,
             direction: PaymentRequestDirection::Incoming,
         }
@@ -140,7 +139,7 @@ impl PaymentRequest {
             unit,
             description,
             deadline,
-            created_at: Utc::now().timestamp() as u64,
+            created_at: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
             state: PaymentRequestState::Pending,
             direction: PaymentRequestDirection::Outgoing,
         }
@@ -408,12 +407,12 @@ pub fn extract_fees_per_month(transactions: &[Transaction]) -> Vec<FeesByMonth> 
     let mut fees_by_month: BTreeMap<(i32, u32), TransactionFees> = BTreeMap::new();
 
     for tx in transactions {
-        let Some(dt) = DateTime::<Utc>::from_timestamp(tx.tstamp as i64, 0) else {
+        let Ok(dt) = time::OffsetDateTime::from_unix_timestamp(tx.tstamp as i64) else {
             continue;
         };
 
         let year = dt.year();
-        let month = dt.month();
+        let month = dt.month() as u32;
 
         fees_by_month
             .entry((year, month))
@@ -483,15 +482,17 @@ pub struct ClowderBeta {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use super::*;
-    use chrono::{TimeZone, Utc};
+    use std::str::FromStr;
+    use time::{Date, Month};
 
-    fn ts(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> u64 {
-        Utc.with_ymd_and_hms(year, month, day, hour, min, sec)
+    fn ts(year: i32, month: u32, day: u8, hour: u8, min: u8, sec: u8) -> u64 {
+        Date::from_calendar_date(year, Month::try_from(month as u8).unwrap(), day)
             .unwrap()
-            .timestamp() as u64
+            .with_hms(hour, min, sec)
+            .unwrap()
+            .assume_utc()
+            .unix_timestamp() as u64
     }
 
     fn tx(timestamp: u64, fee: Amount) -> Transaction {

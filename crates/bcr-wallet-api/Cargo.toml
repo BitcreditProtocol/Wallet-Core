@@ -13,7 +13,6 @@ bcr-wallet-transport = {workspace = true}
 bip39.workspace = true
 bitcoin.workspace = true
 borsh.workspace = true
-chrono = {workspace = true}
 futures = {workspace = true}
 nostr = {workspace = true}
 rand = {workspace = true}
@@ -22,6 +21,7 @@ rustls = "0.23"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+time = {workspace = true}
 tokio = {workspace = true}
 tokio-util = {workspace = true}
 tracing.workspace = true

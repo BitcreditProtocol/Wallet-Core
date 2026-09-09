@@ -14,13 +14,13 @@ bcr-common = {workspace = true}
 bcr-wallet-core = {workspace = true}
 bitcoin.workspace = true
 borsh = {workspace = true}
-chrono = {workspace = true}
 ciborium = {workspace = true}
 mockall = {workspace = true, optional = true}
 nostr = {workspace = true}
 redb = {version = "4.1.0", optional = true}
 serde.workspace = true
 thiserror.workspace = true
+time = {workspace = true}
 tokio = {workspace = true}
 tracing.workspace = true
 uuid = {workspace = true }

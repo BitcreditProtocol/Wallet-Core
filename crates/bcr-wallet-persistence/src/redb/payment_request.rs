@@ -333,7 +333,6 @@ mod tests {
     use super::*;
     use bcr_common::cashu::{Amount, CurrencyUnit};
     use bcr_wallet_core::types::{PaymentRequest, PaymentRequestDirection, PaymentRequestState};
-    use chrono::Utc;
     use redb::{Builder, backends::InMemoryBackend};
     use std::{str::FromStr, sync::Arc};
     use uuid::Uuid;
@@ -358,8 +357,8 @@ mod tests {
             amount: Amount::from(42u64),
             unit: CurrencyUnit::Sat,
             description: Some("some description".to_string()),
-            deadline: Some(Utc::now().timestamp() as u64 + 3600),
-            created_at: Utc::now().timestamp() as u64,
+            deadline: Some(time::OffsetDateTime::now_utc().unix_timestamp() as u64 + 3600),
+            created_at: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
             state: PaymentRequestState::Pending,
             direction: PaymentRequestDirection::Incoming,
         }

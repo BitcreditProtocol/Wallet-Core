@@ -7,7 +7,6 @@ use bcr_common::{
     },
 };
 use borsh::{BorshDeserialize, BorshSerialize};
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -154,7 +153,7 @@ impl ContactPaymentRequestPayload {
             amount,
             unit,
             deadline,
-            created_at: Utc::now().timestamp() as u64,
+            created_at: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
         }
     }
 }

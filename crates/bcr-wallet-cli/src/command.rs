@@ -6,8 +6,8 @@ use bcr_wallet_core::types::{
     PaymentRequestDirection, PaymentResultCallback, PendingPaymentSubscriptionCallback,
     TransactionFees, TransactionFilters, TransactionSort,
 };
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::macros::format_description;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -1079,9 +1079,13 @@ fn push_break(res: &mut String) {
 }
 
 fn format_timestamp(ts: u64) -> String {
-    let datetime: DateTime<Utc> = DateTime::from_timestamp(ts as i64, 0).expect("valid timestamp");
-
-    datetime.format("%Y-%m-%d %H:%M:%S").to_string()
+    let datetime: time::OffsetDateTime =
+        time::OffsetDateTime::from_unix_timestamp(ts as i64).expect("valid timestamp");
+    datetime
+        .format(&format_description!(
+            "[year]-[month]-[day] [hour]:[minute]:[second]"
+        ))
+        .unwrap()
 }
 
 fn format_fees(fees: TransactionFees) -> String {

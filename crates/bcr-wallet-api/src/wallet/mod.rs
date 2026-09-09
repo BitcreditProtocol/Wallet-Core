@@ -41,7 +41,6 @@ use bitcoin::{
     hashes::{Hash, sha256::Hash as Sha256},
     secp256k1,
 };
-use chrono::Utc;
 use nostr::{
     event::EventId,
     nips::nip19::{Nip19Profile, ToBech32},
@@ -68,7 +67,7 @@ pub struct Wallet {
     current_payment_request: Mutex<Option<cashu::PaymentRequest>>,
     clowder_id: secp256k1::PublicKey,
     client_factory: Box<dyn Fn(url::Url) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
-    swap_expiry: chrono::TimeDelta,
+    swap_expiry: time::Duration,
     nostr_transport: Arc<dyn TransportApi>,
     nostr_event_channel: NostrEventChannel,
     nostr_repo: Arc<dyn NostrRepository>,
@@ -91,7 +90,7 @@ impl Wallet {
         clowder_id: secp256k1::PublicKey,
         beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>>,
         client_factory: Box<dyn Fn(url::Url) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
-        swap_expiry: chrono::TimeDelta,
+        swap_expiry: time::Duration,
         nostr_transport: Arc<dyn TransportApi>,
         nostr_event_channel: NostrEventChannel,
         nostr_repo: Arc<dyn NostrRepository>,
@@ -257,7 +256,7 @@ impl Wallet {
                                     payload.proofs,
                                     payload.unit,
                                     from_mint_url(&payload.mint),
-                                    chrono::Utc::now().timestamp() as u64,
+                                    time::OffsetDateTime::now_utc().unix_timestamp() as u64,
                                     payload.memo,
                                     PaymentType::Contact,
                                     TransactionStatus::Settled,
@@ -641,7 +640,10 @@ impl Wallet {
                     .with_memo(format!("Reclaimed Foreign Mint Funds from {}", mint.url)),
                 );
                 match self
-                    .receive_token(token, Utc::now().timestamp() as u64)
+                    .receive_token(
+                        token,
+                        time::OffsetDateTime::now_utc().unix_timestamp() as u64,
+                    )
                     .await
                 {
                     Ok(tx_id) => {
@@ -714,7 +716,7 @@ impl Wallet {
                 },
                 amount: tx.amount,
                 memo: tx.memo.clone(),
-                tstamp: Utc::now().timestamp() as u64,
+                tstamp: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
                 unit: tx.unit,
                 payment_type: tx.payment_type,
                 status: TransactionStatus::Canceled, // canceled, since it's the reclaim tx
@@ -1140,7 +1142,7 @@ impl Wallet {
             memo: partial_tx.memo.clone(),
             unit: partial_tx.unit.clone(),
             mint: to_mint_url(self.client.mint_url()),
-            created_at: Utc::now().timestamp() as u64,
+            created_at: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
         };
         let event: EventEnvelope =
             bcr_wallet_core::event::Event::new_contact_payment(payload).try_into()?;
@@ -1188,7 +1190,7 @@ impl Wallet {
             memo: partial_tx.memo.clone(),
             unit: partial_tx.unit.clone(),
             mint: to_mint_url(self.client.mint_url()),
-            created_at: Utc::now().timestamp() as u64,
+            created_at: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
         };
         let event: EventEnvelope =
             bcr_wallet_core::event::Event::new_contact_payment(payload).try_into()?;
@@ -1486,7 +1488,7 @@ mod tests {
             test_pub_key(),
             beta_clients,
             Box::new(|url| Arc::new(HttpClientExt::new(url))),
-            chrono::TimeDelta::seconds(60),
+            time::Duration::seconds(60),
             Arc::new(ctx.nostr_transport),
             ctx.nostr_event_channel,
             Arc::new(ctx.nostr_repo),
@@ -4045,7 +4047,7 @@ mod tests {
                 node_id: test_pub_key(),
             },
         ];
-        let now = chrono::Utc::now().timestamp() as u64;
+        let now = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         let res = wlt
             .read()
             .await
@@ -4524,7 +4526,7 @@ mod tests {
                     assert_eq!(received_clowder_id, substitute_clowder_id);
                     assert_eq!(received_send_amount, send_amount);
                     assert_eq!(received_swap_config.alpha_pk, substitute_clowder_id);
-                    assert_eq!(received_swap_config.expiry, chrono::TimeDelta::seconds(60));
+                    assert_eq!(received_swap_config.expiry, time::Duration::seconds(60));
                     assert!(received_keyset_infos.contains_key(&substitute_kid));
                     assert!(received_keysets.contains_key(&substitute_kid));
                     Ok(unlocked_payment_proofs_for_mock)

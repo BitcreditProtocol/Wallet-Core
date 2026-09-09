@@ -7,6 +7,7 @@
 * Add API to rename existing Wallets
     * Add endpoint `wallet_rename` with `WalletRenameRequest` as input
 * Expose `run_jobs` API to ffi
+* migrate from `chrono` to `time`
 
 # 0.9.12
 

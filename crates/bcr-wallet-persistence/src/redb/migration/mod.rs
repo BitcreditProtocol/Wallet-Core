@@ -4,7 +4,6 @@ use crate::{
 };
 use bcr_common::cashu::CurrencyUnit;
 use borsh::{BorshDeserialize, BorshSerialize};
-use chrono::Utc;
 use redb::{Database, ReadableTable, TableDefinition};
 use std::sync::Arc;
 
@@ -156,7 +155,7 @@ fn mark_migration_applied(txn: &redb::WriteTransaction, migration_id: &str) -> R
 
     let record = AppliedMigration {
         id: migration_id.to_string(),
-        applied_at: Utc::now().timestamp() as u64,
+        applied_at: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
     };
 
     let serialized =

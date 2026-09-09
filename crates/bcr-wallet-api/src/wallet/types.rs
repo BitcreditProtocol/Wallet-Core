@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct SwapConfig {
-    pub expiry: chrono::TimeDelta,
+    pub expiry: time::Duration,
     pub alpha_pk: secp256k1::PublicKey,
 }
 

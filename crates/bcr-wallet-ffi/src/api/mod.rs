@@ -114,7 +114,7 @@ pub async fn init_wallet_ffi(conf: WalletFfiConfig) {
         .into_iter()
         .map(|u| url::Url::from_str(&u).expect("esplora base URLs have to be valid URLs"))
         .collect();
-    let swap_expiry = chrono::TimeDelta::minutes(conf.swap_expiry_minutes as i64);
+    let swap_expiry = time::Duration::minutes(conf.swap_expiry_minutes as i64);
 
     let mut rt = WALLET_RUNTIME.lock().await;
 
