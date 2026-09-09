@@ -1,6 +1,7 @@
 /// This is copied from Cargokit (which is the official way to use it currently)
 /// Details: https://fzyzcjy.github.io/flutter_rust_bridge/manual/integrate/builtin
 
+// CUSTOM OVERRIDE - DON'T REMOVE
 import 'dart:convert';
 import 'dart:io';
 
@@ -26,12 +27,13 @@ class PrecompileBinaries {
     required this.repositorySlug,
     required this.manifestDir,
     required this.targets,
-    this.targetCommitish,
-    required this.prerelease,
+    this.targetCommitish, // CUSTOM OVERRIDE - DON'T REMOVE
+    required this.prerelease, // CUSTOM OVERRIDE - DON'T REMOVE
     this.androidSdkLocation,
     this.androidNdkVersion,
     this.androidMinSdkVersion,
     this.tempDir,
+    this.glibcVersion,
   });
 
   final PrivateKey privateKey;
@@ -39,12 +41,13 @@ class PrecompileBinaries {
   final RepositorySlug repositorySlug;
   final String manifestDir;
   final List<Target> targets;
-  final String? targetCommitish;
-  final bool prerelease;
+  final String? targetCommitish; // CUSTOM OVERRIDE - DON'T REMOVE
+  final bool prerelease; // CUSTOM OVERRIDE - DON'T REMOVE
   final String? androidSdkLocation;
   final String? androidNdkVersion;
   final int? androidMinSdkVersion;
   final String? tempDir;
+  final String? glibcVersion;
 
   static String fileName(Target target, String name) {
     return '${target.rust}_$name';
@@ -74,12 +77,13 @@ class PrecompileBinaries {
 
     final github = GitHub(auth: Authentication.withToken(githubToken));
     final repo = github.repositories;
+    // CUSTOM OVERRIDE - DON'T REMOVE
     var release = await _getOrCreateRelease(
       repo: repo,
       tagName: tagName,
       packageName: crateInfo.packageName,
       hash: hash,
-      github: github,
+      github: github, // CUSTOM OVERRIDE - DON'T REMOVE
     );
 
     final tempDir = this.tempDir != null
@@ -102,6 +106,7 @@ class PrecompileBinaries {
       androidSdkPath: androidSdkLocation,
       androidNdkVersion: androidNdkVersion,
       androidMinSdkVersion: androidMinSdkVersion,
+      glibcVersion: glibcVersion,
     );
 
     final rustup = Rustup();
@@ -113,6 +118,7 @@ class PrecompileBinaries {
         libraryName: crateInfo.packageName,
         remote: true,
       );
+
       final requiredAssetNames = artifactNames
           .expand((name) => [
                 PrecompileBinaries.fileName(target, name),
@@ -238,6 +244,7 @@ class PrecompileBinaries {
     required String tagName,
     required String packageName,
     required String hash,
+    // CUSTOM OVERRIDE - DON'T REMOVE
     required GitHub github,
   }) async {
     Release release;
@@ -246,6 +253,7 @@ class PrecompileBinaries {
       release = await repo.getReleaseByTagName(repositorySlug, tagName);
     } on ReleaseNotFound {
       _log.info('Release not found - creating release $tagName');
+      // CUSTOM OVERRIDE - DON'T REMOVE
       release = await github.postJSON<Map<String, dynamic>, Release>(
         '/repos/${repositorySlug.fullName}/releases',
         statusCode: 201,
@@ -265,6 +273,7 @@ class PrecompileBinaries {
     return _updateReleaseMetadata(github, release);
   }
 
+  // CUSTOM OVERRIDE - DON'T REMOVE
   Future<Release> _updateReleaseMetadata(
     GitHub github,
     Release release,

@@ -6,7 +6,7 @@ use bcr_common::{
         mint::{Client as MintClient, Error as MintError, Result as MintResult},
         treasury::web_ep as TreasuryEp,
     },
-    core,
+    core, ecash,
     wire::{
         attestation as wire_attestation,
         clowder::{self as wire_clowder, ConnectedMintsResponse},
@@ -149,8 +149,8 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
         &self,
         request: cashu::CheckStateRequest,
     ) -> MintResult<Vec<cashu::ProofState>>;
-    async fn get_mint_keyset(&self, keyset_id: cashu::Id) -> MintResult<cashu::KeySet>;
-    async fn get_mint_keysets(&self) -> MintResult<Vec<cashu::KeySetInfo>>;
+    async fn get_mint_keyset(&self, keyset_id: cashu::Id) -> MintResult<ecash::KeySet>;
+    async fn get_mint_keysets(&self) -> MintResult<Vec<ecash::KeySetInfo>>;
     async fn get_clowder_betas(&self) -> MintResult<Vec<ClowderBeta>>;
     async fn post_online_exchange(
         &self,
@@ -250,7 +250,7 @@ impl HttpClientExt {
     pub fn new(cdk_url: url::Url) -> Self {
         Self {
             main: MintClient::new(cdk_url.clone()),
-            secondary: reqwest::Client::new(),
+            secondary: bcr_common::client::reqwest_client(),
         }
     }
 }
@@ -277,12 +277,13 @@ impl ClowderMintConnector for HttpClientExt {
         self.main.check_state(request.ys).await
     }
 
-    async fn get_mint_keyset(&self, keyset_id: cashu::Id) -> MintResult<cashu::KeySet> {
+    async fn get_mint_keyset(&self, keyset_id: cashu::Id) -> MintResult<ecash::KeySet> {
         debug!("HTTP call to get_mint_keyset");
-        self.main.keys(keyset_id).await
+        #[allow(deprecated)]
+        self.main.keys_v1(keyset_id).await
     }
 
-    async fn get_mint_keysets(&self) -> MintResult<Vec<cashu::KeySetInfo>> {
+    async fn get_mint_keysets(&self) -> MintResult<Vec<ecash::KeySetInfo>> {
         debug!("HTTP call to get_mint_keysets");
         self.main
             .list_keyset_info(KeysetInfoFilters::default())
@@ -696,11 +697,12 @@ impl ClowderMintConnector for SentinelClient {
         debug!("HTTP call to post_check_state on sentinel");
         self.main.check_state(request.ys).await
     }
-    async fn get_mint_keyset(&self, keyset_id: cashu::Id) -> MintResult<cashu::KeySet> {
+    async fn get_mint_keyset(&self, keyset_id: cashu::Id) -> MintResult<ecash::KeySet> {
         debug!("HTTP call to get_mint_keyset on sentinel");
-        self.main.keys(keyset_id).await
+        #[allow(deprecated)]
+        self.main.keys_v1(keyset_id).await
     }
-    async fn get_mint_keysets(&self) -> MintResult<Vec<cashu::KeySetInfo>> {
+    async fn get_mint_keysets(&self) -> MintResult<Vec<ecash::KeySetInfo>> {
         debug!("HTTP call to get_mint_keysets on sentinel");
         self.main
             .list_keyset_info(KeysetInfoFilters::default())

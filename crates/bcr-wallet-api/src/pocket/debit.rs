@@ -7,10 +7,11 @@ use crate::{
 use async_trait::async_trait;
 use bcr_common::{
     cashu::{
-        self, Amount, CurrencyUnit, KeySet, KeySetInfo, Proof, ProofsMethods, amount::SplitTarget,
-        nut00 as cdk00, nut01 as cdk01,
+        self, Amount, CurrencyUnit, Proof, ProofsMethods, amount::SplitTarget, nut00 as cdk00,
+        nut01 as cdk01,
     },
     core::swap::wallet::{PaymentPlan, prepare_payment},
+    ecash::{KeySet, KeySetInfo},
     wire::{common as wire_common, melt as wire_melt, mint as wire_mint, swap as wire_swap},
 };
 use bcr_wallet_core::types::{

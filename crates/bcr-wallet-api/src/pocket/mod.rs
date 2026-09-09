@@ -6,10 +6,11 @@ use crate::{
 use async_trait::async_trait;
 use bcr_common::{
     cashu::{
-        self, Amount, CurrencyUnit, KeySet, KeySetInfo, ProofsMethods, amount::SplitTarget,
-        nut00 as cdk00, nut01 as cdk01, nut07 as cdk07,
+        self, Amount, CurrencyUnit, ProofsMethods, amount::SplitTarget, nut00 as cdk00,
+        nut01 as cdk01, nut07 as cdk07,
     },
     core::swap::wallet::prepare_swap,
+    ecash::{KeySet, KeySetInfo},
     wire::{attestation as wire_attestation, keys as wire_keys},
 };
 use bcr_wallet_core::{
@@ -71,7 +72,7 @@ pub trait PocketApi: SendSync {
         keysets_info: &HashMap<cashu::Id, KeySetInfo>,
         keysets: HashMap<cashu::Id, KeySet>,
         substitute_client: Arc<dyn ClowderMintConnector>,
-        substitute_clowder_id: secp256k1::PublicKey,
+        substitute_clowder_id: bitcoin::secp256k1::PublicKey,
         beta_provider: RandomBetaProvider,
         send_amount: Amount,
         swap_config: SwapConfig,
@@ -128,11 +129,9 @@ impl BetaProvider for RandomBetaProvider {
             .betas
             .len()
             .min(crate::config::MAX_ATTESTATION_ATTEMPTS);
-        let selected: Vec<_> = self
-            .betas
-            .choose_multiple(&mut rand::rng(), max)
-            .cloned()
-            .collect();
+
+        let selected: Vec<_> = self.betas.sample(&mut rand::rng(), max).cloned().collect();
+
         let fingerprints = wire_attestation::project_to_fingerprints(proofs)?;
         let mut last_err = None;
         for beta in &selected {
@@ -642,7 +641,7 @@ mod tests {
         let signature = signature::sign_ecash(&mintkeyset, &blind).unwrap();
         let proofs = super::unblind_proofs(&keyset, vec![signature], premint);
         assert_eq!(proofs.len(), 1);
-        signature::verify_ecash_proof(&mintkeyset, &proofs[0]).unwrap();
+        signature::verify_ecash_proof(&mintkeyset.into(), &proofs[0]).unwrap();
     }
 
     #[test]

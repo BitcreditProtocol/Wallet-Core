@@ -5,6 +5,7 @@ use crate::wallet::types::{
     WalletBalance, WalletDetailedBalanceEntry, WalletInfo, WalletProtestResult,
 };
 use bcr_common::core::NodeId;
+use bcr_common::ecash;
 use bcr_common::{
     cashu::{self, CurrencyUnit},
     wallet::Token,
@@ -58,6 +59,7 @@ impl AppState {
     pub const MELT_THRESHOLD_SAT: u64 = 546;
 
     pub async fn initialize(cfg: AppStateConfig) -> Result<Self> {
+        init_crypto_provider();
         tracing::debug!("Initializing API");
 
         // Open Database file - only allowed to do once!
@@ -69,7 +71,7 @@ impl AppState {
             .map(|(network, db)| (network, db as Arc<dyn ContactStoreApi>))
             .collect();
 
-        let http_cl = Arc::new(reqwest::Client::new());
+        let http_cl = Arc::new(bcr_common::client::reqwest_client());
         let purse = purse::Purse::new(pursedb, contact_repos).await?;
         let btc_cl = Arc::new(external::bitcoin::BitcoinClient::new(
             cfg.esplora_base_urls.clone(),
@@ -1235,6 +1237,12 @@ impl AppState {
     }
 }
 
+pub fn init_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+}
+
 pub fn generate_random_mnemonic(mnemonic_len: u32, network: bitcoin::Network) -> (String, String) {
     let mnemonic_len = if mnemonic_len == 0 { 12 } else { mnemonic_len };
     tracing::info!("Generate random {}-word mnemonic", mnemonic_len);
@@ -1299,7 +1307,7 @@ async fn create_new_wallet(
 
     let wallet_id = build_wallet_id(&seed, cfg.network);
     let clowder_id = client.get_clowder_id().await?;
-    let keyset_infos: HashMap<cashu::Id, cashu::KeySetInfo> = client
+    let keyset_infos: HashMap<cashu::Id, ecash::KeySetInfo> = client
         .get_mint_keysets()
         .await?
         .into_iter()

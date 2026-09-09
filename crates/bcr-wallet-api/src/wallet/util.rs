@@ -7,9 +7,11 @@ use crate::{
     wallet::types::SwapConfig,
 };
 use bcr_common::{
-    cashu::{self, HTLCWitness, KeySet, Proof, amount::SplitTarget},
+    cashu::{self, HTLCWitness, Proof, amount::SplitTarget},
     cdk_common,
     core::swap::wallet::prepare_swap,
+    ecash,
+    ecash::KeySet,
     wire::keys::ProofFingerprint,
 };
 use bcr_wallet_core::types::Transaction;
@@ -92,7 +94,7 @@ pub async fn htlc_lock(
         tstamp + (key_locks.len() as u64 + 2) * crate::config::LOCK_REDUCTION_SECONDS_PER_HOP;
 
     // fetch keysets infos for the given client
-    let infos: HashMap<cashu::Id, cashu::KeySetInfo> = client
+    let infos: HashMap<cashu::Id, ecash::KeySetInfo> = client
         .get_mint_keysets()
         .await?
         .into_iter()

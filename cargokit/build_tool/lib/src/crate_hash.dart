@@ -9,6 +9,7 @@ import 'package:collection/collection.dart';
 import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as path;
+// CUSTOM OVERRIDE - DON'T REMOVE
 import 'package:toml/toml.dart';
 
 class CrateHash {
@@ -99,6 +100,7 @@ class CrateHash {
   }
 
   List<File> getFiles() {
+    // CUSTOM OVERRIDE - DON'T REMOVE
     final files = <File>[];
     final packageDirs = <String>{path.normalize(path.absolute(manifestDir))};
 
@@ -122,10 +124,12 @@ class CrateHash {
         .values
         .map((files) => files.first)
         .toList();
+
     uniqueFiles.sortBy((element) => element.path);
     return uniqueFiles;
   }
 
+  // CUSTOM OVERRIDE - DON'T REMOVE
   void _addSourceFiles(List<File> files, String packageDir) {
     final src = Directory(path.join(packageDir, 'src'));
     if (src.existsSync()) {
@@ -135,6 +139,7 @@ class CrateHash {
     }
   }
 
+  // CUSTOM OVERRIDE - DON'T REMOVE
   void _addFile(List<File> files, String filePath) {
     final file = File(filePath);
     if (file.existsSync()) {
@@ -142,6 +147,7 @@ class CrateHash {
     }
   }
 
+  // CUSTOM OVERRIDE - DON'T REMOVE
   String? _findWorkspaceRoot() {
     var current = Directory(path.normalize(path.absolute(manifestDir)));
 
@@ -162,6 +168,7 @@ class CrateHash {
     }
   }
 
+  // CUSTOM OVERRIDE - DON'T REMOVE
   List<String> _workspaceMemberDirs(String workspaceRoot) {
     final manifestFile = File(path.join(workspaceRoot, 'Cargo.toml'));
     final manifest = TomlDocument.parse(manifestFile.readAsStringSync());
@@ -181,6 +188,7 @@ class CrateHash {
         .toList(growable: false);
   }
 
+  // CUSTOM OVERRIDE - DON'T REMOVE
   Iterable<String> _expandWorkspaceMember(String workspaceRoot, String member) {
     if (!member.contains('*')) {
       final memberDir = path.normalize(path.join(workspaceRoot, member));

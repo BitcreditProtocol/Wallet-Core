@@ -30,7 +30,7 @@ pub struct BitcoinClient {
 impl BitcoinClient {
     pub fn new(esplora_base_urls: Vec<url::Url>) -> Self {
         Self {
-            cl: reqwest::Client::new(),
+            cl: bcr_common::client::reqwest_client(),
             esplora_base_urls,
         }
     }
@@ -38,7 +38,7 @@ impl BitcoinClient {
     #[cfg(test)]
     pub fn with_urls(esplora_base_urls: Vec<url::Url>) -> Self {
         Self {
-            cl: reqwest::Client::new(),
+            cl: bcr_common::client::reqwest_client(),
             esplora_base_urls,
         }
     }

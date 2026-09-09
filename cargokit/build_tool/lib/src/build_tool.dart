@@ -131,10 +131,14 @@ class PrecompileBinariesCommand extends Command {
         help: 'Directory to store temporary build artifacts',
       )
       ..addOption(
+        'glibc-version',
+        help: 'GLIBC version to use for linux builds',
+      )
+      ..addOption( // CUSTOM OVERRIDE - DON'T REMOVE
         'target-commitish',
         help: 'Commit-ish used when creating a GitHub release tag',
       )
-      ..addFlag(
+      ..addFlag( // CUSTOM OVERRIDE - DON'T REMOVE
         'prerelease',
         defaultsTo: false,
         help: 'Create the GitHub release as a prerelease',
@@ -203,12 +207,13 @@ class PrecompileBinariesCommand extends Command {
       manifestDir: manifestDir,
       repositorySlug: RepositorySlug.full(argResults!['repository'] as String),
       targets: targets,
-      targetCommitish: argResults!['target-commitish'] as String?,
-      prerelease: argResults!['prerelease'] as bool,
+      targetCommitish: argResults!['target-commitish'] as String?, // CUSTOM OVERRIDE - DON'T REMOVE
+      prerelease: argResults!['prerelease'] as bool, // CUSTOM OVERRIDE - DON'T REMOVE
       androidSdkLocation: argResults!['android-sdk-location'] as String?,
       androidNdkVersion: argResults!['android-ndk-version'] as String?,
       androidMinSdkVersion: androidMinSdkVersion,
       tempDir: argResults!['temp-dir'] as String?,
+      glibcVersion: argResults!['glibc-version'] as String?,
     );
 
     await precompileBinaries.run();

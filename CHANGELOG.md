@@ -1,3 +1,10 @@
+# 0.9.13
+
+* Upgrade Dependencies
+    * nostr, reqwest, bcr-common most notably
+* Upgrade gradle version and cargokit
+* Upgrade flutter-rust-bridge codegen
+
 # 0.9.12
 
 * Sign offline exchange requests with the ephemeral wallet key, binding alpha id, offline evidence digest, proof fingerprints, hash locks and wallet pubkey

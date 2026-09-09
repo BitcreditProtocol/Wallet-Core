@@ -13,9 +13,10 @@ use crate::{
 };
 use async_trait::async_trait;
 use bcr_common::{
-    cashu::{self, Amount, CurrencyUnit, KeySet, ProofsMethods, nut00 as cdk00, nut18 as cdk18},
+    cashu::{self, Amount, CurrencyUnit, ProofsMethods, nut00 as cdk00, nut18 as cdk18},
     cdk_common::wallet::TransactionDirection,
     core::NodeId,
+    ecash::{self, KeySet},
     wallet::{BitcrTokenV5, Token},
     wire::clowder::{self as wire_clowder},
 };
@@ -32,7 +33,7 @@ use bcr_wallet_transport::{NostrEventChannel, NostrWalletEvent};
 use bitcoin::base58;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use nostr::{RelayUrl, event::EventId};
+use nostr::{event::EventId, types::RelayUrl};
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -137,7 +138,7 @@ pub trait WalletApi: SendSync {
     async fn is_nostr_connected(&self) -> bool;
     async fn fetch_nostr_relays(
         &self,
-        npub: nostr::PublicKey,
+        npub: nostr::key::PublicKey,
         relays: Vec<RelayUrl>,
     ) -> Result<Vec<RelayUrl>>;
     async fn delete(&self) -> Result<()>;
@@ -1228,7 +1229,7 @@ impl WalletApi for super::Wallet {
                 .await?;
 
             // Fetch keyset infos
-            let keysets_info: HashMap<cashu::Id, cashu::KeySetInfo> = substitute_client
+            let keysets_info: HashMap<cashu::Id, ecash::KeySetInfo> = substitute_client
                 .get_mint_keysets()
                 .await?
                 .into_iter()
@@ -1314,7 +1315,7 @@ impl WalletApi for super::Wallet {
 
     async fn fetch_nostr_relays(
         &self,
-        npub: nostr::PublicKey,
+        npub: nostr::key::PublicKey,
         relays: Vec<RelayUrl>,
     ) -> Result<Vec<RelayUrl>> {
         let res = self.nostr_transport.fetch_relay_list(npub, relays).await?;

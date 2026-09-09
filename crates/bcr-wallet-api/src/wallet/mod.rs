@@ -15,9 +15,10 @@ use crate::{
     },
 };
 use bcr_common::{
-    cashu::{self, Amount, CurrencyUnit, KeySetInfo, Proof, ProofsMethods},
+    cashu::{self, Amount, CurrencyUnit, Proof, ProofsMethods},
     cdk_common::wallet::TransactionDirection,
     core::NodeId,
+    ecash::{self, KeySetInfo},
     wallet::{BitcrTokenV5, Token},
     wire::clowder::{ConnectedMintResponse, ConnectedMintsResponse},
 };
@@ -412,7 +413,7 @@ impl Wallet {
                 .map(|keyset| {
                     (
                         keyset.id,
-                        cashu::KeySetInfo {
+                        ecash::KeySetInfo {
                             id: keyset.id,
                             unit: keyset.unit.clone(),
                             active: true,
@@ -1082,15 +1083,13 @@ impl Wallet {
         let is_same_mint = &token_mint_url == self.client.mint_url();
 
         let proofs = if is_same_mint {
-            let keysets: Vec<bcr_common::ecash::KeySetInfo> = keysets_info
-                .values()
-                .map(|ks| ks.to_owned().into())
-                .collect();
+            let keysets: Vec<bcr_common::ecash::KeySetInfo> =
+                keysets_info.values().map(|ks| ks.to_owned()).collect();
             token.proofs(&keysets)?
         } else if let Some((_, ref intermint_alpha_infos)) = intermint_infos {
             let keysets: Vec<bcr_common::ecash::KeySetInfo> = intermint_alpha_infos
                 .values()
-                .map(|ks| ks.to_owned().into())
+                .map(|ks| ks.to_owned())
                 .collect();
             token.proofs(&keysets)?
         } else {
@@ -1337,7 +1336,7 @@ mod tests {
     use bcr_common::{
         cashu::{ProofsMethods as CashuProofsMethods, nut18 as cdk18},
         core_tests,
-        ecash::ProofsMethods,
+        ecash::{self, ProofsMethods},
         wire::clowder as wire_clowder,
     };
     use bcr_wallet_core::{
@@ -1417,13 +1416,13 @@ mod tests {
     fn test_keyset_and_proofs(
         amounts: &[Amount],
     ) -> (
-        cashu::KeySetInfo,
-        bcr_common::cashu::MintKeySet,
+        ecash::KeySetInfo,
+        bcr_common::ecash::MintKeySet,
         Vec<cashu::Proof>,
     ) {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let proofs = core_tests::generate_random_ecash_proofs(&keyset, amounts);
-        (cashu::KeySetInfo::from(info), keyset, proofs)
+        (ecash::KeySetInfo::from(info), keyset, proofs)
     }
 
     struct MockWalletCtx {
@@ -2234,7 +2233,7 @@ mod tests {
         ctx.nostr_transport
             .expect_send_private_msg()
             .times(1)
-            .returning(|_target, _payload| Ok(EventId::all_zeros()));
+            .returning(|_target, _payload| Ok(EventId::from_byte_array([0u8; 32])));
 
         ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
             assert_eq!(tx.direction, TransactionDirection::Outgoing);
@@ -2334,7 +2333,7 @@ mod tests {
         ctx.nostr_transport
             .expect_send_private_msg()
             .times(1)
-            .returning(|_target, _payload| Ok(EventId::all_zeros()));
+            .returning(|_target, _payload| Ok(EventId::from_byte_array([0u8; 32])));
 
         ctx.debit
             .expect_send_proofs()
@@ -2836,7 +2835,7 @@ mod tests {
         ctx.nostr_transport
             .expect_send_private_msg()
             .times(1)
-            .returning(|_, _| Ok(EventId::all_zeros()));
+            .returning(|_, _| Ok(EventId::from_byte_array([0u8; 32])));
         ctx.nostr_transport
             .expect_fetch_relay_list()
             .times(1)
@@ -3662,7 +3661,7 @@ mod tests {
         nostr_event_channel.publish(bcr_wallet_transport::NostrWalletEvent::ContactPayment {
             sender: node_id(NODE_ID_1).npub(),
             payload,
-            event_id: EventId::all_zeros(),
+            event_id: EventId::from_byte_array([0u8; 32]),
         });
 
         tokio::time::timeout(Duration::from_secs(1), processed_rx)
@@ -3718,7 +3717,7 @@ mod tests {
             bcr_wallet_transport::NostrWalletEvent::ContactPaymentRequest {
                 sender: node_id(NODE_ID_1).npub(),
                 payload,
-                event_id: EventId::all_zeros(),
+                event_id: EventId::from_byte_array([0u8; 32]),
             },
         );
 
@@ -4099,9 +4098,11 @@ mod tests {
                 },
             )
             .return_once(
-                move |_fingerprints, _hash_locks, _wallet_pk, _wallet_signature, _substitute_clowder_id| {
-                    Ok(beta_proofs)
-                },
+                move |_fingerprints,
+                      _hash_locks,
+                      _wallet_pk,
+                      _wallet_signature,
+                      _substitute_clowder_id| { Ok(beta_proofs) },
             );
 
         let res = wlt
@@ -4295,7 +4296,7 @@ mod tests {
         ctx.nostr_transport
             .expect_send_private_msg()
             .times(1)
-            .returning(|_, _| Ok(EventId::all_zeros()));
+            .returning(|_, _| Ok(EventId::from_byte_array([0u8; 32])));
 
         ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
             assert_eq!(tx.direction, TransactionDirection::Outgoing);
@@ -4310,7 +4311,7 @@ mod tests {
             assert_eq!(tx.status, TransactionStatus::Pending);
             assert_eq!(tx.contact_node_id, Some(expected_receiver_node_id.clone()));
             assert!(tx.payment_request_id.is_none());
-            assert_eq!(tx.nostr_event_id, Some(EventId::all_zeros()));
+            assert_eq!(tx.nostr_event_id, Some(EventId::from_byte_array([0u8; 32])));
             Ok(tx_id)
         });
 
@@ -4655,7 +4656,7 @@ mod tests {
         assert_eq!(token.unit(), Some(CurrencyUnit::Sat));
         assert_eq!(token.memo().as_deref(), memo.as_deref());
         let token_proofs = token
-            .proofs(&[substitute_info.into()])
+            .proofs(&[substitute_info])
             .expect("returned token contains valid substitute proofs");
         assert_eq!(token_proofs.total_amount().unwrap(), send_amount);
         assert_eq!(token_proofs.len(), 1);

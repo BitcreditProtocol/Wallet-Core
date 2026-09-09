@@ -1,4 +1,4 @@
-use nostr::RelayUrl;
+use nostr::types::RelayUrl;
 use std::{collections::HashMap, path::PathBuf, sync::atomic::AtomicBool};
 
 pub const LOCK_REDUCTION_SECONDS_PER_HOP: u64 = 600;

@@ -183,7 +183,7 @@ impl NostrDB {
                 .get(Self::CURRENT_OFFSET_UNIQUE_ID.as_bytes())?
                 .map(|v| v.value())
                 .unwrap_or_default();
-            let next = offset.max(entry.time.as_u64());
+            let next = offset.max(entry.time.as_secs());
             table.insert(Self::CURRENT_OFFSET_UNIQUE_ID.as_bytes(), next)?;
         }
 
