@@ -231,9 +231,38 @@ class CargokitCrateOptions {
 }
 
 class CargokitUserOptions {
+  // CUSTOM OVERRIDE - DON'T REMOVE
+  static bool? _environmentUsePrecompiledBinaries() {
+    final value = Platform.environment['CARGOKIT_USE_PRECOMPILED_BINARIES'];
+    if (value == null) {
+      return null;
+    }
+    final normalizedValue = value.trim().toLowerCase();
+    switch (normalizedValue) {
+      case '1':
+      case 'true':
+      case 'yes':
+      case 'on':
+        return true;
+      case '0':
+      case 'false':
+      case 'no':
+      case 'off':
+        return false;
+      default:
+        throw ArgumentError(
+            'Invalid CARGOKIT_USE_PRECOMPILED_BINARIES value: $value');
+    }
+  }
+
   // When Rustup is installed always build locally unless user opts into
   // using precompiled binaries.
   static bool defaultUsePrecompiledBinaries() {
+    // CUSTOM OVERRIDE - DON'T REMOVE
+    final fromEnvironment = _environmentUsePrecompiledBinaries();
+    if (fromEnvironment != null) {
+      return fromEnvironment;
+    }
     return Rustup.executablePath() == null;
   }
 
@@ -276,6 +305,9 @@ class CargokitUserOptions {
             entry.key.span);
       }
     }
+    // CUSTOM OVERRIDE - DON'T REMOVE
+    usePrecompiledBinaries =
+        _environmentUsePrecompiledBinaries() ?? usePrecompiledBinaries;
     return CargokitUserOptions(
       usePrecompiledBinaries: usePrecompiledBinaries,
       verboseLogging: verboseLogging,
