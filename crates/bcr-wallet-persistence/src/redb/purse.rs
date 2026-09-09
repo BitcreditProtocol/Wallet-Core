@@ -17,7 +17,7 @@ use bcr_wallet_core::{
 use bitcoin::secp256k1;
 use borsh::{BorshDeserialize, BorshSerialize};
 use nostr::types::RelayUrl;
-use redb::{Database, ReadableDatabase, TableDefinition, TableError};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
 use std::{collections::HashMap, sync::Arc};
 use tokio::task::spawn_blocking;
 
@@ -166,6 +166,29 @@ impl PurseDB {
         }
     }
 
+    fn rename_sync(db: Arc<Database>, wallet_id: &str, new_name: String) -> Result<()> {
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(WALLET_TABLE)?;
+            let Some(old_value) = table.get(wallet_id.as_bytes())?.map(|v| v.value()) else {
+                return Err(Error::WalletIdNotFound(wallet_id.to_string()));
+            };
+            let deserialized: StoredWallet = borsh::from_slice(old_value.as_slice())
+                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            let StoredWallet::V1(mut entry) = deserialized;
+
+            entry.name = new_name;
+
+            let serialized = borsh::to_vec(&StoredWallet::V1(entry))
+                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            table.insert(wallet_id.as_bytes(), serialized)?;
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
+
     fn delete_sync(db: Arc<Database>, wallet_id: &str) -> Result<()> {
         let write_txn = db.begin_write()?;
 
@@ -210,6 +233,13 @@ impl PurseRepository for PurseDB {
         let id = wallet_id.to_owned();
         let res = spawn_blocking(move || Self::load_sync(db_clone, &id)).await??;
         res.ok_or(Error::WalletIdNotFound(wallet_id.to_owned()))
+    }
+
+    async fn rename(&self, wallet_id: &str, new_name: String) -> Result<()> {
+        let db_clone = self.db.clone();
+        let id = wallet_id.to_owned();
+        spawn_blocking(move || Self::rename_sync(db_clone, &id, new_name)).await??;
+        Ok(())
     }
 
     async fn delete(&self, wallet_id: &str) -> Result<()> {
@@ -311,6 +341,23 @@ mod tests {
         ids.sort();
 
         assert_eq!(ids, vec!["w1".to_string(), "w2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_rename_renames_wallet() {
+        let db = get_db();
+
+        db.store(test_wallet("w1", "Wallet 1"))
+            .await
+            .expect("store works");
+
+        db.rename("w1", "Wallet 2".to_string())
+            .await
+            .expect("rename works");
+        let loaded = db.load("w1").await.expect("load works");
+
+        assert_eq!(loaded.wallet_id, "w1");
+        assert_eq!(loaded.name, "Wallet 2");
     }
 
     #[tokio::test]

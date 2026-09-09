@@ -285,6 +285,13 @@ pub async fn wallet_restore(
 }
 
 #[frb]
+pub async fn wallet_rename(req: WalletRenameRequest) -> Result<(), WalletError> {
+    let app_state = get_app_state().await;
+    app_state.wallet_rename(req.wallet_id, req.new_name).await?;
+    Ok(())
+}
+
+#[frb]
 pub async fn wallet_delete(req: WalletRequest) -> Result<(), WalletError> {
     let app_state = get_app_state().await;
     app_state.purse_delete_wallet(req.wallet_id).await?;
@@ -721,6 +728,13 @@ pub async fn wallet_get_ids() -> Result<WalletsIdsResponse, WalletError> {
     let app_state = get_app_state().await;
     let ids = app_state.purse_wallets_ids().await?;
     Ok(WalletsIdsResponse { ids })
+}
+
+#[frb]
+pub async fn run_jobs() -> Result<(), WalletError> {
+    let app_state = get_app_state().await;
+    app_state.run_jobs().await?;
+    Ok(())
 }
 
 #[frb]
@@ -1172,6 +1186,12 @@ pub struct RestoreWalletResponse {
 #[derive(Debug, Clone)]
 pub struct WalletRequest {
     pub wallet_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletRenameRequest {
+    pub wallet_id: String,
+    pub new_name: String,
 }
 
 #[derive(Debug, Clone)]

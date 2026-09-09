@@ -153,6 +153,24 @@ pub async fn cmd_delete_wallet(app_state: &AppState, name: &str, id: &str) -> Re
     Ok(res)
 }
 
+pub async fn cmd_rename_wallet(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    new_name: &str,
+) -> Result<String> {
+    let mut res = String::new();
+    app_state
+        .wallet_rename(id.to_owned(), new_name.to_owned())
+        .await?;
+    push_break(&mut res);
+    push_break(&mut res);
+    res.push_str(&format!(
+        "Renamed Wallet for {name} to {new_name} - Wallet ID: {id}.\n"
+    ));
+    Ok(res)
+}
+
 pub async fn cmd_restore_wallet(
     app_state: &AppState,
     name: &str,
