@@ -606,7 +606,6 @@ mod tests {
 
     use super::*;
     use bcr_common::{cashu::amount::SplitTarget, core_tests};
-    use chrono::Utc;
     use redb::{Builder, backends::InMemoryBackend};
 
     fn dummy_commitment() -> (String, bitcoin::secp256k1::schnorr::Signature) {
@@ -739,7 +738,7 @@ mod tests {
         let qid = Uuid::new_v4();
         let amount = bitcoin::Amount::from_sat(12345);
         let address = valid_payment_address_testnet();
-        let expiry = Utc::now().timestamp() as u64;
+        let expiry = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         let (content, commitment) = dummy_commitment();
 
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();

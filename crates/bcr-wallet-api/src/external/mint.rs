@@ -44,7 +44,7 @@ async fn post_swap_commitment_inner(
     client: &MintClient,
     inputs: Vec<cashu::Proof>,
     outputs: Vec<cashu::BlindedMessage>,
-    expiry_seconds: chrono::TimeDelta,
+    expiry_seconds: time::Duration,
     alpha_pk: secp256k1::PublicKey,
     attestation: wire_attestation::IssuanceAttestation,
 ) -> Result<SwapCommitmentResult> {
@@ -59,7 +59,7 @@ async fn post_swap_commitment_inner(
         .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
     let inputs_ys = fingerprints.iter().map(|fp| fp.y).collect::<Vec<_>>();
     let sent_digest = wire_attestation::fp_digest(&fingerprints);
-    let expiry = (chrono::Utc::now() + expiry_seconds).timestamp() as u64;
+    let expiry = (time::OffsetDateTime::now_utc() + expiry_seconds).unix_timestamp() as u64;
     debug!("HTTP call to commit_swap on {}", client.mint_url());
     let (committed_content, commitment) = client
         .commit_swap(
@@ -190,7 +190,7 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
         &self,
         inputs: Vec<cashu::Proof>,
         outputs: Vec<cashu::BlindedMessage>,
-        expiry_seconds: chrono::TimeDelta,
+        expiry_seconds: time::Duration,
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<SwapCommitmentResult>;
@@ -395,7 +395,7 @@ impl ClowderMintConnector for HttpClientExt {
         &self,
         inputs: Vec<cashu::Proof>,
         outputs: Vec<cashu::BlindedMessage>,
-        expiry_seconds: chrono::TimeDelta,
+        expiry_seconds: time::Duration,
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<SwapCommitmentResult> {
@@ -810,7 +810,7 @@ impl ClowderMintConnector for SentinelClient {
         &self,
         inputs: Vec<cashu::Proof>,
         outputs: Vec<cashu::BlindedMessage>,
-        expiry_seconds: chrono::TimeDelta,
+        expiry_seconds: time::Duration,
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<SwapCommitmentResult> {

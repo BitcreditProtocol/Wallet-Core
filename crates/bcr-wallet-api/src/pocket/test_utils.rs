@@ -25,7 +25,7 @@ pub mod tests {
     pub fn test_swap_config() -> SwapConfig {
         let keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         SwapConfig {
-            expiry: chrono::TimeDelta::seconds(600),
+            expiry: time::Duration::seconds(600),
             alpha_pk: secp256k1::PublicKey::from_keypair(&keypair),
         }
     }

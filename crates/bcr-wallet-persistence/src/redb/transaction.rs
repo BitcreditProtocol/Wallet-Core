@@ -681,7 +681,6 @@ mod tests {
 
     use super::*;
     use bcr_common::cashu::Amount;
-    use chrono::Utc;
     use redb::{Builder, backends::InMemoryBackend};
 
     fn get_db(wallet_id: &str) -> TransactionDB {
@@ -709,7 +708,7 @@ mod tests {
             .into(),
             unit: CurrencyUnit::Sat,
             ys: vec![cashu::PublicKey::from(test_pub_key())],
-            tstamp: Utc::now().timestamp() as u64,
+            tstamp: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
             memo: Some("some memo".to_string()),
             payment_type: PaymentType::Token,
             status: TransactionStatus::Pending,

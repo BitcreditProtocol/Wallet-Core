@@ -217,7 +217,7 @@ async fn main() -> Result<()> {
             .iter()
             .map(|(wid, w)| (wid.to_owned(), w.mnemonic.to_owned()))
             .collect(),
-        swap_expiry: chrono::TimeDelta::minutes(15),
+        swap_expiry: time::Duration::minutes(15),
         esplora_base_urls: settings.esplora_base_urls,
         dev_mode: false.into(),
     };

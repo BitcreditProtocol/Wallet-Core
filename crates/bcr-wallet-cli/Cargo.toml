@@ -11,11 +11,11 @@ bcr-wallet-core = {workspace = true}
 bcr-wallet-api = {workspace = true}
 bip39.workspace = true
 bitcoin.workspace = true
-chrono.workspace = true
 clap = {version = "4.0", features = ["derive"]}
 config = {version="0.15"}
 nostr = {workspace = true}
 serde.workspace = true
+time = {workspace = true}
 tokio.workspace = true
 tokio-util.workspace = true
 toml = "1.1"

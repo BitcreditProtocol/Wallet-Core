@@ -388,12 +388,11 @@ impl super::PocketApi for Pocket {
         let mut credit = Amount::ZERO;
 
         let infos = collect_keyset_infos_from_proofs(proofs.iter(), keysets_info)?;
-        let start_of_today = chrono::Utc::now()
-            .date_naive()
-            .and_hms_opt(0, 0, 0)
-            .expect("valid date")
-            .and_utc()
-            .timestamp() as u64;
+        let start_of_today = time::OffsetDateTime::now_utc()
+            .date()
+            .midnight()
+            .assume_utc()
+            .unix_timestamp() as u64;
 
         for proof in proofs {
             let info = infos
@@ -1371,8 +1370,9 @@ mod tests {
     async fn credit_balance_keyset_expiring_in_future() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let mut k_info = KeySetInfo::from(info);
-        k_info.final_expiry =
-            Some((chrono::Utc::now() + chrono::TimeDelta::days(1)).timestamp() as u64);
+        k_info.final_expiry = Some(
+            (time::OffsetDateTime::now_utc() + time::Duration::days(1)).unix_timestamp() as u64,
+        );
 
         let mut k_infos = HashMap::new();
         k_infos.insert(k_info.id, k_info);
@@ -1400,13 +1400,12 @@ mod tests {
     async fn credit_balance_keyset_expiring_earlier_today() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let mut k_info = KeySetInfo::from(info);
-
-        let earlier_today = chrono::Utc::now()
-            .date_naive()
-            .and_hms_opt(0, 0, 1)
+        let earlier_today = time::OffsetDateTime::now_utc()
+            .date()
+            .with_hms(0, 0, 1)
             .unwrap()
-            .and_utc()
-            .timestamp() as u64;
+            .assume_utc()
+            .unix_timestamp() as u64;
 
         k_info.final_expiry = Some(earlier_today);
 
@@ -1439,13 +1438,15 @@ mod tests {
 
         let mut ks_debit = KeySetInfo::from(info_debit);
         // yesterday → debit
-        ks_debit.final_expiry =
-            Some((chrono::Utc::now() - chrono::TimeDelta::days(1)).timestamp() as u64);
+        ks_debit.final_expiry = Some(
+            (time::OffsetDateTime::now_utc() - time::Duration::days(1)).unix_timestamp() as u64,
+        );
 
         let mut ks_credit = KeySetInfo::from(info_credit);
         // tomorrow → credit
-        ks_credit.final_expiry =
-            Some((chrono::Utc::now() + chrono::TimeDelta::days(1)).timestamp() as u64);
+        ks_credit.final_expiry = Some(
+            (time::OffsetDateTime::now_utc() + time::Duration::days(1)).unix_timestamp() as u64,
+        );
 
         let mut k_infos = HashMap::new();
         k_infos.insert(ks_debit.id, ks_debit);
@@ -1914,7 +1915,7 @@ mod tests {
                     quote: Uuid::new_v4(),
                     address: "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0".to_string(),
                     payment_amount: amount,
-                    expiry: chrono::Utc::now().timestamp() as u64,
+                    expiry: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
                     blinded_messages: req.blinded_messages,
                     wallet_key: req.wallet_key,
                 };
@@ -1989,7 +1990,7 @@ mod tests {
                         "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0",
                     )
                     .unwrap(),
-                    expiry: chrono::Utc::now().timestamp() as u64,
+                    expiry: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
                 },
                 premint,
                 content: "dGVzdA==".to_string(),
@@ -2061,7 +2062,7 @@ mod tests {
                         "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0",
                     )
                     .unwrap(),
-                    expiry: chrono::Utc::now().timestamp() as u64,
+                    expiry: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
                 },
                 premint: premint_clone.clone(),
                 content: "dGVzdA==".to_string(),
@@ -2140,7 +2141,7 @@ mod tests {
                         "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0",
                     )
                     .unwrap(),
-                    expiry: chrono::Utc::now().timestamp() as u64,
+                    expiry: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
                 },
                 premint: premint.clone(),
                 content: "dGVzdA==".to_string(),
@@ -2594,7 +2595,7 @@ mod tests {
                     quote_id: qid,
                     amount,
                     address: valid_payment_address_testnet(),
-                    expiry: chrono::Utc::now().timestamp() as u64,
+                    expiry: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
                 },
                 premint: premint_clone.clone(),
                 content: "dGVzdA==".to_string(),
@@ -2670,7 +2671,7 @@ mod tests {
                     quote_id: qid,
                     amount,
                     address: valid_payment_address_testnet(),
-                    expiry: chrono::Utc::now().timestamp() as u64,
+                    expiry: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
                 },
                 premint: premint.clone(),
                 content: "dGVzdA==".to_string(),

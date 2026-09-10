@@ -1,6 +1,5 @@
 use crate::{NostrEventOffset, NostrQueuedMessage, NostrRepository, error::Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use nostr::types::Timestamp;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
 use std::sync::Arc;
@@ -40,11 +39,14 @@ pub struct NostrQueuedMessageEntry {
     pub id: String,
     pub recipient: Option<String>,
     pub payload: String,
-    pub created: DateTime<Utc>,
-    pub last_try: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created: time::OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub last_try: time::OffsetDateTime,
     pub num_retries: i32,
     pub max_retries: i32,
-    pub processing_started_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub processing_started_at: time::OffsetDateTime,
 }
 
 impl From<NostrQueuedMessageEntry> for NostrQueuedMessage {
@@ -63,11 +65,11 @@ impl NostrQueuedMessageEntry {
             id: value.id,
             recipient: value.recipient,
             payload: value.payload,
-            created: Utc::now(),
-            last_try: DateTime::from_timestamp(0, 0).expect("valid"),
+            created: time::OffsetDateTime::now_utc(),
+            last_try: time::OffsetDateTime::from_unix_timestamp(0).expect("valid"),
             num_retries: 0,
             max_retries,
-            processing_started_at: DateTime::from_timestamp(0, 0).expect("valid"),
+            processing_started_at: time::OffsetDateTime::from_unix_timestamp(0).expect("valid"),
         }
     }
 }
@@ -217,9 +219,8 @@ impl NostrDB {
         queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         limit: u64,
     ) -> Result<Vec<NostrQueuedMessageEntry>> {
-        let now = Utc::now();
-        let retry_before =
-            now - chrono::Duration::seconds(Self::NOSTR_QUEUE_PROCESSING_TIMEOUT_SECS);
+        let now = time::OffsetDateTime::now_utc();
+        let retry_before = now - time::Duration::seconds(Self::NOSTR_QUEUE_PROCESSING_TIMEOUT_SECS);
 
         let write_txn = db.begin_write()?;
 
@@ -238,7 +239,7 @@ impl NostrDB {
 
             // set processing_started_at to avoid retrying before the backoff time
             for to_update in res.iter_mut() {
-                to_update.processing_started_at = Utc::now();
+                to_update.processing_started_at = time::OffsetDateTime::now_utc();
                 let mut serialized = Vec::new();
                 ciborium::into_writer(&to_update, &mut serialized)?;
                 table.insert(to_update.id.as_bytes(), serialized)?;
@@ -280,8 +281,9 @@ impl NostrDB {
                     ciborium::into_writer(&entry, &mut serialized)?;
                     table.insert(id.as_bytes(), serialized)?;
                 } else {
-                    entry.last_try = Utc::now();
-                    entry.processing_started_at = DateTime::from_timestamp(0, 0).expect("valid");
+                    entry.last_try = time::OffsetDateTime::now_utc();
+                    entry.processing_started_at =
+                        time::OffsetDateTime::from_unix_timestamp(0).expect("valid");
 
                     let mut serialized = Vec::new();
                     ciborium::into_writer(&entry, &mut serialized)?;
@@ -700,10 +702,10 @@ mod tests {
         let entry = read_queued_entry(&repo, "msg-1").expect("message remains queued");
         assert_eq!(entry.num_retries, 1);
         assert_eq!(entry.max_retries, 3);
-        assert!(entry.last_try > DateTime::from_timestamp(0, 0).expect("valid"));
+        assert!(entry.last_try > time::OffsetDateTime::from_unix_timestamp(0).expect("valid"));
         assert_eq!(
             entry.processing_started_at,
-            DateTime::from_timestamp(0, 0).expect("valid")
+            time::OffsetDateTime::from_unix_timestamp(0).expect("valid")
         );
 
         let messages = repo

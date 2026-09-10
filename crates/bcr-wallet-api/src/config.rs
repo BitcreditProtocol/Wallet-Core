@@ -9,7 +9,7 @@ pub const MAX_ATTESTATION_ATTEMPTS: usize = 3;
 pub struct AppStateConfig {
     pub db_path: PathBuf,
     pub mnemonics: HashMap<String, bip39::Mnemonic>,
-    pub swap_expiry: chrono::TimeDelta,
+    pub swap_expiry: time::Duration,
     /// List of Esplora API base URLs (in order of priority).
     /// The first URL is used for API requests with fallback to subsequent URLs on failure.
     pub esplora_base_urls: Vec<url::Url>,

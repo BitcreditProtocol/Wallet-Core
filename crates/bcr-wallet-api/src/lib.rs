@@ -417,7 +417,7 @@ impl AppState {
     }
 
     pub async fn wallet_receive_token(&self, wallet_id: String, token: String) -> Result<Uuid> {
-        let tstamp = chrono::Utc::now().timestamp() as u64;
+        let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         tracing::debug!("wallet_receive({wallet_id}, {token}, {tstamp})");
 
         let token = Token::from_str(&token).map_err(|e| Error::InvalidToken(e.to_string()))?;
@@ -465,7 +465,7 @@ impl AppState {
         wallet_id: String,
         rid: String,
     ) -> Result<CreatedToken> {
-        let tstamp = chrono::Utc::now().timestamp() as u64;
+        let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         tracing::debug!("wallet_pay_by_token({wallet_id}, {rid}, {tstamp})");
         let p_id = Uuid::from_str(&rid)?;
 
@@ -503,7 +503,7 @@ impl AppState {
     }
 
     pub async fn wallet_pay_to_contact(&self, wallet_id: String, rid: String) -> Result<Uuid> {
-        let tstamp = chrono::Utc::now().timestamp() as u64;
+        let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         tracing::debug!("wallet_pay_to_contact({wallet_id}, {rid}, {tstamp})");
         let p_id = Uuid::from_str(&rid)?;
 
@@ -554,7 +554,7 @@ impl AppState {
         rid: String,
     ) -> Result<Uuid> {
         tracing::debug!("wallet_pay_shared_payment_request({wallet_id}, {rid})");
-        let tstamp = chrono::Utc::now().timestamp() as u64;
+        let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         let p_id = Uuid::from_str(&rid)?;
         let wallet = self.get_wallet(&wallet_id).await?;
         let (tx_id, _) = wallet.read().await.pay(p_id, &self.http_cl, tstamp).await?;
@@ -692,7 +692,7 @@ impl AppState {
 
     pub async fn wallet_pay_payment_request(&self, wallet_id: String, rid: String) -> Result<Uuid> {
         tracing::debug!("wallet_pay_payment_request({wallet_id}, {rid})");
-        let tstamp = chrono::Utc::now().timestamp() as u64;
+        let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         let p_id = Uuid::from_str(&rid)?;
         let wallet = self.get_wallet(&wallet_id).await?;
         let (tx_id, _) = wallet.read().await.pay(p_id, &self.http_cl, tstamp).await?;
@@ -792,7 +792,7 @@ impl AppState {
     }
 
     pub async fn wallet_melt(&self, wallet_id: String, rid: String) -> Result<Uuid> {
-        let tstamp = chrono::Utc::now().timestamp() as u64;
+        let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         tracing::debug!("wallet_melt({wallet_id}, {rid}, {tstamp})");
 
         let wallet = self.get_wallet(&wallet_id).await?;
@@ -899,7 +899,7 @@ impl AppState {
     }
 
     pub async fn wallet_pay(&self, wallet_id: String, rid: String) -> Result<Uuid> {
-        let tstamp = chrono::Utc::now().timestamp() as u64;
+        let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         tracing::debug!("wallet_pay({wallet_id}, {rid}, {tstamp})");
 
         let wallet = self.get_wallet(&wallet_id).await?;
@@ -1306,7 +1306,7 @@ pub struct CreatedToken {
 async fn create_new_wallet(
     cfg: CreateWalletConfig,
     db_version: u32,
-    swap_expiry: chrono::TimeDelta,
+    swap_expiry: time::Duration,
     db: Arc<Database>,
     contact_repo: Arc<dyn ContactStoreApi>,
 ) -> Result<Arc<RwLock<wallet::Wallet>>> {
@@ -1379,7 +1379,7 @@ async fn build_wallet(
     w_cfg: WalletConfig,
     client: HttpClientExt,
     db_version: u32,
-    swap_expiry: chrono::TimeDelta,
+    swap_expiry: time::Duration,
     db: Arc<Database>,
     contactdb: Arc<dyn ContactStoreApi>,
     seed: Seed,
