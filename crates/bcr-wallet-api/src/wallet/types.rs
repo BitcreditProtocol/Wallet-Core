@@ -39,7 +39,7 @@ pub struct PayReference {
     pub memo: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct WalletBalance {
     pub debit: cashu::Amount,
     pub credit: cashu::Amount,
@@ -59,7 +59,7 @@ pub struct WalletProtestResult {
     pub result: Option<(cashu::Amount, Vec<cashu::PublicKey>)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct WalletInfo {
     pub name: String,
     pub node_id: NodeId,

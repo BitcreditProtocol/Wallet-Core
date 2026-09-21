@@ -7,6 +7,7 @@ use bcr_wallet_api::{
 use clap::{Parser, Subcommand};
 use nostr::types::RelayUrl;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tracing::info;
 use tracing_subscriber::{
     filter::{FilterFn, LevelFilter},
@@ -37,6 +38,8 @@ pub struct WalletSettings {
 struct Cli {
     #[arg(short, long, default_value = "default")]
     wallet: String,
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -180,6 +183,19 @@ enum Commands {
     CancelPaymentRequest { id: String, payment_req_id: String },
 }
 
+fn text(text: String) -> (String, String) {
+    (text.clone(), text)
+}
+
+fn emit<T: Serialize>(json: bool, label: &str, (text, value): (String, T)) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string(&value)?);
+    } else {
+        info!("{label}: {text}");
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -196,6 +212,7 @@ async fn main() -> Result<()> {
     tracing_log::LogTracer::init().expect("LogTracer init");
     let level_filter = LevelFilter::from_str(&settings.log_level)?;
     let stdout_log = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
         .with_filter(level_filter)
         .with_filter(FilterFn::new(|md| {
             md.target().starts_with("bcr_wallet_cli")
@@ -208,7 +225,7 @@ async fn main() -> Result<()> {
     tracing::subscriber::set_global_default(subscriber)
         .expect("tracing::subscriber::set_global_default");
 
-    println!("{LOGO}");
+    eprintln!("{LOGO}");
 
     let app_state_cfg = AppStateConfig {
         db_path: settings.db_path.clone(),
@@ -225,101 +242,113 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Info => {
-            info!(
-                "Info for {}: {}",
-                cli.wallet,
-                command::cmd_info(&app_state).await?
-            );
+            emit(
+                cli.json,
+                &format!("Info for {}", cli.wallet),
+                command::cmd_info(&app_state).await?,
+            )?;
         }
         Commands::Status => {
-            info!(
-                "Status for {}: {}",
-                cli.wallet,
-                command::cmd_status(&app_state).await?
-            );
+            emit(
+                cli.json,
+                &format!("Status for {}", cli.wallet),
+                command::cmd_status(&app_state).await?,
+            )?;
         }
         Commands::Wait => {
-            info!("Wait for {} for 120 seconds", cli.wallet);
+            emit(
+                cli.json,
+                &format!("Wait for {}", cli.wallet),
+                text("120 seconds".into()),
+            )?;
             tokio::time::sleep(std::time::Duration::from_secs(120)).await;
         }
         Commands::Receive { id, token } => {
-            info!(
-                "Receiving for {}: {}",
-                cli.wallet,
-                command::cmd_receive(&app_state, &cli.wallet, &token, &id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Receiving for {}", cli.wallet),
+                command::cmd_receive(&app_state, &cli.wallet, &token, &id).await?,
+            )?;
         }
         Commands::AddWallet { id } => {
-            info!(
-                "Adding wallet for {}: {}",
-                cli.wallet,
-                command::cmd_add_wallet(&app_state, &cli.wallet, &settings.wallets[&id]).await?
-            );
+            emit(
+                cli.json,
+                &format!("Adding wallet for {}", cli.wallet),
+                command::cmd_add_wallet(&app_state, &cli.wallet, &settings.wallets[&id]).await?,
+            )?;
         }
         Commands::DeleteWallet { id } => {
-            info!(
-                "Deleting wallet for {}: {}",
-                cli.wallet,
-                command::cmd_delete_wallet(&app_state, &cli.wallet, &id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Deleting wallet for {}", cli.wallet),
+                text(command::cmd_delete_wallet(&app_state, &cli.wallet, &id).await?),
+            )?;
         }
         Commands::RenameWallet { id, new_name } => {
-            info!(
-                "Renaming wallet for {}: {}",
-                cli.wallet,
-                command::cmd_rename_wallet(&app_state, &cli.wallet, &id, &new_name).await?
-            );
+            emit(
+                cli.json,
+                &format!("Renaming wallet for {}", cli.wallet),
+                text(command::cmd_rename_wallet(&app_state, &cli.wallet, &id, &new_name).await?),
+            )?;
         }
         Commands::RestoreWallet { id } => {
-            info!(
-                "Restoring wallet for {}: {}",
-                cli.wallet,
+            emit(
+                cli.json,
+                &format!("Restoring wallet for {}", cli.wallet),
                 command::cmd_restore_wallet(&app_state, &cli.wallet, &settings.wallets[&id])
-                    .await?
-            );
+                    .await?,
+            )?;
         }
         Commands::RequestPayment {
             id,
             amount,
             description,
         } => {
-            info!(
-                "Requesting Payment for {}: {}, Amount: {amount}, Description: {description:?}",
-                cli.wallet,
-                command::cmd_request_payment(
-                    &app_state,
-                    &cli.wallet,
-                    amount,
-                    &id,
-                    description.clone()
-                )
-                .await?
-            );
+            emit(
+                cli.json,
+                &format!(
+                    "Requesting Payment for {}, Amount: {amount}, Description: {description:?}",
+                    cli.wallet
+                ),
+                text(
+                    command::cmd_request_payment(
+                        &app_state,
+                        &cli.wallet,
+                        amount,
+                        &id,
+                        description.clone(),
+                    )
+                    .await?,
+                ),
+            )?;
         }
         Commands::SendPayment { id, input } => {
-            info!(
-                "Sending Payment for {}: {}, Input: {input}",
-                cli.wallet,
-                command::cmd_send_payment(&app_state, &cli.wallet, &input, &id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Sending Payment for {}, Input: {input}", cli.wallet),
+                text(command::cmd_send_payment(&app_state, &cli.wallet, &input, &id).await?),
+            )?;
         }
         Commands::PayByToken {
             id,
             amount,
             description,
         } => {
-            info!(
-                "Payment by Token for {}: {}, Amount: {amount}, Description: {description:?}",
-                cli.wallet,
+            emit(
+                cli.json,
+                &format!(
+                    "Payment by Token for {}, Amount: {amount}, Description: {description:?}",
+                    cli.wallet
+                ),
                 command::cmd_pay_by_token(
                     &app_state,
                     &cli.wallet,
                     &id,
                     amount,
-                    description.clone()
+                    description.clone(),
                 )
-                .await?
-            );
+                .await?,
+            )?;
         }
         Commands::PayToContact {
             id,
@@ -327,51 +356,66 @@ async fn main() -> Result<()> {
             amount,
             description,
         } => {
-            info!(
-                "Payment to Contact {contact_id} for {}: {}, Amount: {amount}, Description: {description:?}",
-                cli.wallet,
-                command::cmd_pay_to_contact(
-                    &app_state,
-                    &cli.wallet,
-                    &id,
-                    &contact_id,
-                    amount,
-                    description.clone()
-                )
-                .await?
-            );
+            emit(
+                cli.json,
+                &format!(
+                    "Payment to Contact {contact_id} for {}, Amount: {amount}, Description: {description:?}",
+                    cli.wallet
+                ),
+                text(
+                    command::cmd_pay_to_contact(
+                        &app_state,
+                        &cli.wallet,
+                        &id,
+                        &contact_id,
+                        amount,
+                        description.clone(),
+                    )
+                    .await?,
+                ),
+            )?;
         }
         Commands::GenMnemonic { network } => {
             let (mnemonic, wallet_id) = generate_random_mnemonic(12, network);
-            info!("Wallet ID: {}", wallet_id);
-            info!("Mnemonic: {}", mnemonic);
+            emit(
+                cli.json,
+                "Generated",
+                (
+                    format!("Wallet ID: {wallet_id}\nMnemonic: {mnemonic}"),
+                    json!({"wallet_id": wallet_id, "mnemonic": mnemonic}),
+                ),
+            )?;
         }
         Commands::CheckBtcTx { tx_id, network } => {
-            info!(
-                "CheckBTCtx for {}: {}",
-                cli.wallet,
-                command::cmd_check_btc_tx(&app_state, &cli.wallet, &tx_id, network).await?
-            );
+            emit(
+                cli.json,
+                &format!("CheckBTCtx for {}", cli.wallet),
+                text(command::cmd_check_btc_tx(&app_state, &cli.wallet, &tx_id, network).await?),
+            )?;
         }
         Commands::WalletId { network, mnemonic } => {
             let mnemonic = mnemonic.join(" ");
             let mnemonic = bip39::Mnemonic::from_str(&mnemonic).expect("is a valid mnemonic");
             let wallet_id = get_wallet_id(&mnemonic, network);
-            info!("Wallet ID: {}", wallet_id);
+            emit(
+                cli.json,
+                "Wallet ID",
+                (wallet_id.clone(), json!({"wallet_id": wallet_id})),
+            )?;
         }
         Commands::Reclaim { id, tx_id } => {
-            info!(
-                "Reclaim for {}: {}",
-                cli.wallet,
-                command::cmd_reclaim(&app_state, &cli.wallet, &id, &tx_id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Reclaim for {}", cli.wallet),
+                text(command::cmd_reclaim(&app_state, &cli.wallet, &id, &tx_id).await?),
+            )?;
         }
         Commands::RecoverStale { id } => {
-            info!(
-                "Recover Stale proofs for {}: {}",
-                cli.wallet,
-                command::cmd_recover_stale(&app_state, &cli.wallet, &id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Recover Stale proofs for {}", cli.wallet),
+                text(command::cmd_recover_stale(&app_state, &cli.wallet, &id).await?),
+            )?;
         }
         Commands::Melt {
             id,
@@ -379,86 +423,105 @@ async fn main() -> Result<()> {
             address,
             description,
         } => {
-            info!(
-                "Melt for {}: {}",
-                cli.wallet,
+            emit(
+                cli.json,
+                &format!("Melt for {}", cli.wallet),
                 command::cmd_melt(&app_state, &cli.wallet, &id, amount, &address, &description)
-                    .await?
-            );
+                    .await?,
+            )?;
         }
         Commands::Mint { id, amount } => {
-            info!(
-                "Mint for {}: {}",
-                cli.wallet,
-                command::cmd_mint(&app_state, &cli.wallet, &id, amount).await?
-            );
+            emit(
+                cli.json,
+                &format!("Mint for {}", cli.wallet),
+                command::cmd_mint(&app_state, &cli.wallet, &id, amount).await?,
+            )?;
         }
         Commands::ProtestMint { id, quote_id } => {
-            info!(
-                "Protest Mint for {}: {}",
-                cli.wallet,
-                command::cmd_protest_mint(&app_state, &cli.wallet, &id, &quote_id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Protest Mint for {}", cli.wallet),
+                text(command::cmd_protest_mint(&app_state, &cli.wallet, &id, &quote_id).await?),
+            )?;
         }
         Commands::ProtestSwap { id, commitment_sig } => {
-            info!(
-                "Protest Swap for {}: {}",
-                cli.wallet,
-                command::cmd_protest_swap(&app_state, &cli.wallet, &id, &commitment_sig).await?
-            );
+            emit(
+                cli.json,
+                &format!("Protest Swap for {}", cli.wallet),
+                text(
+                    command::cmd_protest_swap(&app_state, &cli.wallet, &id, &commitment_sig)
+                        .await?,
+                ),
+            )?;
         }
         Commands::ProtestMelt { id, quote_id } => {
-            info!(
-                "Protest Melt for {}: {}",
-                cli.wallet,
-                command::cmd_protest_melt(&app_state, &cli.wallet, &id, &quote_id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Protest Melt for {}", cli.wallet),
+                text(command::cmd_protest_melt(&app_state, &cli.wallet, &id, &quote_id).await?),
+            )?;
         }
         Commands::MigrateRabid => {
-            info!(
-                "Migrate Rabid for {}: {}",
-                cli.wallet,
-                command::cmd_migrate_rabid(&app_state, &cli.wallet).await?
-            )
+            emit(
+                cli.json,
+                &format!("Migrate Rabid for {}", cli.wallet),
+                command::cmd_migrate_rabid(&app_state, &cli.wallet).await?,
+            )?;
         }
         Commands::RunJobs => {
-            info!("RunJobs for {}:", cli.wallet);
-            command::cmd_run_jobs(&app_state).await?;
+            let ok = command::cmd_run_jobs(&app_state).await?;
+            emit(
+                cli.json,
+                &format!("RunJobs for {}", cli.wallet),
+                (ok.to_string(), json!({"ok": ok})),
+            )?;
         }
         Commands::CheckToken { token } => {
-            info!("Checking token for {}:", cli.wallet);
-            info!("{}", is_valid_token(&token)?);
+            emit(
+                cli.json,
+                &format!("Checking token for {}", cli.wallet),
+                text(is_valid_token(&token)?.to_string()),
+            )?;
         }
         Commands::CheckRabidOffline { id } => {
-            info!(
-                "Check Rabid/Offline for {} and wallet {}: Rabid: {}, Offline: {}",
-                cli.wallet,
-                id,
-                app_state.wallet_mint_is_rabid(id.clone()).await?,
-                app_state.wallet_mint_is_offline(id.clone()).await?,
-            );
+            let rabid = app_state.wallet_mint_is_rabid(id.clone()).await?;
+            let offline = app_state.wallet_mint_is_offline(id.clone()).await?;
+            emit(
+                cli.json,
+                &format!("Check Rabid/Offline for {} and wallet {id}", cli.wallet),
+                (
+                    format!("Rabid: {rabid}, Offline: {offline}"),
+                    json!({"rabid": rabid, "offline": offline}),
+                ),
+            )?;
         }
         Commands::EditTxMemo {
             id,
             tx_id,
             new_memo,
         } => {
-            info!(
-                "Edit Tx Memo for {}: {}",
-                cli.wallet,
-                command::cmd_edit_tx_memo(&app_state, &cli.wallet, &id, &tx_id, &new_memo).await?
-            );
+            emit(
+                cli.json,
+                &format!("Edit Tx Memo for {}", cli.wallet),
+                text(
+                    command::cmd_edit_tx_memo(&app_state, &cli.wallet, &id, &tx_id, &new_memo)
+                        .await?,
+                ),
+            )?;
         }
         Commands::AddContact {
             network,
             name,
             node_id,
         } => {
-            info!(
-                "Add Contact for {}: {}",
-                cli.wallet,
-                command::cmd_add_contact(&app_state, &cli.wallet, network, &node_id, &name).await?
-            );
+            emit(
+                cli.json,
+                &format!("Add Contact for {}", cli.wallet),
+                text(
+                    command::cmd_add_contact(&app_state, &cli.wallet, network, &node_id, &name)
+                        .await?,
+                ),
+            )?;
         }
         Commands::EditContact {
             network,
@@ -468,127 +531,153 @@ async fn main() -> Result<()> {
             name,
             company,
         } => {
-            info!(
-                "Edit Contact for {}: {}",
-                cli.wallet,
-                command::cmd_edit_contact(
-                    &app_state,
-                    &cli.wallet,
-                    network,
-                    &contact_id,
-                    &node_id,
-                    &email,
-                    &name,
-                    &company
-                )
-                .await?
-            );
+            emit(
+                cli.json,
+                &format!("Edit Contact for {}", cli.wallet),
+                text(
+                    command::cmd_edit_contact(
+                        &app_state,
+                        &cli.wallet,
+                        network,
+                        &contact_id,
+                        &node_id,
+                        &email,
+                        &name,
+                        &company,
+                    )
+                    .await?,
+                ),
+            )?;
         }
         Commands::DeleteContact {
             network,
             contact_id,
         } => {
-            info!(
-                "Delete Contact for {}: {}",
-                cli.wallet,
-                command::cmd_delete_contact(&app_state, &cli.wallet, network, &contact_id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Delete Contact for {}", cli.wallet),
+                text(
+                    command::cmd_delete_contact(&app_state, &cli.wallet, network, &contact_id)
+                        .await?,
+                ),
+            )?;
         }
         Commands::GetContact {
             network,
             contact_id,
         } => {
-            info!(
-                "Get Contact for {}: {}",
-                cli.wallet,
-                command::cmd_get_contact(&app_state, &cli.wallet, network, &contact_id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Get Contact for {}", cli.wallet),
+                text(
+                    command::cmd_get_contact(&app_state, &cli.wallet, network, &contact_id).await?,
+                ),
+            )?;
         }
         Commands::ListContacts {
             network,
             search_term,
         } => {
-            info!(
-                "List Contacts for {}: {}",
-                cli.wallet,
-                command::cmd_list_contacts(&app_state, &cli.wallet, network, &search_term).await?
-            );
+            emit(
+                cli.json,
+                &format!("List Contacts for {}", cli.wallet),
+                text(
+                    command::cmd_list_contacts(&app_state, &cli.wallet, network, &search_term)
+                        .await?,
+                ),
+            )?;
         }
         Commands::CreateShareablePaymentRequest { id, amount } => {
-            info!(
-                "Create Shareable Payment Request for {}: {}",
-                cli.wallet,
-                command::cmd_create_shareable_payment_request(&app_state, &cli.wallet, &id, amount)
-                    .await?
-            );
+            emit(
+                cli.json,
+                &format!("Create Shareable Payment Request for {}", cli.wallet),
+                text(
+                    command::cmd_create_shareable_payment_request(
+                        &app_state,
+                        &cli.wallet,
+                        &id,
+                        amount,
+                    )
+                    .await?,
+                ),
+            )?;
         }
         Commands::PaySharedPaymentRequest { id, payment_req } => {
-            info!(
-                "Pay Shared Payment Request for {}: {}",
-                cli.wallet,
-                command::cmd_pay_shared_payment_request(&app_state, &cli.wallet, &id, &payment_req)
-                    .await?
-            );
+            emit(
+                cli.json,
+                &format!("Pay Shared Payment Request for {}", cli.wallet),
+                text(
+                    command::cmd_pay_shared_payment_request(
+                        &app_state,
+                        &cli.wallet,
+                        &id,
+                        &payment_req,
+                    )
+                    .await?,
+                ),
+            )?;
         }
         Commands::RequestPaymentFromContact {
             id,
             contact_id,
             amount,
         } => {
-            info!(
-                "Request Payment Requests for {}: {}",
-                cli.wallet,
-                command::cmd_request_payment_from_contact(
-                    &app_state,
-                    &cli.wallet,
-                    &id,
-                    &contact_id,
-                    amount
-                )
-                .await?
-            );
+            emit(
+                cli.json,
+                &format!("Request Payment Requests for {}", cli.wallet),
+                text(
+                    command::cmd_request_payment_from_contact(
+                        &app_state,
+                        &cli.wallet,
+                        &id,
+                        &contact_id,
+                        amount,
+                    )
+                    .await?,
+                ),
+            )?;
         }
         Commands::SubscribeToPaymentRequests { id } => {
-            info!(
-                "Subscribe to Payment Requests for {}: {}",
-                cli.wallet,
-                command::cmd_subscribe_to_prs(&app_state, &cli.wallet, &id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Subscribe to Payment Requests for {}", cli.wallet),
+                text(command::cmd_subscribe_to_prs(&app_state, &cli.wallet, &id).await?),
+            )?;
         }
         Commands::ListPaymentRequests { id } => {
-            info!(
-                "List Pending Payment Requests for {}: {}",
-                cli.wallet,
-                command::cmd_list_prs(&app_state, &cli.wallet, &id).await?
-            );
+            emit(
+                cli.json,
+                &format!("List Pending Payment Requests for {}", cli.wallet),
+                text(command::cmd_list_prs(&app_state, &cli.wallet, &id).await?),
+            )?;
         }
         Commands::GetPaymentRequest { id, payment_req_id } => {
-            info!(
-                "Get Pending Payment Request for {}: {}",
-                cli.wallet,
-                command::cmd_get_pr(&app_state, &cli.wallet, &id, &payment_req_id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Get Pending Payment Request for {}", cli.wallet),
+                text(command::cmd_get_pr(&app_state, &cli.wallet, &id, &payment_req_id).await?),
+            )?;
         }
         Commands::PayPaymentRequest { id, payment_req_id } => {
-            info!(
-                "Pay Pending Payment Request for {}: {}",
-                cli.wallet,
-                command::cmd_pay_pr(&app_state, &cli.wallet, &id, &payment_req_id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Pay Pending Payment Request for {}", cli.wallet),
+                text(command::cmd_pay_pr(&app_state, &cli.wallet, &id, &payment_req_id).await?),
+            )?;
         }
         Commands::RejectPaymentRequest { id, payment_req_id } => {
-            info!(
-                "Reject Pending Payment Request for {}: {}",
-                cli.wallet,
-                command::cmd_reject_pr(&app_state, &cli.wallet, &id, &payment_req_id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Reject Pending Payment Request for {}", cli.wallet),
+                text(command::cmd_reject_pr(&app_state, &cli.wallet, &id, &payment_req_id).await?),
+            )?;
         }
         Commands::CancelPaymentRequest { id, payment_req_id } => {
-            info!(
-                "Cancel Pending Payment Request for {}: {}",
-                cli.wallet,
-                command::cmd_cancel_pr(&app_state, &cli.wallet, &id, &payment_req_id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Cancel Pending Payment Request for {}", cli.wallet),
+                text(command::cmd_cancel_pr(&app_state, &cli.wallet, &id, &payment_req_id).await?),
+            )?;
         }
     }
 

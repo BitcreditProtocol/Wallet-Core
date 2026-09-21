@@ -69,9 +69,10 @@ impl MeltSummary {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct MintSummary {
     pub quote_id: Uuid,
+    #[serde(with = "bitcoin::amount::serde::as_sat")]
     pub amount: bitcoin::Amount,
     pub address: bitcoin::Address<NetworkUnchecked>,
     pub expiry: u64,
@@ -163,7 +164,7 @@ impl From<ContactPaymentRequestPayload> for PaymentRequest {
 }
 
 /// A transaction in our wallet
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Transaction {
     pub id: Uuid,
     pub mint_url: MintUrl,
@@ -184,7 +185,7 @@ pub struct Transaction {
     pub linked_txs: Vec<TransactionLink>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct TransactionFees {
     pub swap: cashu::Amount,
     pub network: cashu::Amount,
@@ -198,18 +199,22 @@ impl TransactionFees {
 }
 
 /// A link to another transaction with a reason, e.g. linking a payment transaction with a reclaim of the payment
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TransactionLink {
     pub tx_id: Uuid,
     pub reason: TransactionLinkReason,
 }
 
-#[derive(strum::EnumString, strum::Display, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    strum::EnumString, strum::Display, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize,
+)]
 pub enum TransactionLinkReason {
     Reclaim,
 }
 
-#[derive(strum::EnumString, strum::Display, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(
+    strum::EnumString, strum::Display, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize,
+)]
 pub enum PaymentType {
     #[default]
     NotApplicable,
@@ -220,7 +225,7 @@ pub enum PaymentType {
     Contact,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PaymentSummary {
     pub request_id: Uuid,
     pub unit: CurrencyUnit,
@@ -231,7 +236,9 @@ pub struct PaymentSummary {
     pub ptype: PaymentType,
 }
 
-#[derive(strum::Display, strum::EnumString, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(
+    strum::Display, strum::EnumString, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize,
+)]
 pub enum TransactionStatus {
     #[default]
     NotApplicable,
@@ -447,7 +454,7 @@ pub struct BtcTxStatusReceiver {
     pub amount: bitcoin::Amount,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct MeltEstimation {
     pub tx_vsize: u64,
     pub fee_rates: Vec<MeltFeeRateEstimate>,
@@ -455,7 +462,7 @@ pub struct MeltEstimation {
     pub melt_fee_ppk: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct MeltFeeRateEstimate {
     pub target_blocks: u16,
     pub sat_per_vb: f32,

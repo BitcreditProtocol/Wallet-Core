@@ -420,6 +420,7 @@ dependencies = [
  "config",
  "nostr",
  "serde",
+ "serde_json",
  "time",
  "tokio",
  "tokio-util",

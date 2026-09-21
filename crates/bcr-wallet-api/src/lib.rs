@@ -1,7 +1,7 @@
 use crate::config::{AppStateConfig, CreateWalletConfig};
 use crate::external::mint::{ClowderMintConnector, HttpClientExt};
 use crate::wallet::api::WalletApi;
-use crate::wallet::types::{
+pub use crate::wallet::types::{
     WalletBalance, WalletDetailedBalanceEntry, WalletInfo, WalletProtestResult,
 };
 use bcr_common::core::NodeId;

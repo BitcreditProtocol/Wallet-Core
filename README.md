@@ -33,6 +33,19 @@ just cli -w alice pay_by_token $id 100
 just cli -w alice reclaim $id $txid
 ```
 
+### Output modes
+
+By default the CLI is made for humans: results and logs are written to stderr as readable text.
+
+With `--json`, every command writes one JSON document to stdout instead, so scripts and tests can
+parse it. Logs stay on stderr, and a failing command exits non-zero with an empty stdout. The flag is
+global, so it works before or after the subcommand:
+
+```
+just cli -w alice --json info
+just cli -w alice mint $id 1200 --json
+```
+
 ## wallet_ffi
 
 Rust<>Flutter FFI for [Wallet-Core](https://github.com/BitcreditProtocol/Wallet-Core/)

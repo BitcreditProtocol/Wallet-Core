@@ -1,20 +1,32 @@
 use crate::WalletSettings;
 use anyhow::Result;
 use bcr_common::cashu;
-use bcr_wallet_api::{AppState, config::CreateWalletConfig};
+use bcr_wallet_api::{AppState, WalletBalance, WalletInfo, config::CreateWalletConfig};
 use bcr_wallet_core::types::{
-    PaymentRequestDirection, PaymentResultCallback, PendingPaymentSubscriptionCallback,
-    TransactionFees, TransactionFilters, TransactionSort,
+    MeltEstimation, MintSummary, PaymentRequestDirection, PaymentResultCallback, PaymentSummary,
+    PendingPaymentSubscriptionCallback, Transaction, TransactionFees, TransactionFilters,
+    TransactionSort,
 };
-use std::sync::Arc;
+use serde_json::json;
+use std::{collections::HashMap, sync::Arc};
 use time::macros::format_description;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use uuid::Uuid;
 
-pub async fn cmd_info(app_state: &AppState) -> Result<String> {
+#[derive(serde::Serialize)]
+pub struct WalletOut {
+    wallet_id: String,
+    info: WalletInfo,
+    unit: String,
+    balance: WalletBalance,
+    transactions: Vec<Transaction>,
+}
+
+pub async fn cmd_info(app_state: &AppState) -> Result<(String, Vec<WalletOut>)> {
     let mut res = String::new();
+    let mut out = vec![];
     let wallet_ids = app_state.purse_wallets_ids().await?;
 
     push_break(&mut res);
@@ -106,28 +118,35 @@ pub async fn cmd_info(app_state: &AppState) -> Result<String> {
             }
         }
         push_break(&mut res);
+        out.push(WalletOut {
+            wallet_id: id.clone(),
+            info,
+            unit: unit.to_string(),
+            balance,
+            transactions,
+        });
     }
-    Ok(res)
+    Ok((res, out))
 }
 
-pub async fn cmd_status(app_state: &AppState) -> Result<String> {
+pub async fn cmd_status(app_state: &AppState) -> Result<(String, HashMap<String, bool>)> {
     let mut res = String::new();
     // wait until nostr is connected
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     let nostr_connected = app_state.purse_wallets_nostr_connected().await;
     push_break(&mut res);
-    for (wid, connected) in nostr_connected {
+    for (wid, connected) in nostr_connected.iter() {
         res.push_str(&format!("Wallet {} connected: {}", wid, connected));
         push_break(&mut res);
     }
-    Ok(res)
+    Ok((res, nostr_connected))
 }
 
 pub async fn cmd_add_wallet(
     app_state: &AppState,
     name: &str,
     settings: &WalletSettings,
-) -> Result<String> {
+) -> Result<(String, serde_json::Value)> {
     let mut res = String::new();
     let wallet_ids = app_state.purse_wallets_ids().await?;
     let cfg = CreateWalletConfig {
@@ -141,7 +160,7 @@ pub async fn cmd_add_wallet(
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!("Created Wallet for {name} - Wallet ID: {id}.\n"));
-    Ok(res)
+    Ok((res, json!({"wallet_id": id})))
 }
 
 pub async fn cmd_delete_wallet(app_state: &AppState, name: &str, id: &str) -> Result<String> {
@@ -175,7 +194,7 @@ pub async fn cmd_restore_wallet(
     app_state: &AppState,
     name: &str,
     settings: &WalletSettings,
-) -> Result<String> {
+) -> Result<(String, serde_json::Value)> {
     let mut res = String::new();
     let wallet_ids = app_state.purse_wallets_ids().await?;
     let cfg = CreateWalletConfig {
@@ -189,7 +208,7 @@ pub async fn cmd_restore_wallet(
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!("Restored Wallet for {name} - Wallet ID: {id}.\n"));
-    Ok(res)
+    Ok((res, json!({"wallet_id": id})))
 }
 
 pub async fn cmd_receive(
@@ -197,7 +216,7 @@ pub async fn cmd_receive(
     name: &str,
     token: &str,
     id: &str,
-) -> Result<String> {
+) -> Result<(String, Transaction)> {
     let mut res = String::new();
     let swapped = app_state
         .wallet_receive_token(id.to_owned(), token.to_owned())
@@ -211,7 +230,7 @@ pub async fn cmd_receive(
         "Received token {token}, returned {swapped} for {name} - Wallet ID: {id}.\n"
     ));
     res.push_str(&format!("tx: {tx:?}.\n"));
-    Ok(res)
+    Ok((res, tx))
 }
 
 pub async fn cmd_request_payment(
@@ -266,13 +285,20 @@ pub async fn cmd_request_payment(
     Ok(res)
 }
 
+#[derive(serde::Serialize)]
+pub struct PayByTokenOut {
+    tx_id: Uuid,
+    token: String,
+    summary: PaymentSummary,
+}
+
 pub async fn cmd_pay_by_token(
     app_state: &AppState,
     name: &str,
     id: &str,
     amount: u64,
     description: Option<String>,
-) -> Result<String> {
+) -> Result<(String, PayByTokenOut)> {
     let mut res = String::new();
     let payment_summary = app_state
         .wallet_prepare_pay_by_token(id.to_owned(), amount, description)
@@ -305,7 +331,14 @@ pub async fn cmd_pay_by_token(
     push_break(&mut res);
     res.push_str(&format!("Token: {}", result.token));
 
-    Ok(res)
+    Ok((
+        res,
+        PayByTokenOut {
+            tx_id: result.tx_id,
+            token: result.token.to_string(),
+            summary: payment_summary,
+        },
+    ))
 }
 
 pub async fn cmd_pay_to_contact(
@@ -391,9 +424,8 @@ pub async fn cmd_send_payment(
     Ok(res)
 }
 
-pub async fn cmd_run_jobs(app_state: &AppState) -> Result<()> {
-    app_state.execute_regular_jobs().await;
-    Ok(())
+pub async fn cmd_run_jobs(app_state: &AppState) -> Result<bool> {
+    Ok(app_state.execute_regular_jobs().await)
 }
 
 pub async fn cmd_reclaim(
@@ -427,6 +459,14 @@ pub async fn cmd_recover_stale(app_state: &AppState, name: &str, id: &str) -> Re
     Ok(res)
 }
 
+#[derive(serde::Serialize)]
+pub struct MeltOut {
+    tx_id: Uuid,
+    network_fee: u64,
+    estimation: MeltEstimation,
+    summary: PaymentSummary,
+}
+
 pub async fn cmd_melt(
     app_state: &AppState,
     name: &str,
@@ -434,7 +474,7 @@ pub async fn cmd_melt(
     amount: u64,
     address: &str,
     description: &Option<String>,
-) -> Result<String> {
+) -> Result<(String, MeltOut)> {
     let mut res = String::new();
     let melt_estimate = app_state
         .wallet_estimate_melt(id.to_owned(), amount)
@@ -477,10 +517,23 @@ pub async fn cmd_melt(
     push_break(&mut res);
     res.push_str(&format!("Transaction ID: {tx_id}"));
 
-    Ok(res)
+    Ok((
+        res,
+        MeltOut {
+            tx_id,
+            network_fee: selected_network_fee,
+            estimation: melt_estimate,
+            summary: melt_summary,
+        },
+    ))
 }
 
-pub async fn cmd_mint(app_state: &AppState, name: &str, id: &str, amount: u64) -> Result<String> {
+pub async fn cmd_mint(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    amount: u64,
+) -> Result<(String, MintSummary)> {
     let mut res = String::new();
 
     let mint_summary = app_state.wallet_mint(id.to_owned(), amount).await?;
@@ -493,10 +546,10 @@ pub async fn cmd_mint(app_state: &AppState, name: &str, id: &str, amount: u64) -
     push_break(&mut res);
     res.push_str(&format!(
         "Mint Summary - Pay {amount} to address {}",
-        mint_summary.address.assume_checked()
+        mint_summary.address.clone().assume_checked()
     ));
 
-    Ok(res)
+    Ok((res, mint_summary))
 }
 
 pub async fn cmd_protest_mint(
@@ -611,7 +664,10 @@ pub async fn cmd_protest_melt(
     Ok(res)
 }
 
-pub async fn cmd_migrate_rabid(app_state: &AppState, name: &str) -> Result<String> {
+pub async fn cmd_migrate_rabid(
+    app_state: &AppState,
+    name: &str,
+) -> Result<(String, HashMap<String, url::Url>)> {
     let mut res = String::new();
 
     let migrated = app_state.purse_migrate_rabid().await?;
@@ -627,7 +683,7 @@ pub async fn cmd_migrate_rabid(app_state: &AppState, name: &str) -> Result<Strin
             res.push_str(&format!("Migrated Wallet {} to {}.\n", k, v));
         }
     }
-    Ok(res)
+    Ok((res, migrated))
 }
 
 pub async fn cmd_edit_tx_memo(
