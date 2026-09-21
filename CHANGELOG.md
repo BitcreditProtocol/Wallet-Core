@@ -1,5 +1,7 @@
 # 0.9.13
 
+* Add a global `--json` flag to the CLI: every command prints one JSON document to stdout, so it can be driven by scripts and tests
+    * Logs and human-readable output now always go to stderr, leaving stdout for the JSON
 * Upgrade Dependencies
     * nostr, reqwest, bcr-common most notably
 * Upgrade gradle version and cargokit
