@@ -7,6 +7,7 @@ use bcr_wallet_api::{
 use clap::{Parser, Subcommand};
 use nostr::types::RelayUrl;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tracing::info;
 use tracing_subscriber::{
     filter::{FilterFn, LevelFilter},
@@ -37,6 +38,8 @@ pub struct WalletSettings {
 struct Cli {
     #[arg(short, long, default_value = "default")]
     wallet: String,
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -180,6 +183,15 @@ enum Commands {
     CancelPaymentRequest { id: String, payment_req_id: String },
 }
 
+fn emit<T: Serialize>(json: bool, label: &str, (text, value): (String, T)) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string(&value)?);
+    } else {
+        info!("{label}: {text}");
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -196,6 +208,7 @@ async fn main() -> Result<()> {
     tracing_log::LogTracer::init().expect("LogTracer init");
     let level_filter = LevelFilter::from_str(&settings.log_level)?;
     let stdout_log = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
         .with_filter(level_filter)
         .with_filter(FilterFn::new(|md| {
             md.target().starts_with("bcr_wallet_cli")
@@ -208,7 +221,7 @@ async fn main() -> Result<()> {
     tracing::subscriber::set_global_default(subscriber)
         .expect("tracing::subscriber::set_global_default");
 
-    println!("{LOGO}");
+    eprintln!("{LOGO}");
 
     let app_state_cfg = AppStateConfig {
         db_path: settings.db_path.clone(),
@@ -225,36 +238,36 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Info => {
-            info!(
-                "Info for {}: {}",
-                cli.wallet,
-                command::cmd_info(&app_state).await?
-            );
+            emit(
+                cli.json,
+                &format!("Info for {}", cli.wallet),
+                command::cmd_info(&app_state).await?,
+            )?;
         }
         Commands::Status => {
-            info!(
-                "Status for {}: {}",
-                cli.wallet,
-                command::cmd_status(&app_state).await?
-            );
+            emit(
+                cli.json,
+                &format!("Status for {}", cli.wallet),
+                command::cmd_status(&app_state).await?,
+            )?;
         }
         Commands::Wait => {
             info!("Wait for {} for 120 seconds", cli.wallet);
             tokio::time::sleep(std::time::Duration::from_secs(120)).await;
         }
         Commands::Receive { id, token } => {
-            info!(
-                "Receiving for {}: {}",
-                cli.wallet,
-                command::cmd_receive(&app_state, &cli.wallet, &token, &id).await?
-            );
+            emit(
+                cli.json,
+                &format!("Receiving for {}", cli.wallet),
+                command::cmd_receive(&app_state, &cli.wallet, &token, &id).await?,
+            )?;
         }
         Commands::AddWallet { id } => {
-            info!(
-                "Adding wallet for {}: {}",
-                cli.wallet,
-                command::cmd_add_wallet(&app_state, &cli.wallet, &settings.wallets[&id]).await?
-            );
+            emit(
+                cli.json,
+                &format!("Adding wallet for {}", cli.wallet),
+                command::cmd_add_wallet(&app_state, &cli.wallet, &settings.wallets[&id]).await?,
+            )?;
         }
         Commands::DeleteWallet { id } => {
             info!(
@@ -271,12 +284,12 @@ async fn main() -> Result<()> {
             );
         }
         Commands::RestoreWallet { id } => {
-            info!(
-                "Restoring wallet for {}: {}",
-                cli.wallet,
+            emit(
+                cli.json,
+                &format!("Restoring wallet for {}", cli.wallet),
                 command::cmd_restore_wallet(&app_state, &cli.wallet, &settings.wallets[&id])
-                    .await?
-            );
+                    .await?,
+            )?;
         }
         Commands::RequestPayment {
             id,
@@ -308,18 +321,21 @@ async fn main() -> Result<()> {
             amount,
             description,
         } => {
-            info!(
-                "Payment by Token for {}: {}, Amount: {amount}, Description: {description:?}",
-                cli.wallet,
+            emit(
+                cli.json,
+                &format!(
+                    "Payment by Token for {}, Amount: {amount}, Description: {description:?}",
+                    cli.wallet
+                ),
                 command::cmd_pay_by_token(
                     &app_state,
                     &cli.wallet,
                     &id,
                     amount,
-                    description.clone()
+                    description.clone(),
                 )
-                .await?
-            );
+                .await?,
+            )?;
         }
         Commands::PayToContact {
             id,
@@ -343,8 +359,14 @@ async fn main() -> Result<()> {
         }
         Commands::GenMnemonic { network } => {
             let (mnemonic, wallet_id) = generate_random_mnemonic(12, network);
-            info!("Wallet ID: {}", wallet_id);
-            info!("Mnemonic: {}", mnemonic);
+            emit(
+                cli.json,
+                "Generated",
+                (
+                    format!("Wallet ID: {wallet_id}\nMnemonic: {mnemonic}"),
+                    json!({"wallet_id": wallet_id, "mnemonic": mnemonic}),
+                ),
+            )?;
         }
         Commands::CheckBtcTx { tx_id, network } => {
             info!(
@@ -357,7 +379,11 @@ async fn main() -> Result<()> {
             let mnemonic = mnemonic.join(" ");
             let mnemonic = bip39::Mnemonic::from_str(&mnemonic).expect("is a valid mnemonic");
             let wallet_id = get_wallet_id(&mnemonic, network);
-            info!("Wallet ID: {}", wallet_id);
+            emit(
+                cli.json,
+                "Wallet ID",
+                (wallet_id.clone(), json!({"wallet_id": wallet_id})),
+            )?;
         }
         Commands::Reclaim { id, tx_id } => {
             info!(
@@ -379,19 +405,19 @@ async fn main() -> Result<()> {
             address,
             description,
         } => {
-            info!(
-                "Melt for {}: {}",
-                cli.wallet,
+            emit(
+                cli.json,
+                &format!("Melt for {}", cli.wallet),
                 command::cmd_melt(&app_state, &cli.wallet, &id, amount, &address, &description)
-                    .await?
-            );
+                    .await?,
+            )?;
         }
         Commands::Mint { id, amount } => {
-            info!(
-                "Mint for {}: {}",
-                cli.wallet,
-                command::cmd_mint(&app_state, &cli.wallet, &id, amount).await?
-            );
+            emit(
+                cli.json,
+                &format!("Mint for {}", cli.wallet),
+                command::cmd_mint(&app_state, &cli.wallet, &id, amount).await?,
+            )?;
         }
         Commands::ProtestMint { id, quote_id } => {
             info!(
@@ -415,28 +441,35 @@ async fn main() -> Result<()> {
             );
         }
         Commands::MigrateRabid => {
-            info!(
-                "Migrate Rabid for {}: {}",
-                cli.wallet,
-                command::cmd_migrate_rabid(&app_state, &cli.wallet).await?
-            )
+            emit(
+                cli.json,
+                &format!("Migrate Rabid for {}", cli.wallet),
+                command::cmd_migrate_rabid(&app_state, &cli.wallet).await?,
+            )?;
         }
         Commands::RunJobs => {
-            info!("RunJobs for {}:", cli.wallet);
-            command::cmd_run_jobs(&app_state).await?;
+            let ok = command::cmd_run_jobs(&app_state).await?;
+            emit(
+                cli.json,
+                &format!("RunJobs for {}", cli.wallet),
+                (ok.to_string(), json!({"ok": ok})),
+            )?;
         }
         Commands::CheckToken { token } => {
             info!("Checking token for {}:", cli.wallet);
             info!("{}", is_valid_token(&token)?);
         }
         Commands::CheckRabidOffline { id } => {
-            info!(
-                "Check Rabid/Offline for {} and wallet {}: Rabid: {}, Offline: {}",
-                cli.wallet,
-                id,
-                app_state.wallet_mint_is_rabid(id.clone()).await?,
-                app_state.wallet_mint_is_offline(id.clone()).await?,
-            );
+            let rabid = app_state.wallet_mint_is_rabid(id.clone()).await?;
+            let offline = app_state.wallet_mint_is_offline(id.clone()).await?;
+            emit(
+                cli.json,
+                &format!("Check Rabid/Offline for {} and wallet {id}", cli.wallet),
+                (
+                    format!("Rabid: {rabid}, Offline: {offline}"),
+                    json!({"rabid": rabid, "offline": offline}),
+                ),
+            )?;
         }
         Commands::EditTxMemo {
             id,

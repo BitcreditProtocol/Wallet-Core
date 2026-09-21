@@ -15,6 +15,7 @@ clap = {version = "4.0", features = ["derive"]}
 config = {version="0.15"}
 nostr = {workspace = true}
 serde.workspace = true
+serde_json.workspace = true
 time = {workspace = true}
 tokio.workspace = true
 tokio-util.workspace = true
