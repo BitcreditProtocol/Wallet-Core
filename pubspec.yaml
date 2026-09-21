@@ -1,6 +1,6 @@
 name: wallet_ffi
 description: "Wallet FFI"
-version: 0.9.12
+version: 0.9.12-hotfix1
 homepage:
 
 environment:
