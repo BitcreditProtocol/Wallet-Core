@@ -11,6 +11,11 @@
 * Expose `run_jobs` API to ffi
 * migrate from `chrono` to `time`
 
+# 0.9.12-hotfix1
+
+* Fix an issue where a failed swap before restore would impede restoration
+
+
 # 0.9.12
 
 * Sign offline exchange requests with the ephemeral wallet key, binding alpha id, offline evidence digest, proof fingerprints, hash locks and wallet pubkey

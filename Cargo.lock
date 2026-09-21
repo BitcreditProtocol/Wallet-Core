@@ -4694,7 +4694,11 @@ dependencies = [
 
 [[package]]
 name = "wallet_ffi"
+<<<<<<< HEAD
 version = "0.9.13"
+=======
+version = "0.9.12-hotfix1"
+>>>>>>> e346ffa (set hotfix)
 dependencies = [
  "android_logger",
  "bcr-common",
