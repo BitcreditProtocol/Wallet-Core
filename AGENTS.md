@@ -36,6 +36,7 @@ Non-negotiables:
   the `.db` files beside them are gitignored on purpose.
 - A change to a persisted record layout MUST ship a migration (Key Patterns); a record the
   new code cannot read is the user's funds, not a bug report.
+- A change to an existing data model that is sent over the network (e.g. a payment request) MUST ship a backwards-compatible migration path.
 
 ## Key Patterns
 
