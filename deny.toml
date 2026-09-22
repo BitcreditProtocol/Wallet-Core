@@ -26,7 +26,12 @@ allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Unlicense", "CDLA-Permissive-2.0",
     "BSD-3-Clause", "MITNFA", "Zlib", "BSD-2-Clause",
 ]
 confidence-threshold = 0.8
-exceptions = []
+# ammonia 4 pulls in two Servo crates under MPL-2.0, a file-level copyleft that does not reach
+# this repository's MIT code. They are allowed by name, so any other MPL dependency still fails.
+exceptions = [
+    { allow = ["MPL-2.0"], crate = "cssparser" },
+    { allow = ["MPL-2.0"], crate = "dtoa-short" },
+]
 
 [licenses.private]
 ignore = false
