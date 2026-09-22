@@ -1,6 +1,6 @@
 # 0.9.14
 
-* TBD
+* Added filtered logging
 
 # 0.9.13
 

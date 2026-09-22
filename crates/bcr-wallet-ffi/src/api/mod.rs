@@ -204,15 +204,41 @@ fn start_jobs(
 fn init_logging(log_level: &str) {
     info!("Initializing Rust logging");
     let level = log::LevelFilter::from_str(log_level).expect("invalid log level");
+
     #[cfg(target_os = "android")]
-    android_logger::init_once(
-        android_logger::Config::default()
-            .with_tag("WalletFfi")
-            .with_max_level(level),
-    );
+    {
+        use android_logger::{Config, FilterBuilder};
+
+        let mut filter = FilterBuilder::new();
+
+        filter.filter(None, log::LevelFilter::Off);
+        filter.filter(Some("wallet_ffi"), level);
+        filter.filter(Some("bcr_common"), level);
+        filter.filter(Some("bcr_wallet_core"), level);
+        filter.filter(Some("bcr_wallet_persistence"), level);
+        filter.filter(Some("bcr_wallet_transport"), level);
+        filter.filter(Some("bcr_wallet_api"), level);
+
+        android_logger::init_once(
+            Config::default()
+                .with_tag("WalletFfi")
+                .with_max_level(level)
+                .with_filter(filter.build()),
+        );
+    }
 
     #[cfg(not(target_os = "android"))]
-    env_logger::builder().filter_level(level).init();
+    {
+        env_logger::builder()
+            .filter_level(log::LevelFilter::Off)
+            .filter_module("wallet_ffi", level)
+            .filter_module("bcr_common", level)
+            .filter_module("bcr_wallet_core", level)
+            .filter_module("bcr_wallet_persistence", level)
+            .filter_module("bcr_wallet_transport", level)
+            .filter_module("bcr_wallet_api", level)
+            .init();
+    }
 
     info!("Rust logging initialized");
 }
