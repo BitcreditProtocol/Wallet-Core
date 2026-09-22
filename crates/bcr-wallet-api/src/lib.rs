@@ -1,5 +1,6 @@
 use crate::config::{AppStateConfig, CreateWalletConfig};
 use crate::external::mint::{ClowderMintConnector, HttpClientExt};
+use crate::wallet::Wallet;
 use crate::wallet::api::WalletApi;
 pub use crate::wallet::types::{
     WalletBalance, WalletDetailedBalanceEntry, WalletInfo, WalletProtestResult,
@@ -157,7 +158,10 @@ impl AppState {
                 nostr_cl,
             )
             .await?;
-            purse.add_wallet(wallet).await?;
+
+            purse.add_wallet(wallet.clone()).await?;
+            // start nostr event listener after initialization
+            Wallet::start_nostr_event_listener(wallet).await;
         }
         Ok(())
     }
@@ -210,7 +214,9 @@ impl AppState {
         )
         .await?;
 
-        let id = purse.add_wallet(wallet).await?;
+        let id = purse.add_wallet(wallet.clone()).await?;
+        // start nostr event listener after initialization
+        Wallet::start_nostr_event_listener(wallet).await;
 
         Ok(id)
     }
@@ -235,7 +241,9 @@ impl AppState {
         .await?;
         wallet.read().await.restore_local_proofs().await?;
 
-        let id = purse.add_wallet(wallet).await?;
+        let id = purse.add_wallet(wallet.clone()).await?;
+        // start nostr event listener after initialization
+        Wallet::start_nostr_event_listener(wallet).await;
         tracing::debug!("Wallet restored successfully");
         Ok(id)
     }
@@ -1316,7 +1324,7 @@ async fn create_new_wallet(
 
     let wallet_id = build_wallet_id(&seed, cfg.network);
     let clowder_id = client.get_clowder_id().await?;
-    let keyset_infos: HashMap<cashu::Id, ecash::KeySetInfo> = client
+    let keyset_infos: HashMap<ecash::Id, ecash::KeySetInfo> = client
         .get_mint_keysets()
         .await?
         .into_iter()
@@ -1441,7 +1449,7 @@ async fn build_wallet(
         Arc::new(nostr_transport),
         nostr_event_channel,
         nostr_repo,
-        Box::new(nostr_consumer),
+        Arc::new(nostr_consumer),
     )
     .await;
 

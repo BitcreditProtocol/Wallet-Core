@@ -21,7 +21,7 @@ struct MintKeysetInfo {
 }
 
 pub fn serialize_mint_keyset_infos(
-    infos: &HashMap<cashu::Id, ecash::KeySetInfo>,
+    infos: &HashMap<ecash::Id, ecash::KeySetInfo>,
     writer: &mut impl Write,
 ) -> Result<()> {
     let mut stored: Vec<(String, MintKeysetInfo)> = infos
@@ -44,14 +44,14 @@ pub fn serialize_mint_keyset_infos(
 
 pub fn deserialize_mint_keyset_infos(
     reader: &mut impl Read,
-) -> Result<HashMap<cashu::Id, ecash::KeySetInfo>> {
+) -> Result<HashMap<ecash::Id, ecash::KeySetInfo>> {
     let stored: Vec<(String, MintKeysetInfo)> = BorshDeserialize::deserialize_reader(reader)?;
 
     let mut infos = HashMap::with_capacity(stored.len());
 
     for (id, info) in stored {
         let id =
-            cashu::Id::from_str(&id).map_err(|e| BorshError::new(ErrorKind::InvalidData, e))?;
+            ecash::Id::from_str(&id).map_err(|e| BorshError::new(ErrorKind::InvalidData, e))?;
 
         let unit = cashu::CurrencyUnit::from_str(&info.unit)
             .map_err(|e| BorshError::new(ErrorKind::InvalidData, e))?;
@@ -102,7 +102,7 @@ pub struct PremintEntry {
 type PremintStorage = Vec<(String, Vec<PremintEntry>)>;
 
 pub fn serialize_premints(
-    premints: &HashMap<cashu::Id, cdk00::PreMintSecrets>,
+    premints: &HashMap<ecash::Id, cdk00::PreMintSecrets>,
     writer: &mut impl Write,
 ) -> Result<()> {
     let stored = premints_to_storage(premints);
@@ -111,12 +111,12 @@ pub fn serialize_premints(
 
 pub fn deserialize_premints(
     reader: &mut impl Read,
-) -> Result<HashMap<cashu::Id, cdk00::PreMintSecrets>> {
+) -> Result<HashMap<ecash::Id, cdk00::PreMintSecrets>> {
     let stored = PremintStorage::deserialize_reader(reader)?;
     premints_from_storage(stored)
 }
 
-fn premints_to_storage(premints: &HashMap<cashu::Id, cdk00::PreMintSecrets>) -> PremintStorage {
+fn premints_to_storage(premints: &HashMap<ecash::Id, cdk00::PreMintSecrets>) -> PremintStorage {
     let mut stored: PremintStorage = premints
         .iter()
         .map(|(keyset_id, premint_secrets)| {
@@ -140,11 +140,11 @@ fn premints_to_storage(premints: &HashMap<cashu::Id, cdk00::PreMintSecrets>) -> 
 
 fn premints_from_storage(
     stored: PremintStorage,
-) -> Result<HashMap<cashu::Id, cdk00::PreMintSecrets>> {
+) -> Result<HashMap<ecash::Id, cdk00::PreMintSecrets>> {
     stored
         .into_iter()
         .map(|(keyset_id, entries)| {
-            let keyset_id = keyset_id.parse::<cashu::Id>().map_err(|err| {
+            let keyset_id = keyset_id.parse::<ecash::Id>().map_err(|err| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("invalid keyset ID `{keyset_id}`: {err}"),
@@ -161,7 +161,13 @@ fn premints_from_storage(
                 })
                 .collect();
 
-            Ok((keyset_id, cdk00::PreMintSecrets { secrets, keyset_id }))
+            Ok((
+                keyset_id,
+                cdk00::PreMintSecrets {
+                    secrets,
+                    keyset_id: keyset_id.into(),
+                },
+            ))
         })
         .collect()
 }
@@ -185,7 +191,7 @@ mod tests {
         input_fee_ppk: u64,
         final_expiry: Option<u64>,
     ) -> ecash::KeySetInfo {
-        let id = cashu::Id::from_str(id).expect("valid test keyset ID");
+        let id = ecash::Id::from_str(id).expect("valid test keyset ID");
         let unit = cashu::CurrencyUnit::from_str(unit).expect("valid test currency unit");
 
         ecash::KeySetInfo {
@@ -197,13 +203,13 @@ mod tests {
         }
     }
 
-    fn serialize_mint_ks_infos(infos: &HashMap<cashu::Id, ecash::KeySetInfo>) -> Vec<u8> {
+    fn serialize_mint_ks_infos(infos: &HashMap<ecash::Id, ecash::KeySetInfo>) -> Vec<u8> {
         let mut bytes = Vec::new();
         serialize_mint_keyset_infos(infos, &mut bytes).expect("serialization should succeed");
         bytes
     }
 
-    fn deserialize_mint_ks_infos(bytes: &[u8]) -> Result<HashMap<cashu::Id, ecash::KeySetInfo>> {
+    fn deserialize_mint_ks_infos(bytes: &[u8]) -> Result<HashMap<ecash::Id, ecash::KeySetInfo>> {
         let mut reader = Cursor::new(bytes);
         deserialize_mint_keyset_infos(&mut reader)
     }
@@ -234,7 +240,7 @@ mod tests {
         let deserialized =
             deserialize_mint_ks_infos(&bytes).expect("deserialization should succeed");
         assert_eq!(deserialized.len(), 1);
-        let id = cashu::Id::from_str(KEYSET_ID_1).unwrap();
+        let id = ecash::Id::from_str(KEYSET_ID_1).unwrap();
         let actual = deserialized.get(&id).expect("keyset should exist");
         let expected = original.get(&id).expect("original keyset should exist");
         assert_keyset_info_eq(actual, expected);
@@ -278,7 +284,7 @@ mod tests {
 
     #[test]
     fn serialized_keyset_id_is_taken_from_map_key() {
-        let map_id = cashu::Id::from_str(KEYSET_ID_1).unwrap();
+        let map_id = ecash::Id::from_str(KEYSET_ID_1).unwrap();
         let info = keyset_info(KEYSET_ID_2, "sat", true, 100, None);
         let mut original = HashMap::new();
         original.insert(map_id, info);
@@ -289,7 +295,7 @@ mod tests {
             .get(&map_id)
             .expect("map key should be preserved");
         assert_eq!(actual.id.to_string(), KEYSET_ID_1);
-        assert!(!deserialized.contains_key(&cashu::Id::from_str(KEYSET_ID_2).unwrap()));
+        assert!(!deserialized.contains_key(&ecash::Id::from_str(KEYSET_ID_2).unwrap()));
     }
 
     #[test]
@@ -309,7 +315,7 @@ mod tests {
     }
 
     // serialize premints
-    fn sample_premints() -> HashMap<cashu::Id, cdk00::PreMintSecrets> {
+    fn sample_premints() -> HashMap<ecash::Id, cdk00::PreMintSecrets> {
         let (_, keyset) = generate_random_ecash_keyset();
 
         let amounts = [
@@ -319,7 +325,7 @@ mod tests {
             cashu::Amount::from(8),
         ];
 
-        let secrets = generate_random_ecash_blindedmessages(keyset.id, &amounts)
+        let secrets = generate_random_ecash_blindedmessages(keyset.id.into(), &amounts)
             .into_iter()
             .map(|(blinded_message, secret, r)| cdk00::PreMint {
                 amount: blinded_message.amount,
@@ -332,7 +338,7 @@ mod tests {
         HashMap::from([(
             keyset.id,
             cdk00::PreMintSecrets {
-                keyset_id: keyset.id,
+                keyset_id: keyset.id.into(),
                 secrets,
             },
         )])

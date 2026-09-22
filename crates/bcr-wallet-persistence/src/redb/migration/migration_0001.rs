@@ -8,9 +8,9 @@ use crate::{
         pocket::{self, StoredCounter, StoredCounterPayloadV1},
     },
 };
-use bcr_common::cashu::{
-    self, nut00 as cdk00, nut01 as cdk01, nut02 as cdk02, nut07 as cdk07, nut12 as cdk12,
-    secret::Secret,
+use bcr_common::{
+    cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut12 as cdk12, secret::Secret},
+    ecash,
 };
 use bitcoin::secp256k1;
 use redb::{ReadableTable, TableDefinition};
@@ -173,7 +173,7 @@ fn migrate_commitment_table_to_envelope_and_encryption(
 ///////////////////////////////////////////// CounterEntry
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct CounterEntry {
-    kid: cdk02::Id,
+    kid: ecash::Id,
     counter: u32,
 }
 
@@ -182,7 +182,7 @@ pub struct CounterEntry {
 struct ProofEntry {
     y: cdk01::PublicKey,
     amount: bcr_common::cashu::Amount,
-    keyset_id: cdk02::Id,
+    keyset_id: ecash::Id,
     secret: Secret,
     c: cdk01::PublicKey,
     witness: Option<cdk00::Witness>,
@@ -196,7 +196,7 @@ impl std::convert::From<cdk00::Proof> for ProofEntry {
         ProofEntry {
             y,
             amount: proof.amount,
-            keyset_id: proof.keyset_id,
+            keyset_id: proof.keyset_id.into(),
             secret: proof.secret,
             c: proof.c,
             witness: proof.witness,
@@ -210,7 +210,7 @@ impl std::convert::From<ProofEntry> for cdk00::Proof {
     fn from(entry: ProofEntry) -> Self {
         cdk00::Proof {
             amount: entry.amount,
-            keyset_id: entry.keyset_id,
+            keyset_id: entry.keyset_id.into(),
             secret: entry.secret,
             c: entry.c,
             witness: entry.witness,
@@ -221,7 +221,7 @@ impl std::convert::From<ProofEntry> for cdk00::Proof {
 }
 ///////////////////////////////////////////// Commitment
 type PremintStorage = Vec<(
-    cashu::Id,
+    ecash::Id,
     Vec<(
         cdk00::BlindedMessage,
         Secret,
@@ -230,7 +230,7 @@ type PremintStorage = Vec<(
     )>,
 )>;
 
-fn premints_from_storage(stored: PremintStorage) -> HashMap<cashu::Id, cdk00::PreMintSecrets> {
+fn premints_from_storage(stored: PremintStorage) -> HashMap<ecash::Id, cdk00::PreMintSecrets> {
     stored
         .into_iter()
         .map(|(kid, tuples)| {
@@ -247,7 +247,7 @@ fn premints_from_storage(stored: PremintStorage) -> HashMap<cashu::Id, cdk00::Pr
                 kid,
                 cdk00::PreMintSecrets {
                     secrets,
-                    keyset_id: kid,
+                    keyset_id: kid.into(),
                 },
             )
         })
@@ -644,7 +644,7 @@ mod tests {
             &namespace.counter_table,
             database_key,
             CounterEntry {
-                kid: expected_kid,
+                kid: expected_kid.into(),
                 counter: expected_counter,
             },
         );
@@ -655,7 +655,7 @@ mod tests {
         let migrated = load_migrated_counter(&db, &namespace.counter_table, database_key);
         match migrated {
             StoredCounter::V1(payload) => {
-                assert_eq!(payload.kid, expected_kid);
+                assert_eq!(payload.kid, expected_kid.into());
                 assert_eq!(payload.counter, expected_counter);
             }
         }
@@ -673,7 +673,7 @@ mod tests {
             &namespace.counter_table,
             database_key,
             CounterEntry {
-                kid: proof.keyset_id,
+                kid: proof.keyset_id.into(),
                 counter: 7,
             },
         );
@@ -708,7 +708,7 @@ mod tests {
             &namespace.counter_table,
             b"first",
             CounterEntry {
-                kid: first_kid,
+                kid: first_kid.into(),
                 counter: 1,
             },
         );
@@ -718,7 +718,7 @@ mod tests {
             &namespace.counter_table,
             b"second",
             CounterEntry {
-                kid: second_kid,
+                kid: second_kid.into(),
                 counter: 20,
             },
         );
@@ -728,7 +728,7 @@ mod tests {
             &namespace.counter_table,
             b"third",
             CounterEntry {
-                kid: third_kid,
+                kid: third_kid.into(),
                 counter: u32::MAX,
             },
         );
@@ -746,21 +746,21 @@ mod tests {
 
         match first {
             StoredCounter::V1(payload) => {
-                assert_eq!(payload.kid, first_kid);
+                assert_eq!(payload.kid, first_kid.into());
                 assert_eq!(payload.counter, 1);
             }
         }
 
         match second {
             StoredCounter::V1(payload) => {
-                assert_eq!(payload.kid, second_kid);
+                assert_eq!(payload.kid, second_kid.into());
                 assert_eq!(payload.counter, 20);
             }
         }
 
         match third {
             StoredCounter::V1(payload) => {
-                assert_eq!(payload.kid, third_kid);
+                assert_eq!(payload.kid, third_kid.into());
                 assert_eq!(payload.counter, u32::MAX);
             }
         }

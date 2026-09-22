@@ -13,10 +13,10 @@ pub mod tests {
     use uuid::Uuid;
 
     use bcr_common::cashu::{self, Amount, CurrencyUnit};
-    use bcr_common::ecash::{KeySetInfo, MintKeySetInfo};
+    use bcr_common::ecash::{self, KeySetInfo, MintKeySetInfo};
     use bitcoin::secp256k1;
 
-    pub fn test_kinfos(info: MintKeySetInfo) -> HashMap<cashu::Id, KeySetInfo> {
+    pub fn test_kinfos(info: MintKeySetInfo) -> HashMap<ecash::Id, KeySetInfo> {
         let mut map = HashMap::new();
         map.insert(info.id, cashu::KeySetInfo::from(info).into());
         map
@@ -113,31 +113,31 @@ pub mod tests {
             fn unit(&self) -> CurrencyUnit;
             fn set_beta_provider(&mut self, beta_provider: Arc<dyn crate::pocket::BetaProvider>);
             async fn balance(&self,
-                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
             ) -> Result<crate::pocket::PocketBalance>;
             async fn receive_proofs(
                 &self,
                 client: Arc<dyn ClowderMintConnector>,
-                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
                 proofs: Vec<cashu::Proof>,
                 swap_config: SwapConfig,
             ) -> Result<(Amount, Vec<cashu::PublicKey>)>;
             async fn prepare_send(&self, amount: Amount,
-                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
             ) -> Result<SendSummary>;
             async fn send_proofs(
                 &self,
                 rid: Uuid,
-                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
             ) -> Result<HashMap<cashu::PublicKey, cashu::Proof>>;
             async fn restore_local_proofs(
                 &self,
-                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
             ) -> Result<usize>;
-            async fn delete_proofs(&self) -> Result<HashMap<cashu::Id, Vec<cashu::Proof>>>;
+            async fn delete_proofs(&self) -> Result<HashMap<ecash::Id, Vec<cashu::Proof>>>;
             async fn return_proofs_to_send_for_offline_payment(
                 &self,
                 rid: Uuid,
@@ -145,8 +145,8 @@ pub mod tests {
             async fn swap_to_unlocked_substitute_proofs(
                 &self,
                 proofs: Vec<cashu::Proof>,
-                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
-                keysets: HashMap<cashu::Id, bcr_common::ecash::KeySet>,
+                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+                keysets: HashMap<ecash::Id, bcr_common::ecash::KeySet>,
                 substitute_client: Arc<dyn ClowderMintConnector>,
                 substitute_clowder_id: secp256k1::PublicKey,
                 beta_provider: crate::pocket::RandomBetaProvider,
@@ -155,8 +155,8 @@ pub mod tests {
             ) -> Result<Vec<cashu::Proof>>;
             async fn dev_mode_detailed_balance(
                 &self,
-                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
-            ) -> Result<HashMap<cashu::Id, (Option<u64>, Amount)>>;
+                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+            ) -> Result<HashMap<ecash::Id, (Option<u64>, Amount)>>;
             async fn delete(&self) -> Result<()>;
         }
 
@@ -165,14 +165,14 @@ pub mod tests {
             async fn reclaim_proofs(
                 &self,
                 ys: &[cashu::PublicKey],
-                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
             ) -> Result<Amount>;
             async fn recover_pending_stale_proofs(
                 &self,
                 pending_txs_ys: &[cashu::PublicKey],
-                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
             ) -> Result<Amount>;
@@ -185,7 +185,7 @@ pub mod tests {
                 amount: u64,
                 network_fee: u64,
                 melt_fee: u64,
-                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
             ) -> Result<MeltSummary>;
@@ -197,7 +197,7 @@ pub mod tests {
             async fn mint_onchain(
                 &self,
                 amount: bitcoin::Amount,
-                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
             ) -> Result<MintSummary>;
             async fn check_pending_mints(
@@ -213,7 +213,7 @@ pub mod tests {
             async fn protest_swap(
                 &self,
                 commitment_sig: bitcoin::secp256k1::schnorr::Signature,
-                keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
                 alpha_client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
             ) -> Result<ProtestResult>;

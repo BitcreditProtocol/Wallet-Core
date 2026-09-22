@@ -11,7 +11,7 @@ use bcr_common::{
         nut01 as cdk01,
     },
     core::swap::wallet::{PaymentPlan, prepare_payment},
-    ecash::{KeySet, KeySetInfo},
+    ecash::{self, KeySet, KeySetInfo},
     wire::{common as wire_common, melt as wire_melt, mint as wire_mint, swap as wire_swap},
 };
 use bcr_wallet_core::types::{
@@ -33,7 +33,7 @@ pub trait DebitPocketApi: super::PocketApi {
     async fn reclaim_proofs(
         &self,
         ys: &[cashu::PublicKey],
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
     ) -> Result<Amount>;
@@ -42,7 +42,7 @@ pub trait DebitPocketApi: super::PocketApi {
     async fn recover_pending_stale_proofs(
         &self,
         pending_txs_ys: &[cashu::PublicKey],
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
     ) -> Result<Amount>;
@@ -60,7 +60,7 @@ pub trait DebitPocketApi: super::PocketApi {
         amount: u64,
         network_fee: u64,
         melt_fee: u64,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
     ) -> Result<MeltSummary>;
@@ -72,7 +72,7 @@ pub trait DebitPocketApi: super::PocketApi {
     async fn mint_onchain(
         &self,
         amount: bitcoin::Amount,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
     ) -> Result<MintSummary>;
     async fn check_pending_mints(
@@ -88,7 +88,7 @@ pub trait DebitPocketApi: super::PocketApi {
     async fn protest_swap(
         &self,
         commitment_sig: bitcoin::secp256k1::schnorr::Signature,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         alpha_client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
     ) -> Result<ProtestResult>;
@@ -153,9 +153,9 @@ impl Pocket {
 
     fn validate_keysets<'a>(
         &self,
-        keysets_info: &'a HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &'a HashMap<ecash::Id, KeySetInfo>,
         inputs: &[cdk00::Proof],
-    ) -> Result<HashMap<cashu::Id, &'a KeySetInfo>> {
+    ) -> Result<HashMap<ecash::Id, &'a KeySetInfo>> {
         let infos = collect_keyset_infos_from_proofs(inputs.iter(), keysets_info)?;
         for info in infos.values() {
             if info.unit != self.unit {
@@ -171,10 +171,14 @@ impl Pocket {
     async fn digest_proofs(
         &self,
         client: Arc<dyn ClowderMintConnector>,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         inputs: HashMap<cdk01::PublicKey, cdk00::Proof>,
         swap_config: SwapConfig,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
+        let keysets_info: HashMap<cashu::Id, KeySetInfo> = keysets_info
+            .iter()
+            .map(|(id, info)| ((*id).into(), info.clone()))
+            .collect();
         if inputs.is_empty() {
             tracing::warn!("DbPocket::digest_proofs: empty inputs");
             return Ok((Amount::ZERO, Vec::new()));
@@ -183,33 +187,35 @@ impl Pocket {
         let (ys, swap_proofs): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
 
         // create swap plan
-        let swap_plan = prepare_swap(&swap_proofs, keysets_info)?;
+        let swap_plan = prepare_swap(&swap_proofs, &keysets_info)?;
         tracing::debug!("Digest proofs - swap plan: {swap_plan:?}");
 
         // collect keysets first as we don't want any failure once the swap request
         // has been made
-        let kids: HashSet<cashu::Id> = swap_proofs.iter().map(|p| p.keyset_id).collect();
-        let mut keysets: HashMap<cashu::Id, KeySet> = HashMap::new();
+        let kids: HashSet<ecash::Id> = swap_proofs.iter().map(|p| p.keyset_id.into()).collect();
+        let mut keysets: HashMap<ecash::Id, KeySet> = HashMap::new();
         for kid in kids.iter() {
             let keyset = client.get_mint_keyset(*kid).await?;
             keysets.insert(*kid, keyset);
         }
 
         // prepare the premints
-        let mut premints: HashMap<cashu::Id, cdk00::PreMintSecrets> = HashMap::new();
+        let mut premints: HashMap<ecash::Id, cdk00::PreMintSecrets> = HashMap::new();
         for (kid, amount) in swap_plan {
-            let counter = self.pdb.counter(kid).await?;
+            let counter = self.pdb.counter(kid.into()).await?;
             let premint = cdk00::PreMintSecrets::from_seed(
                 kid,
                 counter,
                 &self.seed,
                 amount,
                 &SplitTarget::None,
-                &bcr_wallet_core::util::to_fee_and_amounts(&keysets[&kid]),
+                &bcr_wallet_core::util::to_fee_and_amounts(&keysets[&kid.into()]),
             )?;
             let increment = premint.len() as u32;
-            premints.insert(kid, premint);
-            self.pdb.increment_counter(kid, counter, increment).await?;
+            premints.insert(kid.into(), premint);
+            self.pdb
+                .increment_counter(kid.into(), counter, increment)
+                .await?;
         }
 
         // swap
@@ -230,7 +236,7 @@ impl Pocket {
     async fn compute_send_costs(
         &self,
         target_amount: Amount,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
     ) -> Result<(SendSummary, SendReference)> {
         let unspent_proofs = self.pdb.list_unspent().await?;
         let mut proofs: Vec<Proof> = unspent_proofs.values().cloned().collect();
@@ -238,8 +244,10 @@ impl Pocket {
         proofs.sort_by_key(|proof| proof.amount);
 
         let infos = collect_keyset_infos_from_proofs(unspent_proofs.values(), keysets_info)?;
-        let kinfos: HashMap<cashu::Id, KeySetInfo> =
-            infos.iter().map(|(k, v)| (*k, (*v).clone())).collect();
+        let kinfos: HashMap<cashu::Id, KeySetInfo> = infos
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).clone()))
+            .collect();
 
         let payment_plan = prepare_payment(&proofs, target_amount, &kinfos)?;
         let (pocket_summary, send_ref) = match payment_plan {
@@ -301,7 +309,7 @@ impl Pocket {
         premint: &cdk00::PreMintSecrets,
         client: Arc<dyn ClowderMintConnector>,
     ) -> Result<(cashu::Amount, Vec<cashu::PublicKey>)> {
-        let active_keyset = client.get_mint_keyset(premint.keyset_id).await?;
+        let active_keyset = client.get_mint_keyset(premint.keyset_id.into()).await?;
 
         let proofs = cashu::dhke::construct_proofs(
             signatures,
@@ -381,7 +389,7 @@ impl super::PocketApi for Pocket {
 
     async fn balance(
         &self,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
     ) -> Result<PocketBalance> {
         let proofs: Vec<Proof> = self.pdb.list_unspent().await?.into_values().collect();
         let mut debit = Amount::ZERO;
@@ -396,8 +404,8 @@ impl super::PocketApi for Pocket {
 
         for proof in proofs {
             let info = infos
-                .get(&proof.keyset_id)
-                .ok_or(Error::UnknownKeysetId(proof.keyset_id))?;
+                .get(&proof.keyset_id.into())
+                .ok_or(Error::UnknownKeysetId(proof.keyset_id.into()))?;
 
             // no final expiry -> debit
             // final expiry before today -> debit
@@ -420,7 +428,7 @@ impl super::PocketApi for Pocket {
     async fn receive_proofs(
         &self,
         client: Arc<dyn ClowderMintConnector>,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         inputs: Vec<cdk00::Proof>,
         swap_config: SwapConfig,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
@@ -439,7 +447,7 @@ impl super::PocketApi for Pocket {
     async fn prepare_send(
         &self,
         target: Amount,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
     ) -> Result<SendSummary> {
         let (summary, send_ref) = self.compute_send_costs(target, keysets_info).await?;
         *self.current_send.lock().unwrap() = Some(send_ref);
@@ -449,7 +457,7 @@ impl super::PocketApi for Pocket {
     async fn send_proofs(
         &self,
         rid: Uuid,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
     ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
@@ -480,7 +488,7 @@ impl super::PocketApi for Pocket {
 
     async fn restore_local_proofs(
         &self,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
     ) -> Result<usize> {
         let mut total_recovered = 0;
@@ -491,17 +499,17 @@ impl super::PocketApi for Pocket {
         Ok(total_recovered)
     }
 
-    async fn delete_proofs(&self) -> Result<HashMap<cashu::Id, Vec<cdk00::Proof>>> {
+    async fn delete_proofs(&self) -> Result<HashMap<ecash::Id, Vec<cdk00::Proof>>> {
         let proofs = self.pdb.list_all().await?;
 
-        let mut proofs_by_keyset = HashMap::<cashu::Id, Vec<cdk00::Proof>>::new();
+        let mut proofs_by_keyset = HashMap::<ecash::Id, Vec<cdk00::Proof>>::new();
 
         for y in proofs.iter() {
             if let Some((proof, state)) = self.pdb.delete_proof(*y).await? {
                 // delete all, but return only unspent proofs
                 if matches!(state, cdk07::State::Unspent) {
                     proofs_by_keyset
-                        .entry(proof.keyset_id)
+                        .entry(proof.keyset_id.into())
                         .or_default()
                         .push(proof);
                 }
@@ -533,8 +541,8 @@ impl super::PocketApi for Pocket {
     async fn swap_to_unlocked_substitute_proofs(
         &self,
         proofs: Vec<cdk00::Proof>,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
-        keysets: HashMap<cashu::Id, KeySet>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+        keysets: HashMap<ecash::Id, KeySet>,
         substitute_client: Arc<dyn ClowderMintConnector>,
         substitute_clowder_id: secp256k1::PublicKey,
         beta_provider: RandomBetaProvider,
@@ -544,23 +552,27 @@ impl super::PocketApi for Pocket {
         let total_amount = proofs.total_amount()?;
         let change_amount = total_amount - send_amount;
 
-        let swap_plan: Vec<_> = prepare_swap(&proofs, keysets_info)?.into_iter().collect();
+        let keysets_info: HashMap<cashu::Id, KeySetInfo> = keysets_info
+            .iter()
+            .map(|(id, info)| ((*id).into(), info.clone()))
+            .collect();
+        let swap_plan: Vec<_> = prepare_swap(&proofs, &keysets_info)?.into_iter().collect();
         tracing::debug!(
             "Swapping to unlocked substitute proofs {swap_plan:?} - {change_amount} will be used for fees and stored temporarily as foreign mint proofs."
         );
 
         // prepare the premints
-        let mut premints: HashMap<cashu::Id, cdk00::PreMintSecrets> = HashMap::new();
+        let mut premints: HashMap<ecash::Id, cdk00::PreMintSecrets> = HashMap::new();
         let mut remaining_payment = send_amount;
         // collect payments by kid, so we can reconstruct it after the swap
-        let mut payment_targets_by_kid: HashMap<cashu::Id, Amount> = HashMap::new();
+        let mut payment_targets_by_kid: HashMap<ecash::Id, Amount> = HashMap::new();
 
         for (kid, amount) in swap_plan {
             let keyset_payment_target = std::cmp::min(amount, remaining_payment);
 
             let target = if keyset_payment_target > Amount::ZERO {
                 // used for our payment - needs to add up to our payment amount
-                payment_targets_by_kid.insert(kid, keyset_payment_target);
+                payment_targets_by_kid.insert(kid.into(), keyset_payment_target);
                 remaining_payment -= keyset_payment_target;
                 SplitTarget::Value(keyset_payment_target)
             } else {
@@ -573,9 +585,9 @@ impl super::PocketApi for Pocket {
                 kid,
                 amount,
                 &target,
-                &bcr_wallet_core::util::to_fee_and_amounts(&keysets[&kid]),
+                &bcr_wallet_core::util::to_fee_and_amounts(&keysets[&kid.into()]),
             )?;
-            premints.insert(kid, premint);
+            premints.insert(kid.into(), premint);
         }
 
         if remaining_payment != Amount::ZERO {
@@ -604,10 +616,10 @@ impl super::PocketApi for Pocket {
         let mut on_target: Vec<cdk00::Proof> = Vec::new();
         let mut change_proofs: Vec<cdk00::Proof> = Vec::new();
 
-        let mut sigs_by_kid: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
+        let mut sigs_by_kid: HashMap<ecash::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
         for signature in signatures {
             sigs_by_kid
-                .entry(signature.keyset_id)
+                .entry(signature.keyset_id.into())
                 .and_modify(|v| v.push(signature.clone()))
                 .or_insert_with(|| vec![signature]);
         }
@@ -674,15 +686,15 @@ impl super::PocketApi for Pocket {
 
     async fn dev_mode_detailed_balance(
         &self,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
-    ) -> Result<HashMap<cashu::Id, (Option<u64>, Amount)>> {
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+    ) -> Result<HashMap<ecash::Id, (Option<u64>, Amount)>> {
         let proofs: Vec<Proof> = self.pdb.list_unspent().await?.into_values().collect();
         let infos = collect_keyset_infos_from_proofs(proofs.iter(), keysets_info)?;
 
-        let mut balances: HashMap<cashu::Id, (Option<u64>, Amount)> = HashMap::new();
+        let mut balances: HashMap<ecash::Id, (Option<u64>, Amount)> = HashMap::new();
 
         for proof in proofs {
-            let kid = proof.keyset_id;
+            let kid = proof.keyset_id.into();
             let info = infos.get(&kid).ok_or(Error::UnknownKeysetId(kid))?;
 
             let entry = balances
@@ -713,7 +725,7 @@ impl DebitPocketApi for Pocket {
     async fn reclaim_proofs(
         &self,
         ys: &[cdk01::PublicKey],
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
     ) -> Result<Amount> {
@@ -731,7 +743,7 @@ impl DebitPocketApi for Pocket {
     async fn recover_pending_stale_proofs(
         &self,
         pending_txs_ys: &[cashu::PublicKey],
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
     ) -> Result<Amount> {
@@ -853,7 +865,7 @@ impl DebitPocketApi for Pocket {
         amount: u64,
         network_fee: u64,
         melt_fee: u64,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
     ) -> Result<MeltSummary> {
@@ -968,7 +980,7 @@ impl DebitPocketApi for Pocket {
     async fn mint_onchain(
         &self,
         amount: bitcoin::Amount,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
     ) -> Result<MintSummary> {
         // find debit keyset
@@ -982,7 +994,7 @@ impl DebitPocketApi for Pocket {
         let keyset = client.get_mint_keyset(kid).await?;
         let counter = self.pdb.counter(kid).await?;
         let premint = cdk00::PreMintSecrets::from_seed(
-            kid,
+            kid.into(),
             counter,
             &self.seed,
             cashu::Amount::from(amount.to_sat()),
@@ -1151,7 +1163,7 @@ impl DebitPocketApi for Pocket {
     async fn protest_swap(
         &self,
         commitment_sig: bitcoin::secp256k1::schnorr::Signature,
-        keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         alpha_client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
     ) -> Result<ProtestResult> {
@@ -1178,16 +1190,16 @@ impl DebitPocketApi for Pocket {
                     "swap protest resolved but no signatures returned".to_string(),
                 ))?;
 
-                let mut sigs_by_kid: HashMap<cashu::Id, Vec<cdk00::BlindSignature>> =
+                let mut sigs_by_kid: HashMap<ecash::Id, Vec<cdk00::BlindSignature>> =
                     HashMap::new();
                 for signature in signatures {
                     sigs_by_kid
-                        .entry(signature.keyset_id)
+                        .entry(signature.keyset_id.into())
                         .or_default()
                         .push(signature);
                 }
 
-                let mut keysets: HashMap<cashu::Id, KeySet> = HashMap::new();
+                let mut keysets: HashMap<ecash::Id, KeySet> = HashMap::new();
                 for kid in sigs_by_kid.keys() {
                     let keyset = alpha_client.get_mint_keyset(*kid).await?;
                     keysets.insert(*kid, keyset);
@@ -1971,7 +1983,9 @@ mod tests {
         let dummy_secret = secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap();
         mdb.expect_load_mint().times(1).returning(move |_| {
             let premint = cdk00::PreMintSecrets::random(
-                bcr_wallet_core::util::to_keyset(&keyset_clone, None).id,
+                bcr_wallet_core::util::to_keyset(&keyset_clone, None)
+                    .id
+                    .into(),
                 Amount::from(amount.to_sat()),
                 &SplitTarget::None,
                 &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
@@ -2026,7 +2040,7 @@ mod tests {
         let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
         let premint = cdk00::PreMintSecrets::random(
-            kid,
+            kid.into(),
             Amount::from(amount.to_sat()),
             &SplitTarget::None,
             &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
@@ -2115,7 +2129,7 @@ mod tests {
         let kid = info.id;
 
         let premint = cdk00::PreMintSecrets::random(
-            kid,
+            kid.into(),
             Amount::from(amount.to_sat()),
             &SplitTarget::None,
             &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
@@ -2191,7 +2205,7 @@ mod tests {
 
         // Generate premint secrets and sign them — these are the ORIGINAL blinding factors
         let premint = cdk00::PreMintSecrets::random(
-            kid,
+            kid.into(),
             amount,
             &SplitTarget::None,
             &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
@@ -2565,7 +2579,7 @@ mod tests {
         let kid = info.id;
 
         let premint = cdk00::PreMintSecrets::random(
-            kid,
+            kid.into(),
             Amount::from(amount.to_sat()),
             &SplitTarget::None,
             &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
@@ -2649,7 +2663,7 @@ mod tests {
         let kid = info.id;
 
         let premint = cdk00::PreMintSecrets::random(
-            kid,
+            kid.into(),
             Amount::from(amount.to_sat()),
             &SplitTarget::None,
             &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(

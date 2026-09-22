@@ -8,6 +8,7 @@ use crate::error::Result;
 use async_trait::async_trait;
 use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07};
 use bcr_common::core::NodeId;
+use bcr_common::ecash;
 use bcr_wallet_core::contact::Contact;
 use bcr_wallet_core::types::{
     ForeignMintProof, PaymentRequestDirection, PaymentRequestState, Transaction,
@@ -32,7 +33,7 @@ pub struct SwapCommitmentRecord {
     pub ephemeral_secret: secp256k1::SecretKey,
     pub body_content: String,
     pub wallet_key: cashu::PublicKey,
-    pub premints: HashMap<cashu::Id, cdk00::PreMintSecrets>,
+    pub premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
 }
 
 ///////////////////////////////////////////// MeltCommitmentRecord
@@ -69,8 +70,8 @@ pub trait PocketRepository: SendSync {
     async fn mark_pending_as_spent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
     async fn revert_pendingspent_to_unspent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
 
-    async fn counter(&self, kid: cashu::Id) -> Result<u32>;
-    async fn increment_counter(&self, kid: cashu::Id, old: u32, increment: u32) -> Result<()>;
+    async fn counter(&self, kid: ecash::Id) -> Result<u32>;
+    async fn increment_counter(&self, kid: ecash::Id, old: u32, increment: u32) -> Result<()>;
 
     async fn store_commitment(&self, record: SwapCommitmentRecord) -> Result<()>;
     async fn load_commitment(

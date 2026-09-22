@@ -1,5 +1,8 @@
 use crate::{ClowderMintConnector, error::Result};
-use bcr_common::cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09};
+use bcr_common::{
+    cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09},
+    ecash,
+};
 use bcr_wallet_core::types::Seed;
 use bcr_wallet_persistence::PocketRepository;
 use std::{collections::HashMap, sync::Arc};
@@ -10,7 +13,7 @@ const BATCH_SIZE: u32 = 100;
 
 pub async fn restore_keysetid(
     seed: &Seed,
-    kid: cashu::Id,
+    kid: ecash::Id,
     client: &Arc<dyn ClowderMintConnector>,
     db: &dyn PocketRepository,
 ) -> Result<usize> {
@@ -37,13 +40,14 @@ pub async fn restore_keysetid(
 
 async fn restore_batch(
     seed: &Seed,
-    kid: cashu::Id,
+    kid: ecash::Id,
     client: &Arc<dyn ClowderMintConnector>,
     db: &dyn PocketRepository,
     counter: u32,
     batch_size: u32,
 ) -> Result<usize> {
-    let premints = cdk00::PreMintSecrets::restore_batch(kid, seed, counter, counter + batch_size)?;
+    let premints =
+        cdk00::PreMintSecrets::restore_batch(kid.into(), seed, counter, counter + batch_size)?;
     let request = cdk09::RestoreRequest {
         outputs: premints.blinded_messages(),
     };

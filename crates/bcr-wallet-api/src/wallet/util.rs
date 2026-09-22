@@ -98,13 +98,13 @@ pub async fn htlc_lock(
         .get_mint_keysets()
         .await?
         .into_iter()
-        .map(|k| (k.id, k))
+        .map(|k| (k.id.into(), k))
         .collect();
 
     let swap_plan = prepare_swap(&proofs, &infos)?;
 
-    let kids: HashSet<cashu::Id> = proofs.iter().map(|p| p.keyset_id).collect();
-    let mut keysets: HashMap<cashu::Id, KeySet> = HashMap::new();
+    let kids: HashSet<ecash::Id> = proofs.iter().map(|p| p.keyset_id.into()).collect();
+    let mut keysets: HashMap<ecash::Id, KeySet> = HashMap::new();
     for kid in kids.iter() {
         let keyset = client.get_mint_keyset(*kid).await?;
         keysets.insert(*kid, keyset);
@@ -122,16 +122,16 @@ pub async fn htlc_lock(
     let htlc = cashu::SpendingConditions::new_htlc_hash(&hash_lock.to_string(), Some(p2pk))?;
 
     // prepare the premints
-    let mut premints: HashMap<cashu::Id, cashu::PreMintSecrets> = HashMap::new();
+    let mut premints: HashMap<ecash::Id, cashu::PreMintSecrets> = HashMap::new();
     for (kid, amount) in swap_plan {
         let premint = cashu::PreMintSecrets::with_conditions(
             kid,
             amount,
             &SplitTarget::None,
             &htlc,
-            &bcr_wallet_core::util::to_fee_and_amounts(&keysets[&kid]),
+            &bcr_wallet_core::util::to_fee_and_amounts(&keysets[&kid.into()]),
         )?;
-        premints.insert(kid, premint);
+        premints.insert(kid.into(), premint);
     }
 
     let blinds: Vec<cashu::BlindedMessage> = premints
@@ -151,10 +151,10 @@ pub async fn htlc_lock(
     .await?;
 
     let mut result_proofs = Vec::new();
-    let mut sigs_by_kid: HashMap<cashu::Id, Vec<cashu::BlindSignature>> = HashMap::new();
+    let mut sigs_by_kid: HashMap<ecash::Id, Vec<cashu::BlindSignature>> = HashMap::new();
     for signature in signatures {
         sigs_by_kid
-            .entry(signature.keyset_id)
+            .entry(signature.keyset_id.into())
             .or_default()
             .push(signature);
     }

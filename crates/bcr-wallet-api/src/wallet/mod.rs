@@ -54,7 +54,7 @@ use uuid::Uuid;
 pub struct Wallet {
     network: bitcoin::Network,
     client: Arc<dyn ClowderMintConnector>,
-    mint_keyset_infos: HashMap<cashu::Id, KeySetInfo>,
+    mint_keyset_infos: HashMap<ecash::Id, KeySetInfo>,
     beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>>,
     tx_repo: Box<dyn TransactionRepository>,
     contact_repo: Arc<dyn ContactStoreApi>,
@@ -73,13 +73,14 @@ pub struct Wallet {
     nostr_repo: Arc<dyn NostrRepository>,
     nostr_consumer_running: Arc<Mutex<bool>>,
     nostr_shutdown: CancellationToken,
+    nostr_consumer: Arc<dyn ConsumerApi>,
 }
 
 impl Wallet {
     pub async fn new(
         network: bitcoin::Network,
         client: Arc<dyn ClowderMintConnector>,
-        mint_keyset_infos: HashMap<cashu::Id, KeySetInfo>,
+        mint_keyset_infos: HashMap<ecash::Id, KeySetInfo>,
         tx_repo: Box<dyn TransactionRepository>,
         contact_repo: Arc<dyn ContactStoreApi>,
         payment_request_repo: Box<dyn PaymentRequestStoreApi>,
@@ -94,10 +95,10 @@ impl Wallet {
         nostr_transport: Arc<dyn TransportApi>,
         nostr_event_channel: NostrEventChannel,
         nostr_repo: Arc<dyn NostrRepository>,
-        nostr_consumer: Box<dyn ConsumerApi>,
+        nostr_consumer: Arc<dyn ConsumerApi>,
     ) -> Arc<RwLock<Self>> {
         let cancel = CancellationToken::new();
-        let wallet = Arc::new(RwLock::new(Self {
+        Arc::new(RwLock::new(Self {
             network,
             client,
             mint_keyset_infos,
@@ -119,19 +120,18 @@ impl Wallet {
             nostr_repo,
             nostr_consumer_running: Arc::new(Mutex::new(false)),
             nostr_shutdown: cancel.clone(),
-        }));
-        wallet
-            .read()
-            .await
-            .nostr_connect(nostr_consumer, cancel)
-            .await;
-        Self::start_nostr_event_listener(wallet.clone()).await;
-        wallet
+            nostr_consumer,
+        }))
     }
 
-    async fn nostr_connect(&self, nostr_consumer: Box<dyn ConsumerApi>, cancel: CancellationToken) {
+    pub fn nostr_consumer(&self) -> Arc<dyn ConsumerApi> {
+        self.nostr_consumer.clone()
+    }
+
+    async fn nostr_connect(&self, nostr_consumer: Arc<dyn ConsumerApi>) {
         let wallet_id = self.id.clone();
         let nostr_consumer_running = self.nostr_consumer_running.clone();
+        let cancel = self.nostr_shutdown.clone();
         tokio::spawn(async move {
             *nostr_consumer_running.lock().await = false;
             // attempt to start nostr consumer
@@ -204,8 +204,13 @@ impl Wallet {
         });
     }
 
-    async fn start_nostr_event_listener(wallet: Arc<RwLock<Self>>) {
+    pub async fn start_nostr_event_listener(wallet: Arc<RwLock<Self>>) {
+        // subscribe before events are published to avoid events being lost
         let mut nostr_receiver = wallet.read().await.nostr_event_channel.subscribe();
+
+        let nostr_consumer = wallet.read().await.nostr_consumer();
+        wallet.read().await.nostr_connect(nostr_consumer).await;
+
         let wallet_network = wallet.read().await.network();
         tokio::spawn(async move {
             loop {
@@ -365,8 +370,8 @@ impl Wallet {
         &self,
         mint_url: url::Url,
     ) -> Result<(
-        Option<(ConnectedMintsResponse, HashMap<cashu::Id, KeySetInfo>)>,
-        HashMap<cashu::Id, KeySetInfo>,
+        Option<(ConnectedMintsResponse, HashMap<ecash::Id, KeySetInfo>)>,
+        HashMap<ecash::Id, KeySetInfo>,
     )> {
         let local_keysets_info = self.get_wallet_mint_keyset_infos().await?;
         if &mint_url == self.client.mint_url() {
@@ -407,13 +412,13 @@ impl Wallet {
             let alpha_keysets = substitute_client.get_alpha_keysets(alpha_id).await?;
 
             // The endpoint only returns active keysets
-            let intermint_alpha_infos: HashMap<cashu::Id, KeySetInfo> = alpha_keysets
+            let intermint_alpha_infos: HashMap<ecash::Id, KeySetInfo> = alpha_keysets
                 .iter()
                 .map(|keyset| {
                     (
-                        keyset.id,
+                        keyset.id.into(),
                         ecash::KeySetInfo {
-                            id: keyset.id,
+                            id: keyset.id.into(),
                             unit: keyset.unit.clone(),
                             active: true,
                             input_fee_ppk: keyset.input_fee_ppk,
@@ -426,7 +431,7 @@ impl Wallet {
         }
     }
 
-    async fn get_wallet_mint_keyset_infos(&self) -> Result<HashMap<cashu::Id, KeySetInfo>> {
+    async fn get_wallet_mint_keyset_infos(&self) -> Result<HashMap<ecash::Id, KeySetInfo>> {
         Ok(match self.client.get_mint_keysets().await {
             Ok(infos) => infos.into_iter().map(|k| (k.id, k)).collect(),
             Err(e) => {
@@ -746,11 +751,11 @@ impl Wallet {
 
     async fn _receive_proofs(
         &self,
-        local_alpha_keysets_info: &HashMap<cashu::Id, KeySetInfo>,
+        local_alpha_keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         proofs: Vec<cashu::Proof>,
         unit: CurrencyUnit,
         mint: url::Url,
-        intermint_infos: Option<(ConnectedMintsResponse, HashMap<cashu::Id, KeySetInfo>)>,
+        intermint_infos: Option<(ConnectedMintsResponse, HashMap<ecash::Id, KeySetInfo>)>,
         tstamp: u64,
         memo: Option<String>,
         payment_type: PaymentType,
@@ -1454,7 +1459,7 @@ mod tests {
         }
     }
 
-    async fn wallet(mut ctx: MockWalletCtx) -> Arc<RwLock<Wallet>> {
+    async fn wallet(ctx: MockWalletCtx) -> Arc<RwLock<Wallet>> {
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(ctx.client);
         let mut beta_mock = crate::external::mint::MockClowderMintConnector::new();
         beta_mock.expect_get_alpha_status().returning(|_| {
@@ -1470,9 +1475,6 @@ mod tests {
         let beta_url = url::Url::parse("https://beta.test").unwrap();
         let mut beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>> = HashMap::new();
         beta_clients.insert(beta_url, Arc::new(beta_mock));
-        ctx.nostr_consumer
-            .expect_start()
-            .returning(|| Ok(tokio::task::JoinSet::new()));
 
         Wallet::new(
             bitcoin::Network::Testnet,
@@ -1492,7 +1494,7 @@ mod tests {
             Arc::new(ctx.nostr_transport),
             ctx.nostr_event_channel,
             Arc::new(ctx.nostr_repo),
-            Box::new(ctx.nostr_consumer),
+            Arc::new(ctx.nostr_consumer),
         )
         .await
     }
@@ -3648,7 +3650,8 @@ mod tests {
                 Ok(())
             });
 
-        let _wlt = wallet(ctx).await;
+        let wlt = wallet(ctx).await;
+        Wallet::start_nostr_event_listener(wlt).await;
 
         let payload = ContactPaymentPayload {
             payment_request_id: Some(req_id),
@@ -3702,7 +3705,8 @@ mod tests {
                 Ok(())
             });
 
-        let _wlt = wallet(ctx).await;
+        let wlt = wallet(ctx).await;
+        Wallet::start_nostr_event_listener(wlt).await;
 
         let payload = ContactPaymentRequestPayload {
             id: req_id,
@@ -3766,7 +3770,7 @@ mod tests {
 
         ctx.client
             .expect_mint_url()
-            .times(2)
+            .times(1)
             .return_const(url::Url::from_str("https://mint.example").unwrap());
 
         ctx.client
@@ -4129,8 +4133,6 @@ mod tests {
     #[tokio::test]
     async fn test_create_shareable_remote_payment_request_can_be_prepared() {
         let mut ctx = wallet_ctx();
-        let relays = vec![RelayUrl::from_str("wss://relay.example.com").unwrap()];
-
         ctx.debit
             .expect_unit()
             .times(1)
@@ -4140,11 +4142,6 @@ mod tests {
             .expect_mint_url()
             .times(1)
             .return_const(url::Url::from_str("https://mint.example").unwrap());
-
-        ctx.nostr_transport
-            .expect_relays()
-            .times(1)
-            .return_const(relays);
 
         ctx.client
             .expect_get_mint_keysets()
@@ -4187,18 +4184,12 @@ mod tests {
     #[tokio::test]
     async fn test_prepare_pay_shared_payment_request_sets_payment_reference() {
         let mut ctx = wallet_ctx();
-        let relays = vec![RelayUrl::from_str("wss://relay.example.com").unwrap()];
         let expected_node_id = NodeId::new(test_pub_key(), bitcoin::Network::Testnet);
 
         ctx.debit
             .expect_unit()
             .times(1)
             .returning(|| CurrencyUnit::Sat);
-
-        ctx.nostr_transport
-            .expect_relays()
-            .times(1)
-            .return_const(relays);
 
         ctx.client
             .expect_mint_url()

@@ -1,6 +1,7 @@
 use bcr_common::{
     cashu::{self, CurrencyUnit},
     core::NodeId,
+    ecash,
     wire::common as wire_common,
 };
 use bcr_wallet_core::types::TransactionFees;
@@ -48,7 +49,7 @@ pub struct WalletBalance {
 
 #[derive(Debug, Clone)]
 pub struct WalletDetailedBalanceEntry {
-    pub kid: cashu::Id,
+    pub kid: ecash::Id,
     pub final_expiry: Option<u64>,
     pub amount: cashu::Amount,
 }
