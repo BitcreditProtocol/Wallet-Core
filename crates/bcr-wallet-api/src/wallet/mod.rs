@@ -24,11 +24,12 @@ use bcr_common::{
 };
 use bcr_wallet_core::{
     contact::Contact,
-    event::{ContactPaymentPayload, EventEnvelope},
+    event::{ContactPaymentPayload, ContactPaymentRequestPayload, EventEnvelope},
     types::{
-        ClowderBeta, ForeignMintProof, ListTransactionsResult, PaymentRequest, PaymentType,
-        Transaction, TransactionCursor, TransactionFees, TransactionFilters, TransactionLinkReason,
-        TransactionSort, TransactionStatus, extract_fees_per_month,
+        ClowderBeta, ForeignMintProof, ListTransactionsResult, PaymentRequest,
+        PaymentRequestDirection, PaymentRequestState, PaymentType, Transaction, TransactionCursor,
+        TransactionFees, TransactionFilters, TransactionLinkReason, TransactionSort,
+        TransactionStatus, extract_fees_per_month,
     },
     util::{from_mint_url, to_mint_url},
 };
@@ -1227,6 +1228,72 @@ impl Wallet {
         Ok(txid)
     }
 
+    async fn send_payment_request(
+        &self,
+        node_id: NodeId,
+        relays: Vec<RelayUrl>,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+        deadline: Option<u64>,
+    ) -> Result<Uuid> {
+        let payload = ContactPaymentRequestPayload::new(
+            self.node_id(),
+            amount,
+            unit.clone(),
+            description.clone(),
+            deadline,
+            to_mint_url(self.client.mint_url()),
+        );
+        let created_at = payload.created_at;
+        let payment_req_id = payload.id;
+        let event: EventEnvelope =
+            bcr_wallet_core::event::Event::new_contact_payment_request(payload).try_into()?;
+        let payload = base58::encode(&borsh::to_vec(&event)?);
+        let target = Nip19Profile::new(node_id.npub(), relays)
+            .to_bech32()
+            .map_err(|_| Error::Unsupported(node_id.to_string()))?;
+        match self
+            .nostr_transport
+            .send_private_msg(target.clone(), payload.clone())
+            .await
+        {
+            Ok(event_id) => {
+                tracing::info!(
+                    "Sent contact payment request {} with nostr event_id {event_id}",
+                    payment_req_id
+                );
+            }
+            Err(e) => {
+                tracing::error!("Failed to send contact payment request, queuing for retry: {e}");
+                match e {
+                    bcr_wallet_transport::error::Error::NostrSendPrivateMsg(_) => {
+                        self.nostr_transport
+                            .queue_retry_message(Some(target), payload)
+                            .await?;
+                    }
+                    e => return Err(e.into()),
+                }
+            }
+        };
+        let outgoing_payment_request = PaymentRequest {
+            id: payment_req_id,
+            node_id,
+            amount,
+            unit,
+            description,
+            deadline,
+            created_at,
+            state: PaymentRequestState::Pending,
+            direction: PaymentRequestDirection::Outgoing,
+        };
+
+        self.payment_request_repo
+            .add_payment_request(outgoing_payment_request)
+            .await?;
+        Ok(payment_req_id)
+    }
+
     async fn pay_nut18(
         &self,
         proofs: Vec<cashu::Proof>,
@@ -1337,7 +1404,7 @@ mod tests {
     use ::nostr::{
         event::EventId,
         key::PublicKey,
-        nips::nip19::{Nip19Profile, ToBech32},
+        nips::nip19::{FromBech32, Nip19Profile, ToBech32},
         types::RelayUrl,
     };
     use bcr_common::{
@@ -1357,7 +1424,7 @@ mod tests {
     use bcr_wallet_persistence::{
         MockContactStoreApi, MockNostrRepository, MockPaymentRequestStoreApi,
         MockTransactionRepository,
-        test_utils::tests::{test_pub_key, valid_payment_address_testnet},
+        test_utils::tests::{test_other_pub_key, test_pub_key, valid_payment_address_testnet},
     };
     use bcr_wallet_transport::NostrEventChannel;
     use secp256k1::SECP256K1;
@@ -2844,20 +2911,6 @@ mod tests {
             .expect_fetch_relay_list()
             .times(1)
             .returning(|_, _| Ok(vec![]));
-        ctx.nostr_transport
-            .expect_nip19_for_contact()
-            .times(1)
-            .returning(|_| {
-                Ok(Some(
-                    Nip19Profile::new(
-                        PublicKey::from_byte_array([0u8; 32]),
-                        vec![RelayUrl::from_str("wss://test.example.com").unwrap()],
-                    )
-                    .to_bech32()
-                    .unwrap()
-                    .to_string(),
-                ))
-            });
         ctx.contact_repo
             .expect_get_contact()
             .times(2)
@@ -2884,6 +2937,75 @@ mod tests {
             )
             .await
             .expect("request payment from contact works");
+    }
+
+    #[tokio::test]
+    async fn test_req_payment_from_node_id() {
+        let mut ctx = wallet_ctx();
+        let target = node_id(NODE_ID_1);
+        let relay = RelayUrl::from_str("wss://test.example.com").unwrap();
+
+        let own_relays = vec![relay.clone()];
+        ctx.nostr_transport
+            .expect_relays()
+            .times(1)
+            .return_const(own_relays);
+        let expected_npub = target.npub();
+        let fetched_relays = vec![relay.clone()];
+        ctx.nostr_transport
+            .expect_fetch_relay_list()
+            .times(1)
+            .withf(move |npub, _| *npub == expected_npub)
+            .returning(move |_, _| Ok(fetched_relays.clone()));
+        let expected_npub = target.npub();
+        ctx.nostr_transport
+            .expect_send_private_msg()
+            .times(1)
+            .withf(move |recipient, _| {
+                Nip19Profile::from_bech32(recipient)
+                    .is_ok_and(|p| p.public_key == expected_npub && p.relays == vec![relay.clone()])
+            })
+            .returning(|_, _| Ok(EventId::from_byte_array([0u8; 32])));
+        let expected_node_id = target.clone();
+        ctx.payment_request_repo
+            .expect_add_payment_request()
+            .times(1)
+            .withf(move |req| {
+                req.node_id == expected_node_id
+                    && req.amount == Amount::from(100)
+                    && req.direction == PaymentRequestDirection::Outgoing
+                    && req.state == PaymentRequestState::Pending
+            })
+            .returning(|_| Ok(()));
+        ctx.client
+            .expect_mint_url()
+            .times(1)
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
+
+        let wlt = wallet(ctx).await;
+        wlt.read()
+            .await
+            .request_payment_from_node_id(target, Amount::from(100), CurrencyUnit::Sat, None, None)
+            .await
+            .expect("request payment from node id works");
+    }
+
+    #[tokio::test]
+    async fn test_req_payment_from_node_id_wrong_network() {
+        let ctx = wallet_ctx();
+        let wlt = wallet(ctx).await;
+        let res = wlt
+            .read()
+            .await
+            .request_payment_from_node_id(
+                NodeId::new(test_other_pub_key(), bitcoin::Network::Bitcoin),
+                Amount::from(100),
+                CurrencyUnit::Sat,
+                None,
+                None,
+            )
+            .await;
+        assert!(matches!(res, Err(Error::InvalidNetwork(..))));
     }
 
     #[tokio::test]

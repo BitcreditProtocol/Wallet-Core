@@ -265,6 +265,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletRequestPaymentFromNodeIdRequest
+  dco_decode_box_autoadd_wallet_request_payment_from_node_id_request(
+    dynamic raw,
+  );
+
+  @protected
   WalletSubscribeToPaymentRequestsRequest
   dco_decode_box_autoadd_wallet_subscribe_to_payment_requests_request(
     dynamic raw,
@@ -771,6 +777,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_wallet_request_payment_from_contact_response(dynamic raw);
 
   @protected
+  WalletRequestPaymentFromNodeIdRequest
+  dco_decode_wallet_request_payment_from_node_id_request(dynamic raw);
+
+  @protected
+  WalletRequestPaymentFromNodeIdResponse
+  dco_decode_wallet_request_payment_from_node_id_response(dynamic raw);
+
+  @protected
   WalletSubscribeToPaymentRequestsRequest
   dco_decode_wallet_subscribe_to_payment_requests_request(dynamic raw);
 
@@ -1086,6 +1100,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletRequestPaymentFromContactRequest
   sse_decode_box_autoadd_wallet_request_payment_from_contact_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletRequestPaymentFromNodeIdRequest
+  sse_decode_box_autoadd_wallet_request_payment_from_node_id_request(
     SseDeserializer deserializer,
   );
 
@@ -1734,6 +1754,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletRequestPaymentFromNodeIdRequest
+  sse_decode_wallet_request_payment_from_node_id_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletRequestPaymentFromNodeIdResponse
+  sse_decode_wallet_request_payment_from_node_id_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   WalletSubscribeToPaymentRequestsRequest
   sse_decode_wallet_subscribe_to_payment_requests_request(
     SseDeserializer deserializer,
@@ -2108,6 +2140,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_wallet_request_payment_from_contact_request(
     WalletRequestPaymentFromContactRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_wallet_request_payment_from_node_id_request(
+    WalletRequestPaymentFromNodeIdRequest self,
     SseSerializer serializer,
   );
 
@@ -2897,6 +2935,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_request_payment_from_contact_response(
     WalletRequestPaymentFromContactResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_request_payment_from_node_id_request(
+    WalletRequestPaymentFromNodeIdRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_request_payment_from_node_id_response(
+    WalletRequestPaymentFromNodeIdResponse self,
     SseSerializer serializer,
   );
 

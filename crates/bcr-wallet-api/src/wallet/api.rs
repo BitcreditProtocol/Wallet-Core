@@ -161,6 +161,14 @@ pub trait WalletApi: SendSync {
         description: Option<String>,
         deadline: Option<u64>,
     ) -> Result<Uuid>;
+    async fn request_payment_from_node_id(
+        &self,
+        node_id: NodeId,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+        deadline: Option<u64>,
+    ) -> Result<Uuid>;
     fn nostr_event_channel(&self) -> NostrEventChannel;
     async fn list_payment_requests(
         &self,
@@ -1454,65 +1462,37 @@ impl WalletApi for super::Wallet {
         let Ok(Some(contact)) = self.contact_repo.get_contact(contact_id).await else {
             return Err(Error::ContactNotFound(contact_id.to_string()));
         };
-        let Some(ref node_id) = contact.node_id else {
+        let Some(node_id) = contact.node_id else {
             return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
         };
-        let payload = ContactPaymentRequestPayload::new(
-            self.node_id(),
-            amount,
-            unit.clone(),
-            description.clone(),
-            deadline,
-            to_mint_url(self.client.mint_url()),
-        );
-        let created_at = payload.created_at;
-        let payment_req_id = payload.id;
-        let event: EventEnvelope =
-            bcr_wallet_core::event::Event::new_contact_payment_request(payload).try_into()?;
-        let payload = base58::encode(&borsh::to_vec(&event)?);
-        let target = self.nostr_transport.nip19_for_contact(&contact).await?;
-        let Some(target) = target else {
-            return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
-        };
-        match self
-            .nostr_transport
-            .send_private_msg(target.clone(), payload.clone())
-            .await
-        {
-            Ok(event_id) => {
-                tracing::info!(
-                    "Sent contact payment request {} with nostr event_id {event_id}",
-                    payment_req_id
-                );
-            }
-            Err(e) => {
-                tracing::error!("Failed to send contact payment request, queuing for retry: {e}");
-                match e {
-                    bcr_wallet_transport::error::Error::NostrSendPrivateMsg(_) => {
-                        self.nostr_transport
-                            .queue_retry_message(Some(target), payload)
-                            .await?;
-                    }
-                    e => return Err(e.into()),
-                }
-            }
-        };
-        let outgoing_payment_request = PaymentRequest {
-            id: payment_req_id,
-            node_id: node_id.to_owned(),
+        self.send_payment_request(
+            node_id,
+            contact.nostr_relays,
             amount,
             unit,
             description,
             deadline,
-            created_at,
-            state: PaymentRequestState::Pending,
-            direction: PaymentRequestDirection::Outgoing,
-        };
+        )
+        .await
+    }
 
-        self.payment_request_repo
-            .add_payment_request(outgoing_payment_request)
+    async fn request_payment_from_node_id(
+        &self,
+        node_id: NodeId,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+        deadline: Option<u64>,
+    ) -> Result<Uuid> {
+        if node_id.network() != self.network() {
+            return Err(Error::InvalidNetwork(self.network(), node_id.network()));
+        }
+        let relays = self
+            .nostr_transport
+            .fetch_relay_list(node_id.npub(), self.nostr_transport.relays().to_owned())
             .await?;
-        Ok(payment_req_id)
+        self.send_payment_request(node_id, relays, amount, unit, description, deadline)
+            .await
     }
 
     fn nostr_event_channel(&self) -> NostrEventChannel {
