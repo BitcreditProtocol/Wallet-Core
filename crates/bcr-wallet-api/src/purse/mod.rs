@@ -209,17 +209,10 @@ where
             && let Some(first_wallet_for_network) = self.first_wallet_for_network(network).await
             && let Some(wlt) = self.get_wallet(&first_wallet_for_network).await
         {
-            let mut fetched_relay_list = wlt
-                .read()
+            wlt.read()
                 .await
-                .fetch_nostr_relays(node_id.npub(), my_relays.clone())
+                .fetch_nostr_relays(node_id.npub(), my_relays)
                 .await
-                .unwrap_or(my_relays.clone());
-
-            if fetched_relay_list.is_empty() {
-                fetched_relay_list = my_relays;
-            }
-            fetched_relay_list
         } else {
             my_relays
         }

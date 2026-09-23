@@ -23,7 +23,6 @@ use bcr_common::{
     wire::clowder::{ConnectedMintResponse, ConnectedMintsResponse},
 };
 use bcr_wallet_core::{
-    contact::Contact,
     event::{ContactPaymentPayload, ContactPaymentRequestPayload, EventEnvelope},
     types::{
         ClowderBeta, ForeignMintProof, ListTransactionsResult, PaymentRequest,
@@ -1133,11 +1132,11 @@ impl Wallet {
         Ok(tx_id)
     }
 
-    async fn pay_to_contact(
+    async fn pay_to_node(
         &self,
+        node_id: &NodeId,
+        relays: Vec<RelayUrl>,
         proofs: Vec<cashu::Proof>,
-        nostr_cl: &Arc<dyn TransportApi>,
-        contact: Contact,
         payment_request_id: Option<Uuid>,
         mut partial_tx: Transaction,
     ) -> Result<Uuid> {
@@ -1153,79 +1152,36 @@ impl Wallet {
         let event: EventEnvelope =
             bcr_wallet_core::event::Event::new_contact_payment(payload).try_into()?;
         let payload = base58::encode(&borsh::to_vec(&event)?);
-        let target = nostr_cl.nip19_for_contact(&contact).await?;
-        let Some(target) = target else {
-            return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
-        };
-
-        let event_id = match nostr_cl
-            .send_private_msg(target.clone(), payload.clone())
-            .await
-        {
-            Ok(event_id) => event_id,
-            Err(e) => {
-                tracing::error!("Failed to send contact payment, queuing for retry: {e}");
-                match e {
-                    bcr_wallet_transport::error::Error::NostrSendPrivateMsg(event_id) => {
-                        self.nostr_transport
-                            .queue_retry_message(Some(target), payload)
-                            .await?;
-                        event_id
-                    }
-                    e => return Err(e.into()),
-                }
-            }
-        };
+        let event_id = self.send_private_or_queue(node_id, relays, payload).await?;
         partial_tx.nostr_event_id = Some(event_id);
         let txid = self.tx_repo.store_tx(partial_tx).await?;
         Ok(txid)
     }
 
-    async fn pay_shared_payment_request(
+    async fn send_private_or_queue(
         &self,
-        node_id: NodeId,
+        node_id: &NodeId,
         relays: Vec<RelayUrl>,
-        proofs: Vec<cashu::Proof>,
-        nostr_cl: &Arc<dyn TransportApi>,
-        mut partial_tx: Transaction,
-    ) -> Result<Uuid> {
-        let payload = ContactPaymentPayload {
-            payment_request_id: None,
-            sender: self.node_id(),
-            proofs,
-            memo: partial_tx.memo.clone(),
-            unit: partial_tx.unit.clone(),
-            mint: to_mint_url(self.client.mint_url()),
-            created_at: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
-        };
-        let event: EventEnvelope =
-            bcr_wallet_core::event::Event::new_contact_payment(payload).try_into()?;
-        let payload = base58::encode(&borsh::to_vec(&event)?);
-        let target = Nip19Profile::new(node_id.npub(), relays.clone())
+        payload: String,
+    ) -> Result<EventId> {
+        let target = Nip19Profile::new(node_id.npub(), relays)
             .to_bech32()
             .map_err(|_| Error::Unsupported(node_id.to_string()))?;
-
-        let event_id = match nostr_cl
+        match self
+            .nostr_transport
             .send_private_msg(target.clone(), payload.clone())
             .await
         {
-            Ok(event_id) => event_id,
-            Err(e) => {
-                tracing::error!("Failed to send contact payment, queuing for retry: {e}");
-                match e {
-                    bcr_wallet_transport::error::Error::NostrSendPrivateMsg(event_id) => {
-                        self.nostr_transport
-                            .queue_retry_message(Some(target), payload)
-                            .await?;
-                        event_id
-                    }
-                    e => return Err(e.into()),
-                }
+            Ok(event_id) => Ok(event_id),
+            Err(bcr_wallet_transport::error::Error::NostrSendPrivateMsg(event_id)) => {
+                tracing::error!("Failed to send private message to {node_id}, queuing for retry");
+                self.nostr_transport
+                    .queue_retry_message(Some(target), payload)
+                    .await?;
+                Ok(event_id)
             }
-        };
-        partial_tx.nostr_event_id = Some(event_id);
-        let txid = self.tx_repo.store_tx(partial_tx).await?;
-        Ok(txid)
+            Err(e) => Err(e.into()),
+        }
     }
 
     async fn send_payment_request(
@@ -1250,32 +1206,10 @@ impl Wallet {
         let event: EventEnvelope =
             bcr_wallet_core::event::Event::new_contact_payment_request(payload).try_into()?;
         let payload = base58::encode(&borsh::to_vec(&event)?);
-        let target = Nip19Profile::new(node_id.npub(), relays)
-            .to_bech32()
-            .map_err(|_| Error::Unsupported(node_id.to_string()))?;
-        match self
-            .nostr_transport
-            .send_private_msg(target.clone(), payload.clone())
-            .await
-        {
-            Ok(event_id) => {
-                tracing::info!(
-                    "Sent contact payment request {} with nostr event_id {event_id}",
-                    payment_req_id
-                );
-            }
-            Err(e) => {
-                tracing::error!("Failed to send contact payment request, queuing for retry: {e}");
-                match e {
-                    bcr_wallet_transport::error::Error::NostrSendPrivateMsg(_) => {
-                        self.nostr_transport
-                            .queue_retry_message(Some(target), payload)
-                            .await?;
-                    }
-                    e => return Err(e.into()),
-                }
-            }
-        };
+        let event_id = self
+            .send_private_or_queue(&node_id, relays, payload)
+            .await?;
+        tracing::info!("Sent payment request {payment_req_id} with nostr event_id {event_id}");
         let outgoing_payment_request = PaymentRequest {
             id: payment_req_id,
             node_id,
@@ -1379,19 +1313,13 @@ impl Wallet {
         };
 
         let existing_relays = existing_contact.nostr_relays;
-        let Ok(fetched_relays) = self
-            .nostr_transport
-            .fetch_relay_list(node_id.npub(), existing_relays.clone())
-            .await
-        else {
-            return;
-        };
-
-        // only update if they're not empty
-        if !fetched_relays.is_empty()
+        let relays = self
+            .fetch_nostr_relays(node_id.npub(), existing_relays.clone())
+            .await;
+        if relays != existing_relays
             && let Err(e) = self
                 .contact_repo
-                .edit_contact_relays(contact_id.to_owned(), fetched_relays)
+                .edit_contact_relays(contact_id.to_owned(), relays)
                 .await
         {
             tracing::warn!("Could not update relays for contact {node_id}: {e}");
@@ -1414,6 +1342,7 @@ mod tests {
         wire::clowder as wire_clowder,
     };
     use bcr_wallet_core::{
+        contact::Contact,
         event::ContactPaymentRequestPayload,
         name::Name,
         types::{
@@ -1426,7 +1355,7 @@ mod tests {
         MockTransactionRepository,
         test_utils::tests::{test_other_pub_key, test_pub_key, valid_payment_address_testnet},
     };
-    use bcr_wallet_transport::NostrEventChannel;
+    use bcr_wallet_transport::{NostrEventChannel, error::Error as TransportError};
     use secp256k1::SECP256K1;
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
@@ -2387,21 +2316,6 @@ mod tests {
             .returning(|_, _| Ok(vec![]));
 
         ctx.nostr_transport
-            .expect_nip19_for_contact()
-            .times(1)
-            .returning(|_| {
-                Ok(Some(
-                    Nip19Profile::new(
-                        PublicKey::from_byte_array([0u8; 32]),
-                        vec![RelayUrl::from_str("wss://test.example.com").unwrap()],
-                    )
-                    .to_bech32()
-                    .unwrap()
-                    .to_string(),
-                ))
-            });
-
-        ctx.nostr_transport
             .expect_send_private_msg()
             .times(1)
             .returning(|_target, _payload| Ok(EventId::from_byte_array([0u8; 32])));
@@ -2902,19 +2816,29 @@ mod tests {
     #[tokio::test]
     async fn test_req_payment_from_contact() {
         let mut ctx = wallet_ctx();
+        let relay = RelayUrl::from_str("wss://contact.example.com").unwrap();
+        let contact = Contact {
+            nostr_relays: vec![relay.clone()],
+            ..test_contact()
+        };
+        let expected_npub = node_id(NODE_ID_1).npub();
 
         ctx.nostr_transport
             .expect_send_private_msg()
             .times(1)
+            .withf(move |recipient, _| {
+                Nip19Profile::from_bech32(recipient)
+                    .is_ok_and(|p| p.public_key == expected_npub && p.relays == vec![relay.clone()])
+            })
             .returning(|_, _| Ok(EventId::from_byte_array([0u8; 32])));
         ctx.nostr_transport
             .expect_fetch_relay_list()
             .times(1)
-            .returning(|_, _| Ok(vec![]));
+            .returning(|_, _| Err(TransportError::Network("offline".to_string())));
         ctx.contact_repo
             .expect_get_contact()
             .times(2)
-            .returning(|_| Ok(Some(test_contact())));
+            .returning(move |_| Ok(Some(contact.clone())));
         ctx.payment_request_repo
             .expect_add_payment_request()
             .times(1)
@@ -2939,33 +2863,42 @@ mod tests {
             .expect("request payment from contact works");
     }
 
-    #[tokio::test]
-    async fn test_req_payment_from_node_id() {
+    async fn req_payment_from_node_id_with(
+        fetched: fn() -> bcr_wallet_transport::error::Result<Vec<RelayUrl>>,
+        sent: fn() -> bcr_wallet_transport::error::Result<EventId>,
+        expected_relays: Vec<RelayUrl>,
+        queued: usize,
+    ) {
         let mut ctx = wallet_ctx();
         let target = node_id(NODE_ID_1);
-        let relay = RelayUrl::from_str("wss://test.example.com").unwrap();
+        let own_relay = RelayUrl::from_str("wss://own.example.com").unwrap();
 
-        let own_relays = vec![relay.clone()];
         ctx.nostr_transport
             .expect_relays()
             .times(1)
-            .return_const(own_relays);
+            .return_const(vec![own_relay.clone()]);
         let expected_npub = target.npub();
-        let fetched_relays = vec![relay.clone()];
         ctx.nostr_transport
             .expect_fetch_relay_list()
             .times(1)
-            .withf(move |npub, _| *npub == expected_npub)
-            .returning(move |_, _| Ok(fetched_relays.clone()));
+            .withf(move |npub, relays| *npub == expected_npub && *relays == vec![own_relay.clone()])
+            .returning(move |_, _| fetched());
         let expected_npub = target.npub();
+        let is_target = move |recipient: &str| {
+            Nip19Profile::from_bech32(recipient)
+                .is_ok_and(|p| p.public_key == expected_npub && p.relays == expected_relays)
+        };
+        let is_sent_target = is_target.clone();
         ctx.nostr_transport
             .expect_send_private_msg()
             .times(1)
-            .withf(move |recipient, _| {
-                Nip19Profile::from_bech32(recipient)
-                    .is_ok_and(|p| p.public_key == expected_npub && p.relays == vec![relay.clone()])
-            })
-            .returning(|_, _| Ok(EventId::from_byte_array([0u8; 32])));
+            .withf(move |recipient, _| is_sent_target(recipient))
+            .returning(move |_, _| sent());
+        ctx.nostr_transport
+            .expect_queue_retry_message()
+            .times(queued)
+            .withf(move |recipient, _| recipient.as_deref().is_some_and(&is_target))
+            .returning(|_, _| Ok(()));
         let expected_node_id = target.clone();
         ctx.payment_request_repo
             .expect_add_payment_request()
@@ -2988,6 +2921,54 @@ mod tests {
             .request_payment_from_node_id(target, Amount::from(100), CurrencyUnit::Sat, None, None)
             .await
             .expect("request payment from node id works");
+    }
+
+    fn their_relays() -> Vec<RelayUrl> {
+        vec![RelayUrl::from_str("wss://their.example.com").unwrap()]
+    }
+
+    fn own_relays() -> Vec<RelayUrl> {
+        vec![RelayUrl::from_str("wss://own.example.com").unwrap()]
+    }
+
+    fn sent_ok() -> bcr_wallet_transport::error::Result<EventId> {
+        Ok(EventId::from_byte_array([0u8; 32]))
+    }
+
+    #[tokio::test]
+    async fn test_req_payment_from_node_id() {
+        req_payment_from_node_id_with(|| Ok(their_relays()), sent_ok, their_relays(), 0).await;
+    }
+
+    #[tokio::test]
+    async fn test_req_payment_from_node_id_falls_back_to_own_relays_when_none_announced() {
+        req_payment_from_node_id_with(|| Ok(vec![]), sent_ok, own_relays(), 0).await;
+    }
+
+    #[tokio::test]
+    async fn test_req_payment_from_node_id_falls_back_to_own_relays_when_lookup_fails() {
+        req_payment_from_node_id_with(
+            || Err(TransportError::Network("offline".to_string())),
+            sent_ok,
+            own_relays(),
+            0,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_req_payment_from_node_id_queues_when_send_fails() {
+        req_payment_from_node_id_with(
+            || Ok(their_relays()),
+            || {
+                Err(TransportError::NostrSendPrivateMsg(
+                    EventId::from_byte_array([1u8; 32]),
+                ))
+            },
+            their_relays(),
+            1,
+        )
+        .await;
     }
 
     #[tokio::test]

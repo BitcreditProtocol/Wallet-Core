@@ -140,7 +140,7 @@ pub trait WalletApi: SendSync {
         &self,
         npub: nostr::key::PublicKey,
         relays: Vec<RelayUrl>,
-    ) -> Result<Vec<RelayUrl>>;
+    ) -> Vec<RelayUrl>;
     async fn delete(&self) -> Result<()>;
     fn rename(&mut self, new_name: String);
     async fn create_shareable_remote_payment_request(
@@ -592,9 +592,9 @@ impl WalletApi for super::Wallet {
                 let Ok(Some(contact)) = self.contact_repo.get_contact(contact_id).await else {
                     return Err(Error::ContactNotFound(contact_id.to_string()));
                 };
-                if contact.node_id.is_none() {
+                let Some(node_id) = contact.node_id else {
                     return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
-                }
+                };
 
                 let proofs = self
                     .debit
@@ -620,14 +620,14 @@ impl WalletApi for super::Wallet {
                     btc_tx_id: None,
                     quote_id: None,
                     nostr_event_id: None,
-                    contact_node_id: contact.node_id.clone(),
+                    contact_node_id: Some(node_id.clone()),
                     linked_txs: vec![],
                 };
                 let tx_id = self
-                    .pay_to_contact(
+                    .pay_to_node(
+                        &node_id,
+                        contact.nostr_relays,
                         proofs,
-                        &self.nostr_transport,
-                        contact,
                         payment_request_id,
                         partial_tx,
                     )
@@ -643,11 +643,9 @@ impl WalletApi for super::Wallet {
                 Ok((tx_id, None))
             }
             WalletPaymentType::SharedPaymentRequest { node_id } => {
-                let existing_relays = self.nostr_transport.relays().to_owned();
                 let receiver_relays = self
-                    .nostr_transport
-                    .fetch_relay_list(node_id.npub(), existing_relays)
-                    .await?;
+                    .fetch_nostr_relays(node_id.npub(), self.nostr_transport.relays().to_owned())
+                    .await;
 
                 let proofs = self
                     .debit
@@ -677,13 +675,7 @@ impl WalletApi for super::Wallet {
                     linked_txs: vec![],
                 };
                 let tx_id = self
-                    .pay_shared_payment_request(
-                        node_id,
-                        receiver_relays,
-                        proofs,
-                        &self.nostr_transport,
-                        partial_tx,
-                    )
+                    .pay_to_node(&node_id, receiver_relays, proofs, None, partial_tx)
                     .await?;
 
                 Ok((tx_id, None))
@@ -1329,9 +1321,19 @@ impl WalletApi for super::Wallet {
         &self,
         npub: nostr::key::PublicKey,
         relays: Vec<RelayUrl>,
-    ) -> Result<Vec<RelayUrl>> {
-        let res = self.nostr_transport.fetch_relay_list(npub, relays).await?;
-        Ok(res)
+    ) -> Vec<RelayUrl> {
+        match self
+            .nostr_transport
+            .fetch_relay_list(npub, relays.clone())
+            .await
+        {
+            Ok(fetched) if !fetched.is_empty() => fetched,
+            Ok(_) => relays,
+            Err(e) => {
+                tracing::warn!("Could not fetch relays for {npub}, using known relays: {e}");
+                relays
+            }
+        }
     }
 
     fn rename(&mut self, new_name: String) {
@@ -1488,9 +1490,8 @@ impl WalletApi for super::Wallet {
             return Err(Error::InvalidNetwork(self.network(), node_id.network()));
         }
         let relays = self
-            .nostr_transport
-            .fetch_relay_list(node_id.npub(), self.nostr_transport.relays().to_owned())
-            .await?;
+            .fetch_nostr_relays(node_id.npub(), self.nostr_transport.relays().to_owned())
+            .await;
         self.send_payment_request(node_id, relays, amount, unit, description, deadline)
             .await
     }

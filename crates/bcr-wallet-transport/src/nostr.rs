@@ -4,10 +4,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use bcr_common::{cashu::nut18 as cdk18, cdk_common::bitcoin::base58};
-use bcr_wallet_core::{
-    contact::Contact,
-    event::{ContactPaymentPayload, ContactPaymentRequestPayload, EventEnvelope},
-};
+use bcr_wallet_core::event::{ContactPaymentPayload, ContactPaymentRequestPayload, EventEnvelope};
 use bcr_wallet_persistence::{NostrEventOffset, NostrQueuedMessage, NostrRepository};
 use bitcoin::secp256k1::Keypair;
 use futures::StreamExt;
@@ -295,17 +292,6 @@ impl TransportApi for Transport {
             target: Nip19Profile::new(self.client.signer.public_key(), self.client.relays.clone())
                 .to_bech32()?,
             tags: vec![vec![String::from("n"), String::from("17")]],
-        })
-    }
-
-    async fn nip19_for_contact(&self, contact: &Contact) -> Result<Option<String>> {
-        Ok(match contact.node_id.as_ref() {
-            Some(node_id) => {
-                let target =
-                    Nip19Profile::new(node_id.npub(), contact.nostr_relays.clone()).to_bech32()?;
-                Some(target)
-            }
-            None => None,
         })
     }
 
