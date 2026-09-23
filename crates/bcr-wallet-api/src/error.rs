@@ -1,6 +1,6 @@
 use bcr_common::{
     cashu::{self},
-    cdk_common,
+    cdk_common, ecash,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -75,9 +75,9 @@ pub enum Error {
     #[error("no active keyset")]
     NoActiveKeyset,
     #[error("unknown keyset ID")]
-    UnknownKeysetId(cashu::Id),
+    UnknownKeysetId(ecash::Id),
     #[error("inactive keyset {0}")]
-    InactiveKeyset(cashu::Id),
+    InactiveKeyset(ecash::Id),
     #[error("invalid currency unit: {0}")]
     InvalidCurrencyUnit(String),
     #[error("no reference to prepare request_id: {0}")]
@@ -294,7 +294,9 @@ impl From<bcr_common::wire::attestation::AttestationError> for Error {
 impl From<bcr_common::core::swap::wallet::Error> for Error {
     fn from(value: bcr_common::core::swap::wallet::Error) -> Self {
         match value {
-            bcr_common::core::swap::wallet::Error::UnknownKeyset(id) => Error::UnknownKeysetId(id),
+            bcr_common::core::swap::wallet::Error::UnknownKeyset(id) => {
+                Error::UnknownKeysetId(id.into())
+            }
             bcr_common::core::swap::wallet::Error::InsufficientBalance(amount, other_amount) => {
                 Error::InsufficientBalance(amount, other_amount)
             }

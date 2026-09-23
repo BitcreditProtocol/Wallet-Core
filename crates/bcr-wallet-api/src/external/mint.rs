@@ -64,7 +64,7 @@ async fn post_swap_commitment_inner(
     let (committed_content, commitment) = client
         .commit_swap(
             fingerprints,
-            outputs.clone(),
+            outputs.clone().into_iter().map(|o| o.into()).collect(),
             expiry,
             wallet_pk,
             alpha_pk,
@@ -149,7 +149,7 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
         &self,
         request: cashu::CheckStateRequest,
     ) -> MintResult<Vec<cashu::ProofState>>;
-    async fn get_mint_keyset(&self, keyset_id: cashu::Id) -> MintResult<ecash::KeySet>;
+    async fn get_mint_keyset(&self, keyset_id: ecash::Id) -> MintResult<ecash::KeySet>;
     async fn get_mint_keysets(&self) -> MintResult<Vec<ecash::KeySetInfo>>;
     async fn get_clowder_betas(&self) -> MintResult<Vec<ClowderBeta>>;
     async fn post_online_exchange(
@@ -277,10 +277,10 @@ impl ClowderMintConnector for HttpClientExt {
         self.main.check_state(request.ys).await
     }
 
-    async fn get_mint_keyset(&self, keyset_id: cashu::Id) -> MintResult<ecash::KeySet> {
+    async fn get_mint_keyset(&self, keyset_id: ecash::Id) -> MintResult<ecash::KeySet> {
         debug!("HTTP call to get_mint_keyset");
         #[allow(deprecated)]
-        self.main.keys_v1(keyset_id).await
+        self.main.keys_v1(keyset_id.into()).await
     }
 
     async fn get_mint_keysets(&self) -> MintResult<Vec<ecash::KeySetInfo>> {
@@ -697,10 +697,10 @@ impl ClowderMintConnector for SentinelClient {
         debug!("HTTP call to post_check_state on sentinel");
         self.main.check_state(request.ys).await
     }
-    async fn get_mint_keyset(&self, keyset_id: cashu::Id) -> MintResult<ecash::KeySet> {
+    async fn get_mint_keyset(&self, keyset_id: ecash::Id) -> MintResult<ecash::KeySet> {
         debug!("HTTP call to get_mint_keyset on sentinel");
         #[allow(deprecated)]
-        self.main.keys_v1(keyset_id).await
+        self.main.keys_v1(keyset_id.into()).await
     }
     async fn get_mint_keysets(&self) -> MintResult<Vec<ecash::KeySetInfo>> {
         debug!("HTTP call to get_mint_keysets on sentinel");

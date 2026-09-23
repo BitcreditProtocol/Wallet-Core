@@ -1230,15 +1230,18 @@ impl WalletApi for super::Wallet {
                 .await?;
 
             // Fetch keyset infos
-            let keysets_info: HashMap<cashu::Id, ecash::KeySetInfo> = substitute_client
+            let keysets_info: HashMap<ecash::Id, ecash::KeySetInfo> = substitute_client
                 .get_mint_keysets()
                 .await?
                 .into_iter()
                 .map(|k| (k.id, k))
                 .collect();
 
-            let kids: HashSet<cashu::Id> = substitute_proofs.iter().map(|p| p.keyset_id).collect();
-            let mut keysets: HashMap<cashu::Id, KeySet> = HashMap::new();
+            let kids: HashSet<ecash::Id> = substitute_proofs
+                .iter()
+                .map(|p| p.keyset_id.into())
+                .collect();
+            let mut keysets: HashMap<ecash::Id, KeySet> = HashMap::new();
             for kid in kids.iter() {
                 let keyset = substitute_client.get_mint_keyset(*kid).await?;
                 keysets.insert(*kid, keyset);

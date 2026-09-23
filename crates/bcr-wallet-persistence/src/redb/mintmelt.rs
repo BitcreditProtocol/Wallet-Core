@@ -3,7 +3,10 @@ use crate::{
     error::{Error, Result},
 };
 use async_trait::async_trait;
-use bcr_common::cashu::{self, Amount, CurrencyUnit, nut00 as cdk00, nut01 as cdk01};
+use bcr_common::{
+    cashu::{self, Amount, CurrencyUnit, nut00 as cdk00, nut01 as cdk01},
+    ecash,
+};
 use bcr_wallet_core::types::MintSummary;
 use bitcoin::address::NetworkUnchecked;
 use redb::{Database, ReadableDatabase, TableDefinition, TableError};
@@ -21,7 +24,7 @@ struct MeltEntry {
         cdk01::SecretKey,
         Amount,
     )>,
-    kid: Option<cashu::Id>,
+    kid: Option<ecash::Id>,
 }
 
 fn convert_melt_entry_from(qid: String, premints: Option<cdk00::PreMintSecrets>) -> MeltEntry {
@@ -34,7 +37,7 @@ fn convert_melt_entry_from(qid: String, premints: Option<cdk00::PreMintSecrets>)
     };
     entry.premints = Vec::with_capacity(premints.len());
     let cdk00::PreMintSecrets { secrets, keyset_id } = premints;
-    entry.kid = Some(keyset_id);
+    entry.kid = Some(keyset_id.into());
     for premint in secrets {
         entry.premints.push((
             premint.blinded_message,
@@ -66,7 +69,13 @@ fn convert_melt_entry_to(entry: MeltEntry) -> (String, Option<cdk00::PreMintSecr
         };
         secrets.push(pre);
     }
-    (quote_id, Some(cdk00::PreMintSecrets { secrets, keyset_id }))
+    (
+        quote_id,
+        Some(cdk00::PreMintSecrets {
+            secrets,
+            keyset_id: keyset_id.into(),
+        }),
+    )
 }
 
 ///////////////////////////////////////////// MintEntry
@@ -82,7 +91,7 @@ struct MintEntry {
         cdk01::SecretKey,
         Amount,
     )>,
-    kid: cashu::Id,
+    kid: ecash::Id,
     content: String,
     commitment: bitcoin::secp256k1::schnorr::Signature,
     ephemeral_secret: Vec<u8>,
@@ -105,7 +114,7 @@ fn convert_mint_entry_from(
         address,
         expiry,
         premints: Vec::with_capacity(secrets.len()),
-        kid: keyset_id,
+        kid: keyset_id.into(),
         content,
         commitment,
         ephemeral_secret: ephemeral_secret.secret_bytes().to_vec(),
@@ -143,7 +152,10 @@ fn convert_mint_entry_to(entry: MintEntry) -> Result<crate::MintRecord> {
         .map_err(|e| Error::Custom(format!("invalid ephemeral secret: {e}")))?;
     Ok(crate::MintRecord {
         summary,
-        premint: cdk00::PreMintSecrets { secrets, keyset_id },
+        premint: cdk00::PreMintSecrets {
+            secrets,
+            keyset_id: keyset_id.into(),
+        },
         content: entry.content,
         commitment: entry.commitment,
         ephemeral_secret,
@@ -660,7 +672,7 @@ mod tests {
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let premint = cdk00::PreMintSecrets::random(
-            keyset.id,
+            keyset.id.into(),
             amounts[0],
             &SplitTarget::None,
             &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
@@ -744,7 +756,7 @@ mod tests {
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let premint = cdk00::PreMintSecrets::random(
-            keyset.id,
+            keyset.id.into(),
             Amount::from(12345u64),
             &SplitTarget::None,
             &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
@@ -787,14 +799,14 @@ mod tests {
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let premint1 = cdk00::PreMintSecrets::random(
-            keyset.id,
+            keyset.id.into(),
             Amount::from(1u64),
             &SplitTarget::None,
             &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
         )
         .unwrap();
         let premint2 = cdk00::PreMintSecrets::random(
-            keyset.id,
+            keyset.id.into(),
             Amount::from(2u64),
             &SplitTarget::None,
             &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
@@ -844,7 +856,7 @@ mod tests {
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let premint = cdk00::PreMintSecrets::random(
-            keyset.id,
+            keyset.id.into(),
             Amount::from(42u64),
             &SplitTarget::None,
             &bcr_wallet_core::util::to_fee_and_amounts(&keyset),

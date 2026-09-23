@@ -6,10 +6,7 @@ use async_trait::async_trait;
 use bcr_common::wire::borsh::{
     deserialize_from_str, deserialize_vec_of_strs, serialize_as_str, serialize_vec_of_strs,
 };
-use bcr_common::{
-    cashu::{self, CurrencyUnit},
-    ecash,
-};
+use bcr_common::{cashu::CurrencyUnit, ecash};
 use bcr_wallet_core::{
     borsh::{deserialize_mint_keyset_infos, serialize_mint_keyset_infos},
     types::WalletConfig,
@@ -45,7 +42,7 @@ pub(super) struct StoredWalletPayloadV1 {
         serialize_with = "serialize_mint_keyset_infos",
         deserialize_with = "deserialize_mint_keyset_infos"
     )]
-    mint_keyset_infos: HashMap<cashu::Id, ecash::KeySetInfo>,
+    mint_keyset_infos: HashMap<ecash::Id, ecash::KeySetInfo>,
     #[borsh(
         serialize_with = "serialize_as_str",
         deserialize_with = "deserialize_from_str"

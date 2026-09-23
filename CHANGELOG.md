@@ -1,6 +1,8 @@
 # 0.9.14
 
 * Added filtered logging
+* Start listening to and processing Nostr messages AFTER all initialization completed (especially restore)
+* Upgrade bcr-common and use new ecash types
 
 # 0.9.13
 

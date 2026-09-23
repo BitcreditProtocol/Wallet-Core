@@ -3,15 +3,18 @@ use crate::{
     error::{Error, Result},
 };
 use async_trait::async_trait;
-use bcr_common::cashu::{
-    self, CurrencyUnit, nut00 as cdk00, nut01 as cdk01, nut02 as cdk02, nut07 as cdk07,
-    nut12 as cdk12, secret::Secret,
-};
 use bcr_common::wire::borsh::{
     deserialize_cashu_amount, deserialize_from_str, deserialize_optionproofdleq,
     deserialize_optionproofwitness, deserialize_vec_of_strs, deserialize_vecof_blindedmessage,
     serialize_as_str, serialize_cashu_amount, serialize_optionproofdleq,
     serialize_optionproofwitness, serialize_vec_of_strs, serialize_vecof_blindedmessage,
+};
+use bcr_common::{
+    cashu::{
+        self, CurrencyUnit, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut12 as cdk12,
+        secret::Secret,
+    },
+    ecash,
 };
 use bcr_wallet_core::{
     borsh::{deserialize_premints, serialize_premints},
@@ -171,7 +174,7 @@ pub(super) struct StoredCommitmentPayloadV1 {
         serialize_with = "serialize_premints",
         deserialize_with = "deserialize_premints"
     )]
-    premints: HashMap<cashu::Id, cdk00::PreMintSecrets>,
+    premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
 }
 
 pub(super) fn to_stored_commitment_v1(
@@ -245,7 +248,7 @@ pub(super) struct StoredProofPayloadV1 {
         serialize_with = "serialize_as_str",
         deserialize_with = "deserialize_from_str"
     )]
-    keyset_id: cdk02::Id,
+    keyset_id: ecash::Id,
     #[borsh(
         serialize_with = "serialize_as_str",
         deserialize_with = "deserialize_from_str"
@@ -279,7 +282,7 @@ impl std::convert::From<cdk00::Proof> for StoredProofPayloadV1 {
         StoredProofPayloadV1 {
             y,
             amount: proof.amount,
-            keyset_id: proof.keyset_id,
+            keyset_id: proof.keyset_id.into(),
             secret: proof.secret,
             c: proof.c,
             witness: proof.witness,
@@ -293,7 +296,7 @@ impl std::convert::From<StoredProofPayloadV1> for cdk00::Proof {
     fn from(entry: StoredProofPayloadV1) -> Self {
         cdk00::Proof {
             amount: entry.amount,
-            keyset_id: entry.keyset_id,
+            keyset_id: entry.keyset_id.into(),
             secret: entry.secret,
             c: entry.c,
             witness: entry.witness,
@@ -343,7 +346,7 @@ pub(super) struct StoredCounterPayloadV1 {
         serialize_with = "serialize_as_str",
         deserialize_with = "deserialize_from_str"
     )]
-    pub kid: cdk02::Id,
+    pub kid: ecash::Id,
     pub counter: u32,
 }
 
@@ -632,7 +635,7 @@ impl PocketDB {
     fn load_counter_sync(
         db: Arc<Database>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        kid: cdk02::Id,
+        kid: ecash::Id,
     ) -> Result<StoredCounter> {
         let read_txn = db.begin_read()?;
 
@@ -659,7 +662,7 @@ impl PocketDB {
     fn insert_counter_sync(
         db: Arc<Database>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        kid: cdk02::Id,
+        kid: ecash::Id,
     ) -> Result<StoredCounter> {
         let entry = StoredCounter::V1(StoredCounterPayloadV1 { kid, counter: 0 });
         let write_txn = db.begin_write()?;
@@ -1086,7 +1089,7 @@ impl PocketRepository for PocketDB {
         Ok(proof)
     }
 
-    async fn counter(&self, kid: bcr_common::cashu::Id) -> Result<u32> {
+    async fn counter(&self, kid: ecash::Id) -> Result<u32> {
         let db_clone = self.db.clone();
         let table = self.counter_table;
         let counter =
@@ -1095,12 +1098,7 @@ impl PocketRepository for PocketDB {
         Ok(counter.counter)
     }
 
-    async fn increment_counter(
-        &self,
-        kid: bcr_common::cashu::Id,
-        old: u32,
-        increment: u32,
-    ) -> Result<()> {
+    async fn increment_counter(&self, kid: ecash::Id, old: u32, increment: u32) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.counter_table;
         let old_c = StoredCounterPayloadV1 { kid, counter: old };

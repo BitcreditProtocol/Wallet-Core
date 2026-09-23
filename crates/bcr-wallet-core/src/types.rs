@@ -2,7 +2,7 @@ use bcr_common::{
     cashu::{self, Amount, CurrencyUnit, MintUrl},
     cdk_common::wallet::TransactionDirection,
     core::NodeId,
-    ecash::KeySetInfo,
+    ecash::{self, KeySetInfo},
 };
 use bitcoin::{address::NetworkUnchecked, secp256k1};
 use nostr::{event::EventId, types::RelayUrl};
@@ -42,7 +42,7 @@ pub struct WalletConfig {
     pub name: String,
     pub network: bitcoin::Network,
     pub mint: url::Url,
-    pub mint_keyset_infos: HashMap<cashu::Id, KeySetInfo>,
+    pub mint_keyset_infos: HashMap<ecash::Id, KeySetInfo>,
     pub clowder_id: secp256k1::PublicKey,
     pub debit: CurrencyUnit,
     pub pub_key: secp256k1::PublicKey,

@@ -1,6 +1,6 @@
 use bcr_common::{
-    cashu::{self, nut02 as cdk02},
-    cdk_common,
+    cashu::{self},
+    cdk_common, ecash,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -54,7 +54,7 @@ pub enum Error {
     #[error("counter kid mismatch")]
     CounterKidMismatch,
     #[error("counter in local DB not found: {0}")]
-    CounterNotFound(cdk02::Id),
+    CounterNotFound(ecash::Id),
     #[error("{0}")]
     Custom(String),
     #[error("Contact already exists {0}")]
