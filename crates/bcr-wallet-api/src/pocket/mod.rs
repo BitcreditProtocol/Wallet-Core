@@ -19,8 +19,8 @@ use bcr_wallet_core::{
 };
 use bcr_wallet_persistence::PocketRepository;
 use rand::seq::IndexedRandom;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 pub mod debit;
@@ -191,6 +191,61 @@ enum SendPlan {
     },
 }
 
+///////////////////////////////////////////// InFlight
+#[derive(Default)]
+pub(crate) struct InFlight(Mutex<HashSet<cdk01::PublicKey>>);
+
+impl InFlight {
+    fn insert(&self, ys: &[cdk01::PublicKey]) {
+        self.0.lock().unwrap().extend(ys);
+    }
+
+    fn remove(&self, ys: &[cdk01::PublicKey]) {
+        let mut set = self.0.lock().unwrap();
+        for y in ys {
+            set.remove(y);
+        }
+    }
+
+    fn exclude<V>(&self, proofs: &mut HashMap<cdk01::PublicKey, V>) {
+        let set = self.0.lock().unwrap();
+        proofs.retain(|y, _| !set.contains(y));
+    }
+}
+
+///////////////////////////////////////////// premint_from_counter
+async fn premint_from_counter(
+    db: &dyn PocketRepository,
+    seed: &Seed,
+    kid: ecash::Id,
+    amount: Amount,
+    target: &SplitTarget,
+    keyset: &KeySet,
+) -> Result<cdk00::PreMintSecrets> {
+    let fee_and_amounts = bcr_wallet_core::util::to_fee_and_amounts(keyset);
+    loop {
+        let counter = db.counter(kid).await?;
+        let premint = cdk00::PreMintSecrets::from_seed(
+            kid.into(),
+            counter,
+            seed,
+            amount,
+            target,
+            &fee_and_amounts,
+        )?;
+        match db
+            .increment_counter(kid, counter, premint.len() as u32)
+            .await
+        {
+            Err(bcr_wallet_persistence::error::Error::CounterConflict(_)) => continue,
+            res => {
+                res?;
+                return Ok(premint);
+            }
+        }
+    }
+}
+
 ///////////////////////////////////////////// unblind_proofs
 pub(crate) fn unblind_proofs(
     keyset: &KeySet,
@@ -300,7 +355,7 @@ pub(crate) async fn committed_swap(
 async fn swap(
     output_unit: CurrencyUnit,
     inputs: Vec<cdk00::Proof>,
-    mut premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
+    mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets>,
     keysets: HashMap<ecash::Id, KeySet>,
     client: Arc<dyn ClowderMintConnector>,
     db: &dyn PocketRepository,
@@ -348,11 +403,7 @@ async fn swap(
 
         for proof in proofs {
             let amount = proof.amount;
-            let response = db.store_new(proof).await;
-            if let Err(e) = response {
-                tracing::error!("failed at storing new proof: {kid}, {amount}, {e}");
-                continue;
-            }
+            db.store_new(proof).await?;
             total_cashed_in += amount;
         }
     }
@@ -375,13 +426,13 @@ async fn swap_proofs_to_target(
         .iter()
         .map(|(id, info)| ((*id).into(), info.clone()))
         .collect();
-    let swap_plan: Vec<_> = prepare_swap(&swap_proofs, &keysets_info)?
+    let swap_plan: BTreeMap<_, _> = prepare_swap(&swap_proofs, &keysets_info)?
         .into_iter()
         .collect();
     tracing::debug!("Swapping Proof to Target {target_amount}, {swap_plan:?}");
 
     // prepare the premints
-    let mut premints: HashMap<ecash::Id, cdk00::PreMintSecrets> = HashMap::new();
+    let mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets> = BTreeMap::new();
     let mut remaining_payment = target_amount;
     // collect payments by kid, so we can reconstruct it after the swap
     let mut payment_targets_by_kid: HashMap<ecash::Id, Amount> = HashMap::new();
@@ -399,18 +450,9 @@ async fn swap_proofs_to_target(
             SplitTarget::default()
         };
 
-        let counter = db.counter(kid.into()).await?;
-        let premint = cdk00::PreMintSecrets::from_seed(
-            kid,
-            counter,
-            seed,
-            amount,
-            &target,
-            &bcr_wallet_core::util::to_fee_and_amounts(&keysets[&kid.into()]),
-        )?;
-        let increment = premint.len() as u32;
-        premints.insert(kid.into(), premint);
-        db.increment_counter(kid.into(), counter, increment).await?;
+        let kid: ecash::Id = kid.into();
+        let premint = premint_from_counter(db, seed, kid, amount, &target, &keysets[&kid]).await?;
+        premints.insert(kid, premint);
     }
 
     if remaining_payment != Amount::ZERO {
@@ -458,18 +500,11 @@ async fn swap_proofs_to_target(
         proofs.sort_by_key(|proof| std::cmp::Reverse(proof.amount));
         for proof in proofs {
             let amount = proof.amount;
-            let result = db.store_new(proof.clone()).await;
-            match result {
-                Ok(y) => {
-                    if selected_amount_per_keyset + amount <= keyset_target_amount {
-                        selected_amount_per_keyset += amount;
-                        selected_amount += amount;
-                        on_target.insert(y, proof);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("error in storing proof {}, {}: {e}", kid, amount);
-                }
+            let y = db.store_new(proof.clone()).await?;
+            if selected_amount_per_keyset + amount <= keyset_target_amount {
+                selected_amount_per_keyset += amount;
+                selected_amount += amount;
+                on_target.insert(y, proof);
             }
         }
 
@@ -530,14 +565,16 @@ async fn send_proofs(
     client: &Arc<dyn ClowderMintConnector>,
     swap_config: SwapConfig,
     beta: &dyn BetaProvider,
+    in_flight: &InFlight,
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
     let mut current_amount = Amount::ZERO;
     let mut sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
 
     match plan {
         SendPlan::Ready { proofs } => {
-            for y in proofs {
-                let proof = db.mark_as_pendingspent(y).await?;
+            in_flight.insert(&proofs);
+            let reserved = db.mark_as_pendingspent(proofs.clone()).await?;
+            for (y, proof) in proofs.into_iter().zip(reserved) {
                 current_amount += proof.amount;
                 sending_proofs.insert(y, proof);
             }
@@ -560,12 +597,11 @@ async fn send_proofs(
                 keysets.insert(*kid, keyset);
             }
 
-            for y in swap_proofs.keys() {
-                let _ = db.mark_as_pendingspent(*y).await?;
-            }
+            in_flight.insert(&inputs);
+            let swap_proofs = db.mark_as_pendingspent(inputs).await?;
 
             let swapped_to_target_proofs = swap_proofs_to_target(
-                swap_proofs.into_values().collect(),
+                swap_proofs,
                 keysets_info,
                 keysets,
                 target,
@@ -577,10 +613,12 @@ async fn send_proofs(
             )
             .await?;
 
-            for (y, proof) in swapped_to_target_proofs.iter() {
-                let _ = db.mark_as_pendingspent(*y).await?;
+            let ys: Vec<cdk01::PublicKey> = swapped_to_target_proofs.keys().cloned().collect();
+            in_flight.insert(&ys);
+            db.mark_as_pendingspent(ys).await?;
+            for (y, proof) in swapped_to_target_proofs {
                 current_amount += proof.amount;
-                sending_proofs.insert(*y, proof.clone());
+                sending_proofs.insert(y, proof);
             }
         }
     };
@@ -598,25 +636,20 @@ async fn send_proofs(
 async fn return_proofs_to_send_for_offline_payment(
     plan: SendPlan,
     db: &dyn PocketRepository,
+    in_flight: &InFlight,
 ) -> Result<(Amount, HashMap<cdk01::PublicKey, cdk00::Proof>)> {
-    let mut send_amount = Amount::ZERO;
-    let mut sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
-    match plan {
-        SendPlan::Ready { proofs } => {
-            for y in proofs {
-                let proof = db.mark_as_pendingspent(y).await?;
-                send_amount += proof.amount;
-                sending_proofs.insert(y, proof);
-            }
-        }
-        SendPlan::NeedSwap { inputs, target, .. } => {
-            for proof in inputs {
-                let swap_proof = db.mark_as_pendingspent(proof).await?;
-                sending_proofs.insert(proof, swap_proof);
-            }
-            send_amount += target;
-        }
+    let (ys, target) = match plan {
+        SendPlan::Ready { proofs } => (proofs, None),
+        SendPlan::NeedSwap { inputs, target, .. } => (inputs, Some(target)),
     };
+    in_flight.insert(&ys);
+    let reserved = db.mark_as_pendingspent(ys.clone()).await?;
+    let send_amount = match target {
+        Some(target) => target,
+        None => reserved.iter().fold(Amount::ZERO, |acc, p| acc + p.amount),
+    };
+    let sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
+        ys.into_iter().zip(reserved).collect();
 
     Ok((send_amount, sending_proofs))
 }
@@ -628,6 +661,55 @@ mod tests {
     use bcr_common::{cashu::Proof, core::signature, core_tests};
     use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
     use mockall::predicate::*;
+
+    #[tokio::test]
+    async fn premint_from_counter_retries_on_conflict() {
+        let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let amount = Amount::from(8);
+
+        let mut db = MockPocketRepository::new();
+        let mut seq = mockall::Sequence::new();
+        db.expect_counter()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|_| Ok(0));
+        db.expect_increment_counter()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|kid, _, _| Err(bcr_wallet_persistence::error::Error::CounterConflict(kid)));
+        db.expect_counter()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|_| Ok(3));
+        db.expect_increment_counter()
+            .times(1)
+            .with(eq(kid), eq(3), eq(1))
+            .in_sequence(&mut seq)
+            .returning(|_, _, _| Ok(()));
+
+        let premint = super::premint_from_counter(
+            &db,
+            &zero_seed(),
+            kid,
+            amount,
+            &SplitTarget::None,
+            &keyset,
+        )
+        .await
+        .unwrap();
+        let expected = cdk00::PreMintSecrets::from_seed(
+            kid.into(),
+            3,
+            &zero_seed(),
+            amount,
+            &SplitTarget::None,
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
+        )
+        .unwrap();
+        assert_eq!(premint.secrets(), expected.secrets());
+    }
 
     #[test]
     fn unblind_proofs() {
@@ -803,7 +885,7 @@ mod tests {
         let amounts = [Amount::from(8), Amount::from(16)];
         let unit = CurrencyUnit::Sat;
         let inputs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
-        let premints = HashMap::from_iter([(
+        let premints = BTreeMap::from_iter([(
             info.id,
             cdk00::PreMintSecrets::random(
                 info.id.into(),
@@ -865,8 +947,8 @@ mod tests {
         let mut mockdb = MockPocketRepository::new();
         mockdb
             .expect_mark_as_pendingspent()
-            .times(2)
-            .returning(move |y| Ok(proof_by_y.get(&y).unwrap().clone()));
+            .times(1)
+            .returning(move |ys| Ok(ys.iter().map(|y| proof_by_y[y].clone()).collect()));
 
         let mockclient = MockClowderMintConnector::new();
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
@@ -881,6 +963,7 @@ mod tests {
             &arc_client,
             test_swap_config(),
             &beta,
+            &InFlight::default(),
         )
         .await
         .unwrap();
@@ -949,7 +1032,7 @@ mod tests {
 
         mockdb
             .expect_mark_as_pendingspent()
-            .returning(move |_| Ok(swap_proof.clone()));
+            .returning(move |ys| Ok(ys.iter().map(|_| swap_proof.clone()).collect()));
 
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
 
@@ -967,6 +1050,7 @@ mod tests {
             &arc_client,
             test_swap_config(),
             &beta,
+            &InFlight::default(),
         )
         .await
         .unwrap();
@@ -1057,9 +1141,18 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(proofs_clone.clone()));
 
-        mockdb
-            .expect_mark_as_pendingspent()
-            .returning(move |_| Ok(swap_proofs[0].clone()));
+        mockdb.expect_mark_as_pendingspent().returning(move |ys| {
+            Ok(ys
+                .iter()
+                .map(|y| {
+                    swap_proofs
+                        .iter()
+                        .find(|p| p.y().unwrap() == *y)
+                        .unwrap_or(&swap_proofs[0])
+                        .clone()
+                })
+                .collect())
+        });
 
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
 
@@ -1077,6 +1170,7 @@ mod tests {
             &arc_client,
             test_swap_config(),
             &beta,
+            &InFlight::default(),
         )
         .await
         .unwrap();
@@ -1144,7 +1238,7 @@ mod tests {
 
         mockdb
             .expect_mark_as_pendingspent()
-            .returning(move |_| Ok(swap_proof.clone()));
+            .returning(move |ys| Ok(ys.iter().map(|_| swap_proof.clone()).collect()));
 
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
         let beta = test_beta_provider();
@@ -1162,6 +1256,7 @@ mod tests {
             &arc_client,
             test_swap_config(),
             &beta,
+            &InFlight::default(),
         )
         .await
         .unwrap();
@@ -1257,9 +1352,16 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(load_proofs.clone()));
 
-        mockdb
-            .expect_mark_as_pendingspent()
-            .returning(move |_| Ok(swap_proof.clone()));
+        let marked = HashMap::from([
+            (swap_y, swap_proof.clone()),
+            (swap_y_ks_2, swap_proof_ks_2.clone()),
+        ]);
+        mockdb.expect_mark_as_pendingspent().returning(move |ys| {
+            Ok(ys
+                .iter()
+                .map(|y| marked.get(y).unwrap_or(&swap_proof).clone())
+                .collect())
+        });
 
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
 
@@ -1277,6 +1379,7 @@ mod tests {
             &arc_client,
             test_swap_config(),
             &beta,
+            &InFlight::default(),
         )
         .await
         .unwrap();

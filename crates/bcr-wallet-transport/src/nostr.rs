@@ -29,7 +29,7 @@ use nostr_sdk::{
     relay::RelayStatus,
 };
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -196,7 +196,7 @@ impl Client {
         let fetched_relays = self
             .fetch_relay_list(signer.public_key(), relays.clone())
             .await?;
-        let mut merged: HashSet<RelayUrl> = relays.into_iter().collect();
+        let mut merged: BTreeSet<RelayUrl> = relays.into_iter().collect();
         merged.extend(fetched_relays);
 
         self.publish_relay_list(merged.into_iter().collect())

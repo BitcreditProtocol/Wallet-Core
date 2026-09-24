@@ -46,7 +46,12 @@ use nostr::{
     nips::nip19::{Nip19Profile, ToBech32},
     types::RelayUrl,
 };
-use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -55,7 +60,7 @@ pub struct Wallet {
     network: bitcoin::Network,
     client: Arc<dyn ClowderMintConnector>,
     mint_keyset_infos: HashMap<ecash::Id, KeySetInfo>,
-    beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>>,
+    beta_clients: BTreeMap<url::Url, Arc<dyn ClowderMintConnector>>,
     tx_repo: Box<dyn TransactionRepository>,
     contact_repo: Arc<dyn ContactStoreApi>,
     payment_request_repo: Box<dyn PaymentRequestStoreApi>,
@@ -89,7 +94,7 @@ impl Wallet {
         id: String,
         pub_key: secp256k1::PublicKey,
         clowder_id: secp256k1::PublicKey,
-        beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>>,
+        beta_clients: BTreeMap<url::Url, Arc<dyn ClowderMintConnector>>,
         client_factory: Box<dyn Fn(url::Url) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
         swap_expiry: time::Duration,
         nostr_transport: Arc<dyn TransportApi>,
@@ -1473,7 +1478,7 @@ mod tests {
             ))
         });
         let beta_url = url::Url::parse("https://beta.test").unwrap();
-        let mut beta_clients: HashMap<url::Url, Arc<dyn ClowderMintConnector>> = HashMap::new();
+        let mut beta_clients: BTreeMap<url::Url, Arc<dyn ClowderMintConnector>> = BTreeMap::new();
         beta_clients.insert(beta_url, Arc::new(beta_mock));
 
         Wallet::new(
@@ -1503,7 +1508,7 @@ mod tests {
         w: Arc<RwLock<Wallet>>,
         betas: Vec<(url::Url, Arc<dyn ClowderMintConnector>)>,
     ) -> Arc<RwLock<Wallet>> {
-        let mut map = HashMap::new();
+        let mut map = BTreeMap::new();
         for (url, cl) in betas {
             map.insert(url, cl);
         }

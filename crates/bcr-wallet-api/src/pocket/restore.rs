@@ -19,9 +19,8 @@ pub async fn restore_keysetid(
 ) -> Result<usize> {
     let mut zero_response_counter = 0;
     let mut total_proofs_restored = 0;
-    db.counter(kid).await?; // initialize counter
-    let mut dbcursor = 0; // always start at 0 for restore
-    let mut cursor = dbcursor;
+    let mut dbcursor = db.counter(kid).await?;
+    let mut cursor = 0; // always start at 0 for restore
     while zero_response_counter < EMPTY_RESPONSES_BEFORE_ABORT {
         let restored_proofs = restore_batch(seed, kid, client, db, cursor, BATCH_SIZE).await?;
         cursor += BATCH_SIZE;
@@ -29,9 +28,11 @@ pub async fn restore_keysetid(
             zero_response_counter += 1;
         } else {
             zero_response_counter = 0;
-            db.increment_counter(kid, dbcursor, cursor - dbcursor)
-                .await?;
-            dbcursor = cursor;
+            if cursor > dbcursor {
+                db.increment_counter(kid, dbcursor, cursor - dbcursor)
+                    .await?;
+                dbcursor = cursor;
+            }
         }
         total_proofs_restored += restored_proofs;
     }
@@ -330,8 +331,7 @@ mod tests {
         assert_eq!(restored_proofs, BATCH_SIZE as usize);
     }
 
-    #[tokio::test]
-    async fn restore_keysetid_1stbatch() {
+    async fn restore_keysetid_1stbatch_with_counter(stored: u32, increments: usize) {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
@@ -344,7 +344,7 @@ mod tests {
         db.expect_counter()
             .times(1)
             .with(eq(mintkeyset.id))
-            .returning(move |_| Ok(0));
+            .returning(move |_| Ok(stored));
         let cloned_mintkeyset = mintkeyset.clone();
         client
             .expect_post_restore()
@@ -381,7 +381,7 @@ mod tests {
             .times(BATCH_SIZE as usize)
             .returning(|p| Ok(p.y().unwrap()));
         db.expect_increment_counter()
-            .times(1)
+            .times(increments)
             .with(eq(mintkeyset.id), eq(0), eq(BATCH_SIZE))
             .returning(|_, _, _| Ok(()));
         client
@@ -393,6 +393,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(total_restored, BATCH_SIZE as usize);
+    }
+
+    #[tokio::test]
+    async fn restore_keysetid_1stbatch() {
+        restore_keysetid_1stbatch_with_counter(0, 1).await;
+    }
+
+    #[tokio::test]
+    async fn restore_keysetid_never_lowers_counter() {
+        restore_keysetid_1stbatch_with_counter(3 * BATCH_SIZE, 0).await;
     }
 
     #[tokio::test]
