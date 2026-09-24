@@ -7,7 +7,7 @@ use bcr_wallet_core::{contact::Contact, email::Email, name::Name, types::WalletC
 use bcr_wallet_persistence::{ContactStoreApi, PurseRepository, redb::purse::PurseDB};
 use nostr::types::RelayUrl;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     sync::Arc,
 };
 use tokio::sync::RwLock;
@@ -183,7 +183,7 @@ where
 
     // collect nostr relays of all wallets of this network
     async fn nostr_relays(&self, network: bitcoin::Network) -> Vec<RelayUrl> {
-        let mut res = HashSet::new();
+        let mut res = BTreeSet::new();
         let wallets: HashMap<_, _> = {
             let wlts = self.wallets.read().await;
             wlts.clone()

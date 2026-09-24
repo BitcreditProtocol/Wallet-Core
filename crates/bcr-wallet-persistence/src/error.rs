@@ -53,6 +53,8 @@ pub enum Error {
     MeltCommitmentNotFound(String),
     #[error("counter kid mismatch")]
     CounterKidMismatch,
+    #[error("counter changed concurrently: {0}")]
+    CounterConflict(ecash::Id),
     #[error("counter in local DB not found: {0}")]
     CounterNotFound(ecash::Id),
     #[error("{0}")]

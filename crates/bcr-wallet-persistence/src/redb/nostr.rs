@@ -234,7 +234,7 @@ impl NostrDB {
                 }
             }
 
-            res.sort_by_key(|msg| msg.last_try);
+            res.sort_by_key(|msg| (msg.last_try, msg.created));
             res.truncate(limit as usize);
 
             // set processing_started_at to avoid retrying before the backoff time

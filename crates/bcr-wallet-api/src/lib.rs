@@ -30,7 +30,7 @@ use bcr_wallet_transport::{NostrEventChannel, NostrWalletEvent};
 use error::{Error, Result};
 use std::sync::atomic::Ordering;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     str::FromStr,
     sync::Arc,
 };
@@ -1407,7 +1407,7 @@ async fn build_wallet(
     let nostr_transport = nostr::Transport::new(nostr_cl, nostr_repo.clone());
 
     // building the debit pocket
-    let mut beta_clients = HashMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
+    let mut beta_clients = BTreeMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
     for beta in w_cfg.betas.clone() {
         let beta_client = HttpClientExt::new(beta.clone());
         beta_clients.insert(beta, Arc::new(beta_client));
