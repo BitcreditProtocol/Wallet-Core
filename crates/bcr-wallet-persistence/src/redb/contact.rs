@@ -263,6 +263,7 @@ impl ContactDB {
                     let StoredContact::V1(contact) = deserialized;
                     res.push(contact.into());
                 }
+                res.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
                 let search_term = search_term.map(|st| st.to_lowercase());
                 // search in name and company
                 match search_term {

@@ -220,6 +220,7 @@ impl PaymentRequestDB {
                         res.push(entry);
                     }
                 }
+                res.sort_by_key(|entry| (entry.created_at, entry.id));
                 Ok(res)
             }
             Err(TableError::TableDoesNotExist(_)) => Ok(vec![]),

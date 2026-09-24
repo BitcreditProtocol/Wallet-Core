@@ -8,7 +8,7 @@ pub mod tests {
     use crate::types::{MeltSummary, MintSummary, SendSummary};
     use crate::wallet::types::SwapConfig;
     use async_trait::async_trait;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::sync::Arc;
     use uuid::Uuid;
 
@@ -203,7 +203,7 @@ pub mod tests {
             async fn check_pending_mints(
                 &self,
                 client: Arc<dyn ClowderMintConnector>,
-            ) -> Result<HashMap<Uuid, crate::pocket::debit::CheckPendingMintResult>>;
+            ) -> Result<BTreeMap<Uuid, crate::pocket::debit::CheckPendingMintResult>>;
             async fn check_pending_commitments(&self, tstamp: u64) -> Result<()>;
             async fn protest_mint(
                 &self,

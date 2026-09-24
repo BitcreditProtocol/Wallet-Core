@@ -35,7 +35,7 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use nostr::{event::EventId, types::RelayUrl};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     str::FromStr,
     sync::Arc,
 };
@@ -699,7 +699,7 @@ impl WalletApi for super::Wallet {
 
         for (qid, mint_result) in pending_mints_result {
             let tx = Transaction {
-                id: Uuid::new_v4(),
+                id: qid,
                 mint_url: to_mint_url(self.client.mint_url()),
                 fees: TransactionFees {
                     swap: mint_result.fee, // when minting, we only accrue swap fees
@@ -1055,7 +1055,7 @@ impl WalletApi for super::Wallet {
 
         self.client = substitute;
         self.clowder_id = self.client.get_clowder_id().await?;
-        let mut beta_clients = HashMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
+        let mut beta_clients = BTreeMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
 
         for beta in self.client.as_ref().get_clowder_betas().await? {
             let beta_client = (self.client_factory)(beta.url.clone());
@@ -1186,7 +1186,7 @@ impl WalletApi for super::Wallet {
                 .ok_or_else(|| Error::Swap("alpha not offline at substitute".into()))?;
 
             // Create beta provider for substitute to do attestation
-            let mut beta_clients = HashMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
+            let mut beta_clients = BTreeMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
 
             for beta in substitute_client.as_ref().get_clowder_betas().await? {
                 let beta_client = (self.client_factory)(beta.url.clone());

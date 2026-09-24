@@ -433,6 +433,7 @@ impl TransactionDB {
                         .map_err(|e| Error::InvalidTransactionId(e.to_string()))?;
                     res.push(tx_id);
                 }
+                res.sort();
                 Ok(res)
             }
             Err(TableError::TableDoesNotExist(_)) => Ok(vec![]),

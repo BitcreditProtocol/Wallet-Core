@@ -429,10 +429,11 @@ impl PocketDB {
 
         {
             let mut table = write_txn.open_table(proof_table)?;
-
-            let serialized =
-                borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
-            table.insert(y.to_bytes().as_slice(), serialized)?;
+            if table.get(y.to_bytes().as_slice())?.is_none() {
+                let serialized =
+                    borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                table.insert(y.to_bytes().as_slice(), serialized)?;
+            }
         }
 
         write_txn.commit()?;
@@ -599,22 +600,24 @@ impl PocketDB {
         db: Arc<Database>,
         proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         keys: bitcoin::secp256k1::Keypair,
-        y: cdk01::PublicKey,
+        ys: &[cdk01::PublicKey],
         old_state_set: &[cdk07::State],
         new_state: cdk07::State,
-    ) -> Result<(cdk00::Proof, cdk07::State)> {
+    ) -> Result<Vec<cdk00::Proof>> {
         let write_txn = db.begin_write()?;
-        let new_value = {
+        let mut proofs = Vec::with_capacity(ys.len());
+        {
             let mut table = write_txn.open_table(proof_table)?;
-            let old_value = table.get(y.to_bytes().as_slice())?.map(|v| v.value());
-
-            if let Some(old_value) = old_value {
+            for y in ys {
+                let Some(old_value) = table.get(y.to_bytes().as_slice())?.map(|v| v.value()) else {
+                    return Err(Error::ProofNotFound(*y));
+                };
                 let deserialized: StoredProof = borsh::from_slice(old_value.as_slice())
                     .map_err(|e| Error::BorshSerialization(e.to_string()))?;
                 let (proof, proof_state) = from_stored_proof_v1(deserialized, keys)?;
 
                 if !old_state_set.contains(&proof_state) {
-                    return Err(Error::InvalidProofState(y));
+                    return Err(Error::InvalidProofState(*y));
                 }
 
                 let entry = to_stored_proof_v1(proof.clone(), Some(new_state), keys)?;
@@ -622,14 +625,12 @@ impl PocketDB {
                     borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
 
                 table.insert(y.to_bytes().as_slice(), serialized)?;
-                (proof, new_state)
-            } else {
-                return Err(Error::ProofNotFound(y));
+                proofs.push(proof);
             }
-        };
+        }
 
         write_txn.commit()?;
-        Ok(new_value)
+        Ok(proofs)
     }
 
     fn load_counter_sync(
@@ -664,16 +665,23 @@ impl PocketDB {
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         kid: ecash::Id,
     ) -> Result<StoredCounter> {
-        let entry = StoredCounter::V1(StoredCounterPayloadV1 { kid, counter: 0 });
         let write_txn = db.begin_write()?;
 
-        {
+        let entry = {
             let mut table = write_txn.open_table(counter_table)?;
-
-            let serialized =
-                borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
-            table.insert(kid.to_bytes().as_slice(), serialized)?;
-        }
+            let existing = table.get(kid.to_bytes().as_slice())?.map(|v| v.value());
+            match existing {
+                Some(existing) => borsh::from_slice(&existing)
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?,
+                None => {
+                    let entry = StoredCounter::V1(StoredCounterPayloadV1 { kid, counter: 0 });
+                    let serialized = borsh::to_vec(&entry)
+                        .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                    table.insert(kid.to_bytes().as_slice(), serialized)?;
+                    entry
+                }
+            }
+        };
 
         write_txn.commit()?;
         Ok(entry)
@@ -703,6 +711,9 @@ impl PocketDB {
 
                 if old_counter.kid != old.kid {
                     return Err(Error::CounterKidMismatch);
+                }
+                if old_counter.counter != old.counter {
+                    return Err(Error::CounterConflict(old.kid));
                 }
 
                 let serialized = borsh::to_vec(&StoredCounter::V1(new))
@@ -1035,58 +1046,57 @@ impl PocketRepository for PocketDB {
         spawn_blocking(move || Self::list_keys_sync(db_clone, table)).await?
     }
 
-    async fn mark_as_pendingspent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof> {
+    async fn mark_as_pendingspent(&self, ys: Vec<cdk01::PublicKey>) -> Result<Vec<cdk00::Proof>> {
         let db_clone = self.db.clone();
         let table = self.proof_table;
         let keys = self.keys;
-        let (proof, _) = spawn_blocking(move || {
+        spawn_blocking(move || {
             Self::update_entry_state_sync(
                 db_clone,
                 table,
                 keys,
-                y,
+                &ys,
                 &[cdk07::State::Unspent],
                 cdk07::State::PendingSpent,
             )
         })
-        .await??;
-        Ok(proof)
+        .await?
     }
 
     async fn mark_pending_as_spent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof> {
         let db_clone = self.db.clone();
         let table = self.proof_table;
         let keys = self.keys;
-        let (proof, _) = spawn_blocking(move || {
+        let mut proofs = spawn_blocking(move || {
             Self::update_entry_state_sync(
                 db_clone,
                 table,
                 keys,
-                y,
+                &[y],
                 &[cdk07::State::Pending, cdk07::State::PendingSpent],
                 cdk07::State::Spent,
             )
         })
         .await??;
-        Ok(proof)
+        Ok(proofs.remove(0))
     }
 
     async fn revert_pendingspent_to_unspent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof> {
         let db_clone = self.db.clone();
         let table = self.proof_table;
         let keys = self.keys;
-        let (proof, _) = spawn_blocking(move || {
+        let mut proofs = spawn_blocking(move || {
             Self::update_entry_state_sync(
                 db_clone,
                 table,
                 keys,
-                y,
+                &[y],
                 &[cdk07::State::PendingSpent],
                 cdk07::State::Unspent,
             )
         })
         .await??;
-        Ok(proof)
+        Ok(proofs.remove(0))
     }
 
     async fn counter(&self, kid: ecash::Id) -> Result<u32> {
@@ -1299,7 +1309,7 @@ mod tests {
 
         let y = repo.store_new(test_proof()).await.unwrap();
         let _proof = repo
-            .mark_as_pendingspent(y)
+            .mark_as_pendingspent(vec![y])
             .await
             .expect("mark_as_pendingspent works");
 
@@ -1319,7 +1329,7 @@ mod tests {
 
         let y = repo.store_new(test_proof()).await.unwrap();
         let _proof = repo
-            .mark_as_pendingspent(y)
+            .mark_as_pendingspent(vec![y])
             .await
             .expect("mark_as_pendingspent works");
         let _proof = repo
@@ -1343,7 +1353,7 @@ mod tests {
 
         let y = repo.store_pendingspent(test_proof()).await.unwrap();
 
-        let err = repo.mark_as_pendingspent(y).await.unwrap_err();
+        let err = repo.mark_as_pendingspent(vec![y]).await.unwrap_err();
         match err {
             Error::InvalidProofState(k) => assert_eq!(k, y),
             other => panic!("expected InvalidProofState, got: {other:?}"),
@@ -1372,6 +1382,52 @@ mod tests {
 
         let c2 = repo.counter(kid).await.expect("counter works");
         assert_eq!(c2, 5);
+    }
+
+    #[tokio::test]
+    async fn test_increment_counter_rejects_stale_old() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = mintkeyset.id;
+
+        repo.counter(kid).await.expect("counter works");
+        repo.increment_counter(kid, 0, 3)
+            .await
+            .expect("increment_counter works");
+
+        let err = repo.increment_counter(kid, 0, 2).await.unwrap_err();
+        assert!(matches!(err, Error::CounterConflict(k) if k == kid));
+        assert_eq!(repo.counter(kid).await.expect("counter works"), 3);
+    }
+
+    #[tokio::test]
+    async fn test_store_new_keeps_existing_state() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let proof = test_proof();
+
+        let y = repo.store_new(proof.clone()).await.unwrap();
+        repo.mark_as_pendingspent(vec![y]).await.unwrap();
+        repo.store_new(proof).await.unwrap();
+
+        let (_, state) = repo.load_proof(y).await.unwrap();
+        assert_eq!(state, cdk07::State::PendingSpent);
+    }
+
+    #[tokio::test]
+    async fn test_mark_as_pendingspent_is_all_or_nothing() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+
+        let unspent = repo.store_new(test_proof()).await.unwrap();
+        let pending = repo.store_pendingspent(test_proof()).await.unwrap();
+
+        let err = repo
+            .mark_as_pendingspent(vec![unspent, pending])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidProofState(k) if k == pending));
+
+        let (_, state) = repo.load_proof(unspent).await.unwrap();
+        assert_eq!(state, cdk07::State::Unspent);
     }
 
     #[tokio::test]
