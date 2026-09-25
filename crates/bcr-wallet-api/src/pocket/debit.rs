@@ -1027,7 +1027,7 @@ impl DebitPocketApi for Pocket {
             &self.beta.alpha_id().x_only_public_key().0,
         )?;
 
-        let body: wire_mint::OnchainMintQuoteResponseBody =
+        let body: wire_mint::OnchainMintQuoteResponseBodyV1 =
             bcr_common::core::signature::deserialize_borsh_msg(&response.content)?;
 
         if body.blinded_messages != blinded_messages {
@@ -1923,7 +1923,7 @@ mod tests {
             .expect_post_mint_quote_onchain()
             .times(1)
             .returning(move |req| {
-                let body = wire_mint::OnchainMintQuoteResponseBody {
+                let body = wire_mint::OnchainMintQuoteResponseBodyV1 {
                     quote: Uuid::new_v4(),
                     address: "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0".to_string(),
                     payment_amount: amount,
