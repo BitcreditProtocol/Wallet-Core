@@ -624,7 +624,7 @@ impl WalletApi for super::Wallet {
                     linked_txs: vec![],
                 };
                 let tx_id = self
-                    .pay_to_node(
+                    .pay_to_node_id(
                         &node_id,
                         contact.nostr_relays,
                         proofs,
@@ -675,7 +675,7 @@ impl WalletApi for super::Wallet {
                     linked_txs: vec![],
                 };
                 let tx_id = self
-                    .pay_to_node(&node_id, receiver_relays, proofs, None, partial_tx)
+                    .pay_to_node_id(&node_id, receiver_relays, proofs, None, partial_tx)
                     .await?;
 
                 Ok((tx_id, None))

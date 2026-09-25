@@ -1132,7 +1132,7 @@ impl Wallet {
         Ok(tx_id)
     }
 
-    async fn pay_to_node(
+    async fn pay_to_node_id(
         &self,
         node_id: &NodeId,
         relays: Vec<RelayUrl>,
@@ -1152,13 +1152,15 @@ impl Wallet {
         let event: EventEnvelope =
             bcr_wallet_core::event::Event::new_contact_payment(payload).try_into()?;
         let payload = base58::encode(&borsh::to_vec(&event)?);
-        let event_id = self.send_private_or_queue(node_id, relays, payload).await?;
+        let event_id = self
+            .send_payment_via_nostr(node_id, relays, payload)
+            .await?;
         partial_tx.nostr_event_id = Some(event_id);
         let txid = self.tx_repo.store_tx(partial_tx).await?;
         Ok(txid)
     }
 
-    async fn send_private_or_queue(
+    async fn send_payment_via_nostr(
         &self,
         node_id: &NodeId,
         relays: Vec<RelayUrl>,
@@ -1207,7 +1209,7 @@ impl Wallet {
             bcr_wallet_core::event::Event::new_contact_payment_request(payload).try_into()?;
         let payload = base58::encode(&borsh::to_vec(&event)?);
         let event_id = self
-            .send_private_or_queue(&node_id, relays, payload)
+            .send_payment_via_nostr(&node_id, relays, payload)
             .await?;
         tracing::info!("Sent payment request {payment_req_id} with nostr event_id {event_id}");
         let outgoing_payment_request = PaymentRequest {
