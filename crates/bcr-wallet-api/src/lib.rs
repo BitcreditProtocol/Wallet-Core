@@ -592,6 +592,29 @@ impl AppState {
         Ok(payment_req_id)
     }
 
+    pub async fn wallet_request_payment_from_node_id(
+        &self,
+        wallet_id: String,
+        node_id: String,
+        amount: u64,
+        description: Option<String>,
+        deadline: Option<u64>,
+    ) -> Result<Uuid> {
+        tracing::debug!(
+            "wallet_request_payment_from_node_id({wallet_id}, {node_id}, {amount}, {description:?}, {deadline:?})"
+        );
+        let node_id = NodeId::from_str(&node_id)?;
+        let amount = cashu::Amount::from(amount);
+        let wallet = self.get_wallet(&wallet_id).await?;
+        let unit = wallet.read().await.debit_unit();
+        let payment_req_id = wallet
+            .read()
+            .await
+            .request_payment_from_node_id(node_id, amount, unit, description, deadline)
+            .await?;
+        Ok(payment_req_id)
+    }
+
     pub async fn wallet_subscribe_to_payment_requests(
         &self,
         wallet_id: String,

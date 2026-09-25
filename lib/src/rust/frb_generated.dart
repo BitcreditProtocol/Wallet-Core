@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 872749461;
+  int get rustContentHash => -1683817817;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -349,6 +349,11 @@ abstract class RustLibApi extends BaseApi {
   Future<WalletRequestPaymentFromContactResponse>
   crateApiWalletRequestPaymentFromContact({
     required WalletRequestPaymentFromContactRequest req,
+  });
+
+  Future<WalletRequestPaymentFromNodeIdResponse>
+  crateApiWalletRequestPaymentFromNodeId({
+    required WalletRequestPaymentFromNodeIdRequest req,
   });
 
   Future<RestoreWalletResponse> crateApiWalletRestore({
@@ -2760,6 +2765,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<WalletRequestPaymentFromNodeIdResponse>
+  crateApiWalletRequestPaymentFromNodeId({
+    required WalletRequestPaymentFromNodeIdRequest req,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_wallet_request_payment_from_node_id_request(
+            req,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 75,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_wallet_request_payment_from_node_id_response,
+          decodeErrorData: sse_decode_wallet_error,
+        ),
+        constMeta: kCrateApiWalletRequestPaymentFromNodeIdConstMeta,
+        argValues: [req],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWalletRequestPaymentFromNodeIdConstMeta =>
+      const TaskConstMeta(
+        debugName: "wallet_request_payment_from_node_id",
+        argNames: ["req"],
+      );
+
+  @override
   Future<RestoreWalletResponse> crateApiWalletRestore({
     required CreateWalletRequest req,
   }) {
@@ -2771,7 +2814,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 75,
+            funcId: 76,
             port: port_,
           );
         },
@@ -2801,7 +2844,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 76,
+            funcId: 77,
             port: port_,
           );
         },
@@ -2840,7 +2883,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 77,
+            funcId: 78,
             port: port_,
           );
         },
@@ -3390,6 +3433,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_wallet_request_payment_from_contact_request(raw);
+  }
+
+  @protected
+  WalletRequestPaymentFromNodeIdRequest
+  dco_decode_box_autoadd_wallet_request_payment_from_node_id_request(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_wallet_request_payment_from_node_id_request(raw);
   }
 
   @protected
@@ -4947,6 +4999,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  WalletRequestPaymentFromNodeIdRequest
+  dco_decode_wallet_request_payment_from_node_id_request(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return WalletRequestPaymentFromNodeIdRequest(
+      walletId: dco_decode_String(arr[0]),
+      nodeId: dco_decode_String(arr[1]),
+      amount: dco_decode_u_64(arr[2]),
+      description: dco_decode_opt_String(arr[3]),
+      deadline: dco_decode_opt_box_autoadd_u_64(arr[4]),
+    );
+  }
+
+  @protected
+  WalletRequestPaymentFromNodeIdResponse
+  dco_decode_wallet_request_payment_from_node_id_response(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 1)
+      throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
+    return WalletRequestPaymentFromNodeIdResponse(
+      paymentRequestId: dco_decode_String(arr[0]),
+    );
+  }
+
+  @protected
   WalletSubscribeToPaymentRequestsRequest
   dco_decode_wallet_subscribe_to_payment_requests_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -5514,6 +5594,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_wallet_request_payment_from_contact_request(
+      deserializer,
+    ));
+  }
+
+  @protected
+  WalletRequestPaymentFromNodeIdRequest
+  sse_decode_box_autoadd_wallet_request_payment_from_node_id_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_wallet_request_payment_from_node_id_request(
       deserializer,
     ));
   }
@@ -7218,6 +7309,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  WalletRequestPaymentFromNodeIdRequest
+  sse_decode_wallet_request_payment_from_node_id_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_walletId = sse_decode_String(deserializer);
+    var var_nodeId = sse_decode_String(deserializer);
+    var var_amount = sse_decode_u_64(deserializer);
+    var var_description = sse_decode_opt_String(deserializer);
+    var var_deadline = sse_decode_opt_box_autoadd_u_64(deserializer);
+    return WalletRequestPaymentFromNodeIdRequest(
+      walletId: var_walletId,
+      nodeId: var_nodeId,
+      amount: var_amount,
+      description: var_description,
+      deadline: var_deadline,
+    );
+  }
+
+  @protected
+  WalletRequestPaymentFromNodeIdResponse
+  sse_decode_wallet_request_payment_from_node_id_response(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_paymentRequestId = sse_decode_String(deserializer);
+    return WalletRequestPaymentFromNodeIdResponse(
+      paymentRequestId: var_paymentRequestId,
+    );
+  }
+
+  @protected
   WalletSubscribeToPaymentRequestsRequest
   sse_decode_wallet_subscribe_to_payment_requests_request(
     SseDeserializer deserializer,
@@ -7836,6 +7959,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_wallet_request_payment_from_contact_request(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_wallet_request_payment_from_node_id_request(
+    WalletRequestPaymentFromNodeIdRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_wallet_request_payment_from_node_id_request(self, serializer);
   }
 
   @protected
@@ -9264,6 +9396,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   void sse_encode_wallet_request_payment_from_contact_response(
     WalletRequestPaymentFromContactResponse self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.paymentRequestId, serializer);
+  }
+
+  @protected
+  void sse_encode_wallet_request_payment_from_node_id_request(
+    WalletRequestPaymentFromNodeIdRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.walletId, serializer);
+    sse_encode_String(self.nodeId, serializer);
+    sse_encode_u_64(self.amount, serializer);
+    sse_encode_opt_String(self.description, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.deadline, serializer);
+  }
+
+  @protected
+  void sse_encode_wallet_request_payment_from_node_id_response(
+    WalletRequestPaymentFromNodeIdResponse self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs

@@ -3,6 +3,8 @@
 * Added filtered logging
 * Start listening to and processing Nostr messages AFTER all initialization completed (especially restore)
 * Upgrade bcr-common and use new ecash types
+* Add API to request a payment from a node id without adding a contact
+    * Add endpoint `wallet_request_payment_from_node_id` with `WalletRequestPaymentFromNodeIdRequest` as input
 
 # 0.9.13
 
