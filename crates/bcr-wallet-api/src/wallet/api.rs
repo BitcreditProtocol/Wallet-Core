@@ -140,7 +140,7 @@ pub trait WalletApi: SendSync {
         &self,
         npub: nostr::key::PublicKey,
         relays: Vec<RelayUrl>,
-    ) -> Result<Vec<RelayUrl>>;
+    ) -> Vec<RelayUrl>;
     async fn delete(&self) -> Result<()>;
     fn rename(&mut self, new_name: String);
     async fn create_shareable_remote_payment_request(
@@ -156,6 +156,14 @@ pub trait WalletApi: SendSync {
     async fn request_payment_from_contact(
         &self,
         contact_id: Uuid,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+        deadline: Option<u64>,
+    ) -> Result<Uuid>;
+    async fn request_payment_from_node_id(
+        &self,
+        node_id: NodeId,
         amount: Amount,
         unit: CurrencyUnit,
         description: Option<String>,
@@ -584,9 +592,9 @@ impl WalletApi for super::Wallet {
                 let Ok(Some(contact)) = self.contact_repo.get_contact(contact_id).await else {
                     return Err(Error::ContactNotFound(contact_id.to_string()));
                 };
-                if contact.node_id.is_none() {
+                let Some(node_id) = contact.node_id else {
                     return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
-                }
+                };
 
                 let proofs = self
                     .debit
@@ -612,14 +620,14 @@ impl WalletApi for super::Wallet {
                     btc_tx_id: None,
                     quote_id: None,
                     nostr_event_id: None,
-                    contact_node_id: contact.node_id.clone(),
+                    contact_node_id: Some(node_id.clone()),
                     linked_txs: vec![],
                 };
                 let tx_id = self
-                    .pay_to_contact(
+                    .pay_to_node_id(
+                        &node_id,
+                        contact.nostr_relays,
                         proofs,
-                        &self.nostr_transport,
-                        contact,
                         payment_request_id,
                         partial_tx,
                     )
@@ -635,11 +643,9 @@ impl WalletApi for super::Wallet {
                 Ok((tx_id, None))
             }
             WalletPaymentType::SharedPaymentRequest { node_id } => {
-                let existing_relays = self.nostr_transport.relays().to_owned();
                 let receiver_relays = self
-                    .nostr_transport
-                    .fetch_relay_list(node_id.npub(), existing_relays)
-                    .await?;
+                    .fetch_nostr_relays(node_id.npub(), self.nostr_transport.relays().to_owned())
+                    .await;
 
                 let proofs = self
                     .debit
@@ -669,13 +675,7 @@ impl WalletApi for super::Wallet {
                     linked_txs: vec![],
                 };
                 let tx_id = self
-                    .pay_shared_payment_request(
-                        node_id,
-                        receiver_relays,
-                        proofs,
-                        &self.nostr_transport,
-                        partial_tx,
-                    )
+                    .pay_to_node_id(&node_id, receiver_relays, proofs, None, partial_tx)
                     .await?;
 
                 Ok((tx_id, None))
@@ -1321,9 +1321,19 @@ impl WalletApi for super::Wallet {
         &self,
         npub: nostr::key::PublicKey,
         relays: Vec<RelayUrl>,
-    ) -> Result<Vec<RelayUrl>> {
-        let res = self.nostr_transport.fetch_relay_list(npub, relays).await?;
-        Ok(res)
+    ) -> Vec<RelayUrl> {
+        match self
+            .nostr_transport
+            .fetch_relay_list(npub, relays.clone())
+            .await
+        {
+            Ok(fetched) if !fetched.is_empty() => fetched,
+            Ok(_) => relays,
+            Err(e) => {
+                tracing::warn!("Could not fetch relays for {npub}, using known relays: {e}");
+                relays
+            }
+        }
     }
 
     fn rename(&mut self, new_name: String) {
@@ -1454,65 +1464,36 @@ impl WalletApi for super::Wallet {
         let Ok(Some(contact)) = self.contact_repo.get_contact(contact_id).await else {
             return Err(Error::ContactNotFound(contact_id.to_string()));
         };
-        let Some(ref node_id) = contact.node_id else {
+        let Some(node_id) = contact.node_id else {
             return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
         };
-        let payload = ContactPaymentRequestPayload::new(
-            self.node_id(),
-            amount,
-            unit.clone(),
-            description.clone(),
-            deadline,
-            to_mint_url(self.client.mint_url()),
-        );
-        let created_at = payload.created_at;
-        let payment_req_id = payload.id;
-        let event: EventEnvelope =
-            bcr_wallet_core::event::Event::new_contact_payment_request(payload).try_into()?;
-        let payload = base58::encode(&borsh::to_vec(&event)?);
-        let target = self.nostr_transport.nip19_for_contact(&contact).await?;
-        let Some(target) = target else {
-            return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
-        };
-        match self
-            .nostr_transport
-            .send_private_msg(target.clone(), payload.clone())
-            .await
-        {
-            Ok(event_id) => {
-                tracing::info!(
-                    "Sent contact payment request {} with nostr event_id {event_id}",
-                    payment_req_id
-                );
-            }
-            Err(e) => {
-                tracing::error!("Failed to send contact payment request, queuing for retry: {e}");
-                match e {
-                    bcr_wallet_transport::error::Error::NostrSendPrivateMsg(_) => {
-                        self.nostr_transport
-                            .queue_retry_message(Some(target), payload)
-                            .await?;
-                    }
-                    e => return Err(e.into()),
-                }
-            }
-        };
-        let outgoing_payment_request = PaymentRequest {
-            id: payment_req_id,
-            node_id: node_id.to_owned(),
+        self.send_payment_request(
+            node_id,
+            contact.nostr_relays,
             amount,
             unit,
             description,
             deadline,
-            created_at,
-            state: PaymentRequestState::Pending,
-            direction: PaymentRequestDirection::Outgoing,
-        };
+        )
+        .await
+    }
 
-        self.payment_request_repo
-            .add_payment_request(outgoing_payment_request)
-            .await?;
-        Ok(payment_req_id)
+    async fn request_payment_from_node_id(
+        &self,
+        node_id: NodeId,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+        deadline: Option<u64>,
+    ) -> Result<Uuid> {
+        if node_id.network() != self.network() {
+            return Err(Error::InvalidNetwork(self.network(), node_id.network()));
+        }
+        let relays = self
+            .fetch_nostr_relays(node_id.npub(), self.nostr_transport.relays().to_owned())
+            .await;
+        self.send_payment_request(node_id, relays, amount, unit, description, deadline)
+            .await
     }
 
     fn nostr_event_channel(&self) -> NostrEventChannel {

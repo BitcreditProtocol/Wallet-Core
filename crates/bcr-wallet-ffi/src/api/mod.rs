@@ -889,6 +889,25 @@ pub async fn wallet_request_payment_from_contact(
 }
 
 #[frb]
+pub async fn wallet_request_payment_from_node_id(
+    req: WalletRequestPaymentFromNodeIdRequest,
+) -> Result<WalletRequestPaymentFromNodeIdResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let res = app_state
+        .wallet_request_payment_from_node_id(
+            req.wallet_id,
+            req.node_id,
+            req.amount,
+            req.description,
+            req.deadline,
+        )
+        .await?;
+    Ok(WalletRequestPaymentFromNodeIdResponse {
+        payment_request_id: res.to_string(),
+    })
+}
+
+#[frb]
 pub async fn wallet_list_payment_requests(
     req: WalletListPaymentRequestsRequest,
 ) -> Result<WalletListPaymentRequestsResponse, WalletError> {
@@ -2276,6 +2295,20 @@ pub struct WalletRequestPaymentFromContactRequest {
 
 #[derive(Debug, Clone)]
 pub struct WalletRequestPaymentFromContactResponse {
+    pub payment_request_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletRequestPaymentFromNodeIdRequest {
+    pub wallet_id: String,
+    pub node_id: String,
+    pub amount: u64,
+    pub description: Option<String>,
+    pub deadline: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletRequestPaymentFromNodeIdResponse {
     pub payment_request_id: String,
 }
 

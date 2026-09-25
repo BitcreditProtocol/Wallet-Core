@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use bcr_common::cashu::nut18 as cdk18;
 use bcr_wallet_core::{
     SendSync,
-    contact::Contact,
     event::{ContactPaymentPayload, ContactPaymentRequestPayload},
 };
 use tokio::sync::broadcast;
@@ -22,7 +21,6 @@ pub enum SortOrder {
 pub trait TransportApi: SendSync {
     async fn send_private_msg(&self, target: String, payload: String) -> Result<EventId>;
     async fn cdk18_transport(&self) -> Result<cdk18::Transport>;
-    async fn nip19_for_contact(&self, contact: &Contact) -> Result<Option<String>>;
     async fn shutdown(&self);
     fn relays(&self) -> &[RelayUrl];
     async fn has_connected_relays(&self) -> bool;
