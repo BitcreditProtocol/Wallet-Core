@@ -70,8 +70,12 @@ pub trait PocketRepository: SendSync {
     async fn mark_pending_as_spent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
     async fn revert_pendingspent_to_unspent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
 
+    /// Side-effect-free: returns 0 for a kid that has never been reserved.
     async fn counter(&self, kid: ecash::Id) -> Result<u32>;
-    async fn increment_counter(&self, kid: ecash::Id, old: u32, increment: u32) -> Result<()>;
+    /// Atomically reserves `n` indices for `kid` and returns the start of the reserved range.
+    async fn reserve_counter(&self, kid: ecash::Id, n: u32) -> Result<u32>;
+    /// Atomically sets the counter to `max(current, at_least)`; never lowers it.
+    async fn advance_counter_to(&self, kid: ecash::Id, at_least: u32) -> Result<()>;
 
     async fn store_commitment(&self, record: SwapCommitmentRecord) -> Result<()>;
     async fn load_commitment(

@@ -248,6 +248,7 @@ impl Drop for Reservation {
 }
 
 ///////////////////////////////////////////// premint_from_counter
+/// Sizes the premint at counter 0 (length is counter-independent), then derives it at a reserved start.
 async fn premint_from_counter(
     db: &dyn PocketRepository,
     seed: &Seed,
@@ -257,27 +258,19 @@ async fn premint_from_counter(
     keyset: &KeySet,
 ) -> Result<cdk00::PreMintSecrets> {
     let fee_and_amounts = bcr_wallet_core::util::to_fee_and_amounts(keyset);
-    loop {
-        let counter = db.counter(kid).await?;
-        let premint = cdk00::PreMintSecrets::from_seed(
+    let from_seed = |counter| {
+        cdk00::PreMintSecrets::from_seed(
             kid.into(),
             counter,
             seed,
             amount,
             target,
             &fee_and_amounts,
-        )?;
-        match db
-            .increment_counter(kid, counter, premint.len() as u32)
-            .await
-        {
-            Err(bcr_wallet_persistence::error::Error::CounterConflict(_)) => continue,
-            res => {
-                res?;
-                return Ok(premint);
-            }
-        }
-    }
+        )
+    };
+    let n = from_seed(0)?.len() as u32;
+    let start = db.reserve_counter(kid, n).await?;
+    Ok(from_seed(start)?)
 }
 
 ///////////////////////////////////////////// unblind_proofs
@@ -695,31 +688,17 @@ mod tests {
     use mockall::predicate::*;
 
     #[tokio::test]
-    async fn premint_from_counter_retries_on_conflict() {
+    async fn premint_from_counter_derives_at_reserved_start() {
         let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
         let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let amount = Amount::from(8);
 
         let mut db = MockPocketRepository::new();
-        let mut seq = mockall::Sequence::new();
-        db.expect_counter()
+        db.expect_reserve_counter()
             .times(1)
-            .in_sequence(&mut seq)
-            .returning(|_| Ok(0));
-        db.expect_increment_counter()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|kid, _, _| Err(bcr_wallet_persistence::error::Error::CounterConflict(kid)));
-        db.expect_counter()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|_| Ok(3));
-        db.expect_increment_counter()
-            .times(1)
-            .with(eq(kid), eq(3), eq(1))
-            .in_sequence(&mut seq)
-            .returning(|_, _, _| Ok(()));
+            .with(eq(kid), eq(1))
+            .returning(|_, _| Ok(3));
 
         let premint = super::premint_from_counter(
             &db,
@@ -863,15 +842,10 @@ mod tests {
         let mut mockdb = MockPocketRepository::new();
         let mut mockclient = MockClowderMintConnector::new();
         mockdb
-            .expect_counter()
+            .expect_reserve_counter()
             .times(1)
-            .with(eq(keyset.id))
-            .returning(|_| Ok(0));
-        mockdb
-            .expect_increment_counter()
-            .times(1)
-            .with(eq(keyset.id), eq(0), eq(5))
-            .returning(|_, _, _| Ok(()));
+            .with(eq(keyset.id), eq(5))
+            .returning(|_, _| Ok(0));
         let cloned_keyset = keyset.clone();
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
         mockclient
@@ -1024,11 +998,10 @@ mod tests {
         let mut mockdb = MockPocketRepository::new();
         let mut mockclient = MockClowderMintConnector::new();
 
-        mockdb.expect_counter().times(1).returning(|_| Ok(0));
         mockdb
-            .expect_increment_counter()
+            .expect_reserve_counter()
             .times(1)
-            .returning(|_, _, _| Ok(()));
+            .returning(|_, _| Ok(0));
 
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
 
@@ -1134,11 +1107,10 @@ mod tests {
         let mut mockdb = MockPocketRepository::new();
         let mut mockclient = MockClowderMintConnector::new();
 
-        mockdb.expect_counter().times(1).returning(|_| Ok(0));
         mockdb
-            .expect_increment_counter()
+            .expect_reserve_counter()
             .times(1)
-            .returning(|_, _, _| Ok(()));
+            .returning(|_, _| Ok(0));
 
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
 
@@ -1230,11 +1202,10 @@ mod tests {
         let mut mockdb = MockPocketRepository::new();
         let mut mockclient = MockClowderMintConnector::new();
 
-        mockdb.expect_counter().times(1).returning(|_| Ok(0));
         mockdb
-            .expect_increment_counter()
+            .expect_reserve_counter()
             .times(1)
-            .returning(|_, _, _| Ok(()));
+            .returning(|_, _| Ok(0));
 
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
 
@@ -1325,11 +1296,10 @@ mod tests {
         let mut mockdb = MockPocketRepository::new();
         let mut mockclient = MockClowderMintConnector::new();
 
-        mockdb.expect_counter().times(2).returning(|_| Ok(0));
         mockdb
-            .expect_increment_counter()
+            .expect_reserve_counter()
             .times(2)
-            .returning(|_, _, _| Ok(()));
+            .returning(|_, _| Ok(0));
 
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
 

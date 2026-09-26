@@ -633,97 +633,75 @@ impl PocketDB {
         Ok(proofs)
     }
 
-    fn load_counter_sync(
+    fn decode_counter(bytes: &[u8]) -> Result<u32> {
+        let StoredCounter::V1(counter) =
+            borsh::from_slice(bytes).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+        Ok(counter.counter)
+    }
+
+    fn encode_counter(kid: ecash::Id, counter: u32) -> Result<Vec<u8>> {
+        borsh::to_vec(&StoredCounter::V1(StoredCounterPayloadV1 { kid, counter }))
+            .map_err(|e| Error::BorshSerialization(e.to_string()))
+    }
+
+    fn read_counter_sync(
         db: Arc<Database>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         kid: ecash::Id,
-    ) -> Result<StoredCounter> {
+    ) -> Result<u32> {
         let read_txn = db.begin_read()?;
 
         match read_txn.open_table(counter_table) {
-            Ok(table) => {
-                let entry = table.get(kid.to_bytes().as_slice())?;
-                match entry {
-                    Some(e) => {
-                        let deserialized: StoredCounter =
-                            borsh::from_slice(e.value().as_slice())
-                                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                        Ok(deserialized)
-                    }
-                    None => Self::insert_counter_sync(db, counter_table, kid),
-                }
-            }
-            Err(TableError::TableDoesNotExist(_)) => {
-                Self::insert_counter_sync(db, counter_table, kid)
-            }
+            Ok(table) => match table.get(kid.to_bytes().as_slice())? {
+                Some(e) => Self::decode_counter(&e.value()),
+                None => Ok(0),
+            },
+            Err(TableError::TableDoesNotExist(_)) => Ok(0),
             Err(e) => Err(e.into()),
         }
     }
 
-    fn insert_counter_sync(
+    fn reserve_counter_sync(
         db: Arc<Database>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         kid: ecash::Id,
-    ) -> Result<StoredCounter> {
+        n: u32,
+    ) -> Result<u32> {
         let write_txn = db.begin_write()?;
-
-        let entry = {
+        let start = {
             let mut table = write_txn.open_table(counter_table)?;
-            let existing = table.get(kid.to_bytes().as_slice())?.map(|v| v.value());
-            match existing {
-                Some(existing) => borsh::from_slice(&existing)
-                    .map_err(|e| Error::BorshSerialization(e.to_string()))?,
-                None => {
-                    let entry = StoredCounter::V1(StoredCounterPayloadV1 { kid, counter: 0 });
-                    let serialized = borsh::to_vec(&entry)
-                        .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                    table.insert(kid.to_bytes().as_slice(), serialized)?;
-                    entry
-                }
-            }
+            let current = match table.get(kid.to_bytes().as_slice())? {
+                Some(e) => Self::decode_counter(&e.value())?,
+                None => 0,
+            };
+            let next = current.checked_add(n).ok_or(Error::CounterExhausted)?;
+            table.insert(kid.to_bytes().as_slice(), Self::encode_counter(kid, next)?)?;
+            current
         };
-
         write_txn.commit()?;
-        Ok(entry)
+        Ok(start)
     }
 
-    fn increment_counter_sync(
+    fn advance_counter_to_sync(
         db: Arc<Database>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        old: StoredCounter,
-        new: StoredCounter,
+        kid: ecash::Id,
+        at_least: u32,
     ) -> Result<()> {
-        let StoredCounter::V1(old) = old;
-        let StoredCounter::V1(new) = new;
-        if old.kid != new.kid {
-            return Err(Error::CounterKidMismatch);
-        }
-
         let write_txn = db.begin_write()?;
         {
             let mut table = write_txn.open_table(counter_table)?;
-            let old_value = table.get(old.kid.to_bytes().as_slice())?.map(|v| v.value());
-
-            if let Some(old_value) = old_value {
-                let deserialized: StoredCounter = borsh::from_slice(&old_value)
-                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                let StoredCounter::V1(old_counter) = deserialized;
-
-                if old_counter.kid != old.kid {
-                    return Err(Error::CounterKidMismatch);
-                }
-                if old_counter.counter != old.counter {
-                    return Err(Error::CounterConflict(old.kid));
-                }
-
-                let serialized = borsh::to_vec(&StoredCounter::V1(new))
-                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                table.insert(old.kid.to_bytes().as_slice(), serialized)?;
-            } else {
-                return Err(Error::CounterNotFound(old.kid));
+            let current = match table.get(kid.to_bytes().as_slice())? {
+                Some(e) => Self::decode_counter(&e.value())?,
+                None => 0,
+            };
+            if at_least > current {
+                table.insert(
+                    kid.to_bytes().as_slice(),
+                    Self::encode_counter(kid, at_least)?,
+                )?;
             }
         }
-
         write_txn.commit()?;
         Ok(())
     }
@@ -1102,26 +1080,20 @@ impl PocketRepository for PocketDB {
     async fn counter(&self, kid: ecash::Id) -> Result<u32> {
         let db_clone = self.db.clone();
         let table = self.counter_table;
-        let counter =
-            spawn_blocking(move || Self::load_counter_sync(db_clone, table, kid)).await??;
-        let StoredCounter::V1(counter) = counter;
-        Ok(counter.counter)
+        spawn_blocking(move || Self::read_counter_sync(db_clone, table, kid)).await?
     }
 
-    async fn increment_counter(&self, kid: ecash::Id, old: u32, increment: u32) -> Result<()> {
+    async fn reserve_counter(&self, kid: ecash::Id, n: u32) -> Result<u32> {
         let db_clone = self.db.clone();
         let table = self.counter_table;
-        let old_c = StoredCounterPayloadV1 { kid, counter: old };
-        let old = StoredCounter::V1(old_c.clone());
-        let new = StoredCounter::V1(StoredCounterPayloadV1 {
-            kid,
-            counter: old_c
-                .counter
-                .checked_add(increment)
-                // TODO (future): how do we handle this? we can switch seeds / switch keyset, but if we hit u32::Max, this fails
-                .ok_or(Error::CounterExhausted)?,
-        });
-        spawn_blocking(move || Self::increment_counter_sync(db_clone, table, old, new)).await?
+        spawn_blocking(move || Self::reserve_counter_sync(db_clone, table, kid, n)).await?
+    }
+
+    async fn advance_counter_to(&self, kid: ecash::Id, at_least: u32) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.counter_table;
+        spawn_blocking(move || Self::advance_counter_to_sync(db_clone, table, kid, at_least))
+            .await?
     }
 
     async fn store_commitment(&self, record: crate::SwapCommitmentRecord) -> Result<()> {
@@ -1361,7 +1333,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_counter_initializes_and_increments() {
+    async fn test_counter_reserves_sequentially() {
         let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = mintkeyset.id;
@@ -1369,35 +1341,127 @@ mod tests {
         let c0 = repo.counter(kid).await.expect("counter works");
         assert_eq!(c0, 0);
 
-        repo.increment_counter(kid, 0, 3)
-            .await
-            .expect("increment_counter works");
+        let start1 = repo.reserve_counter(kid, 3).await.expect("reserve works");
+        assert_eq!(start1, 0);
 
         let c1 = repo.counter(kid).await.expect("counter works");
         assert_eq!(c1, 3);
 
-        repo.increment_counter(kid, 3, 2)
-            .await
-            .expect("increment_counter works");
+        let start2 = repo.reserve_counter(kid, 2).await.expect("reserve works");
+        assert_eq!(start2, 3);
 
         let c2 = repo.counter(kid).await.expect("counter works");
         assert_eq!(c2, 5);
     }
 
     #[tokio::test]
-    async fn test_increment_counter_rejects_stale_old() {
+    async fn test_counter_reads_are_side_effect_free() {
         let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = mintkeyset.id;
 
-        repo.counter(kid).await.expect("counter works");
-        repo.increment_counter(kid, 0, 3)
-            .await
-            .expect("increment_counter works");
+        assert_eq!(repo.counter(kid).await.expect("counter works"), 0);
+        assert_eq!(repo.counter(kid).await.expect("counter works"), 0);
 
-        let err = repo.increment_counter(kid, 0, 2).await.unwrap_err();
-        assert!(matches!(err, Error::CounterConflict(k) if k == kid));
-        assert_eq!(repo.counter(kid).await.expect("counter works"), 3);
+        let start = repo.reserve_counter(kid, 4).await.expect("reserve works");
+        assert_eq!(start, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_reserve_counter_disjoint_ranges() {
+        let repo = Arc::new(get_db(&wallet_id(), CurrencyUnit::Sat));
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = mintkeyset.id;
+
+        const TASKS: u32 = 20;
+        const PER_TASK: u32 = 7;
+
+        let mut handles = Vec::new();
+        for _ in 0..TASKS {
+            let repo = repo.clone();
+            handles.push(tokio::spawn(async move {
+                repo.reserve_counter(kid, PER_TASK)
+                    .await
+                    .expect("reserve works")
+            }));
+        }
+
+        let mut starts = Vec::new();
+        for handle in handles {
+            starts.push(handle.await.expect("task should not panic"));
+        }
+        starts.sort_unstable();
+
+        let expected: Vec<u32> = (0..TASKS).map(|i| i * PER_TASK).collect();
+        assert_eq!(
+            starts, expected,
+            "concurrent reservations must partition the range with no gaps or overlaps"
+        );
+
+        let total = repo.counter(kid).await.expect("counter works");
+        assert_eq!(total, TASKS * PER_TASK);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_first_use_never_resets() {
+        let repo = Arc::new(get_db(&wallet_id(), CurrencyUnit::Sat));
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = mintkeyset.id;
+
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let repo = repo.clone();
+            handles.push(tokio::spawn(async move {
+                repo.reserve_counter(kid, 1).await.expect("reserve works")
+            }));
+        }
+
+        let mut starts = Vec::new();
+        for handle in handles {
+            starts.push(handle.await.expect("task should not panic"));
+        }
+        starts.sort_unstable();
+        assert_eq!(starts, (0..10).collect::<Vec<_>>());
+
+        assert_eq!(repo.counter(kid).await.expect("counter works"), 10);
+    }
+
+    #[tokio::test]
+    async fn test_advance_counter_to_is_monotonic() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = mintkeyset.id;
+
+        repo.advance_counter_to(kid, 50)
+            .await
+            .expect("advance works");
+        assert_eq!(repo.counter(kid).await.unwrap(), 50);
+
+        repo.advance_counter_to(kid, 10)
+            .await
+            .expect("advance works");
+        assert_eq!(repo.counter(kid).await.unwrap(), 50);
+
+        repo.advance_counter_to(kid, 100)
+            .await
+            .expect("advance works");
+        assert_eq!(repo.counter(kid).await.unwrap(), 100);
+    }
+
+    #[tokio::test]
+    async fn test_advance_counter_to_never_lowers_a_prior_reservation() {
+        let repo = Arc::new(get_db(&wallet_id(), CurrencyUnit::Sat));
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = mintkeyset.id;
+
+        let reserved_start = repo.reserve_counter(kid, 200).await.expect("reserve works");
+        assert_eq!(reserved_start, 0);
+
+        repo.advance_counter_to(kid, 5)
+            .await
+            .expect("advance works");
+
+        assert_eq!(repo.counter(kid).await.unwrap(), 200);
     }
 
     #[tokio::test]

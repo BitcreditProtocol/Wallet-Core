@@ -76,6 +76,14 @@ Traps that cost real time. Append when you hit one; prune when the edge is gone.
 2. **`cargokit/` carries local patches** (#269: Android 16 KB page-size linker flags in
    `cargokit/build_tool/lib/src/android_environment.dart`; #337 touched more). Re-syncing from
    upstream wholesale silently drops them.
+3. **The keyset counter (`PocketRepository::reserve_counter`/`advance_counter_to`) must stay a
+   single atomic redb transaction** (#351): a prior version split it into a `counter()` read and a
+   separate `increment_counter()` write, which raced under concurrent sends/receives/mints and let
+   restore regress the counter. Don't reintroduce a read-then-write pair across two calls; add new
+   counter operations as one `begin_write()` transaction that reads, checks and writes in place.
+   The guarantee is per device only: the counter lives in the local redb, so the same seed on two
+   devices derives the same indices and the mint rejects the second signing, with no structured
+   already-signed error to recover from. Running restore on a device re-syncs its counter.
 
 ## Hit every surface
 
