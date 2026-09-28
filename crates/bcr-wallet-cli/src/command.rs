@@ -977,8 +977,13 @@ pub async fn cmd_list_prs(app_state: &AppState, name: &str, id: &str) -> Result<
     push_break(&mut res);
     for ppr in incoming_pprs {
         res.push_str(&format!(
-            "Id: {}, NodeId: {}, Amount: {}, Direction: {:?}, State: {:?}\n",
-            ppr.id, ppr.node_id, ppr.amount, ppr.direction, ppr.state
+            "Id: {}, NodeId: {}, Amount: {}, Direction: {:?}, State: {:?}, History: {}\n",
+            ppr.id,
+            ppr.node_id,
+            ppr.amount,
+            ppr.direction,
+            ppr.state,
+            format_history(&ppr.history)
         ));
         push_break(&mut res);
     }
@@ -987,8 +992,13 @@ pub async fn cmd_list_prs(app_state: &AppState, name: &str, id: &str) -> Result<
     push_break(&mut res);
     for ppr in outgoing_pprs {
         res.push_str(&format!(
-            "Id: {}, NodeId: {}, Amount: {}, Direction: {:?}, State: {:?}\n",
-            ppr.id, ppr.node_id, ppr.amount, ppr.direction, ppr.state
+            "Id: {}, NodeId: {}, Amount: {}, Direction: {:?}, State: {:?}, History: {}\n",
+            ppr.id,
+            ppr.node_id,
+            ppr.amount,
+            ppr.direction,
+            ppr.state,
+            format_history(&ppr.history)
         ));
         push_break(&mut res);
     }
@@ -1013,12 +1023,42 @@ pub async fn cmd_get_pr(
     ));
     push_break(&mut res);
     res.push_str(&format!(
-        "Id: {} NodeId: {} Amount: {}\n",
-        ppr.id, ppr.node_id, ppr.amount
+        "Id: {} NodeId: {} Amount: {} Direction: {:?} State: {:?}\n",
+        ppr.id, ppr.node_id, ppr.amount, ppr.direction, ppr.state
     ));
+    res.push_str(&format!("History: {}\n", format_history(&ppr.history)));
     push_break(&mut res);
     push_break(&mut res);
     Ok(res)
+}
+
+fn format_history(history: &[bcr_wallet_core::types::PaymentRequestHistoryEntry]) -> String {
+    if history.is_empty() {
+        return "(none)".to_string();
+    }
+    history
+        .iter()
+        .map(|h| {
+            let actor = h
+                .actor
+                .as_ref()
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            format!(
+                "[{:?} applied={} by={} at={} origin={:?}{}]",
+                h.state,
+                h.applied,
+                actor,
+                h.at,
+                h.origin,
+                h.reason
+                    .as_ref()
+                    .map(|r| format!(" reason={r}"))
+                    .unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub async fn cmd_pay_pr(
@@ -1159,5 +1199,51 @@ fn format_fees(fees: TransactionFees) -> String {
         "Fees: 0".to_string()
     } else {
         format!("Fees: {}", parts.join(", "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bcr_common::core::NodeId;
+    use bcr_wallet_core::types::{
+        PaymentRequestActionOrigin, PaymentRequestHistoryEntry, PaymentRequestState,
+    };
+    use std::str::FromStr;
+
+    #[test]
+    fn test_format_history_lists_each_entry_with_actor_and_reason() {
+        let actor = NodeId::from_str(
+            "bitcrt03205b8dec12bc9e879f5b517aa32192a2550e88adcee3e54ec2c7294802568fef",
+        )
+        .unwrap();
+        let history = [
+            PaymentRequestHistoryEntry {
+                state: PaymentRequestState::Canceled,
+                applied: true,
+                actor: Some(actor.clone()),
+                at: 1,
+                origin: PaymentRequestActionOrigin::Local,
+                reason: Some("no longer needed".to_string()),
+            },
+            PaymentRequestHistoryEntry {
+                state: PaymentRequestState::Rejected,
+                applied: false,
+                actor: None,
+                at: 2,
+                origin: PaymentRequestActionOrigin::Remote {
+                    event_id: "evt".to_string(),
+                },
+                reason: None,
+            },
+        ];
+
+        assert_eq!(format_history(&[]), "(none)");
+        assert_eq!(
+            format_history(&history),
+            format!(
+                "[Canceled applied=true by={actor} at=1 origin=Local reason=no longer needed], [Rejected applied=false by=unknown at=2 origin=Remote {{ event_id: \"evt\" }}]"
+            )
+        );
     }
 }

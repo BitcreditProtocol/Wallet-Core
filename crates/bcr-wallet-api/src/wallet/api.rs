@@ -22,9 +22,10 @@ use bcr_common::{
 };
 use bcr_wallet_core::{
     SendSync,
-    event::{ContactPaymentRequestPayload, EventEnvelope},
+    event::{ContactPaymentRequestPayload, EventEnvelope, PaymentRequestActionKind},
     types::{
-        MeltEstimation, PaymentRequest, PaymentRequestDirection, PaymentRequestState,
+        MeltEstimation, PaymentRequest, PaymentRequestActionOrigin, PaymentRequestDirection,
+        PaymentRequestState, PaymentRequestTransition, PaymentRequestTransitionOutcome,
         PaymentResultCallback, PaymentType, Transaction, TransactionFees, TransactionStatus,
     },
     util::{from_mint_url, to_mint_url},
@@ -183,7 +184,13 @@ pub trait WalletApi: SendSync {
     async fn prepare_pay_payment_request(&self, payment_req_id: Uuid) -> Result<PaymentSummary>;
     async fn reject_payment_request(&self, payment_req_id: Uuid) -> Result<()>;
     async fn cancel_payment_request(&self, payment_req_id: Uuid) -> Result<()>;
-    async fn mark_payment_request_as_paid(&self, payment_req_id: Uuid, tx_id: Uuid) -> Result<()>;
+    async fn mark_payment_request_as_paid(
+        &self,
+        payment_req_id: Uuid,
+        tx_id: Uuid,
+        payer: NodeId,
+        origin: PaymentRequestActionOrigin,
+    ) -> Result<()>;
 }
 
 #[async_trait]
@@ -634,7 +641,14 @@ impl WalletApi for super::Wallet {
                     .await?;
                 // if it was a payment request - mark as paid
                 if let Some(p_req_id) = payment_request_id
-                    && let Err(e) = self.mark_payment_request_as_paid(p_req_id, tx_id).await
+                    && let Err(e) = self
+                        .mark_payment_request_as_paid(
+                            p_req_id,
+                            tx_id,
+                            self.node_id(),
+                            PaymentRequestActionOrigin::Local,
+                        )
+                        .await
                 {
                     tracing::warn!(
                         "Could not mark payment request {p_req_id} as paid after successful payment: {e}"
@@ -1574,58 +1588,48 @@ impl WalletApi for super::Wallet {
     }
 
     async fn reject_payment_request(&self, payment_req_id: Uuid) -> Result<()> {
-        let Some(req) = self
-            .payment_request_repo
-            .get_payment_request(payment_req_id)
-            .await?
-        else {
-            return Err(Error::PaymentRequestNotFound(payment_req_id));
-        };
-        if req.direction != PaymentRequestDirection::Incoming {
-            return Err(Error::PaymentRequestInWrongState(payment_req_id));
-        }
-        if req.state != PaymentRequestState::Pending {
-            return Err(Error::PaymentRequestInWrongState(payment_req_id));
-        }
-        self.payment_request_repo
-            .set_payment_request_state(payment_req_id, PaymentRequestState::Rejected)
-            .await?;
-        Ok(())
+        self.resolve_payment_request(payment_req_id, PaymentRequestActionKind::Reject)
+            .await
     }
 
     async fn cancel_payment_request(&self, payment_req_id: Uuid) -> Result<()> {
-        let Some(req) = self
-            .payment_request_repo
-            .get_payment_request(payment_req_id)
-            .await?
-        else {
-            return Err(Error::PaymentRequestNotFound(payment_req_id));
-        };
-        if req.direction != PaymentRequestDirection::Outgoing {
-            return Err(Error::PaymentRequestInWrongState(payment_req_id));
-        }
-        if req.state != PaymentRequestState::Pending {
-            return Err(Error::PaymentRequestInWrongState(payment_req_id));
-        }
-        self.payment_request_repo
-            .set_payment_request_state(payment_req_id, PaymentRequestState::Canceled)
-            .await?;
-        Ok(())
+        self.resolve_payment_request(payment_req_id, PaymentRequestActionKind::Cancel)
+            .await
     }
 
-    async fn mark_payment_request_as_paid(&self, payment_req_id: Uuid, tx_id: Uuid) -> Result<()> {
-        if self
-            .payment_request_repo
-            .get_payment_request(payment_req_id)
-            .await?
-            .is_none()
-        {
-            return Err(Error::PaymentRequestNotFound(payment_req_id));
-        }
+    async fn mark_payment_request_as_paid(
+        &self,
+        payment_req_id: Uuid,
+        tx_id: Uuid,
+        payer: NodeId,
+        origin: PaymentRequestActionOrigin,
+    ) -> Result<()> {
         // paid overrides rejected/cancelled, if it's set
-        self.payment_request_repo
-            .set_payment_request_state(payment_req_id, PaymentRequestState::Paid { tx_id })
-            .await?;
-        Ok(())
+        let outcome = self
+            .payment_request_repo
+            .apply_payment_request_transition(
+                payment_req_id,
+                PaymentRequestTransition {
+                    target_state: PaymentRequestState::Paid { tx_id },
+                    actor: Some(payer),
+                    at: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
+                    origin,
+                    reason: None,
+                },
+            )
+            .await
+            .map_err(|e| match e {
+                bcr_wallet_persistence::error::Error::PaymentRequestNotFound(_) => {
+                    Error::PaymentRequestNotFound(payment_req_id)
+                }
+                other => other.into(),
+            })?;
+        match outcome {
+            PaymentRequestTransitionOutcome::Applied
+            | PaymentRequestTransitionOutcome::AlreadyApplied => Ok(()),
+            PaymentRequestTransitionOutcome::Conflicted => {
+                Err(Error::PaymentRequestInWrongState(payment_req_id))
+            }
+        }
     }
 }

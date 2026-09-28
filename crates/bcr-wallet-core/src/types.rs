@@ -92,6 +92,43 @@ pub enum PaymentRequestDirection {
     Outgoing,
 }
 
+/// Where a payment request state transition came from.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum PaymentRequestActionOrigin {
+    Local,
+    Remote { event_id: String },
+}
+
+/// Append-only audit entry; `applied` is false for a recorded conflict.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PaymentRequestHistoryEntry {
+    pub state: PaymentRequestState,
+    pub applied: bool,
+    pub actor: Option<NodeId>,
+    pub at: u64,
+    pub origin: PaymentRequestActionOrigin,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PaymentRequestTransition {
+    pub target_state: PaymentRequestState,
+    pub actor: Option<NodeId>,
+    pub at: u64,
+    pub origin: PaymentRequestActionOrigin,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum PaymentRequestTransitionOutcome {
+    /// The transition was allowed and applied.
+    Applied,
+    /// The request was already in the target state; a no-op, not recorded again.
+    AlreadyApplied,
+    /// Not allowed from the current state: recorded in history, not applied.
+    Conflicted,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PaymentRequest {
     pub id: Uuid,
@@ -103,6 +140,9 @@ pub struct PaymentRequest {
     pub created_at: u64,
     pub state: PaymentRequestState,
     pub direction: PaymentRequestDirection,
+    pub history: Vec<PaymentRequestHistoryEntry>,
+    /// A remote action stored before its request arrived.
+    pub tombstone: bool,
 }
 
 impl PaymentRequest {
@@ -123,6 +163,8 @@ impl PaymentRequest {
             created_at: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
             state: PaymentRequestState::Pending,
             direction: PaymentRequestDirection::Incoming,
+            history: Vec::new(),
+            tombstone: false,
         }
     }
 
@@ -143,6 +185,29 @@ impl PaymentRequest {
             created_at: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
             state: PaymentRequestState::Pending,
             direction: PaymentRequestDirection::Outgoing,
+            history: Vec::new(),
+            tombstone: false,
+        }
+    }
+
+    pub fn new_tombstone(
+        id: Uuid,
+        node_id: NodeId,
+        direction: PaymentRequestDirection,
+        at: u64,
+    ) -> Self {
+        Self {
+            id,
+            node_id,
+            amount: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            description: None,
+            deadline: None,
+            created_at: at,
+            state: PaymentRequestState::Pending,
+            direction,
+            history: Vec::new(),
+            tombstone: true,
         }
     }
 }
@@ -159,6 +224,8 @@ impl From<ContactPaymentRequestPayload> for PaymentRequest {
             created_at: value.created_at,
             state: PaymentRequestState::Pending,
             direction: PaymentRequestDirection::Incoming,
+            history: Vec::new(),
+            tombstone: false,
         }
     }
 }

@@ -29,7 +29,7 @@
 
 use crate::api::*;
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
-use flutter_rust_bridge::for_generated::{Lifetimeable, Lockable, transform_result_dco};
+use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
 use flutter_rust_bridge::{Handler, IntoIntoDart};
 
 // Section: boilerplate
@@ -3323,6 +3323,20 @@ impl SseDecode for Vec<crate::api::PaymentRequest> {
     }
 }
 
+impl SseDecode for Vec<crate::api::PaymentRequestHistoryEntry> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::PaymentRequestHistoryEntry>::sse_decode(
+                deserializer,
+            ));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::api::PaymentRequestListState> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3566,6 +3580,11 @@ impl SseDecode for crate::api::PaymentRequest {
         let mut var_description = <Option<String>>::sse_decode(deserializer);
         let mut var_deadline = <Option<u64>>::sse_decode(deserializer);
         let mut var_createdAt = <u64>::sse_decode(deserializer);
+        let mut var_state = <crate::api::PaymentRequestListState>::sse_decode(deserializer);
+        let mut var_paidTxId = <Option<String>>::sse_decode(deserializer);
+        let mut var_direction = <crate::api::PaymentRequestDirection>::sse_decode(deserializer);
+        let mut var_history =
+            <Vec<crate::api::PaymentRequestHistoryEntry>>::sse_decode(deserializer);
         return crate::api::PaymentRequest {
             id: var_id,
             node_id: var_nodeId,
@@ -3574,6 +3593,25 @@ impl SseDecode for crate::api::PaymentRequest {
             description: var_description,
             deadline: var_deadline,
             created_at: var_createdAt,
+            state: var_state,
+            paid_tx_id: var_paidTxId,
+            direction: var_direction,
+            history: var_history,
+        };
+    }
+}
+
+impl SseDecode for crate::api::PaymentRequestActionOriginKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::PaymentRequestActionOriginKind::Local,
+            1 => crate::api::PaymentRequestActionOriginKind::Remote,
+            _ => unreachable!(
+                "Invalid variant for PaymentRequestActionOriginKind: {}",
+                inner
+            ),
         };
     }
 }
@@ -3586,6 +3624,30 @@ impl SseDecode for crate::api::PaymentRequestDirection {
             0 => crate::api::PaymentRequestDirection::Incoming,
             1 => crate::api::PaymentRequestDirection::Outgoing,
             _ => unreachable!("Invalid variant for PaymentRequestDirection: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::PaymentRequestHistoryEntry {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_state = <crate::api::PaymentRequestListState>::sse_decode(deserializer);
+        let mut var_paidTxId = <Option<String>>::sse_decode(deserializer);
+        let mut var_applied = <bool>::sse_decode(deserializer);
+        let mut var_actor = <Option<String>>::sse_decode(deserializer);
+        let mut var_at = <u64>::sse_decode(deserializer);
+        let mut var_origin = <crate::api::PaymentRequestActionOriginKind>::sse_decode(deserializer);
+        let mut var_eventId = <Option<String>>::sse_decode(deserializer);
+        let mut var_reason = <Option<String>>::sse_decode(deserializer);
+        return crate::api::PaymentRequestHistoryEntry {
+            state: var_state,
+            paid_tx_id: var_paidTxId,
+            applied: var_applied,
+            actor: var_actor,
+            at: var_at,
+            origin: var_origin,
+            event_id: var_eventId,
+            reason: var_reason,
         };
     }
 }
@@ -5571,6 +5633,10 @@ impl flutter_rust_bridge::IntoDart for crate::api::PaymentRequest {
             self.description.into_into_dart().into_dart(),
             self.deadline.into_into_dart().into_dart(),
             self.created_at.into_into_dart().into_dart(),
+            self.state.into_into_dart().into_dart(),
+            self.paid_tx_id.into_into_dart().into_dart(),
+            self.direction.into_into_dart().into_dart(),
+            self.history.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -5578,6 +5644,27 @@ impl flutter_rust_bridge::IntoDart for crate::api::PaymentRequest {
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::PaymentRequest {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::PaymentRequest> for crate::api::PaymentRequest {
     fn into_into_dart(self) -> crate::api::PaymentRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::PaymentRequestActionOriginKind {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Local => 0.into_dart(),
+            Self::Remote => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::PaymentRequestActionOriginKind
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::PaymentRequestActionOriginKind>
+    for crate::api::PaymentRequestActionOriginKind
+{
+    fn into_into_dart(self) -> crate::api::PaymentRequestActionOriginKind {
         self
     }
 }
@@ -5599,6 +5686,33 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::PaymentRequestDirection>
     for crate::api::PaymentRequestDirection
 {
     fn into_into_dart(self) -> crate::api::PaymentRequestDirection {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::PaymentRequestHistoryEntry {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.state.into_into_dart().into_dart(),
+            self.paid_tx_id.into_into_dart().into_dart(),
+            self.applied.into_into_dart().into_dart(),
+            self.actor.into_into_dart().into_dart(),
+            self.at.into_into_dart().into_dart(),
+            self.origin.into_into_dart().into_dart(),
+            self.event_id.into_into_dart().into_dart(),
+            self.reason.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::PaymentRequestHistoryEntry
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::PaymentRequestHistoryEntry>
+    for crate::api::PaymentRequestHistoryEntry
+{
+    fn into_into_dart(self) -> crate::api::PaymentRequestHistoryEntry {
         self
     }
 }
@@ -7807,6 +7921,16 @@ impl SseEncode for Vec<crate::api::PaymentRequest> {
     }
 }
 
+impl SseEncode for Vec<crate::api::PaymentRequestHistoryEntry> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::PaymentRequestHistoryEntry>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<crate::api::PaymentRequestListState> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -8004,6 +8128,26 @@ impl SseEncode for crate::api::PaymentRequest {
         <Option<String>>::sse_encode(self.description, serializer);
         <Option<u64>>::sse_encode(self.deadline, serializer);
         <u64>::sse_encode(self.created_at, serializer);
+        <crate::api::PaymentRequestListState>::sse_encode(self.state, serializer);
+        <Option<String>>::sse_encode(self.paid_tx_id, serializer);
+        <crate::api::PaymentRequestDirection>::sse_encode(self.direction, serializer);
+        <Vec<crate::api::PaymentRequestHistoryEntry>>::sse_encode(self.history, serializer);
+    }
+}
+
+impl SseEncode for crate::api::PaymentRequestActionOriginKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::PaymentRequestActionOriginKind::Local => 0,
+                crate::api::PaymentRequestActionOriginKind::Remote => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 
@@ -8020,6 +8164,20 @@ impl SseEncode for crate::api::PaymentRequestDirection {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::api::PaymentRequestHistoryEntry {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::PaymentRequestListState>::sse_encode(self.state, serializer);
+        <Option<String>>::sse_encode(self.paid_tx_id, serializer);
+        <bool>::sse_encode(self.applied, serializer);
+        <Option<String>>::sse_encode(self.actor, serializer);
+        <u64>::sse_encode(self.at, serializer);
+        <crate::api::PaymentRequestActionOriginKind>::sse_encode(self.origin, serializer);
+        <Option<String>>::sse_encode(self.event_id, serializer);
+        <Option<String>>::sse_encode(self.reason, serializer);
     }
 }
 
@@ -9014,7 +9172,7 @@ mod io {
     use flutter_rust_bridge::for_generated::byteorder::{
         NativeEndian, ReadBytesExt, WriteBytesExt,
     };
-    use flutter_rust_bridge::for_generated::{Lifetimeable, Lockable, transform_result_dco};
+    use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
     use flutter_rust_bridge::{Handler, IntoIntoDart};
 
     // Section: boilerplate
@@ -9053,7 +9211,7 @@ mod web {
     };
     use flutter_rust_bridge::for_generated::wasm_bindgen;
     use flutter_rust_bridge::for_generated::wasm_bindgen::prelude::*;
-    use flutter_rust_bridge::for_generated::{Lifetimeable, Lockable, transform_result_dco};
+    use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
     use flutter_rust_bridge::{Handler, IntoIntoDart};
 
     // Section: boilerplate

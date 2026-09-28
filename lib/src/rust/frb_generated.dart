@@ -3722,6 +3722,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<PaymentRequestHistoryEntry>
+  dco_decode_list_payment_request_history_entry(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_payment_request_history_entry)
+        .toList();
+  }
+
+  @protected
   List<PaymentRequestListState> dco_decode_list_payment_request_list_state(
     dynamic raw,
   ) {
@@ -3883,8 +3892,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   PaymentRequest dco_decode_payment_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return PaymentRequest(
       id: dco_decode_String(arr[0]),
       nodeId: dco_decode_String(arr[1]),
@@ -3893,13 +3902,45 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       description: dco_decode_opt_String(arr[4]),
       deadline: dco_decode_opt_box_autoadd_u_64(arr[5]),
       createdAt: dco_decode_u_64(arr[6]),
+      state: dco_decode_payment_request_list_state(arr[7]),
+      paidTxId: dco_decode_opt_String(arr[8]),
+      direction: dco_decode_payment_request_direction(arr[9]),
+      history: dco_decode_list_payment_request_history_entry(arr[10]),
     );
+  }
+
+  @protected
+  PaymentRequestActionOriginKind dco_decode_payment_request_action_origin_kind(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return PaymentRequestActionOriginKind.values[raw as int];
   }
 
   @protected
   PaymentRequestDirection dco_decode_payment_request_direction(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return PaymentRequestDirection.values[raw as int];
+  }
+
+  @protected
+  PaymentRequestHistoryEntry dco_decode_payment_request_history_entry(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    return PaymentRequestHistoryEntry(
+      state: dco_decode_payment_request_list_state(arr[0]),
+      paidTxId: dco_decode_opt_String(arr[1]),
+      applied: dco_decode_bool(arr[2]),
+      actor: dco_decode_opt_String(arr[3]),
+      at: dco_decode_u_64(arr[4]),
+      origin: dco_decode_payment_request_action_origin_kind(arr[5]),
+      eventId: dco_decode_opt_String(arr[6]),
+      reason: dco_decode_opt_String(arr[7]),
+    );
   }
 
   @protected
@@ -5938,6 +5979,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<PaymentRequestHistoryEntry>
+  sse_decode_list_payment_request_history_entry(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <PaymentRequestHistoryEntry>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_payment_request_history_entry(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<PaymentRequestListState> sse_decode_list_payment_request_list_state(
     SseDeserializer deserializer,
   ) {
@@ -6184,6 +6238,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_description = sse_decode_opt_String(deserializer);
     var var_deadline = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_createdAt = sse_decode_u_64(deserializer);
+    var var_state = sse_decode_payment_request_list_state(deserializer);
+    var var_paidTxId = sse_decode_opt_String(deserializer);
+    var var_direction = sse_decode_payment_request_direction(deserializer);
+    var var_history = sse_decode_list_payment_request_history_entry(
+      deserializer,
+    );
     return PaymentRequest(
       id: var_id,
       nodeId: var_nodeId,
@@ -6192,7 +6252,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       description: var_description,
       deadline: var_deadline,
       createdAt: var_createdAt,
+      state: var_state,
+      paidTxId: var_paidTxId,
+      direction: var_direction,
+      history: var_history,
     );
+  }
+
+  @protected
+  PaymentRequestActionOriginKind sse_decode_payment_request_action_origin_kind(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return PaymentRequestActionOriginKind.values[inner];
   }
 
   @protected
@@ -6202,6 +6275,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
     return PaymentRequestDirection.values[inner];
+  }
+
+  @protected
+  PaymentRequestHistoryEntry sse_decode_payment_request_history_entry(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_state = sse_decode_payment_request_list_state(deserializer);
+    var var_paidTxId = sse_decode_opt_String(deserializer);
+    var var_applied = sse_decode_bool(deserializer);
+    var var_actor = sse_decode_opt_String(deserializer);
+    var var_at = sse_decode_u_64(deserializer);
+    var var_origin = sse_decode_payment_request_action_origin_kind(
+      deserializer,
+    );
+    var var_eventId = sse_decode_opt_String(deserializer);
+    var var_reason = sse_decode_opt_String(deserializer);
+    return PaymentRequestHistoryEntry(
+      state: var_state,
+      paidTxId: var_paidTxId,
+      applied: var_applied,
+      actor: var_actor,
+      at: var_at,
+      origin: var_origin,
+      eventId: var_eventId,
+      reason: var_reason,
+    );
   }
 
   @protected
@@ -8239,6 +8339,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_payment_request_history_entry(
+    List<PaymentRequestHistoryEntry> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_payment_request_history_entry(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_payment_request_list_state(
     List<PaymentRequestListState> self,
     SseSerializer serializer,
@@ -8475,6 +8587,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.description, serializer);
     sse_encode_opt_box_autoadd_u_64(self.deadline, serializer);
     sse_encode_u_64(self.createdAt, serializer);
+    sse_encode_payment_request_list_state(self.state, serializer);
+    sse_encode_opt_String(self.paidTxId, serializer);
+    sse_encode_payment_request_direction(self.direction, serializer);
+    sse_encode_list_payment_request_history_entry(self.history, serializer);
+  }
+
+  @protected
+  void sse_encode_payment_request_action_origin_kind(
+    PaymentRequestActionOriginKind self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected
@@ -8484,6 +8609,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_payment_request_history_entry(
+    PaymentRequestHistoryEntry self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_payment_request_list_state(self.state, serializer);
+    sse_encode_opt_String(self.paidTxId, serializer);
+    sse_encode_bool(self.applied, serializer);
+    sse_encode_opt_String(self.actor, serializer);
+    sse_encode_u_64(self.at, serializer);
+    sse_encode_payment_request_action_origin_kind(self.origin, serializer);
+    sse_encode_opt_String(self.eventId, serializer);
+    sse_encode_opt_String(self.reason, serializer);
   }
 
   @protected

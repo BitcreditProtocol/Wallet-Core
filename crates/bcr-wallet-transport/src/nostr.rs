@@ -4,7 +4,9 @@ use crate::{
 };
 use async_trait::async_trait;
 use bcr_common::{cashu::nut18 as cdk18, cdk_common::bitcoin::base58};
-use bcr_wallet_core::event::{ContactPaymentPayload, ContactPaymentRequestPayload, EventEnvelope};
+use bcr_wallet_core::event::{
+    ContactPaymentPayload, ContactPaymentRequestPayload, EventEnvelope, PaymentRequestActionPayload,
+};
 use bcr_wallet_persistence::{NostrEventOffset, NostrQueuedMessage, NostrRepository};
 use bitcoin::secp256k1::Keypair;
 use futures::StreamExt;
@@ -580,7 +582,7 @@ async fn handle_nip17_direct_message(
                         event_channel.publish(NostrWalletEvent::ContactPayment {
                             event_id: event.id,
                             payload,
-                            sender: event.pubkey,
+                            sender,
                         });
                     }
                 }
@@ -591,7 +593,18 @@ async fn handle_nip17_direct_message(
                         event_channel.publish(NostrWalletEvent::ContactPaymentRequest {
                             event_id: event.id,
                             payload,
-                            sender: event.pubkey,
+                            sender,
+                        });
+                    }
+                }
+                bcr_wallet_core::event::EventType::PaymentRequestAction => {
+                    if let Ok(payload) =
+                        borsh::from_slice::<PaymentRequestActionPayload>(&envelope.data)
+                    {
+                        event_channel.publish(NostrWalletEvent::PaymentRequestAction {
+                            event_id: event.id,
+                            payload,
+                            sender,
                         });
                     }
                 }
@@ -602,7 +615,7 @@ async fn handle_nip17_direct_message(
             event_channel.publish(NostrWalletEvent::Cdk18Payment {
                 event_id: event.id,
                 payload: cdk18_payload,
-                sender: event.pubkey,
+                sender,
             });
         } else {
             tracing::debug!(
@@ -636,5 +649,61 @@ fn valid_time(kind: Kind, created: Timestamp, since: Timestamp) -> bool {
         created >= since
     } else {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bcr_common::core::NodeId;
+    use bcr_wallet_core::event::PaymentRequestActionKind;
+    use std::str::FromStr;
+
+    #[tokio::test]
+    async fn test_nip17_payment_request_action_is_published_with_the_seal_sender() {
+        let sender = Keys::generate();
+        let receiver = Keys::generate();
+        let payload = PaymentRequestActionPayload::new(
+            uuid::Uuid::new_v4(),
+            PaymentRequestActionKind::Cancel,
+            NodeId::from_str(
+                "bitcrt03205b8dec12bc9e879f5b517aa32192a2550e88adcee3e54ec2c7294802568fef",
+            )
+            .unwrap(),
+            None,
+        );
+        let envelope: EventEnvelope =
+            bcr_wallet_core::event::Event::new_payment_request_action(payload.clone())
+                .try_into()
+                .unwrap();
+        let gift_wrap = PrivateDirectMessageBuilder::new(
+            receiver.public_key(),
+            base58::encode(&borsh::to_vec(&envelope).unwrap()),
+        )
+        .finalize(&sender)
+        .unwrap();
+        let channel = NostrEventChannel::new();
+        let mut received = channel.subscribe();
+
+        handle_nip17_direct_message(Box::new(gift_wrap.clone()), &receiver, channel)
+            .await
+            .unwrap();
+
+        let NostrWalletEvent::PaymentRequestAction {
+            event_id,
+            payload: received_payload,
+            sender: received_sender,
+        } = received.try_recv().unwrap()
+        else {
+            panic!("expected a payment request action");
+        };
+        assert_eq!(event_id, gift_wrap.id);
+        assert_eq!(received_sender, sender.public_key());
+        assert_ne!(received_sender, gift_wrap.pubkey);
+        assert_eq!(
+            received_payload.payment_request_id,
+            payload.payment_request_id
+        );
+        assert_eq!(received_payload.action, payload.action);
     }
 }

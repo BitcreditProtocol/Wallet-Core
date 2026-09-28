@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use bcr_common::cashu::nut18 as cdk18;
 use bcr_wallet_core::{
     SendSync,
-    event::{ContactPaymentPayload, ContactPaymentRequestPayload},
+    event::{ContactPaymentPayload, ContactPaymentRequestPayload, PaymentRequestActionPayload},
 };
 use tokio::sync::broadcast;
 
@@ -58,6 +58,11 @@ pub enum NostrWalletEvent {
     ContactPaymentRequest {
         event_id: EventId,
         payload: ContactPaymentRequestPayload,
+        sender: PublicKey,
+    },
+    PaymentRequestAction {
+        event_id: EventId,
+        payload: PaymentRequestActionPayload,
         sender: PublicKey,
     },
 }

@@ -25,8 +25,8 @@ use bcr_wallet_core::util::{
 };
 use bcr_wallet_persistence::ContactStoreApi;
 use bcr_wallet_persistence::redb::{Database, build_pursedbs, build_wallet_dbs, create_db};
+use bcr_wallet_transport::NostrEventChannel;
 use bcr_wallet_transport::nostr;
-use bcr_wallet_transport::{NostrEventChannel, NostrWalletEvent};
 use error::{Error, Result};
 use std::sync::atomic::Ordering;
 use std::{
@@ -647,24 +647,9 @@ impl AppState {
                         },
                     };
 
-                    let NostrWalletEvent::ContactPaymentRequest { event_id, payload, sender } = received_evt else {
-                        continue;
-                    };
-                    tracing::info!("Received contact payment request {} from {sender}, event_id: {event_id}", payload.id);
-                    let pending_incoming_payment_request: PaymentRequest = payload.into();
-                    let payment_request_id = pending_incoming_payment_request.id;
-                    match wallet.read().await.add_payment_request(pending_incoming_payment_request).await {
-                        Ok(_) => {
-                            item_callback(payment_request_id);
-                        },
-                        Err(Error::Database(bcr_wallet_persistence::error::Error::PaymentRequestAlreadyExists(_))) => {
-                            // already had it - either sent again, or already processed - sending it either way and the caller can choose to ignore it
-                            item_callback(payment_request_id);
-                        },
-                        Err(e) => {
-                            tracing::error!("Could not store payment request: {e}");
-                        }
-                    };
+                    if let Some(payment_request_id) = wallet.read().await.subscribed_payment_request(received_evt).await {
+                        item_callback(payment_request_id);
+                    }
                 }
             }
         }

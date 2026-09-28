@@ -1553,6 +1553,25 @@ impl From<PaymentRequestListState> for bcr_wallet_core::types::PaymentRequestSta
     }
 }
 
+impl From<bcr_wallet_core::types::PaymentRequestState> for PaymentRequestListState {
+    fn from(value: bcr_wallet_core::types::PaymentRequestState) -> Self {
+        match value {
+            bcr_wallet_core::types::PaymentRequestState::Pending => {
+                PaymentRequestListState::Pending
+            }
+            bcr_wallet_core::types::PaymentRequestState::Paid { .. } => {
+                PaymentRequestListState::Paid
+            }
+            bcr_wallet_core::types::PaymentRequestState::Canceled => {
+                PaymentRequestListState::Canceled
+            }
+            bcr_wallet_core::types::PaymentRequestState::Rejected => {
+                PaymentRequestListState::Rejected
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PaymentRequestDirection {
     Incoming,
@@ -1594,6 +1613,10 @@ pub struct PaymentRequest {
     pub description: Option<String>,
     pub deadline: Option<u64>,
     pub created_at: u64,
+    pub state: PaymentRequestListState,
+    pub paid_tx_id: Option<String>,
+    pub direction: PaymentRequestDirection,
+    pub history: Vec<PaymentRequestHistoryEntry>,
 }
 
 impl From<bcr_wallet_core::types::PaymentRequest> for PaymentRequest {
@@ -1606,7 +1629,59 @@ impl From<bcr_wallet_core::types::PaymentRequest> for PaymentRequest {
             description: value.description,
             deadline: value.deadline,
             created_at: value.created_at,
+            paid_tx_id: paid_tx_id(&value.state),
+            state: value.state.into(),
+            direction: value.direction.into(),
+            history: value.history.into_iter().map(Into::into).collect(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum PaymentRequestActionOriginKind {
+    Local,
+    Remote,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PaymentRequestHistoryEntry {
+    pub state: PaymentRequestListState,
+    pub paid_tx_id: Option<String>,
+    pub applied: bool,
+    pub actor: Option<String>,
+    pub at: u64,
+    pub origin: PaymentRequestActionOriginKind,
+    pub event_id: Option<String>,
+    pub reason: Option<String>,
+}
+
+impl From<bcr_wallet_core::types::PaymentRequestHistoryEntry> for PaymentRequestHistoryEntry {
+    fn from(value: bcr_wallet_core::types::PaymentRequestHistoryEntry) -> Self {
+        let (origin, event_id) = match value.origin {
+            bcr_wallet_core::types::PaymentRequestActionOrigin::Local => {
+                (PaymentRequestActionOriginKind::Local, None)
+            }
+            bcr_wallet_core::types::PaymentRequestActionOrigin::Remote { event_id } => {
+                (PaymentRequestActionOriginKind::Remote, Some(event_id))
+            }
+        };
+        Self {
+            paid_tx_id: paid_tx_id(&value.state),
+            state: value.state.into(),
+            applied: value.applied,
+            actor: value.actor.map(|a| a.to_string()),
+            at: value.at,
+            origin,
+            event_id,
+            reason: value.reason,
+        }
+    }
+}
+
+fn paid_tx_id(state: &bcr_wallet_core::types::PaymentRequestState) -> Option<String> {
+    match state {
+        bcr_wallet_core::types::PaymentRequestState::Paid { tx_id } => Some(tx_id.to_string()),
+        _ => None,
     }
 }
 
@@ -2730,5 +2805,144 @@ impl From<BcrWalletError> for WalletError {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::ContactMustHaveNodeId)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bcr_common::core::NodeId;
+    use bcr_wallet_core::types::{
+        PaymentRequest as CorePaymentRequest, PaymentRequestActionOrigin as CoreOrigin,
+        PaymentRequestDirection as CoreDirection, PaymentRequestHistoryEntry as CoreHistoryEntry,
+        PaymentRequestState as CoreState,
+    };
+
+    fn requester_node_id() -> NodeId {
+        let key = bitcoin::secp256k1::PublicKey::from_str(
+            "03f9f94d1fdc2090d46f3524807e3f58618c36988e69577d70d5d4d1e9e9645a4f",
+        )
+        .expect("valid key");
+        NodeId::new(key, bitcoin::Network::Testnet)
+    }
+
+    fn core_request(
+        direction: CoreDirection,
+        state: CoreState,
+        history: Vec<CoreHistoryEntry>,
+    ) -> CorePaymentRequest {
+        let mut req = CorePaymentRequest::new_incoming(
+            requester_node_id(),
+            cashu::Amount::from(21),
+            cashu::CurrencyUnit::Sat,
+            None,
+            None,
+        );
+        req.id = Uuid::from_str("7f3c1e2a-0d4b-4c8e-9a61-2b5d8e0f4a13").expect("valid uuid");
+        req.direction = direction;
+        req.state = state;
+        req.history = history;
+        req
+    }
+
+    #[test]
+    fn test_payment_request_from_core_remote_cancel() {
+        let n = requester_node_id();
+        let core = core_request(
+            CoreDirection::Incoming,
+            CoreState::Canceled,
+            vec![CoreHistoryEntry {
+                state: CoreState::Canceled,
+                applied: true,
+                actor: Some(n.clone()),
+                at: 1790000100,
+                origin: CoreOrigin::Remote {
+                    event_id: "ev1".to_string(),
+                },
+                reason: Some("no longer needed".to_string()),
+            }],
+        );
+
+        let ffi = PaymentRequest::from(core);
+
+        assert_eq!(ffi.id, "7f3c1e2a-0d4b-4c8e-9a61-2b5d8e0f4a13");
+        assert_eq!(ffi.state, PaymentRequestListState::Canceled);
+        assert_eq!(ffi.paid_tx_id, None);
+        assert_eq!(ffi.direction, PaymentRequestDirection::Incoming);
+        assert_eq!(
+            ffi.history,
+            vec![PaymentRequestHistoryEntry {
+                state: PaymentRequestListState::Canceled,
+                paid_tx_id: None,
+                applied: true,
+                actor: Some(n.to_string()),
+                at: 1790000100,
+                origin: PaymentRequestActionOriginKind::Remote,
+                event_id: Some("ev1".to_string()),
+                reason: Some("no longer needed".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_payment_request_from_core_paid_wins_late_cancel_conflicted() {
+        let n = requester_node_id();
+        let tx_id = Uuid::from_str("0b9e2c4e-6a51-4f7e-9d2a-3c1f5e8a7b10").expect("valid uuid");
+        let core = core_request(
+            CoreDirection::Outgoing,
+            CoreState::Paid { tx_id },
+            vec![
+                CoreHistoryEntry {
+                    state: CoreState::Paid { tx_id },
+                    applied: true,
+                    actor: None,
+                    at: 1790000050,
+                    origin: CoreOrigin::Local,
+                    reason: None,
+                },
+                CoreHistoryEntry {
+                    state: CoreState::Canceled,
+                    applied: false,
+                    actor: Some(n.clone()),
+                    at: 1790000100,
+                    origin: CoreOrigin::Remote {
+                        event_id: "ev2".to_string(),
+                    },
+                    reason: None,
+                },
+            ],
+        );
+
+        let ffi = PaymentRequest::from(core);
+
+        let tx = "0b9e2c4e-6a51-4f7e-9d2a-3c1f5e8a7b10".to_string();
+        assert_eq!(ffi.state, PaymentRequestListState::Paid);
+        assert_eq!(ffi.paid_tx_id, Some(tx.clone()));
+        assert_eq!(ffi.direction, PaymentRequestDirection::Outgoing);
+        assert_eq!(
+            ffi.history,
+            vec![
+                PaymentRequestHistoryEntry {
+                    state: PaymentRequestListState::Paid,
+                    paid_tx_id: Some(tx),
+                    applied: true,
+                    actor: None,
+                    at: 1790000050,
+                    origin: PaymentRequestActionOriginKind::Local,
+                    event_id: None,
+                    reason: None,
+                },
+                PaymentRequestHistoryEntry {
+                    state: PaymentRequestListState::Canceled,
+                    paid_tx_id: None,
+                    applied: false,
+                    actor: Some(n.to_string()),
+                    at: 1790000100,
+                    origin: PaymentRequestActionOriginKind::Remote,
+                    event_id: Some("ev2".to_string()),
+                    reason: None,
+                },
+            ]
+        );
     }
 }
