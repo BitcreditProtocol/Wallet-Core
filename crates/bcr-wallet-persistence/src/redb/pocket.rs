@@ -644,6 +644,15 @@ impl PocketDB {
             .map_err(|e| Error::BorshSerialization(e.to_string()))
     }
 
+    /// Side-effect-free: returns 0 for a kid that has never been reserved.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn counter(&self, kid: ecash::Id) -> Result<u32> {
+        let db_clone = self.db.clone();
+        let table = self.counter_table;
+        spawn_blocking(move || Self::read_counter_sync(db_clone, table, kid)).await?
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
     fn read_counter_sync(
         db: Arc<Database>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
@@ -1075,12 +1084,6 @@ impl PocketRepository for PocketDB {
         })
         .await??;
         Ok(proofs.remove(0))
-    }
-
-    async fn counter(&self, kid: ecash::Id) -> Result<u32> {
-        let db_clone = self.db.clone();
-        let table = self.counter_table;
-        spawn_blocking(move || Self::read_counter_sync(db_clone, table, kid)).await?
     }
 
     async fn reserve_counter(&self, kid: ecash::Id, n: u32) -> Result<u32> {

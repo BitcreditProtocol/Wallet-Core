@@ -528,11 +528,48 @@ mod tests {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = mintkeyset.id;
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
 
         let db = in_memory_pocket_db(&wallet_id(), CurrencyUnit::Sat);
         db.reserve_counter(kid, 500).await.expect("reserve works");
 
         let mut client = MockClowderMintConnector::new();
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(keyset.clone()));
+        let cloned_mintkeyset = mintkeyset.clone();
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |request| {
+                let cdk09::RestoreRequest { outputs } = request;
+                let signatures = outputs
+                    .iter()
+                    .map(|blind| {
+                        let mut bblind = blind.clone();
+                        bblind.amount = Amount::from(1u64);
+                        signature::sign_ecash(&cloned_mintkeyset, &bblind)
+                            .expect("signatures should be generated")
+                    })
+                    .collect::<Vec<_>>();
+                Ok(outputs.into_iter().zip(signatures).collect::<Vec<_>>())
+            });
+        client
+            .expect_post_check_state()
+            .times(1)
+            .returning(move |request| {
+                let states: Vec<cdk07::ProofState> = request
+                    .ys
+                    .iter()
+                    .map(|y| cdk07::ProofState {
+                        state: cdk07::State::Unspent,
+                        y: *y,
+                        witness: None,
+                    })
+                    .collect();
+                Ok(states)
+            });
         client
             .expect_post_restore()
             .times(EMPTY_RESPONSES_BEFORE_ABORT)
@@ -542,7 +579,7 @@ mod tests {
         let total_restored = restore_keysetid(&seed, kid, &arc_client, &db)
             .await
             .unwrap();
-        assert_eq!(total_restored, 0);
+        assert_eq!(total_restored, BATCH_SIZE as usize);
 
         assert_eq!(
             db.counter(kid).await.unwrap(),
