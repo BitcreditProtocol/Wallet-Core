@@ -1192,26 +1192,13 @@ impl PocketRepository for PocketDB {
 #[cfg(test)]
 mod tests {
     use crate::error::Error;
-    use crate::test_utils::tests::wallet_id;
+    use crate::test_utils::tests::{in_memory_pocket_db as get_db, wallet_id};
 
     use super::*;
     use bcr_common::{
         cashu::{self, Amount},
         core_tests,
     };
-    use redb::{Builder, backends::InMemoryBackend};
-
-    fn get_db(wallet_id: &str, unit: CurrencyUnit) -> PocketDB {
-        let in_mem = InMemoryBackend::new();
-        let db = Arc::new(
-            Builder::new()
-                .create_with_backend(in_mem)
-                .expect("can create in-memory redb"),
-        );
-        let keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
-        PocketDB::new(db, wallet_id, &unit, keypair).expect("can create PocketDB")
-    }
-
     fn test_proof() -> cdk00::Proof {
         let (_, keyset) = core_tests::generate_random_ecash_keyset();
         let amounts = [Amount::from(16u64)];
