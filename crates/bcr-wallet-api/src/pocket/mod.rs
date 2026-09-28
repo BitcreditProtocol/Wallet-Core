@@ -248,7 +248,6 @@ impl Drop for Reservation {
 }
 
 ///////////////////////////////////////////// premint_from_counter
-/// Sizes the premint at counter 0 (length is counter-independent), then derives it at a reserved start.
 async fn premint_from_counter(
     db: &dyn PocketRepository,
     seed: &Seed,
@@ -258,19 +257,16 @@ async fn premint_from_counter(
     keyset: &KeySet,
 ) -> Result<cdk00::PreMintSecrets> {
     let fee_and_amounts = bcr_wallet_core::util::to_fee_and_amounts(keyset);
-    let from_seed = |counter| {
-        cdk00::PreMintSecrets::from_seed(
-            kid.into(),
-            counter,
-            seed,
-            amount,
-            target,
-            &fee_and_amounts,
-        )
-    };
-    let n = from_seed(0)?.len() as u32;
+    let n = amount.split_targeted(target, &fee_and_amounts)?.len() as u32;
     let start = db.reserve_counter(kid, n).await?;
-    Ok(from_seed(start)?)
+    Ok(cdk00::PreMintSecrets::from_seed(
+        kid.into(),
+        start,
+        seed,
+        amount,
+        target,
+        &fee_and_amounts,
+    )?)
 }
 
 ///////////////////////////////////////////// unblind_proofs
