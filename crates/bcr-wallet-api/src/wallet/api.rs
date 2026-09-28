@@ -35,7 +35,7 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use nostr::{event::EventId, types::RelayUrl};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     str::FromStr,
     sync::Arc,
 };
@@ -453,7 +453,7 @@ impl WalletApi for super::Wallet {
         }
         match ptype {
             WalletPaymentType::Cdk18 { transport, id } => {
-                let proofs = self
+                let (proofs, _reservation) = self
                     .debit
                     .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
                     .await?;
@@ -509,8 +509,8 @@ impl WalletApi for super::Wallet {
                     }
                 };
 
-                let (proofs, token) = {
-                    let p = self
+                let (proofs, token, _reservation) = {
+                    let (p, reservation) = self
                         .debit
                         .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
                         .await?;
@@ -523,7 +523,7 @@ impl WalletApi for super::Wallet {
                     if let Some(ref m) = memo {
                         token = token.with_memo(m.to_string());
                     }
-                    (p.clone(), Token::BitcrV5(token))
+                    (p, Token::BitcrV5(token), reservation)
                 };
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
@@ -552,7 +552,7 @@ impl WalletApi for super::Wallet {
                 Ok((tx_id, Some(token)))
             }
             WalletPaymentType::OnChain => {
-                let (btc_tx_id, proofs) = self
+                let (btc_tx_id, proofs, _reservation) = self
                     .debit
                     .pay_onchain_melt(request_id, self.client.clone())
                     .await?;
@@ -596,7 +596,7 @@ impl WalletApi for super::Wallet {
                     return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
                 };
 
-                let proofs = self
+                let (proofs, _reservation) = self
                     .debit
                     .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
                     .await?;
@@ -647,7 +647,7 @@ impl WalletApi for super::Wallet {
                     .fetch_nostr_relays(node_id.npub(), self.nostr_transport.relays().to_owned())
                     .await;
 
-                let proofs = self
+                let (proofs, _reservation) = self
                     .debit
                     .send_proofs(request_id, &infos, self.client.clone(), self.swap_config())
                     .await?;
@@ -699,7 +699,7 @@ impl WalletApi for super::Wallet {
 
         for (qid, mint_result) in pending_mints_result {
             let tx = Transaction {
-                id: Uuid::new_v4(),
+                id: qid,
                 mint_url: to_mint_url(self.client.mint_url()),
                 fees: TransactionFees {
                     swap: mint_result.fee, // when minting, we only accrue swap fees
@@ -1055,7 +1055,7 @@ impl WalletApi for super::Wallet {
 
         self.client = substitute;
         self.clowder_id = self.client.get_clowder_id().await?;
-        let mut beta_clients = HashMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
+        let mut beta_clients = BTreeMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
 
         for beta in self.client.as_ref().get_clowder_betas().await? {
             let beta_client = (self.client_factory)(beta.url.clone());
@@ -1186,7 +1186,7 @@ impl WalletApi for super::Wallet {
                 .ok_or_else(|| Error::Swap("alpha not offline at substitute".into()))?;
 
             // Create beta provider for substitute to do attestation
-            let mut beta_clients = HashMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
+            let mut beta_clients = BTreeMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
 
             for beta in substitute_client.as_ref().get_clowder_betas().await? {
                 let beta_client = (self.client_factory)(beta.url.clone());
@@ -1201,7 +1201,7 @@ impl WalletApi for super::Wallet {
             // Get keyset infos from substitute
             // Get local proofs
             tracing::debug!("Offline Pay by Token: Get Local Proofs");
-            let (send_amount, local_proofs) = self
+            let (send_amount, local_proofs, _reservation) = self
                 .debit
                 .return_proofs_to_send_for_offline_payment(request_id)
                 .await?;

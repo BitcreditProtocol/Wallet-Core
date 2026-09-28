@@ -21,7 +21,7 @@ use bcr_wallet_core::types::{
 use bcr_wallet_persistence::{MeltCommitmentRecord, MintMeltRepository, PocketRepository};
 use bitcoin::secp256k1;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
 use uuid::Uuid;
@@ -68,7 +68,11 @@ pub trait DebitPocketApi: super::PocketApi {
         &self,
         rid: Uuid,
         client: Arc<dyn ClowderMintConnector>,
-    ) -> Result<(bitcoin::Txid, HashMap<cashu::PublicKey, cashu::Proof>)>;
+    ) -> Result<(
+        bitcoin::Txid,
+        HashMap<cashu::PublicKey, cashu::Proof>,
+        super::Reservation,
+    )>;
     async fn mint_onchain(
         &self,
         amount: bitcoin::Amount,
@@ -78,7 +82,7 @@ pub trait DebitPocketApi: super::PocketApi {
     async fn check_pending_mints(
         &self,
         client: Arc<dyn ClowderMintConnector>,
-    ) -> Result<HashMap<Uuid, CheckPendingMintResult>>;
+    ) -> Result<BTreeMap<Uuid, CheckPendingMintResult>>;
     async fn protest_mint(
         &self,
         qid: Uuid,
@@ -118,6 +122,7 @@ pub struct CheckPendingMintResult {
 struct MeltReference {
     rid: Uuid,
     quote_id: Uuid,
+    reservation: super::Reservation,
 }
 
 ///////////////////////////////////////////// debit pocket
@@ -130,6 +135,7 @@ pub struct Pocket {
 
     current_send: Mutex<Option<SendReference>>,
     current_melt: Mutex<Option<MeltReference>>,
+    in_flight: InFlight,
 }
 
 impl Pocket {
@@ -148,6 +154,7 @@ impl Pocket {
             beta,
             current_send: Mutex::new(None),
             current_melt: Mutex::new(None),
+            in_flight: InFlight::default(),
         }
     }
 
@@ -187,7 +194,9 @@ impl Pocket {
         let (ys, swap_proofs): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
 
         // create swap plan
-        let swap_plan = prepare_swap(&swap_proofs, &keysets_info)?;
+        let swap_plan: BTreeMap<_, _> = prepare_swap(&swap_proofs, &keysets_info)?
+            .into_iter()
+            .collect();
         tracing::debug!("Digest proofs - swap plan: {swap_plan:?}");
 
         // collect keysets first as we don't want any failure once the swap request
@@ -200,22 +209,19 @@ impl Pocket {
         }
 
         // prepare the premints
-        let mut premints: HashMap<ecash::Id, cdk00::PreMintSecrets> = HashMap::new();
+        let mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets> = BTreeMap::new();
         for (kid, amount) in swap_plan {
-            let counter = self.pdb.counter(kid.into()).await?;
-            let premint = cdk00::PreMintSecrets::from_seed(
-                kid,
-                counter,
+            let kid: ecash::Id = kid.into();
+            let premint = premint_from_counter(
+                self.pdb.as_ref(),
                 &self.seed,
+                kid,
                 amount,
                 &SplitTarget::None,
-                &bcr_wallet_core::util::to_fee_and_amounts(&keysets[&kid.into()]),
-            )?;
-            let increment = premint.len() as u32;
-            premints.insert(kid.into(), premint);
-            self.pdb
-                .increment_counter(kid.into(), counter, increment)
-                .await?;
+                &keysets[&kid],
+            )
+            .await?;
+            premints.insert(kid, premint);
         }
 
         // swap
@@ -239,9 +245,20 @@ impl Pocket {
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
     ) -> Result<(SendSummary, SendReference)> {
         let unspent_proofs = self.pdb.list_unspent().await?;
-        let mut proofs: Vec<Proof> = unspent_proofs.values().cloned().collect();
-        // sort by amount as required by `prepare_payment`
-        proofs.sort_by_key(|proof| proof.amount);
+        let mut proofs: Vec<(&cdk01::PublicKey, &Proof)> = unspent_proofs.iter().collect();
+        // sort by amount as required by `prepare_payment`, ties spend the earliest expiring keyset first
+        proofs.sort_by_key(|(y, proof)| {
+            let expiry = keysets_info
+                .get(&proof.keyset_id.into())
+                .and_then(|info| info.final_expiry);
+            (
+                proof.amount,
+                expiry.unwrap_or(u64::MAX),
+                proof.keyset_id,
+                **y,
+            )
+        });
+        let proofs: Vec<Proof> = proofs.into_iter().map(|(_, p)| p.clone()).collect();
 
         let infos = collect_keyset_infos_from_proofs(unspent_proofs.values(), keysets_info)?;
         let kinfos: HashMap<cashu::Id, KeySetInfo> = infos
@@ -323,12 +340,7 @@ impl Pocket {
         for proof in proofs.into_iter() {
             let amount = proof.amount;
             let y = proof.y()?;
-            let kid = proof.keyset_id;
-            let response = self.pdb.store_new(proof).await;
-            if let Err(e) = response {
-                tracing::error!("failed at storing new proof: {kid}, {amount}, {e}");
-                continue;
-            }
+            self.pdb.store_new(proof).await?;
             ys.push(y);
             total_cashed_in += amount;
         }
@@ -460,7 +472,7 @@ impl super::PocketApi for Pocket {
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
-    ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
+    ) -> Result<(HashMap<cdk01::PublicKey, cdk00::Proof>, super::Reservation)> {
         let send_ref = {
             let mut locked = self.current_send.lock().unwrap();
             if locked.is_none() {
@@ -471,7 +483,7 @@ impl super::PocketApi for Pocket {
             }
             locked.take().unwrap()
         };
-        let sending_proofs = send_proofs(
+        send_proofs(
             send_ref.plan,
             keysets_info,
             send_ref.target_amount,
@@ -480,10 +492,9 @@ impl super::PocketApi for Pocket {
             &client,
             swap_config,
             self.beta.as_ref(),
+            &self.in_flight,
         )
-        .await?;
-
-        Ok(sending_proofs)
+        .await
     }
 
     async fn restore_local_proofs(
@@ -522,7 +533,11 @@ impl super::PocketApi for Pocket {
     async fn return_proofs_to_send_for_offline_payment(
         &self,
         rid: Uuid,
-    ) -> Result<(Amount, HashMap<cdk01::PublicKey, cdk00::Proof>)> {
+    ) -> Result<(
+        Amount,
+        HashMap<cdk01::PublicKey, cdk00::Proof>,
+        super::Reservation,
+    )> {
         let send_ref = {
             let mut locked = self.current_send.lock().unwrap();
             if locked.is_none() {
@@ -533,9 +548,8 @@ impl super::PocketApi for Pocket {
             }
             locked.take().unwrap()
         };
-        let proofs_to_send =
-            return_proofs_to_send_for_offline_payment(send_ref.plan, self.pdb.as_ref()).await?;
-        Ok(proofs_to_send)
+        return_proofs_to_send_for_offline_payment(send_ref.plan, self.pdb.as_ref(), &self.in_flight)
+            .await
     }
 
     async fn swap_to_unlocked_substitute_proofs(
@@ -556,13 +570,13 @@ impl super::PocketApi for Pocket {
             .iter()
             .map(|(id, info)| ((*id).into(), info.clone()))
             .collect();
-        let swap_plan: Vec<_> = prepare_swap(&proofs, &keysets_info)?.into_iter().collect();
+        let swap_plan: BTreeMap<_, _> = prepare_swap(&proofs, &keysets_info)?.into_iter().collect();
         tracing::debug!(
             "Swapping to unlocked substitute proofs {swap_plan:?} - {change_amount} will be used for fees and stored temporarily as foreign mint proofs."
         );
 
         // prepare the premints
-        let mut premints: HashMap<ecash::Id, cdk00::PreMintSecrets> = HashMap::new();
+        let mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets> = BTreeMap::new();
         let mut remaining_payment = send_amount;
         // collect payments by kid, so we can reconstruct it after the swap
         let mut payment_targets_by_kid: HashMap<ecash::Id, Amount> = HashMap::new();
@@ -751,6 +765,7 @@ impl DebitPocketApi for Pocket {
         let mut pendings = self.pdb.list_pending().await?;
         let remove_set: HashSet<&cashu::PublicKey> = pending_txs_ys.iter().collect();
         pendings.retain(|k, _| !remove_set.contains(k));
+        self.in_flight.exclude(&mut pendings);
 
         let req = cdk07::CheckStateRequest {
             ys: pendings.keys().cloned().collect(),
@@ -879,7 +894,7 @@ impl DebitPocketApi for Pocket {
             .compute_send_costs(Amount::from(full_amount), keysets_info)
             .await?;
 
-        let sending_proofs = send_proofs(
+        let (sending_proofs, reservation) = send_proofs(
             send_ref.plan,
             keysets_info,
             send_ref.target_amount,
@@ -888,6 +903,7 @@ impl DebitPocketApi for Pocket {
             &client,
             swap_config.clone(),
             self.beta.as_ref(),
+            &self.in_flight,
         )
         .await?;
         let sent_ys: Vec<cdk01::PublicKey> = sending_proofs.keys().cloned().collect();
@@ -944,6 +960,7 @@ impl DebitPocketApi for Pocket {
         let melt_ref = MeltReference {
             rid: summary.request_id,
             quote_id,
+            reservation,
         };
         self.current_melt.lock().unwrap().replace(melt_ref);
         Ok(summary)
@@ -953,7 +970,11 @@ impl DebitPocketApi for Pocket {
         &self,
         rid: Uuid,
         client: Arc<dyn ClowderMintConnector>,
-    ) -> Result<(bitcoin::Txid, HashMap<cdk01::PublicKey, cdk00::Proof>)> {
+    ) -> Result<(
+        bitcoin::Txid,
+        HashMap<cdk01::PublicKey, cdk00::Proof>,
+        super::Reservation,
+    )> {
         let melt_ref = self.current_melt.lock().unwrap().take();
         let melt_ref = melt_ref.ok_or(Error::NoPrepareRef(rid))?;
         if melt_ref.rid != rid {
@@ -974,7 +995,7 @@ impl DebitPocketApi for Pocket {
         let response = client.post_melt_onchain(request).await?;
 
         self.mdb.delete_melt_commitment(melt_ref.quote_id).await?;
-        Ok((response.txid, sending_proofs))
+        Ok((response.txid, sending_proofs, melt_ref.reservation))
     }
 
     async fn mint_onchain(
@@ -986,24 +1007,22 @@ impl DebitPocketApi for Pocket {
         // find debit keyset
         let active_info = keysets_info
             .values()
-            .find(|info| info.unit == self.unit && info.active && info.final_expiry.is_none());
+            .filter(|info| info.unit == self.unit && info.active && info.final_expiry.is_none())
+            .min_by_key(|info| info.id);
         let Some(active_info) = active_info else {
             return Err(Error::NoActiveKeyset);
         };
         let kid = active_info.id;
         let keyset = client.get_mint_keyset(kid).await?;
-        let counter = self.pdb.counter(kid).await?;
-        let premint = cdk00::PreMintSecrets::from_seed(
-            kid.into(),
-            counter,
+        let premint = premint_from_counter(
+            self.pdb.as_ref(),
             &self.seed,
+            kid,
             cashu::Amount::from(amount.to_sat()),
             &SplitTarget::None,
-            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
-        )?;
-        self.pdb
-            .increment_counter(kid, counter, premint.len() as u32)
-            .await?;
+            &keyset,
+        )
+        .await?;
 
         let blinded_messages = premint.blinded_messages();
 
@@ -1066,9 +1085,9 @@ impl DebitPocketApi for Pocket {
     async fn check_pending_mints(
         &self,
         client: Arc<dyn ClowderMintConnector>,
-    ) -> Result<HashMap<Uuid, CheckPendingMintResult>> {
+    ) -> Result<BTreeMap<Uuid, CheckPendingMintResult>> {
         let mint_ids = self.mdb.list_mints().await?;
-        let mut res = HashMap::with_capacity(mint_ids.len());
+        let mut res = BTreeMap::new();
 
         tracing::debug!("check pending mints for {} mints", mint_ids.len());
         for qid in mint_ids {
@@ -1739,7 +1758,11 @@ mod tests {
             .returning(|_| Ok(()));
 
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
-        let melt_ref = MeltReference { rid, quote_id };
+        let melt_ref = MeltReference {
+            rid,
+            quote_id,
+            reservation: Default::default(),
+        };
         pocket.current_melt.lock().unwrap().replace(melt_ref);
 
         let res = pocket
@@ -1889,8 +1912,10 @@ mod tests {
     #[tokio::test]
     async fn mint_onchain() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
-        let kid = info.id;
-        let k_infos = test_kinfos(info);
+        let (info_2, _) = core_tests::generate_random_ecash_keyset();
+        let kid = std::cmp::min(info.id, info_2.id);
+        let mut k_infos = test_kinfos(info);
+        k_infos.extend(test_kinfos(info_2));
         let amount = bitcoin::Amount::from_sat(24);
 
         let mut mdb = MockMintMeltRepository::new();
@@ -2412,6 +2437,131 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compute_send_costs_breaks_amount_ties_deterministically() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8u64); 8]);
+        let expected = proofs.iter().map(|p| p.y().unwrap()).min().unwrap();
+
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_list_unspent()
+            .returning(move || Ok(proofs.iter().map(|p| (p.y().unwrap(), p.clone())).collect()));
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()));
+        for _ in 0..8 {
+            let (_, send_ref) = pocket
+                .compute_send_costs(Amount::from(8u64), &k_infos)
+                .await
+                .expect("compute send costs works");
+            match send_ref.plan {
+                SendPlan::Ready { proofs } => assert_eq!(proofs, vec![expected]),
+                SendPlan::NeedSwap { .. } => panic!("expected ready send plan"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn recover_pending_stale_proofs_skips_reserved_until_released() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let proofs =
+            core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8), Amount::from(16)]);
+        let reserved_y = proofs[0].y().unwrap();
+        let stale_y = proofs[1].y().unwrap();
+
+        let mut pdb = MockPocketRepository::new();
+        let mut seq = mockall::Sequence::new();
+        let reserved = proofs[0].clone();
+        pdb.expect_mark_as_pendingspent()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(move |_| Ok(vec![reserved.clone()]));
+        pdb.expect_mark_as_pendingspent()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(move |_| {
+                Err(bcr_wallet_persistence::error::Error::InvalidProofState(
+                    reserved_y,
+                ))
+            });
+        pdb.expect_list_pending()
+            .times(2)
+            .returning(move || Ok(proofs.iter().map(|p| (p.y().unwrap(), p.clone())).collect()));
+        let pdb = Arc::new(pdb);
+        let mut connector = MockClowderMintConnector::new();
+        let mut seq = mockall::Sequence::new();
+        connector
+            .expect_post_check_state()
+            .times(1)
+            .in_sequence(&mut seq)
+            .withf(move |req| req.ys == vec![stale_y])
+            .returning(|_| Ok(vec![]));
+        connector
+            .expect_post_check_state()
+            .times(1)
+            .in_sequence(&mut seq)
+            .withf(move |req| req.ys.len() == 2 && req.ys.contains(&reserved_y))
+            .returning(|_| Ok(vec![]));
+        let connector: Arc<dyn ClowderMintConnector> = Arc::new(connector);
+
+        let pocket = pocket(pdb.clone(), Arc::new(MockMintMeltRepository::new()));
+        let mut reservation = pocket.in_flight.reservation();
+        reservation
+            .reserve(pdb.as_ref(), vec![reserved_y])
+            .await
+            .expect("reserve works");
+        let mut overlapping = pocket.in_flight.reservation();
+        assert!(
+            overlapping
+                .reserve(pdb.as_ref(), vec![reserved_y])
+                .await
+                .is_err()
+        );
+        drop(overlapping);
+        pocket
+            .recover_pending_stale_proofs(&[], &k_infos, connector.clone(), test_swap_config())
+            .await
+            .expect("recover works");
+
+        drop(reservation);
+        pocket
+            .recover_pending_stale_proofs(&[], &k_infos, connector, test_swap_config())
+            .await
+            .expect("recover works");
+    }
+
+    #[tokio::test]
+    async fn compute_send_costs_spends_earliest_expiring_keyset_first() {
+        let (expiring, expiring_keyset) = core_tests::generate_random_ecash_keyset();
+        let (lasting, lasting_keyset) = core_tests::generate_random_ecash_keyset();
+        let mut k_infos = test_kinfos(expiring);
+        k_infos
+            .values_mut()
+            .for_each(|info| info.final_expiry = Some(1));
+        k_infos.extend(test_kinfos(lasting));
+        let mut proofs =
+            core_tests::generate_random_ecash_proofs(&lasting_keyset, &[Amount::from(8u64); 4]);
+        let expiring_proofs =
+            core_tests::generate_random_ecash_proofs(&expiring_keyset, &[Amount::from(8u64)]);
+        let expected = expiring_proofs[0].y().unwrap();
+        proofs.extend(expiring_proofs);
+
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_list_unspent()
+            .returning(move || Ok(proofs.iter().map(|p| (p.y().unwrap(), p.clone())).collect()));
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()));
+        let (_, send_ref) = pocket
+            .compute_send_costs(Amount::from(8u64), &k_infos)
+            .await
+            .expect("compute send costs works");
+        match send_ref.plan {
+            SendPlan::Ready { proofs } => assert_eq!(proofs, vec![expected]),
+            SendPlan::NeedSwap { .. } => panic!("expected ready send plan"),
+        }
+    }
+
+    #[tokio::test]
     async fn compute_send_costs_ready() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let k_infos = test_kinfos(info);
@@ -2742,8 +2892,8 @@ mod tests {
 
         let pending = proofs_by_y.clone();
         pdb.expect_mark_as_pendingspent()
-            .times(3)
-            .returning(move |y| Ok(pending.get(&y).unwrap().clone()));
+            .times(1)
+            .returning(move |ys| Ok(ys.iter().map(|y| pending[y].clone()).collect()));
 
         connector
             .expect_post_melt_quote_onchain()
