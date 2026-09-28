@@ -131,7 +131,7 @@ pub mod tests {
                 keysets_info: &HashMap<ecash::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
                 swap_config: SwapConfig,
-            ) -> Result<HashMap<cashu::PublicKey, cashu::Proof>>;
+            ) -> Result<(HashMap<cashu::PublicKey, cashu::Proof>, crate::pocket::Reservation)>;
             async fn restore_local_proofs(
                 &self,
                 keysets_info: &HashMap<ecash::Id, KeySetInfo>,
@@ -141,7 +141,7 @@ pub mod tests {
             async fn return_proofs_to_send_for_offline_payment(
                 &self,
                 rid: Uuid,
-            ) -> Result<(Amount, HashMap<cashu::PublicKey, cashu::Proof>)>;
+            ) -> Result<(Amount, HashMap<cashu::PublicKey, cashu::Proof>, crate::pocket::Reservation)>;
             async fn swap_to_unlocked_substitute_proofs(
                 &self,
                 proofs: Vec<cashu::Proof>,
@@ -193,7 +193,7 @@ pub mod tests {
                 &self,
                 rid: Uuid,
                 client: Arc<dyn ClowderMintConnector>,
-            ) -> Result<(bitcoin::Txid, HashMap<cashu::PublicKey, cashu::Proof>)>;
+            ) -> Result<(bitcoin::Txid, HashMap<cashu::PublicKey, cashu::Proof>, crate::pocket::Reservation)>;
             async fn mint_onchain(
                 &self,
                 amount: bitcoin::Amount,

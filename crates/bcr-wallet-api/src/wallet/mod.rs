@@ -2081,7 +2081,7 @@ mod tests {
         ctx.debit
             .expect_send_proofs()
             .times(1)
-            .returning(|_rid, _infos, _client, _safe| Ok(HashMap::default()));
+            .returning(|_rid, _infos, _client, _safe| Ok(Default::default()));
 
         ctx.tx_repo
             .expect_store_tx()
@@ -2176,7 +2176,13 @@ mod tests {
         ctx.debit
             .expect_pay_onchain_melt()
             .times(1)
-            .returning(|_request_id, _client| Ok((bitcoin::Txid::all_zeros(), HashMap::default())));
+            .returning(|_request_id, _client| {
+                Ok((
+                    bitcoin::Txid::all_zeros(),
+                    HashMap::default(),
+                    Default::default(),
+                ))
+            });
 
         ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
             assert_eq!(tx.direction, TransactionDirection::Outgoing);
@@ -2235,7 +2241,7 @@ mod tests {
         ctx.debit
             .expect_send_proofs()
             .times(1)
-            .returning(|_rid, _infos, _client, _swap| Ok(HashMap::default()));
+            .returning(|_rid, _infos, _client, _swap| Ok(Default::default()));
 
         ctx.nostr_transport
             .expect_send_private_msg()
@@ -2330,7 +2336,7 @@ mod tests {
         ctx.debit
             .expect_send_proofs()
             .times(1)
-            .returning(|_rid, _infos, _client, _swap| Ok(HashMap::default()));
+            .returning(|_rid, _infos, _client, _swap| Ok(Default::default()));
 
         ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
             assert_eq!(tx.direction, TransactionDirection::Outgoing);
@@ -4394,7 +4400,7 @@ mod tests {
         ctx.debit
             .expect_send_proofs()
             .times(1)
-            .returning(|_rid, _infos, _client, _swap| Ok(HashMap::default()));
+            .returning(|_rid, _infos, _client, _swap| Ok(Default::default()));
 
         ctx.nostr_transport
             .expect_send_private_msg()
@@ -4599,7 +4605,7 @@ mod tests {
             .return_once(move |actual_request_id| {
                 assert_eq!(actual_request_id, request_id);
 
-                Ok((send_amount, local_proofs_for_mock))
+                Ok((send_amount, local_proofs_for_mock, Default::default()))
             });
 
         let unlocked_payment_proofs_for_mock = unlocked_payment_proofs.clone();

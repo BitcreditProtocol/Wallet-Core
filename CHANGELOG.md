@@ -5,12 +5,9 @@
 * Upgrade bcr-common and use new ecash types
 * Add API to request a payment from a node id without adding a contact
     * Add endpoint `wallet_request_payment_from_node_id` with `WalletRequestPaymentFromNodeIdRequest` as input
-* Deterministic proof selection, swap plans and active keyset choice (`prepare_send`, `mint_onchain`)
-* NUT-13 counters are advanced by compare-and-swap, concurrent swaps no longer reuse secrets and restore never lowers a counter
-* Storing a proof never overwrites an existing one, proof reservation is all-or-nothing
-* Background recovery no longer reclaims proofs of an in-flight payment or melt
-* `wallet_check_pending_mints` transaction ids are the mint quote id, a mint is recorded once
-* Stable ordering for `wallet_get_transaction_ids`, contacts, payment requests and the nostr retry queue
+* Deterministic wallet state: the same inputs give the same proof selection, swap plan and keyset choice (`prepare_send`, `mint_onchain`), and a stable order for `wallet_get_transaction_ids`, contacts, payment requests and the nostr retry queue
+* Race-safe wallet state: NUT-13 counters use compare-and-swap so concurrent swaps never reuse secrets and restore never lowers a counter, stored proofs are never overwritten, proofs are reserved all-or-nothing, and background recovery leaves Pending proofs of a running payment or melt alone
+* `wallet_check_pending_mints` uses the mint quote id as the transaction id and records each mint once
 
 # 0.9.13
 

@@ -55,7 +55,7 @@ pub trait PocketApi: SendSync {
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
-    ) -> Result<HashMap<cashu::PublicKey, cashu::Proof>>;
+    ) -> Result<(HashMap<cashu::PublicKey, cashu::Proof>, Reservation)>;
     async fn restore_local_proofs(
         &self,
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
@@ -65,7 +65,7 @@ pub trait PocketApi: SendSync {
     async fn return_proofs_to_send_for_offline_payment(
         &self,
         rid: Uuid,
-    ) -> Result<(Amount, HashMap<cashu::PublicKey, cashu::Proof>)>;
+    ) -> Result<(Amount, HashMap<cashu::PublicKey, cashu::Proof>, Reservation)>;
     async fn swap_to_unlocked_substitute_proofs(
         &self,
         proofs: Vec<cashu::Proof>,
@@ -192,24 +192,58 @@ enum SendPlan {
 }
 
 ///////////////////////////////////////////// InFlight
-#[derive(Default)]
-pub(crate) struct InFlight(Mutex<HashSet<cdk01::PublicKey>>);
+#[derive(Default, Clone)]
+pub(crate) struct InFlight(Arc<Mutex<HashMap<cdk01::PublicKey, usize>>>);
 
 impl InFlight {
-    fn insert(&self, ys: &[cdk01::PublicKey]) {
-        self.0.lock().unwrap().extend(ys);
-    }
-
-    fn remove(&self, ys: &[cdk01::PublicKey]) {
-        let mut set = self.0.lock().unwrap();
-        for y in ys {
-            set.remove(y);
+    fn reservation(&self) -> Reservation {
+        Reservation {
+            in_flight: self.clone(),
+            ys: Vec::new(),
         }
     }
 
     fn exclude<V>(&self, proofs: &mut HashMap<cdk01::PublicKey, V>) {
         let set = self.0.lock().unwrap();
-        proofs.retain(|y, _| !set.contains(y));
+        proofs.retain(|y, _| !set.contains_key(y));
+    }
+}
+
+/// Proofs marked PendingSpent by an operation that is still running, released on drop
+#[derive(Default)]
+pub struct Reservation {
+    in_flight: InFlight,
+    ys: Vec<cdk01::PublicKey>,
+}
+
+impl Reservation {
+    async fn reserve(
+        &mut self,
+        db: &dyn PocketRepository,
+        ys: Vec<cdk01::PublicKey>,
+    ) -> Result<Vec<cdk00::Proof>> {
+        {
+            let mut set = self.in_flight.0.lock().unwrap();
+            for y in &ys {
+                *set.entry(*y).or_default() += 1;
+            }
+        }
+        self.ys.extend_from_slice(&ys);
+        Ok(db.mark_as_pendingspent(ys).await?)
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let mut set = self.in_flight.0.lock().unwrap();
+        for y in &self.ys {
+            if let Some(count) = set.get_mut(y) {
+                *count -= 1;
+                if *count == 0 {
+                    set.remove(y);
+                }
+            }
+        }
     }
 }
 
@@ -566,14 +600,14 @@ async fn send_proofs(
     swap_config: SwapConfig,
     beta: &dyn BetaProvider,
     in_flight: &InFlight,
-) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
+) -> Result<(HashMap<cdk01::PublicKey, cdk00::Proof>, Reservation)> {
     let mut current_amount = Amount::ZERO;
     let mut sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
+    let mut reservation = in_flight.reservation();
 
     match plan {
         SendPlan::Ready { proofs } => {
-            in_flight.insert(&proofs);
-            let reserved = db.mark_as_pendingspent(proofs.clone()).await?;
+            let reserved = reservation.reserve(db, proofs.clone()).await?;
             for (y, proof) in proofs.into_iter().zip(reserved) {
                 current_amount += proof.amount;
                 sending_proofs.insert(y, proof);
@@ -597,8 +631,7 @@ async fn send_proofs(
                 keysets.insert(*kid, keyset);
             }
 
-            in_flight.insert(&inputs);
-            let swap_proofs = db.mark_as_pendingspent(inputs).await?;
+            let swap_proofs = reservation.reserve(db, inputs).await?;
 
             let swapped_to_target_proofs = swap_proofs_to_target(
                 swap_proofs,
@@ -614,8 +647,7 @@ async fn send_proofs(
             .await?;
 
             let ys: Vec<cdk01::PublicKey> = swapped_to_target_proofs.keys().cloned().collect();
-            in_flight.insert(&ys);
-            db.mark_as_pendingspent(ys).await?;
+            reservation.reserve(db, ys).await?;
             for (y, proof) in swapped_to_target_proofs {
                 current_amount += proof.amount;
                 sending_proofs.insert(y, proof);
@@ -627,7 +659,7 @@ async fn send_proofs(
         tracing::warn!("Send Proofs: Target was {target_amount}, sending only {current_amount}");
     }
 
-    Ok(sending_proofs)
+    Ok((sending_proofs, reservation))
 }
 
 ///////////////////////////////////////////// return proofs to send for offline payment
@@ -637,13 +669,13 @@ async fn return_proofs_to_send_for_offline_payment(
     plan: SendPlan,
     db: &dyn PocketRepository,
     in_flight: &InFlight,
-) -> Result<(Amount, HashMap<cdk01::PublicKey, cdk00::Proof>)> {
+) -> Result<(Amount, HashMap<cdk01::PublicKey, cdk00::Proof>, Reservation)> {
     let (ys, target) = match plan {
         SendPlan::Ready { proofs } => (proofs, None),
         SendPlan::NeedSwap { inputs, target, .. } => (inputs, Some(target)),
     };
-    in_flight.insert(&ys);
-    let reserved = db.mark_as_pendingspent(ys.clone()).await?;
+    let mut reservation = in_flight.reservation();
+    let reserved = reservation.reserve(db, ys.clone()).await?;
     let send_amount = match target {
         Some(target) => target,
         None => reserved.iter().fold(Amount::ZERO, |acc, p| acc + p.amount),
@@ -651,7 +683,7 @@ async fn return_proofs_to_send_for_offline_payment(
     let sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
         ys.into_iter().zip(reserved).collect();
 
-    Ok((send_amount, sending_proofs))
+    Ok((send_amount, sending_proofs, reservation))
 }
 
 #[cfg(test)]
@@ -954,7 +986,7 @@ mod tests {
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
         let beta = test_beta_provider();
 
-        let sent = super::send_proofs(
+        let (sent, _) = super::send_proofs(
             SendPlan::Ready { proofs: ys },
             &HashMap::new(),
             Amount::from(24),
@@ -1037,7 +1069,7 @@ mod tests {
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
 
         let beta = test_beta_provider();
-        let sent = super::send_proofs(
+        let (sent, _) = super::send_proofs(
             SendPlan::NeedSwap {
                 inputs: vec![swap_y],
                 target: Amount::from(13),
@@ -1157,7 +1189,7 @@ mod tests {
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
 
         let beta = test_beta_provider();
-        let sent = super::send_proofs(
+        let (sent, _) = super::send_proofs(
             SendPlan::NeedSwap {
                 inputs: swap_ys,
                 target: Amount::from(788),
@@ -1243,7 +1275,7 @@ mod tests {
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
         let beta = test_beta_provider();
 
-        let sent = super::send_proofs(
+        let (sent, _) = super::send_proofs(
             SendPlan::NeedSwap {
                 inputs: vec![swap_y],
                 target: Amount::from(13),
@@ -1366,7 +1398,7 @@ mod tests {
         let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(mockclient);
 
         let beta = test_beta_provider();
-        let sent = super::send_proofs(
+        let (sent, _) = super::send_proofs(
             SendPlan::NeedSwap {
                 inputs: vec![swap_y, swap_y_ks_2],
                 target: Amount::from(23),
