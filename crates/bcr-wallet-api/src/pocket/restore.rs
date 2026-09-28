@@ -19,8 +19,7 @@ pub async fn restore_keysetid(
 ) -> Result<usize> {
     let mut zero_response_counter = 0;
     let mut total_proofs_restored = 0;
-    // scans from 0 regardless of the stored counter; advance_counter_to never lowers it
-    let mut cursor = 0;
+    let mut cursor = 0; // always start at 0 for restore
     while zero_response_counter < EMPTY_RESPONSES_BEFORE_ABORT {
         let restored_proofs = restore_batch(seed, kid, client, db, cursor, BATCH_SIZE).await?;
         cursor += BATCH_SIZE;

@@ -644,7 +644,6 @@ impl PocketDB {
             .map_err(|e| Error::BorshSerialization(e.to_string()))
     }
 
-    /// Side-effect-free: returns 0 for a kid that has never been reserved.
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn counter(&self, kid: ecash::Id) -> Result<u32> {
         let db_clone = self.db.clone();
@@ -683,7 +682,10 @@ impl PocketDB {
                 Some(e) => Self::decode_counter(&e.value())?,
                 None => 0,
             };
-            let next = current.checked_add(n).ok_or(Error::CounterExhausted)?;
+            let next = current
+                .checked_add(n)
+                // TODO (future): how do we handle this? we can switch seeds / switch keyset, but if we hit u32::Max, this fails
+                .ok_or(Error::CounterExhausted)?;
             table.insert(kid.to_bytes().as_slice(), Self::encode_counter(kid, next)?)?;
             current
         };
