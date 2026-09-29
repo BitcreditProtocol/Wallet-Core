@@ -3,8 +3,7 @@
 * Added filtered logging
 * Start listening to and processing Nostr messages AFTER all initialization completed (especially restore)
 * Upgrade bcr-common and use new ecash types
-* Fix a race in the keyset counter: concurrent sends/receives/mints/restores could reuse or lose deterministic secret indices. Counter reservation is now a single atomic redb transaction (`reserve_counter`/`advance_counter_to`), replacing the non-atomic `counter`/`increment_counter` pair; restore can no longer regress a wallet's counter
-    * Per device only: the same seed used on two devices still derives the same indices, and the mint's rejection of an already-signed output is not yet surfaced as a structured error; run restore to re-sync a device's counter
+* Fix a race in the keyset counter: counter reservation is now a single atomic redb transaction
 * Add API to request a payment from a node id without adding a contact
     * Add endpoint `wallet_request_payment_from_node_id` with `WalletRequestPaymentFromNodeIdRequest` as input
 * Deterministic wallet state: the same inputs give the same proof selection, swap plan and keyset choice (`prepare_send`, `mint_onchain`), and a stable order for `wallet_get_transaction_ids`, contacts, payment requests and the nostr retry queue
