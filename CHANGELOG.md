@@ -8,6 +8,11 @@
 * Deterministic wallet state: the same inputs give the same proof selection, swap plan and keyset choice (`prepare_send`, `mint_onchain`), and a stable order for `wallet_get_transaction_ids`, contacts, payment requests and the nostr retry queue
 * Race-safe wallet state: NUT-13 counters use compare-and-swap so concurrent swaps never reuse secrets and restore never lowers a counter, stored proofs are never overwritten, proofs are reserved all-or-nothing, and background recovery leaves Pending proofs of a running payment or melt alone
 * `wallet_check_pending_mints` uses the mint quote id as the transaction id and records each mint once
+* Make `wallet_migrate_rabid` resumable: journal alpha proofs before the offline exchange, resend a lost exchange identically and switch to the substitute only once every proof is swapped, else stay on alpha with `MigrationIncomplete`
+    * Requires a substitute that replays an identical offline exchange (Wildcat #643)
+* One wallet failing `wallet_migrate_rabid` no longer stops the others, and concurrent calls never migrate the same wallet twice
+* Hold coins of an unfinished payment outside the balance during migration; `wallet_reclaim_tx` reclaims them at the substitute after the switch, except onchain melts
+* DB change (non-breaking): new per-wallet `migration_journal` table
 
 # 0.9.13
 

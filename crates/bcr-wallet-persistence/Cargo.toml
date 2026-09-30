@@ -17,7 +17,7 @@ borsh = {workspace = true}
 ciborium = {workspace = true}
 mockall = {workspace = true, optional = true}
 nostr = {workspace = true}
-redb = {version = "4.1.0", optional = true}
+redb = {workspace = true, optional = true}
 serde.workspace = true
 thiserror.workspace = true
 time = {workspace = true}
@@ -28,5 +28,7 @@ url = {workspace = true }
 
 [dev-dependencies]
 bcr-common = {workspace = true, features = ["test-utils"]}
+mockall.workspace = true
+redb.workspace = true
 tokio = {workspace = true}
 
