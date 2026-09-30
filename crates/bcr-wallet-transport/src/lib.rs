@@ -20,7 +20,6 @@ pub enum SortOrder {
 #[async_trait]
 pub trait TransportApi: SendSync {
     async fn send_private_msg(&self, target: String, payload: String) -> Result<EventId>;
-    async fn cdk18_transport(&self) -> Result<cdk18::Transport>;
     async fn shutdown(&self);
     fn relays(&self) -> &[RelayUrl];
     async fn has_connected_relays(&self) -> bool;

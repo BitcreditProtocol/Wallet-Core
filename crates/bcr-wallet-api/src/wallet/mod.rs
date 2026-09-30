@@ -52,7 +52,6 @@ use nostr::{
 };
 use std::{
     collections::{BTreeMap, HashMap},
-    str::FromStr,
     sync::Arc,
     time::Duration,
 };
@@ -73,7 +72,6 @@ pub struct Wallet {
     id: String,
     pub_key: secp256k1::PublicKey,
     current_payment: Mutex<Option<PayReference>>,
-    current_payment_request: Mutex<Option<cashu::PaymentRequest>>,
     clowder_id: secp256k1::PublicKey,
     client_factory: Box<dyn Fn(url::Url) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
     swap_expiry: time::Duration,
@@ -127,7 +125,6 @@ impl Wallet {
             id,
             pub_key,
             current_payment: Mutex::new(None),
-            current_payment_request: Mutex::new(None),
             beta_clients,
             clowder_id,
             client_factory,
@@ -262,9 +259,6 @@ impl Wallet {
                                     }
                                 };
                             },
-                            bcr_wallet_transport::NostrWalletEvent::Cdk18Payment { .. } => {
-                                // ignore - cdk18 payments are handled by explicitly awaiting them
-                            },
                             bcr_wallet_transport::NostrWalletEvent::PaymentRequestAction { payload, event_id, sender } => {
                                 let payment_request_id = payload.payment_request_id;
                                 let wallet_guard = wallet.read().await;
@@ -272,12 +266,7 @@ impl Wallet {
                                     tracing::error!("Could not apply payment request action for {payment_request_id}: {e}");
                                 }
                             },
-                            bcr_wallet_transport::NostrWalletEvent::ContactPayment { payload, event_id, sender } => {
-                                if !is_authentic_sender(&payload.sender, &sender, wallet_network) {
-                                    tracing::warn!("Rejected incoming Contact payment: claimed sender {} is not on this network or not the authenticated Nostr sender {sender}", payload.sender);
-                                    continue;
-                                }
-
+                            bcr_wallet_transport::NostrWalletEvent::Cdk18Payment { payload, event_id, .. } => {
                                 let amount = payload.proofs.total_amount().unwrap_or(Amount::ZERO);
                                 let wallet_guard = wallet.read().await;
                                 match <Self as api::WalletApi>::receive_proofs(
@@ -287,23 +276,49 @@ impl Wallet {
                                     from_mint_url(&payload.mint),
                                     time::OffsetDateTime::now_utc().unix_timestamp() as u64,
                                     payload.memo,
-                                    PaymentType::Contact,
+                                    PaymentType::PaymentRequest,
+                                    TransactionStatus::Settled,
+                                    None,
+                                    None,
+                                    Some(event_id),
+                                ).await {
+                                    Ok(tx_id) => {
+                                        tracing::info!("Received legacy Cdk18 payment for {amount} with Transaction ID: {tx_id}")
+                                    },
+                                    Err(e) => {
+                                        tracing::error!("Error processing legacy Cdk18 payment for {amount}: {e}")
+                                    }
+                                };
+                            },
+                            bcr_wallet_transport::NostrWalletEvent::ContactPayment { payload, event_id, sender } => {
+                                if !is_authentic_sender(&payload.sender, &sender, wallet_network) {
+                                    tracing::warn!("Rejected incoming Contact payment: claimed sender {} is not on this network or not the authenticated Nostr sender {sender}", payload.sender);
+                                    continue;
+                                }
+
+                                let amount = payload.proofs.total_amount().unwrap_or(Amount::ZERO);
+                                let unit = payload.unit.clone();
+                                let wallet_guard = wallet.read().await;
+                                match <Self as api::WalletApi>::receive_proofs(
+                                    &*wallet_guard,
+                                    payload.proofs,
+                                    payload.unit,
+                                    from_mint_url(&payload.mint),
+                                    time::OffsetDateTime::now_utc().unix_timestamp() as u64,
+                                    payload.memo,
+                                    if payload.payment_request_id.is_some() {
+                                        PaymentType::PaymentRequest
+                                    } else {
+                                        PaymentType::Contact
+                                    },
                                     TransactionStatus::Settled,
                                     payload.payment_request_id,
                                     Some(payload.sender.clone()),
                                     Some(event_id)
                                 ).await {
                                     Ok(tx_id) => {
-                                        // if it's from a payment request - attempt to set it to paid
-                                        if let Some(p_req_id) = payload.payment_request_id &&
-                                            let Err(e) = <Self as api::WalletApi>::mark_payment_request_as_paid(
-                                                &*wallet_guard,
-                                                p_req_id,
-                                                tx_id,
-                                                payload.sender.clone(),
-                                                PaymentRequestActionOrigin::Remote { event_id: event_id.to_string() },
-                                            ).await {
-                                                tracing::error!("Could not set Payment Request {p_req_id} to paid: {e}");
+                                        if let Some(p_req_id) = payload.payment_request_id {
+                                            wallet_guard.settle_outgoing_payment_request(p_req_id, tx_id, amount, &unit, &payload.sender, event_id).await;
                                         }
                                         tracing::info!("Received Contact Payment from {} for {} with Transaction ID: {}",
                                             payload.sender, amount, tx_id)
@@ -319,6 +334,69 @@ impl Wallet {
                 }
             }
         });
+    }
+
+    async fn settle_outgoing_payment_request(
+        &self,
+        p_req_id: Uuid,
+        tx_id: Uuid,
+        amount: Amount,
+        unit: &CurrencyUnit,
+        sender: &NodeId,
+        event_id: EventId,
+    ) {
+        let req = match self
+            .payment_request_repo
+            .get_payment_request(p_req_id)
+            .await
+        {
+            Ok(Some(req)) => req,
+            Ok(None) => {
+                tracing::debug!("Payment for unknown payment request {p_req_id}, tx {tx_id}");
+                return;
+            }
+            Err(e) => {
+                tracing::error!("Could not read payment request {p_req_id}: {e}");
+                return;
+            }
+        };
+        if req.direction != PaymentRequestDirection::Outgoing {
+            tracing::warn!("Payment {tx_id} names payment request {p_req_id} we did not issue");
+            return;
+        }
+        if let PaymentRequestState::Paid { tx_id: paid_by } = req.state {
+            tracing::info!("Payment request {p_req_id} already paid by {paid_by}, tx {tx_id}");
+            return;
+        }
+        if let Some(expected) = &req.node_id
+            && expected != sender
+        {
+            tracing::warn!(
+                "Payment {tx_id} for request {p_req_id} is from {sender}, not {expected}"
+            );
+            return;
+        }
+        if &req.unit != unit || amount < req.amount {
+            tracing::warn!(
+                "Payment {tx_id} of {amount} {unit} does not cover request {p_req_id} for {} {}",
+                req.amount,
+                req.unit
+            );
+            return;
+        }
+        if let Err(e) = <Self as api::WalletApi>::mark_payment_request_as_paid(
+            self,
+            p_req_id,
+            tx_id,
+            sender.clone(),
+            PaymentRequestActionOrigin::Remote {
+                event_id: event_id.to_string(),
+            },
+        )
+        .await
+        {
+            tracing::error!("Could not set Payment Request {p_req_id} to paid: {e}");
+        }
     }
 
     pub fn name(&self) -> String {
@@ -486,40 +564,6 @@ impl Wallet {
             credit: balance.credit,
             total: balance.debit + balance.credit,
         })
-    }
-
-    async fn check_nut18_request(
-        &self,
-        req: &cashu::PaymentRequest,
-    ) -> Result<(Amount, CurrencyUnit, cashu::Transport)> {
-        if !req.mints.is_empty() && !req.mints.contains(&to_mint_url(self.client.mint_url())) {
-            return Err(Error::InterMint);
-        }
-        if req.nut10.is_some() {
-            return Err(Error::SpendingConditions);
-        }
-        let Some(amount) = req.amount else {
-            return Err(Error::MissingAmount);
-        };
-        let unit = if let Some(unit) = &req.unit {
-            if *unit != self.debit.unit() {
-                return Err(Error::InvalidCurrencyUnit(unit.to_string()));
-            }
-            unit.clone()
-        } else {
-            self.debit.unit()
-        };
-        let (nostr_transports, http_transports): (Vec<_>, Vec<_>) = req
-            .transports
-            .iter()
-            .partition(|t| matches!(t._type, cashu::TransportType::Nostr));
-        if !http_transports.is_empty() {
-            Ok((amount, unit, http_transports[0].clone()))
-        } else if !nostr_transports.is_empty() {
-            Ok((amount, unit, nostr_transports[0].clone()))
-        } else {
-            Err(Error::NoTransport)
-        }
     }
 
     pub async fn restore_local_proofs(&self) -> Result<()> {
@@ -1244,7 +1288,7 @@ impl Wallet {
         tracing::info!("Sent payment request {payment_req_id} with nostr event_id {event_id}");
         let outgoing_payment_request = PaymentRequest {
             id: payment_req_id,
-            node_id,
+            node_id: Some(node_id),
             amount,
             unit,
             description,
@@ -1362,8 +1406,9 @@ impl Wallet {
         if outcome != PaymentRequestTransitionOutcome::Applied {
             return Err(Error::PaymentRequestInWrongState(payment_req_id));
         }
-        self.send_payment_request_action(&req.node_id, payload)
-            .await;
+        if let Some(node_id) = &req.node_id {
+            self.send_payment_request_action(node_id, payload).await;
+        }
         Ok(())
     }
 
@@ -1373,15 +1418,7 @@ impl Wallet {
         payload: PaymentRequestActionPayload,
     ) {
         let payment_req_id = payload.payment_request_id;
-        let known_relays = self
-            .contact_repo
-            .get_contacts_by_node_id(node_id.clone())
-            .await
-            .ok()
-            .and_then(|contacts| contacts.first().map(|c| c.nostr_relays.clone()))
-            .unwrap_or_else(|| self.nostr_transport.relays().to_owned());
-        let relays =
-            <Self as api::WalletApi>::fetch_nostr_relays(self, node_id.npub(), known_relays).await;
+        let relays = self.resolve_relays_for_node(node_id).await;
         let (target, message) = match Self::encode_payment_request_action(node_id, relays, payload)
         {
             Ok(encoded) => encoded,
@@ -1464,53 +1501,23 @@ impl Wallet {
         Ok(outcome.is_some())
     }
 
-    async fn pay_nut18(
-        &self,
-        proofs: Vec<cashu::Proof>,
-        nostr_cl: &Arc<dyn TransportApi>,
-        http_cl: &reqwest::Client,
-        transport: cashu::Transport,
-        p_id: Option<String>,
-        mut partial_tx: Transaction,
-    ) -> Result<Uuid> {
-        let payload = cashu::PaymentRequestPayload {
-            id: p_id,
-            memo: partial_tx.memo.clone(),
-            unit: partial_tx.unit.clone(),
-            mint: to_mint_url(self.client.mint_url()),
-            proofs,
-        };
-        match transport._type {
-            cashu::TransportType::HttpPost => {
-                let url = reqwest::Url::from_str(&transport.target)?;
-                let response = http_cl.post(url).json(&payload).send().await?;
-                response.error_for_status()?;
-            }
-            cashu::TransportType::Nostr => {
-                let payload = serde_json::to_string(&payload)?;
-                let event_id = match nostr_cl
-                    .send_private_msg(transport.target.clone(), payload.clone())
-                    .await
-                {
-                    Ok(event_id) => event_id,
-                    Err(e) => {
-                        tracing::error!("Failed to send nut18 payment, queuing for retry: {e}");
-                        match e {
-                            bcr_wallet_transport::error::Error::NostrSendPrivateMsg(event_id) => {
-                                self.nostr_transport
-                                    .queue_retry_message(Some(transport.target), payload)
-                                    .await?;
-                                event_id
-                            }
-                            e => return Err(e.into()),
-                        }
+    async fn resolve_relays_for_node(&self, node_id: &NodeId) -> Vec<RelayUrl> {
+        let mut known_relays = self.nostr_transport.relays().to_owned();
+        if let Ok(contacts) = self
+            .contact_repo
+            .get_contacts_by_node_id(node_id.clone())
+            .await
+        {
+            for contact in contacts {
+                for relay in contact.nostr_relays {
+                    if !known_relays.contains(&relay) {
+                        known_relays.push(relay);
                     }
-                };
-                partial_tx.nostr_event_id = Some(event_id);
+                }
             }
         }
-        let txid = self.tx_repo.store_tx(partial_tx).await?;
-        Ok(txid)
+
+        self.fetch_nostr_relays(node_id.npub(), known_relays).await
     }
 
     pub async fn dev_mode_detailed_balance(&self) -> Result<Vec<WalletDetailedBalanceEntry>> {
@@ -1567,12 +1574,11 @@ impl Wallet {
 mod tests {
     use ::nostr::{
         event::EventId,
-        key::PublicKey,
-        nips::nip19::{FromBech32, Nip19Profile, ToBech32},
+        nips::nip19::{FromBech32, Nip19Profile},
         types::RelayUrl,
     };
     use bcr_common::{
-        cashu::{ProofsMethods as CashuProofsMethods, nut18 as cdk18},
+        cashu::ProofsMethods as CashuProofsMethods,
         core_tests,
         ecash::{self, ProofsMethods},
         wire::clowder as wire_clowder,
@@ -1596,6 +1602,7 @@ mod tests {
     };
     use bcr_wallet_transport::{NostrEventChannel, error::Error as TransportError};
     use secp256k1::SECP256K1;
+    use std::str::FromStr;
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
@@ -1646,7 +1653,7 @@ mod tests {
     ) -> PaymentRequest {
         PaymentRequest {
             id,
-            node_id: node_id(NODE_ID_1),
+            node_id: Some(node_id(NODE_ID_1)),
             amount: Amount::from(42),
             unit: CurrencyUnit::Sat,
             description: Some("payment request memo".to_string()),
@@ -1832,7 +1839,7 @@ mod tests {
                 200,
                 20,
                 TransactionDirection::Incoming,
-                PaymentType::Cdk18,
+                PaymentType::PaymentRequest,
                 TransactionStatus::Settled,
             ),
             tx_with(
@@ -1840,7 +1847,7 @@ mod tests {
                 300,
                 80,
                 TransactionDirection::Outgoing,
-                PaymentType::Cdk18,
+                PaymentType::PaymentRequest,
                 TransactionStatus::Canceled,
             ),
             tx_with(
@@ -1946,12 +1953,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_betas_and_mint_urls() {
-        let mut ctx = wallet_ctx();
-        ctx.client
-            .expect_mint_url()
-            .times(1)
-            .return_const(url::Url::from_str("https://mint.example").unwrap());
+    async fn test_betas() {
+        let ctx = wallet_ctx();
         let mut wlt = wallet(ctx).await;
 
         let b1 = url::Url::from_str("https://beta1.example").unwrap();
@@ -1966,110 +1969,86 @@ mod tests {
         assert_eq!(betas.len(), 2);
         assert!(betas.contains(&b1));
         assert!(betas.contains(&b2));
-
-        let urls = wlt.read().await.mint_urls();
-        assert!(urls.contains(&b1));
-        assert!(urls.contains(&b2));
-        assert!(urls.contains(&url::Url::from_str("https://mint.example").unwrap()));
-        assert_eq!(urls.len(), 3);
     }
 
     #[tokio::test]
-    async fn test_prepare_pay_unknown_payment_request() {
+    async fn test_check_received_payment_request_unknown_reports_none() {
         let mut ctx = wallet_ctx();
-        ctx.client
-            .expect_get_mint_keysets()
+        let pid = Uuid::new_v4();
+        ctx.payment_request_repo
+            .expect_get_payment_request()
             .times(1)
-            .returning(|| Ok(vec![]));
+            .returning(|_| Ok(None));
         let wlt = wallet(ctx).await;
 
-        let err = wlt
-            .read()
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let results_cb = results.clone();
+        let callback: PaymentResultCallback = Arc::new(move |r| results_cb.lock().unwrap().push(r));
+
+        wlt.read()
             .await
-            .prepare_pay_cdk18("not-a-request".to_string())
-            .await
-            .unwrap_err();
-
-        match err {
-            Error::UnknownPaymentRequest(s) => assert_eq!(s, "not-a-request"),
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_prepare_payment_request_sets_current_request() {
-        let mut ctx = wallet_ctx();
-
-        ctx.nostr_transport.expect_cdk18_transport().returning(|| {
-            Ok(cdk18::Transport {
-                _type: cdk18::TransportType::Nostr,
-                target: Nip19Profile::new(
-                    PublicKey::from_byte_array([0u8; 32]),
-                    vec![RelayUrl::from_str("wss://test.example.com").unwrap()],
-                )
-                .to_bech32()
-                .unwrap(),
-                tags: vec![vec![String::from("n"), String::from("17")]],
-            })
-        });
-
-        ctx.client
-            .expect_mint_url()
-            .times(1)
-            .return_const(url::Url::from_str("https://mint.example").unwrap());
-
-        let wlt = wallet(ctx).await;
-        let req = wlt
-            .read()
-            .await
-            .prepare_cdk18_payment_request(
-                cashu::Amount::from(123),
-                CurrencyUnit::Sat,
-                Some("hello".to_string()),
+            .check_received_payment(
+                std::time::Duration::from_secs(1),
+                pid,
+                CancellationToken::new(),
+                callback,
             )
             .await
             .unwrap();
 
-        let stored = wlt
-            .read()
-            .await
-            .current_payment_request
-            .lock()
-            .await
-            .clone();
-        assert!(stored.is_some());
-        assert_eq!(stored.unwrap().payment_id, req.payment_id);
-        assert_eq!(req.amount, Some(cashu::Amount::from(123)));
-        assert_eq!(req.unit, Some(CurrencyUnit::Sat));
-        assert_eq!(req.description, Some("hello".to_string()));
-        assert_eq!(req.single_use, Some(true));
+        assert_eq!(*results.lock().unwrap(), vec![None]);
     }
 
     #[tokio::test]
-    async fn test_check_received_payment_errors_if_no_current_request() {
-        let ctx = wallet_ctx();
+    async fn test_check_received_payment_request_reports_paid_without_receiving() {
+        let mut ctx = wallet_ctx();
+        let pid = Uuid::new_v4();
+        let tx_id = Uuid::new_v4();
+        let mut seq = mockall::Sequence::new();
+        ctx.payment_request_repo
+            .expect_get_payment_request()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(move |id| {
+                Ok(Some(payment_request_with(
+                    id,
+                    PaymentRequestDirection::Outgoing,
+                    PaymentRequestState::Pending,
+                )))
+            });
+        ctx.payment_request_repo
+            .expect_get_payment_request()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(move |id| {
+                Ok(Some(payment_request_with(
+                    id,
+                    PaymentRequestDirection::Outgoing,
+                    PaymentRequestState::Paid { tx_id },
+                )))
+            });
+        ctx.debit.expect_receive_proofs().never();
+        ctx.payment_request_repo
+            .expect_apply_payment_request_transition()
+            .never();
         let wlt = wallet(ctx).await;
 
-        let callback: PaymentResultCallback = Arc::new(move |_| {});
-        let cancel_token = CancellationToken::new();
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let results_cb = results.clone();
+        let callback: PaymentResultCallback = Arc::new(move |r| results_cb.lock().unwrap().push(r));
 
-        let pid = Uuid::new_v4();
-        let err = wlt
-            .read()
+        wlt.read()
             .await
             .check_received_payment(
-                std::time::Duration::from_millis(1),
+                std::time::Duration::from_secs(5),
                 pid,
-                cancel_token,
+                CancellationToken::new(),
                 callback,
             )
             .await
-            .unwrap_err();
+            .unwrap();
 
-        match err {
-            Error::NoPrepareRef(x) => assert_eq!(x, pid),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert_eq!(*results.lock().unwrap(), vec![Some(tx_id)]);
     }
 
     #[tokio::test]
@@ -2333,9 +2312,7 @@ mod tests {
             memo: Some("memo".to_string()),
         });
 
-        let http_cl = reqwest::Client::new();
-
-        let (_txid, token) = wlt.read().await.pay(pid, &http_cl, 123).await.unwrap();
+        let (_txid, token) = wlt.read().await.pay(pid, 123).await.unwrap();
 
         assert!(token.is_some());
     }
@@ -2346,9 +2323,8 @@ mod tests {
         let wlt = wallet(ctx).await;
 
         let pid = Uuid::new_v4();
-        let http_cl = reqwest::Client::new();
 
-        let err = wlt.read().await.pay(pid, &http_cl, 123).await.unwrap_err();
+        let err = wlt.read().await.pay(pid, 123).await.unwrap_err();
 
         match err {
             Error::NoPrepareRef(id) => assert_eq!(id, pid),
@@ -2372,14 +2348,7 @@ mod tests {
             memo: None,
         });
 
-        let http_cl = reqwest::Client::new();
-
-        let err = wlt
-            .read()
-            .await
-            .pay(actual_pid, &http_cl, 123)
-            .await
-            .unwrap_err();
+        let err = wlt.read().await.pay(actual_pid, 123).await.unwrap_err();
 
         match err {
             Error::NoPrepareRef(id) => assert_eq!(id, actual_pid),
@@ -2444,88 +2413,7 @@ mod tests {
             memo: Some("melt memo".to_string()),
         });
 
-        let http_cl = reqwest::Client::new();
-
-        let (res_tx_id, token) = wlt.read().await.pay(pid, &http_cl, 123).await.unwrap();
-
-        assert_eq!(res_tx_id, tx_id);
-        assert!(token.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_pay_cdk18() {
-        let mut ctx = wallet_ctx();
-
-        let pid = Uuid::new_v4();
-        let tx_id = Uuid::new_v4();
-
-        ctx.client
-            .expect_get_mint_keysets()
-            .times(1)
-            .returning(|| Ok(vec![]));
-
-        ctx.client
-            .expect_mint_url()
-            .times(2)
-            .return_const(url::Url::from_str("https://mint.example").unwrap());
-
-        ctx.debit
-            .expect_unit()
-            .times(1)
-            .returning(|| CurrencyUnit::Sat);
-
-        ctx.debit
-            .expect_send_proofs()
-            .times(1)
-            .returning(|_rid, _infos, _client, _swap| Ok(Default::default()));
-
-        ctx.nostr_transport
-            .expect_send_private_msg()
-            .times(1)
-            .returning(|_target, _payload| Ok(EventId::from_byte_array([0u8; 32])));
-
-        ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
-            assert_eq!(tx.direction, TransactionDirection::Outgoing);
-            assert_eq!(tx.amount, Amount::ZERO);
-            assert_eq!(tx.fees.swap, Amount::ZERO);
-            assert_eq!(tx.fees.melt, Amount::ZERO);
-            assert_eq!(tx.fees.network, Amount::ZERO);
-            assert_eq!(tx.unit, CurrencyUnit::Sat);
-            assert_eq!(tx.tstamp, 123);
-            assert_eq!(tx.memo, Some("cdk18 memo".to_string()));
-            assert_eq!(tx.payment_type, PaymentType::Cdk18,);
-            assert_eq!(tx.status, TransactionStatus::Pending,);
-            assert!(tx.nostr_event_id.is_some());
-            Ok(tx_id)
-        });
-
-        let transport = cdk18::Transport {
-            _type: cdk18::TransportType::Nostr,
-            target: Nip19Profile::new(
-                PublicKey::from_byte_array([0u8; 32]),
-                vec![RelayUrl::from_str("wss://test.example.com").unwrap()],
-            )
-            .to_bech32()
-            .unwrap(),
-            tags: vec![],
-        };
-
-        let wlt = wallet(ctx).await;
-
-        *wlt.read().await.current_payment.lock().await = Some(PayReference {
-            request_id: pid,
-            unit: CurrencyUnit::Sat,
-            fees: TransactionFees::default(),
-            ptype: WalletPaymentType::Cdk18 {
-                transport,
-                id: Some("payment-id".to_string()),
-            },
-            memo: Some("cdk18 memo".to_string()),
-        });
-
-        let http_cl = reqwest::Client::new();
-
-        let (res_tx_id, token) = wlt.read().await.pay(pid, &http_cl, 123).await.unwrap();
+        let (res_tx_id, token) = wlt.read().await.pay(pid, 123).await.unwrap();
 
         assert_eq!(res_tx_id, tx_id);
         assert!(token.is_none());
@@ -2538,6 +2426,7 @@ mod tests {
         let pid = Uuid::new_v4();
         let tx_id = Uuid::new_v4();
         let contact_node_id = node_id(NODE_ID_1);
+        let expected_node_id = contact_node_id.clone();
 
         ctx.client
             .expect_get_mint_keysets()
@@ -2554,10 +2443,18 @@ mod tests {
             .times(1)
             .returning(|| CurrencyUnit::Sat);
 
+        ctx.nostr_transport
+            .expect_relays()
+            .return_const(vec![RelayUrl::from_str("wss://test.example.com").unwrap()]);
+
         ctx.contact_repo
-            .expect_get_contact()
-            .times(2)
-            .returning(|_| Ok(Some(test_contact())));
+            .expect_get_contacts_by_node_id()
+            .times(1)
+            .returning(|_| {
+                let mut contact = test_contact();
+                contact.nostr_relays = vec![RelayUrl::from_str("wss://relay.theirs").unwrap()];
+                Ok(vec![contact])
+            });
 
         ctx.nostr_transport
             .expect_fetch_relay_list()
@@ -2567,7 +2464,20 @@ mod tests {
         ctx.nostr_transport
             .expect_send_private_msg()
             .times(1)
-            .returning(|_target, _payload| Ok(EventId::from_byte_array([0u8; 32])));
+            .returning(|target, _payload| {
+                let profile = Nip19Profile::from_bech32(&target).unwrap();
+                assert!(
+                    profile
+                        .relays
+                        .contains(&RelayUrl::from_str("wss://relay.theirs").unwrap())
+                );
+                assert!(
+                    profile
+                        .relays
+                        .contains(&RelayUrl::from_str("wss://test.example.com").unwrap())
+                );
+                Ok(EventId::from_byte_array([0u8; 32]))
+            });
 
         ctx.debit
             .expect_send_proofs()
@@ -2585,7 +2495,7 @@ mod tests {
             assert_eq!(tx.memo, Some("contact memo".to_string()));
             assert_eq!(tx.payment_type, PaymentType::Contact,);
             assert_eq!(tx.status, TransactionStatus::Pending);
-            assert_eq!(tx.contact_node_id, Some(contact_node_id.clone()));
+            assert_eq!(tx.contact_node_id, Some(expected_node_id.clone()));
             assert!(tx.nostr_event_id.is_some());
             Ok(tx_id)
         });
@@ -2596,16 +2506,14 @@ mod tests {
             request_id: pid,
             unit: CurrencyUnit::Sat,
             fees: TransactionFees::default(),
-            ptype: WalletPaymentType::Contact {
-                contact_id: Uuid::new_v4(),
+            ptype: WalletPaymentType::PaymentRequest {
+                node_id: contact_node_id.clone(),
                 payment_request_id: None,
             },
             memo: Some("contact memo".to_string()),
         });
 
-        let http_cl = reqwest::Client::new();
-
-        let (res_tx_id, token) = wlt.read().await.pay(pid, &http_cl, 123).await.unwrap();
+        let (res_tx_id, token) = wlt.read().await.pay(pid, 123).await.unwrap();
 
         assert_eq!(res_tx_id, tx_id);
         assert!(token.is_none());
@@ -3153,7 +3061,7 @@ mod tests {
             .expect_add_payment_request()
             .times(1)
             .withf(move |req| {
-                req.node_id == expected_node_id
+                req.node_id.as_ref() == Some(&expected_node_id)
                     && req.amount == Amount::from(100)
                     && req.direction == PaymentRequestDirection::Outgoing
                     && req.state == PaymentRequestState::Pending
@@ -3796,7 +3704,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_prepare_pay_payment_request_errors_if_contact_missing() {
+    async fn test_prepare_pay_payment_request_succeeds_without_contact() {
         let mut ctx = wallet_ctx();
         let req_id = Uuid::new_v4();
         let req = payment_request_with(
@@ -3804,30 +3712,45 @@ mod tests {
             PaymentRequestDirection::Incoming,
             PaymentRequestState::Pending,
         );
-        let missing_node_id = req.node_id.clone();
+        let requester = req.node_id.clone().unwrap();
 
         ctx.payment_request_repo
             .expect_get_payment_request()
             .times(1)
             .returning(move |_| Ok(Some(req.clone())));
 
-        ctx.contact_repo
-            .expect_get_contacts_by_node_id()
+        ctx.contact_repo.expect_get_contacts_by_node_id().never();
+        ctx.contact_repo.expect_get_contact().never();
+
+        ctx.client
+            .expect_get_mint_keysets()
             .times(1)
-            .returning(|_| Ok(vec![]));
+            .returning(|| Ok(vec![]));
+
+        ctx.debit
+            .expect_prepare_send()
+            .times(1)
+            .returning(|_amount, _infos| Ok(Default::default()));
 
         let wlt = wallet(ctx).await;
 
-        let err = wlt
-            .read()
+        wlt.read()
             .await
             .prepare_pay_payment_request(req_id)
             .await
-            .unwrap_err();
+            .unwrap();
 
-        match err {
-            Error::ContactNotFound(id) => assert_eq!(id, missing_node_id.to_string()),
-            other => panic!("unexpected error: {other:?}"),
+        let binding = wlt.read().await;
+        let pref_lock = binding.current_payment.lock().await;
+        match &pref_lock.as_ref().unwrap().ptype {
+            WalletPaymentType::PaymentRequest {
+                node_id,
+                payment_request_id,
+            } => {
+                assert_eq!(node_id, &requester);
+                assert_eq!(payment_request_id, &Some(req_id));
+            }
+            other => panic!("unexpected payment type: {other:?}"),
         }
     }
 
@@ -3865,13 +3788,12 @@ mod tests {
     async fn test_prepare_pay_payment_request_success_sets_contact_payment_reference() {
         let mut ctx = wallet_ctx();
         let req_id = Uuid::new_v4();
-        let test_contact = test_contact();
-
         let req = payment_request_with(
             req_id,
             PaymentRequestDirection::Incoming,
             PaymentRequestState::Pending,
         );
+        let requester = req.node_id.clone().unwrap();
 
         ctx.payment_request_repo
             .expect_get_payment_request()
@@ -3880,12 +3802,6 @@ mod tests {
                 assert_eq!(id, req_id);
                 Ok(Some(req.clone()))
             });
-
-        let tc_clone = test_contact.clone();
-        ctx.contact_repo
-            .expect_get_contacts_by_node_id()
-            .times(1)
-            .returning(move |_| Ok(vec![tc_clone.clone()]));
 
         ctx.client
             .expect_get_mint_keysets()
@@ -3909,18 +3825,18 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(summary.ptype, PaymentType::Contact);
+        assert_eq!(summary.ptype, PaymentType::PaymentRequest);
 
         let binding = wlt.read().await;
         let pref_lock = binding.current_payment.lock().await;
         let p = pref_lock.as_ref().unwrap();
 
         match &p.ptype {
-            WalletPaymentType::Contact {
-                contact_id,
+            WalletPaymentType::PaymentRequest {
+                node_id,
                 payment_request_id,
             } => {
-                assert_eq!(contact_id, &test_contact.id);
+                assert_eq!(node_id, &requester);
                 assert_eq!(payment_request_id, &Some(req_id));
             }
             _ => panic!("unexpected payment type"),
@@ -4105,10 +4021,12 @@ mod tests {
             .expect_mint_url()
             .return_const(url::Url::from_str("https://mint.example").unwrap());
         let ys = vec![test_cashu_pubkey(10)];
+        let (_info, _keyset, paid_proofs) =
+            test_keyset_and_proofs(&[Amount::from(32), Amount::from(8), Amount::from(2)]);
         ctx.debit.expect_receive_proofs().times(1).returning(
             move |_client, _infos, proofs, _swap_config| {
-                assert!(proofs.is_empty());
-                Ok((Amount::ZERO, ys.clone()))
+                assert_eq!(proofs.len(), 3);
+                Ok((Amount::from(42), ys.clone()))
             },
         );
         ctx.tx_repo
@@ -4116,10 +4034,10 @@ mod tests {
             .times(1)
             .return_once(move |tx| {
                 assert_eq!(tx.direction, TransactionDirection::Incoming);
-                assert_eq!(tx.amount, Amount::ZERO);
+                assert_eq!(tx.amount, Amount::from(42));
                 assert_eq!(tx.unit, CurrencyUnit::Sat);
                 assert_eq!(tx.memo, Some("payment request memo".to_string()));
-                assert_eq!(tx.payment_type, PaymentType::Contact);
+                assert_eq!(tx.payment_type, PaymentType::PaymentRequest);
                 assert_eq!(tx.status, TransactionStatus::Settled);
                 assert_eq!(tx.payment_request_id, Some(req_id));
                 assert_eq!(tx.contact_node_id, Some(sender_for_tx));
@@ -4127,6 +4045,15 @@ mod tests {
                 Ok(tx_id_for_store)
             });
 
+        let req = payment_request_with(
+            req_id,
+            PaymentRequestDirection::Outgoing,
+            PaymentRequestState::Pending,
+        );
+        ctx.payment_request_repo
+            .expect_get_payment_request()
+            .times(1)
+            .return_once(move |_| Ok(Some(req)));
         ctx.payment_request_repo
             .expect_apply_payment_request_transition()
             .times(1)
@@ -4155,7 +4082,7 @@ mod tests {
         let payload = ContactPaymentPayload {
             payment_request_id: Some(req_id),
             sender,
-            proofs: vec![],
+            proofs: paid_proofs,
             unit: CurrencyUnit::Sat,
             memo: Some("payment request memo".to_string()),
             created_at: 123,
@@ -4178,6 +4105,188 @@ mod tests {
             .expect("paid-state signal should be sent");
     }
 
+    async fn listener_pays_request(
+        stored: Option<PaymentRequest>,
+        paid: &[Amount],
+        sender: NodeId,
+    ) -> (usize, usize) {
+        let (_info, _keyset, paid_proofs) = test_keyset_and_proofs(paid);
+        let mut ctx = wallet_ctx();
+        let req_id = stored.as_ref().map(|r| r.id).unwrap_or_else(Uuid::new_v4);
+        let nostr_event_channel = ctx.nostr_event_channel.clone();
+        let receives = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (looked_up_tx, looked_up_rx) = tokio::sync::oneshot::channel();
+
+        ctx.debit.expect_unit().returning(|| CurrencyUnit::Sat);
+        ctx.client
+            .expect_get_mint_keysets()
+            .returning(|| Ok(vec![]));
+        ctx.client
+            .expect_mint_url()
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
+        let receives_cb = receives.clone();
+        ctx.debit
+            .expect_receive_proofs()
+            .returning(move |_, _, _, _| {
+                receives_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok((Amount::ZERO, vec![test_cashu_pubkey(10)]))
+            });
+        ctx.tx_repo
+            .expect_store_tx()
+            .returning(|_| Ok(Uuid::new_v4()));
+        ctx.payment_request_repo
+            .expect_get_payment_request()
+            .return_once(move |_| {
+                looked_up_tx.send(()).expect("test receiver still alive");
+                Ok(stored)
+            });
+        let writes_cb = writes.clone();
+        ctx.payment_request_repo
+            .expect_apply_payment_request_transition()
+            .returning(move |_, _| {
+                writes_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(PaymentRequestTransitionOutcome::Applied)
+            });
+
+        let wlt = wallet(ctx).await;
+        Wallet::start_nostr_event_listener(wlt).await;
+
+        nostr_event_channel.publish(bcr_wallet_transport::NostrWalletEvent::ContactPayment {
+            sender: sender.npub(),
+            payload: ContactPaymentPayload {
+                payment_request_id: Some(req_id),
+                sender,
+                proofs: paid_proofs,
+                unit: CurrencyUnit::Sat,
+                memo: None,
+                created_at: 123,
+                mint: cashu::MintUrl::from_str("https://mint.example").unwrap(),
+            },
+            event_id: EventId::from_byte_array([1u8; 32]),
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), looked_up_rx)
+            .await
+            .expect("payment request should be looked up")
+            .expect("lookup signal should be sent");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        (
+            receives.load(std::sync::atomic::Ordering::SeqCst),
+            writes.load(std::sync::atomic::Ordering::SeqCst),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_nostr_event_listener_payment_request_unknown_still_received() {
+        assert_eq!(
+            listener_pays_request(
+                None,
+                &[Amount::from(32), Amount::from(8), Amount::from(2)],
+                node_id(NODE_ID_1)
+            )
+            .await,
+            (1, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nostr_event_listener_payment_request_incoming_not_marked() {
+        let req = payment_request_with(
+            Uuid::new_v4(),
+            PaymentRequestDirection::Incoming,
+            PaymentRequestState::Pending,
+        );
+        assert_eq!(
+            listener_pays_request(
+                Some(req),
+                &[Amount::from(32), Amount::from(8), Amount::from(2)],
+                node_id(NODE_ID_1)
+            )
+            .await,
+            (1, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nostr_event_listener_payment_request_already_paid_kept() {
+        let req = payment_request_with(
+            Uuid::new_v4(),
+            PaymentRequestDirection::Outgoing,
+            PaymentRequestState::Paid {
+                tx_id: Uuid::new_v4(),
+            },
+        );
+        assert_eq!(
+            listener_pays_request(
+                Some(req),
+                &[Amount::from(32), Amount::from(8), Amount::from(2)],
+                node_id(NODE_ID_1)
+            )
+            .await,
+            (1, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nostr_event_listener_payment_request_underpaid_not_marked() {
+        let req = payment_request_with(
+            Uuid::new_v4(),
+            PaymentRequestDirection::Outgoing,
+            PaymentRequestState::Pending,
+        );
+        let paid = [Amount::from(32), Amount::from(8)];
+        assert_eq!(
+            listener_pays_request(Some(req), &paid, node_id(NODE_ID_1)).await,
+            (1, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nostr_event_listener_payment_request_wrong_sender_not_marked() {
+        let req = payment_request_with(
+            Uuid::new_v4(),
+            PaymentRequestDirection::Outgoing,
+            PaymentRequestState::Pending,
+        );
+        assert_eq!(
+            listener_pays_request(Some(req), &[Amount::from(64)], node_id(NODE_ID_2)).await,
+            (1, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nostr_event_listener_payment_request_shared_any_sender_marked() {
+        let mut req = payment_request_with(
+            Uuid::new_v4(),
+            PaymentRequestDirection::Outgoing,
+            PaymentRequestState::Pending,
+        );
+        req.node_id = None;
+        assert_eq!(
+            listener_pays_request(Some(req), &[Amount::from(64)], node_id(NODE_ID_2)).await,
+            (1, 1)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nostr_event_listener_payment_request_outgoing_pending_marked() {
+        let req = payment_request_with(
+            Uuid::new_v4(),
+            PaymentRequestDirection::Outgoing,
+            PaymentRequestState::Pending,
+        );
+        assert_eq!(
+            listener_pays_request(
+                Some(req),
+                &[Amount::from(32), Amount::from(8), Amount::from(2)],
+                node_id(NODE_ID_1)
+            )
+            .await,
+            (1, 1)
+        );
+    }
+
     #[tokio::test]
     async fn test_start_nostr_event_listener_contact_payment_request() {
         let mut ctx = wallet_ctx();
@@ -4193,7 +4302,7 @@ mod tests {
             .times(1)
             .return_once(move |stored| {
                 assert_eq!(stored.id, req_id);
-                assert_eq!(stored.node_id, sender_for_assert);
+                assert_eq!(stored.node_id, Some(sender_for_assert));
                 assert_eq!(stored.amount, Amount::from(42));
                 assert_eq!(stored.unit, CurrencyUnit::Sat);
                 assert_eq!(stored.description, Some("payment request memo".to_string()));
@@ -4505,6 +4614,7 @@ mod tests {
             .expect_get_contacts_by_node_id()
             .times(1)
             .returning(move |_| Ok(vec![contact.clone()]));
+        ctx.nostr_transport.expect_relays().return_const(vec![]);
         ctx.nostr_transport
             .expect_fetch_relay_list()
             .times(1)
@@ -5065,9 +5175,14 @@ mod tests {
                 Ok(Default::default())
             });
 
+        ctx.payment_request_repo
+            .expect_add_payment_request()
+            .times(1)
+            .returning(|_| Ok(()));
+
         let wlt = wallet(ctx).await;
 
-        let shared_request = wlt
+        let (_, shared_request) = wlt
             .read()
             .await
             .create_shareable_remote_payment_request(
@@ -5087,7 +5202,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(summary.ptype, PaymentType::Contact);
+        assert_eq!(summary.ptype, PaymentType::PaymentRequest);
     }
 
     #[tokio::test]
@@ -5118,9 +5233,14 @@ mod tests {
                 Ok(Default::default())
             });
 
+        ctx.payment_request_repo
+            .expect_add_payment_request()
+            .times(1)
+            .returning(|_| Ok(()));
+
         let wlt = wallet(ctx).await;
 
-        let shared_request = wlt
+        let (shared_request_id, shared_request) = wlt
             .read()
             .await
             .create_shareable_remote_payment_request(
@@ -5138,7 +5258,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(summary.ptype, PaymentType::Contact);
+        assert_eq!(summary.ptype, PaymentType::PaymentRequest);
 
         let wallet_guard = wlt.read().await;
         let payment_guard = wallet_guard.current_payment.lock().await;
@@ -5148,8 +5268,12 @@ mod tests {
         assert_eq!(payment.memo, Some("shared request memo".to_string()));
 
         match &payment.ptype {
-            WalletPaymentType::SharedPaymentRequest { node_id } => {
+            WalletPaymentType::PaymentRequest {
+                node_id,
+                payment_request_id,
+            } => {
                 assert_eq!(node_id, &expected_node_id);
+                assert_eq!(payment_request_id, &Some(shared_request_id));
             }
             other => panic!("unexpected payment type: {other:?}"),
         }
@@ -5160,6 +5284,7 @@ mod tests {
         let mut ctx = wallet_ctx();
 
         let pid = Uuid::new_v4();
+        let req_id = Uuid::new_v4();
         let tx_id = Uuid::new_v4();
         let receiver_node_id = node_id(NODE_ID_1);
         let expected_receiver_node_id = receiver_node_id.clone();
@@ -5178,6 +5303,11 @@ mod tests {
         ctx.nostr_transport
             .expect_relays()
             .return_const(vec![RelayUrl::from_str("wss://test.example.com").unwrap()]);
+
+        ctx.contact_repo
+            .expect_get_contacts_by_node_id()
+            .times(1)
+            .returning(|_| Ok(vec![]));
 
         let relays_clone = relays.clone();
         ctx.nostr_transport
@@ -5209,13 +5339,20 @@ mod tests {
             assert_eq!(tx.unit, CurrencyUnit::Sat);
             assert_eq!(tx.tstamp, 123);
             assert_eq!(tx.memo, Some("shared request memo".to_string()));
-            assert_eq!(tx.payment_type, PaymentType::Contact);
+            assert_eq!(tx.payment_type, PaymentType::PaymentRequest);
             assert_eq!(tx.status, TransactionStatus::Pending);
             assert_eq!(tx.contact_node_id, Some(expected_receiver_node_id.clone()));
-            assert!(tx.payment_request_id.is_none());
+            assert_eq!(tx.payment_request_id, Some(req_id));
             assert_eq!(tx.nostr_event_id, Some(EventId::from_byte_array([0u8; 32])));
             Ok(tx_id)
         });
+
+        ctx.payment_request_repo
+            .expect_apply_payment_request_transition()
+            .times(1)
+            .returning(|id, _| {
+                Err(bcr_wallet_persistence::error::Error::PaymentRequestNotFound(id.to_string()))
+            });
 
         let wlt = wallet(ctx).await;
 
@@ -5223,14 +5360,108 @@ mod tests {
             request_id: pid,
             unit: CurrencyUnit::Sat,
             fees: TransactionFees::default(),
-            ptype: WalletPaymentType::SharedPaymentRequest {
+            ptype: WalletPaymentType::PaymentRequest {
                 node_id: receiver_node_id,
+                payment_request_id: Some(req_id),
             },
             memo: Some("shared request memo".to_string()),
         });
+        let (res_tx_id, token) = wlt.read().await.pay(pid, 123).await.unwrap();
 
-        let http_cl = reqwest::Client::new();
-        let (res_tx_id, token) = wlt.read().await.pay(pid, &http_cl, 123).await.unwrap();
+        assert_eq!(res_tx_id, tx_id);
+        assert!(token.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_pay_payment_request_marks_local_request_paid() {
+        let mut ctx = wallet_ctx();
+
+        let pid = Uuid::new_v4();
+        let req_id = Uuid::new_v4();
+        let tx_id = Uuid::new_v4();
+        let receiver_node_id = node_id(NODE_ID_1);
+        let expected_receiver_node_id = receiver_node_id.clone();
+        let relays = vec![RelayUrl::from_str("wss://relay.example.com").unwrap()];
+
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        ctx.client
+            .expect_mint_url()
+            .times(2)
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
+
+        ctx.nostr_transport
+            .expect_relays()
+            .return_const(vec![RelayUrl::from_str("wss://test.example.com").unwrap()]);
+
+        ctx.contact_repo
+            .expect_get_contacts_by_node_id()
+            .times(1)
+            .returning(|_| Ok(vec![]));
+
+        let relays_clone = relays.clone();
+        ctx.nostr_transport
+            .expect_fetch_relay_list()
+            .times(1)
+            .returning(move |_, _| Ok(relays_clone.clone()));
+
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+
+        ctx.debit
+            .expect_send_proofs()
+            .times(1)
+            .returning(|_rid, _infos, _client, _swap| Ok(Default::default()));
+
+        ctx.nostr_transport
+            .expect_send_private_msg()
+            .times(1)
+            .returning(|_, _| Ok(EventId::from_byte_array([0u8; 32])));
+
+        ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
+            assert_eq!(tx.direction, TransactionDirection::Outgoing);
+            assert_eq!(tx.amount, Amount::ZERO);
+            assert_eq!(tx.fees.swap, Amount::ZERO);
+            assert_eq!(tx.fees.melt, Amount::ZERO);
+            assert_eq!(tx.fees.network, Amount::ZERO);
+            assert_eq!(tx.unit, CurrencyUnit::Sat);
+            assert_eq!(tx.tstamp, 123);
+            assert_eq!(tx.memo, Some("shared request memo".to_string()));
+            assert_eq!(tx.payment_type, PaymentType::PaymentRequest);
+            assert_eq!(tx.status, TransactionStatus::Pending);
+            assert_eq!(tx.contact_node_id, Some(expected_receiver_node_id.clone()));
+            assert_eq!(tx.payment_request_id, Some(req_id));
+            assert_eq!(tx.nostr_event_id, Some(EventId::from_byte_array([0u8; 32])));
+            Ok(tx_id)
+        });
+
+        ctx.payment_request_repo
+            .expect_apply_payment_request_transition()
+            .times(1)
+            .returning(move |id, transition| {
+                assert_eq!(id, req_id);
+                assert_eq!(transition.target_state, PaymentRequestState::Paid { tx_id });
+                Ok(PaymentRequestTransitionOutcome::Applied)
+            });
+
+        let wlt = wallet(ctx).await;
+
+        *wlt.read().await.current_payment.lock().await = Some(PayReference {
+            request_id: pid,
+            unit: CurrencyUnit::Sat,
+            fees: TransactionFees::default(),
+            ptype: WalletPaymentType::PaymentRequest {
+                node_id: receiver_node_id,
+                payment_request_id: Some(req_id),
+            },
+            memo: Some("shared request memo".to_string()),
+        });
+        let (res_tx_id, token) = wlt.read().await.pay(pid, 123).await.unwrap();
 
         assert_eq!(res_tx_id, tx_id);
         assert!(token.is_none());

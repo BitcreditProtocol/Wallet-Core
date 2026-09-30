@@ -11,6 +11,7 @@ mod migration_0001;
 mod migration_0002;
 mod migration_0003;
 mod migration_0004;
+mod migration_0005;
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct AppliedMigration {
@@ -94,6 +95,18 @@ fn migrate_wallet_sync(db: Arc<Database>, namespace: WalletStorageNamespace) -> 
         migration_0004::migration_0004_tx_fees(&write_txn, &namespace)?;
         mark_migration_applied(&write_txn, &migration_0004_id_for_wallet)?;
         tracing::info!("Applied Migration 0004 for wallet {}", &namespace.wallet_id);
+    }
+
+    let migration_0005_id_for_wallet =
+        migration_0005::migration_name_for_wallet(&namespace.wallet_id);
+    if !applied.contains(&migration_0005_id_for_wallet) {
+        tracing::info!(
+            "Applying Migration 0005 for wallet {}",
+            &namespace.wallet_id
+        );
+        migration_0005::migration_0005_payment_type_rename(&write_txn, &namespace)?;
+        mark_migration_applied(&write_txn, &migration_0005_id_for_wallet)?;
+        tracing::info!("Applied Migration 0005 for wallet {}", &namespace.wallet_id);
     }
 
     write_txn.commit()?;

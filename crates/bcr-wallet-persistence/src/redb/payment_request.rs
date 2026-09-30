@@ -138,7 +138,8 @@ impl From<PaymentRequestEntryHistoryEntry> for PaymentRequestHistoryEntry {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PaymentRequestEntry {
     pub id: Uuid,
-    pub node_id: NodeId,
+    #[serde(default)]
+    pub node_id: Option<NodeId>,
     pub amount: Amount,
     pub unit: CurrencyUnit,
     pub description: Option<String>,
@@ -275,7 +276,7 @@ impl PaymentRequestDB {
                         }
                     } else {
                         tracing::warn!(
-                            "Dropping tombstone for payment request {id}: actor {} does not match the request's real sender {}",
+                            "Dropping tombstone for payment request {id}: actor {:?} does not match the request's real sender {:?}",
                             existing.node_id,
                             entry.node_id
                         );
@@ -397,7 +398,7 @@ impl PaymentRequestDB {
                 _ => return Err(Error::PaymentRequestNotFound(id.to_string())),
             };
             if let Some((node_id, direction)) = counterparty
-                && (entry.node_id != node_id || entry.direction != direction.into())
+                && (entry.node_id.as_ref() != Some(&node_id) || entry.direction != direction.into())
             {
                 tracing::warn!(
                     "Dropping transition for payment request {id}: {node_id} is not its counterparty"
@@ -537,10 +538,46 @@ mod tests {
         PaymentRequestDB::new(db, wallet_id).expect("can create PaymentRequestDB")
     }
 
+    #[test]
+    fn entry_stored_with_a_required_node_id_reads_as_some() {
+        #[derive(serde::Serialize)]
+        struct LegacyEntry {
+            id: Uuid,
+            node_id: NodeId,
+            amount: Amount,
+            unit: CurrencyUnit,
+            description: Option<String>,
+            deadline: Option<u64>,
+            created_at: u64,
+            state: PaymentRequestEntryState,
+            direction: PaymentRequestEntryDirection,
+        }
+        let node_id = NodeId::from_str(NODE_ID_1).unwrap();
+        let mut bytes = Vec::new();
+        ciborium::into_writer(
+            &LegacyEntry {
+                id: Uuid::new_v4(),
+                node_id: node_id.clone(),
+                amount: Amount::from(42u64),
+                unit: CurrencyUnit::Sat,
+                description: None,
+                deadline: None,
+                created_at: 1,
+                state: PaymentRequestEntryState::Pending,
+                direction: PaymentRequestEntryDirection::Incoming,
+            },
+            &mut bytes,
+        )
+        .unwrap();
+
+        let entry: PaymentRequestEntry = ciborium::from_reader(bytes.as_slice()).unwrap();
+        assert_eq!(entry.node_id, Some(node_id));
+    }
+
     fn test_payment_request() -> PaymentRequest {
         PaymentRequest {
             id: Uuid::new_v4(),
-            node_id: NodeId::from_str(NODE_ID_1).unwrap(),
+            node_id: Some(NodeId::from_str(NODE_ID_1).unwrap()),
             amount: Amount::from(42u64),
             unit: CurrencyUnit::Sat,
             description: Some("some description".to_string()),
@@ -1011,7 +1048,7 @@ mod tests {
 
         let mut real_request = test_payment_request();
         real_request.id = id;
-        real_request.node_id = actor;
+        real_request.node_id = Some(actor);
         repo.add_payment_request(real_request).await.unwrap();
         let loaded = repo.get_payment_request(id).await.unwrap().unwrap();
         assert_eq!(loaded.state, PaymentRequestState::Canceled);
@@ -1023,7 +1060,7 @@ mod tests {
         let repo = get_db(&wallet_id());
         let payment_request = test_payment_request();
         let id = payment_request.id;
-        let counterparty = payment_request.node_id.clone();
+        let counterparty = payment_request.node_id.clone().unwrap();
         repo.add_payment_request(payment_request).await.unwrap();
         let other = NodeId::from_str(
             "bitcrt0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
@@ -1085,7 +1122,7 @@ mod tests {
 
         let mut real_request = test_payment_request();
         real_request.id = id;
-        real_request.node_id = actor;
+        real_request.node_id = Some(actor);
         repo.add_payment_request(real_request).await.unwrap();
         let loaded = repo.get_payment_request(id).await.unwrap().unwrap();
         assert_eq!(loaded.state, PaymentRequestState::Pending);
@@ -1111,7 +1148,7 @@ mod tests {
 
         let mut real_request = test_payment_request();
         real_request.id = id;
-        real_request.node_id = actor;
+        real_request.node_id = Some(actor);
         repo.add_payment_request(real_request).await.unwrap();
 
         let loaded = repo.get_payment_request(id).await.unwrap().unwrap();

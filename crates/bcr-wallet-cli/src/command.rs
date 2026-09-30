@@ -3,7 +3,7 @@ use anyhow::Result;
 use bcr_common::cashu;
 use bcr_wallet_api::{AppState, WalletBalance, WalletInfo, config::CreateWalletConfig};
 use bcr_wallet_core::types::{
-    MeltEstimation, MintSummary, PaymentRequestDirection, PaymentResultCallback, PaymentSummary,
+    MeltEstimation, MintSummary, PaymentRequestDirection, PaymentSummary,
     PendingPaymentSubscriptionCallback, Transaction, TransactionFees, TransactionFilters,
     TransactionSort,
 };
@@ -233,58 +233,6 @@ pub async fn cmd_receive(
     Ok((res, tx))
 }
 
-pub async fn cmd_request_payment(
-    app_state: &AppState,
-    name: &str,
-    amount: u64,
-    id: &str,
-    description: Option<String>,
-) -> Result<String> {
-    let req = app_state
-        .wallet_prepare_payment_request(id.to_owned(), amount, description)
-        .await?;
-    info!("Payment Request: {}, {}", &req.request, &req.p_id);
-
-    let cancel_token = CancellationToken::new();
-    // Uncomment to test cancellation
-    // let cancel_token_clone = cancel_token.clone();
-    // tokio::spawn(async move {
-    //     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-    //     cancel_token_clone.cancel();
-    // });
-    let (tx, rx) = oneshot::channel::<Option<Uuid>>();
-
-    let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
-
-    let res_cb: PaymentResultCallback = Arc::new(move |tx_id| {
-        if let Some(sender) = tx.lock().unwrap().take() {
-            let _ = sender.send(tx_id);
-        }
-    });
-
-    app_state
-        .wallet_check_received_payment(id.to_owned(), 60, req.p_id.clone(), cancel_token, res_cb)
-        .await?;
-
-    let Ok(tx_id) = rx.await else {
-        return Ok("Cancelled".to_string());
-    };
-
-    let mut res = String::new();
-    push_break(&mut res);
-    push_break(&mut res);
-    res.push_str(&format!(
-        "Request Payment for {name}, Amount: {amount} - Wallet ID: {id}.\n"
-    ));
-    push_break(&mut res);
-    res.push_str(&format!(
-        "Transaction ID: {:?}",
-        tx_id.map(|t| t.to_string())
-    ));
-
-    Ok(res)
-}
-
 #[derive(serde::Serialize)]
 pub struct PayByTokenOut {
     tx_id: Uuid,
@@ -391,7 +339,7 @@ pub async fn cmd_send_payment(
 ) -> Result<String> {
     let mut res = String::new();
     let payment_summary = app_state
-        .wallet_prepare_cdk18_payment(id.to_owned(), input.to_owned())
+        .wallet_prepare_pay_shared_payment_request(id.to_owned(), input.to_owned())
         .await?;
 
     info!(
@@ -854,7 +802,7 @@ pub async fn cmd_create_shareable_payment_request(
     amount: u64,
 ) -> Result<String> {
     let mut res = String::new();
-    let req = app_state
+    let (req_id, req) = app_state
         .wallet_create_shareable_remote_payment_request(id.to_owned(), amount, None)
         .await?;
     push_break(&mut res);
@@ -862,6 +810,7 @@ pub async fn cmd_create_shareable_payment_request(
     res.push_str(&format!(
         "Create Shareable Payment Request for {amount} for {name}:\n"
     ));
+    res.push_str(&format!("Payment Request ID: {req_id}\n"));
     res.push_str("Payment Request: ");
     res.push_str(&req);
     push_break(&mut res);
@@ -979,7 +928,10 @@ pub async fn cmd_list_prs(app_state: &AppState, name: &str, id: &str) -> Result<
         res.push_str(&format!(
             "Id: {}, NodeId: {}, Amount: {}, Direction: {:?}, State: {:?}, History: {}\n",
             ppr.id,
-            ppr.node_id,
+            ppr.node_id
+                .as_ref()
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
             ppr.amount,
             ppr.direction,
             ppr.state,
@@ -994,7 +946,10 @@ pub async fn cmd_list_prs(app_state: &AppState, name: &str, id: &str) -> Result<
         res.push_str(&format!(
             "Id: {}, NodeId: {}, Amount: {}, Direction: {:?}, State: {:?}, History: {}\n",
             ppr.id,
-            ppr.node_id,
+            ppr.node_id
+                .as_ref()
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
             ppr.amount,
             ppr.direction,
             ppr.state,
@@ -1024,7 +979,14 @@ pub async fn cmd_get_pr(
     push_break(&mut res);
     res.push_str(&format!(
         "Id: {} NodeId: {} Amount: {} Direction: {:?} State: {:?}\n",
-        ppr.id, ppr.node_id, ppr.amount, ppr.direction, ppr.state
+        ppr.id,
+        ppr.node_id
+            .as_ref()
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
+        ppr.amount,
+        ppr.direction,
+        ppr.state
     ));
     res.push_str(&format!("History: {}\n", format_history(&ppr.history)));
     push_break(&mut res);

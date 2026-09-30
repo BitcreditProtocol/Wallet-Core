@@ -532,29 +532,6 @@ pub async fn wallet_mint(req: WalletMintRequest) -> Result<WalletMintSummaryResp
 }
 
 #[frb]
-pub async fn wallet_prepare_payment(
-    req: WalletPreparePaymentRequest,
-) -> Result<WalletPreparePaymentResponse, WalletError> {
-    let app_state = get_app_state().await;
-    let payment_summary = app_state
-        .wallet_prepare_cdk18_payment(req.wallet_id, req.input)
-        .await?;
-    Ok(WalletPreparePaymentResponse {
-        payment_summary: PaymentSummary {
-            request_id: payment_summary.request_id.to_string(),
-            unit: payment_summary.unit.to_string(),
-            amount: u64::from(payment_summary.amount),
-            fees: payment_summary.fees.into(),
-            reserved_fees: u64::from(payment_summary.reserved_fees),
-            expiry: payment_summary.expiry,
-            ptype: PaymentType::from(bcr_wallet_core::types::PaymentType::from(
-                payment_summary.ptype,
-            )),
-        },
-    })
-}
-
-#[frb]
 pub async fn wallet_pay(req: WalletPayRequest) -> Result<WalletTransactionIdResponse, WalletError> {
     let app_state = get_app_state().await;
     let tx_id = app_state.wallet_pay(req.wallet_id, req.rid).await?;
@@ -597,22 +574,6 @@ pub async fn wallet_pay_by_token(
     Ok(WalletPaymentByTokenResponse {
         tx_id: res.tx_id.to_string(),
         token: res.token.to_string(),
-    })
-}
-
-#[frb]
-pub async fn wallet_prepare_payment_request(
-    req: WalletPreparePaymentReqRequest,
-) -> Result<WalletPreparePaymentReqResponse, WalletError> {
-    let app_state = get_app_state().await;
-    let payment_request = app_state
-        .wallet_prepare_payment_request(req.wallet_id, req.amount, req.description)
-        .await?;
-    Ok(WalletPreparePaymentReqResponse {
-        payment_request: Cdk18PaymentRequest {
-            request: payment_request.request,
-            p_id: payment_request.p_id,
-        },
     })
 }
 
@@ -942,10 +903,13 @@ pub async fn wallet_create_shareable_remote_payment_request(
     req: WalletCreateShareableRemotePaymentRequest,
 ) -> Result<WalletCreateShareableRemotePaymentResponse, WalletError> {
     let app_state = get_app_state().await;
-    let payment_request = app_state
+    let (payment_request_id, payment_request) = app_state
         .wallet_create_shareable_remote_payment_request(req.wallet_id, req.amount, req.description)
         .await?;
-    Ok(WalletCreateShareableRemotePaymentResponse { payment_request })
+    Ok(WalletCreateShareableRemotePaymentResponse {
+        payment_request_id,
+        payment_request,
+    })
 }
 
 #[frb]
@@ -1407,7 +1371,7 @@ pub enum PaymentType {
     #[default]
     NotApplicable,
     Token,
-    Cdk18,
+    PaymentRequest,
     OnChain,
     Swap,
     Contact,
@@ -1418,7 +1382,7 @@ impl From<bcr_wallet_core::types::PaymentType> for PaymentType {
         match ptype {
             bcr_wallet_core::types::PaymentType::NotApplicable => PaymentType::NotApplicable,
             bcr_wallet_core::types::PaymentType::Token => PaymentType::Token,
-            bcr_wallet_core::types::PaymentType::Cdk18 => PaymentType::Cdk18,
+            bcr_wallet_core::types::PaymentType::PaymentRequest => PaymentType::PaymentRequest,
             bcr_wallet_core::types::PaymentType::OnChain => PaymentType::OnChain,
             bcr_wallet_core::types::PaymentType::Swap => PaymentType::Swap,
             bcr_wallet_core::types::PaymentType::Contact => PaymentType::Contact,
@@ -1431,7 +1395,7 @@ impl From<PaymentType> for bcr_wallet_core::types::PaymentType {
         match ptype {
             PaymentType::NotApplicable => bcr_wallet_core::types::PaymentType::NotApplicable,
             PaymentType::Token => bcr_wallet_core::types::PaymentType::Token,
-            PaymentType::Cdk18 => bcr_wallet_core::types::PaymentType::Cdk18,
+            PaymentType::PaymentRequest => bcr_wallet_core::types::PaymentType::PaymentRequest,
             PaymentType::OnChain => bcr_wallet_core::types::PaymentType::OnChain,
             PaymentType::Swap => bcr_wallet_core::types::PaymentType::Swap,
             PaymentType::Contact => bcr_wallet_core::types::PaymentType::Contact,
@@ -1607,7 +1571,7 @@ impl From<bcr_wallet_core::types::PaymentRequestDirection> for PaymentRequestDir
 #[derive(Debug, Clone)]
 pub struct PaymentRequest {
     pub id: String,
-    pub node_id: String,
+    pub node_id: Option<String>,
     pub amount: u64,
     pub unit: String,
     pub description: Option<String>,
@@ -1623,7 +1587,7 @@ impl From<bcr_wallet_core::types::PaymentRequest> for PaymentRequest {
     fn from(value: bcr_wallet_core::types::PaymentRequest) -> Self {
         Self {
             id: value.id.to_string(),
-            node_id: value.node_id.to_string(),
+            node_id: value.node_id.map(|n| n.to_string()),
             amount: value.amount.to_u64(),
             unit: value.unit.to_string(),
             description: value.description,
@@ -2049,22 +2013,8 @@ pub struct WalletMintSummaryResponse {
 }
 
 #[derive(Debug, Clone)]
-pub struct WalletPreparePaymentRequest {
-    pub wallet_id: String,
-    pub input: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct WalletPreparePaymentResponse {
     pub payment_summary: PaymentSummary,
-}
-
-#[derive(Debug, Clone)]
-pub struct WalletPreparePaymentReqRequest {
-    pub wallet_id: String,
-    pub amount: u64,
-    pub unit: String,
-    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2076,12 +2026,8 @@ pub struct WalletCreateShareableRemotePaymentRequest {
 
 #[derive(Debug, Clone)]
 pub struct WalletCreateShareableRemotePaymentResponse {
+    pub payment_request_id: String,
     pub payment_request: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct WalletPreparePaymentReqResponse {
-    pub payment_request: Cdk18PaymentRequest,
 }
 
 #[derive(Debug, Clone)]
@@ -2250,12 +2196,6 @@ pub struct MintIsRabidResponse {
 #[derive(Debug, Clone)]
 pub struct MigrateRabidResponse {
     pub migrated_to_mint: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Cdk18PaymentRequest {
-    pub request: String,
-    pub p_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2668,15 +2608,9 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::InvalidBitcoinTxId(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidBitcoinTxId)
             }
-            BcrWalletError::MissingAmount => {
-                WalletError::bad_request(value.to_string(), WalletErrorCode::MissingAmount)
-            }
             BcrWalletError::UnknownPaymentRequest(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::UnknownPaymentRequest)
             }
-            BcrWalletError::InterMint => WalletError::internal(value.to_string()),
-            BcrWalletError::SpendingConditions => WalletError::internal(value.to_string()),
-            BcrWalletError::NoTransport => WalletError::network(value.to_string()),
             BcrWalletError::MaxExchangeAttempts => WalletError::internal(value.to_string()),
             BcrWalletError::InvalidClowderPath => WalletError::internal(value.to_string()),
             BcrWalletError::BetaNotFound(_) => WalletError::internal(value.to_string()),

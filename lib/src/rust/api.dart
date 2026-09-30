@@ -8,7 +8,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `get_app_state`, `init_logging`, `init_panic_hook`, `new`, `paid_tx_id`, `reset_runtime`, `start_jobs`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `PaymentRequestState`, `WalletCleanLocalDbResponse`, `WalletRuntime`, `WalletsNamesResponse`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `try_from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `try_from`
 
 Future<void> initWalletFfi({required WalletFfiConfig conf}) =>
     RustLib.instance.api.crateApiInitWalletFfi(conf: conf);
@@ -89,10 +89,6 @@ Future<WalletMintSummaryResponse> walletMint({
   required WalletMintRequest req,
 }) => RustLib.instance.api.crateApiWalletMint(req: req);
 
-Future<WalletPreparePaymentResponse> walletPreparePayment({
-  required WalletPreparePaymentRequest req,
-}) => RustLib.instance.api.crateApiWalletPreparePayment(req: req);
-
 Future<WalletTransactionIdResponse> walletPay({
   required WalletPayRequest req,
 }) => RustLib.instance.api.crateApiWalletPay(req: req);
@@ -104,10 +100,6 @@ Future<WalletPreparePaymentResponse> walletPreparePayByToken({
 Future<WalletPaymentByTokenResponse> walletPayByToken({
   required WalletPaymentByTokenRequest req,
 }) => RustLib.instance.api.crateApiWalletPayByToken(req: req);
-
-Future<WalletPreparePaymentReqResponse> walletPreparePaymentRequest({
-  required WalletPreparePaymentReqRequest req,
-}) => RustLib.instance.api.crateApiWalletPreparePaymentRequest(req: req);
 
 Future<WalletPaymentCheckHandle> walletCheckReceivedPayment({
   required WalletCheckReceivedPaymentRequest req,
@@ -409,24 +401,6 @@ class BtcTxStatusResponse {
           fee == other.fee &&
           confirmations == other.confirmations &&
           confirmationTstamp == other.confirmationTstamp;
-}
-
-class Cdk18PaymentRequest {
-  final String request;
-  final String pId;
-
-  const Cdk18PaymentRequest({required this.request, required this.pId});
-
-  @override
-  int get hashCode => request.hashCode ^ pId.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is Cdk18PaymentRequest &&
-          runtimeType == other.runtimeType &&
-          request == other.request &&
-          pId == other.pId;
 }
 
 class Contact {
@@ -827,7 +801,7 @@ class MnemonicResponse {
 
 class PaymentRequest {
   final String id;
-  final String nodeId;
+  final String? nodeId;
   final BigInt amount;
   final String unit;
   final String? description;
@@ -840,7 +814,7 @@ class PaymentRequest {
 
   const PaymentRequest({
     required this.id,
-    required this.nodeId,
+    this.nodeId,
     required this.amount,
     required this.unit,
     this.description,
@@ -983,7 +957,7 @@ class PaymentSummary {
 enum PaymentType {
   notApplicable,
   token,
-  cdk18,
+  paymentRequest,
   onChain,
   swap,
   contact;
@@ -1430,20 +1404,23 @@ class WalletCreateShareableRemotePaymentRequest {
 }
 
 class WalletCreateShareableRemotePaymentResponse {
+  final String paymentRequestId;
   final String paymentRequest;
 
   const WalletCreateShareableRemotePaymentResponse({
+    required this.paymentRequestId,
     required this.paymentRequest,
   });
 
   @override
-  int get hashCode => paymentRequest.hashCode;
+  int get hashCode => paymentRequestId.hashCode ^ paymentRequest.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is WalletCreateShareableRemotePaymentResponse &&
           runtimeType == other.runtimeType &&
+          paymentRequestId == other.paymentRequestId &&
           paymentRequest == other.paymentRequest;
 }
 
@@ -2332,74 +2309,6 @@ class WalletPreparePaymentByTokenRequest {
           walletId == other.walletId &&
           amount == other.amount &&
           description == other.description;
-}
-
-class WalletPreparePaymentReqRequest {
-  final String walletId;
-  final BigInt amount;
-  final String unit;
-  final String? description;
-
-  const WalletPreparePaymentReqRequest({
-    required this.walletId,
-    required this.amount,
-    required this.unit,
-    this.description,
-  });
-
-  @override
-  int get hashCode =>
-      walletId.hashCode ^
-      amount.hashCode ^
-      unit.hashCode ^
-      description.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is WalletPreparePaymentReqRequest &&
-          runtimeType == other.runtimeType &&
-          walletId == other.walletId &&
-          amount == other.amount &&
-          unit == other.unit &&
-          description == other.description;
-}
-
-class WalletPreparePaymentReqResponse {
-  final Cdk18PaymentRequest paymentRequest;
-
-  const WalletPreparePaymentReqResponse({required this.paymentRequest});
-
-  @override
-  int get hashCode => paymentRequest.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is WalletPreparePaymentReqResponse &&
-          runtimeType == other.runtimeType &&
-          paymentRequest == other.paymentRequest;
-}
-
-class WalletPreparePaymentRequest {
-  final String walletId;
-  final String input;
-
-  const WalletPreparePaymentRequest({
-    required this.walletId,
-    required this.input,
-  });
-
-  @override
-  int get hashCode => walletId.hashCode ^ input.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is WalletPreparePaymentRequest &&
-          runtimeType == other.runtimeType &&
-          walletId == other.walletId &&
-          input == other.input;
 }
 
 class WalletPreparePaymentResponse {
