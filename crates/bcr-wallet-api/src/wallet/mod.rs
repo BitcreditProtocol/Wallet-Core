@@ -8,9 +8,12 @@ use crate::{
     ClowderMintConnector,
     error::{Error, Result},
     pocket::debit::DebitPocketApi,
+    types::PaymentSummary,
     wallet::{
         api::WalletApi,
-        types::{PayReference, SwapConfig, WalletBalance, WalletDetailedBalanceEntry},
+        types::{
+            PayReference, SwapConfig, WalletBalance, WalletDetailedBalanceEntry, WalletPaymentType,
+        },
         util::tx_can_be_refreshed,
     },
 };
@@ -1569,6 +1572,36 @@ impl Wallet {
         {
             tracing::warn!("Could not update relays for contact {node_id}: {e}");
         }
+    }
+
+    async fn prepare_pay_node_id(
+        &self,
+        node_id: NodeId,
+        amount: Amount,
+        payment_request_id: Option<Uuid>,
+        memo: Option<String>,
+    ) -> Result<PaymentSummary> {
+        let infos = self.get_wallet_mint_keyset_infos().await?;
+
+        let s_summary = self.debit.prepare_send(amount, &infos).await?;
+        let mut summary = PaymentSummary::from(s_summary);
+        summary.ptype = if payment_request_id.is_some() {
+            PaymentType::PaymentRequest
+        } else {
+            PaymentType::Contact
+        };
+        let pref = PayReference {
+            request_id: summary.request_id,
+            unit: summary.unit.clone(),
+            fees: summary.fees,
+            ptype: WalletPaymentType::PaymentRequest {
+                node_id,
+                payment_request_id,
+            },
+            memo,
+        };
+        *self.current_payment.lock().await = Some(pref);
+        Ok(summary)
     }
 }
 
@@ -3746,6 +3779,11 @@ mod tests {
         ctx.contact_repo.expect_get_contacts_by_node_id().never();
         ctx.contact_repo.expect_get_contact().never();
 
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+
         ctx.client
             .expect_get_mint_keysets()
             .times(1)
@@ -3809,8 +3847,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_prepare_pay_payment_request_errors_if_unit_mismatch() {
+        let mut ctx = wallet_ctx();
+        let req_id = Uuid::new_v4();
+        let req = PaymentRequest {
+            unit: CurrencyUnit::Usd,
+            ..payment_request_with(
+                req_id,
+                PaymentRequestDirection::Incoming,
+                PaymentRequestState::Pending,
+            )
+        };
+
+        ctx.payment_request_repo
+            .expect_get_payment_request()
+            .times(1)
+            .returning(move |_| Ok(Some(req.clone())));
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+
+        let wlt = wallet(ctx).await;
+
+        let res = wlt.read().await.prepare_pay_payment_request(req_id).await;
+
+        assert!(matches!(res, Err(Error::InvalidCurrencyUnit(..))));
+        assert!(wlt.read().await.current_payment.lock().await.is_none());
+    }
+
+    #[tokio::test]
     async fn test_prepare_pay_payment_request_success_sets_contact_payment_reference() {
         let mut ctx = wallet_ctx();
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
         let req_id = Uuid::new_v4();
         let req = payment_request_with(
             req_id,
@@ -5486,6 +5558,157 @@ mod tests {
             memo: Some("shared request memo".to_string()),
         });
         let (res_tx_id, token) = wlt.read().await.pay(pid, 123).await.unwrap();
+
+        assert_eq!(res_tx_id, tx_id);
+        assert!(token.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_prepare_pay_to_node_id() {
+        let mut ctx = wallet_ctx();
+        let receiver = node_id(NODE_ID_1);
+
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
+        ctx.debit
+            .expect_prepare_send()
+            .times(1)
+            .returning(|amount, _infos| {
+                assert_eq!(amount, Amount::from(21));
+                Ok(Default::default())
+            });
+
+        let wlt = wallet(ctx).await;
+
+        let summary = wlt
+            .read()
+            .await
+            .prepare_pay_to_node_id(
+                receiver.clone(),
+                Amount::from(21),
+                CurrencyUnit::Sat,
+                Some("node memo".to_string()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(summary.ptype, PaymentType::Contact);
+
+        let wallet_guard = wlt.read().await;
+        let payment_guard = wallet_guard.current_payment.lock().await;
+        let payment = payment_guard.as_ref().expect("payment reference is set");
+        assert_eq!(payment.memo, Some("node memo".to_string()));
+        match &payment.ptype {
+            WalletPaymentType::PaymentRequest {
+                node_id,
+                payment_request_id,
+            } => {
+                assert_eq!(node_id, &receiver);
+                assert!(payment_request_id.is_none());
+            }
+            other => panic!("unexpected payment type: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_prepare_pay_to_node_id_wrong_network() {
+        let mut ctx = wallet_ctx();
+        ctx.debit
+            .expect_unit()
+            .times(1)
+            .returning(|| CurrencyUnit::Sat);
+        let wlt = wallet(ctx).await;
+
+        let res = wlt
+            .read()
+            .await
+            .prepare_pay_to_node_id(
+                NodeId::new(test_other_pub_key(), bitcoin::Network::Bitcoin),
+                Amount::from(21),
+                CurrencyUnit::Sat,
+                None,
+            )
+            .await;
+
+        assert!(matches!(res, Err(Error::InvalidNetwork(..))));
+        assert!(wlt.read().await.current_payment.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_pay_to_node_id() {
+        let mut ctx = wallet_ctx();
+        let tx_id = Uuid::new_v4();
+        let receiver = node_id(NODE_ID_1);
+        let expected_receiver = receiver.clone();
+        let expected_npub = receiver.npub();
+        let known_relay = RelayUrl::from_str("wss://test.example.com").unwrap();
+
+        ctx.debit
+            .expect_unit()
+            .times(2)
+            .returning(|| CurrencyUnit::Sat);
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(2)
+            .returning(|| Ok(vec![]));
+        ctx.client
+            .expect_mint_url()
+            .times(2)
+            .return_const(url::Url::from_str("https://mint.example").unwrap());
+        ctx.debit
+            .expect_prepare_send()
+            .times(1)
+            .returning(|_amount, _infos| Ok(Default::default()));
+        ctx.debit
+            .expect_send_proofs()
+            .times(1)
+            .returning(|_rid, _infos, _client, _swap| Ok(Default::default()));
+        ctx.contact_repo
+            .expect_get_contacts_by_node_id()
+            .times(1)
+            .returning(|_| Ok(vec![]));
+        ctx.nostr_transport
+            .expect_relays()
+            .return_const(vec![known_relay.clone()]);
+        ctx.nostr_transport
+            .expect_fetch_relay_list()
+            .times(1)
+            .returning(|_, _| Err(TransportError::Network("offline".to_string())));
+        ctx.nostr_transport
+            .expect_send_private_msg()
+            .times(1)
+            .withf(move |recipient, _| {
+                Nip19Profile::from_bech32(recipient).is_ok_and(|p| {
+                    p.public_key == expected_npub && p.relays == vec![known_relay.clone()]
+                })
+            })
+            .returning(|_, _| Ok(EventId::from_byte_array([0u8; 32])));
+        ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
+            assert_eq!(tx.direction, TransactionDirection::Outgoing);
+            assert_eq!(tx.payment_type, PaymentType::Contact);
+            assert_eq!(tx.status, TransactionStatus::Pending);
+            assert_eq!(tx.contact_node_id, Some(expected_receiver.clone()));
+            assert!(tx.payment_request_id.is_none());
+            assert_eq!(tx.nostr_event_id, Some(EventId::from_byte_array([0u8; 32])));
+            Ok(tx_id)
+        });
+
+        let wlt = wallet(ctx).await;
+
+        let summary = wlt
+            .read()
+            .await
+            .prepare_pay_to_node_id(receiver, Amount::from(21), CurrencyUnit::Sat, None)
+            .await
+            .unwrap();
+
+        let (res_tx_id, token) = wlt.read().await.pay(summary.request_id, 123).await.unwrap();
 
         assert_eq!(res_tx_id, tx_id);
         assert!(token.is_none());
