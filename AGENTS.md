@@ -65,6 +65,10 @@ Non-negotiables:
   and every user-visible change adds a line there naming the endpoint or type it touches. Pushing a
   `v*` tag runs `.github/workflows/cd_precompiled.yml`, which builds and signs iOS and Android binaries
   of `crates/bcr-wallet-ffi` via `cargokit/build_tool`; apps fetch them by crate hash, else build locally.
+- **Names and mappings.** Name a function by what it does (`handle_*` for one event, no `get_`
+  prefix) and derive a value that follows from another through one method on the type.
+- **Tests and comments.** Test invariants a later change could break, not `From` mappings or
+  output formatting, and state constraints with the exact protocol term (NIP-17 seal sender).
 
 ## Common Gotchas
 

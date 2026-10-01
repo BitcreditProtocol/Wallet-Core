@@ -8,6 +8,14 @@
 * Deterministic wallet state: the same inputs give the same proof selection, swap plan and keyset choice (`prepare_send`, `mint_onchain`), and a stable order for `wallet_get_transaction_ids`, contacts, payment requests and the nostr retry queue
 * Race-safe wallet state: NUT-13 counters use compare-and-swap so concurrent swaps never reuse secrets and restore never lowers a counter, stored proofs are never overwritten, proofs are reserved all-or-nothing, and background recovery leaves Pending proofs of a running payment or melt alone
 * `wallet_check_pending_mints` uses the mint quote id as the transaction id and records each mint once
+* Send reject and cancel of a payment request to the other party over Nostr (#298)
+    * New Nostr event `PaymentRequestAction`, older clients ignore it
+    * `wallet_subscribe_to_payment_requests` also fires when the other party cancels or rejects
+* Make payment request state changes a single compare-and-set, a payment always wins over a stale cancel or reject
+    * Keep every change, including conflicts, in an append-only history (no DB migration, existing rows read with an empty history)
+* Check incoming Nostr contact payments, payment requests and payment request actions against the authenticated sender and the wallet's network
+* Extend `PaymentRequest` with `state`, `direction`, `history` and `paid_tx_id` (breaking API change)
+    * Add `PaymentRequestHistoryEntry` and `PaymentRequestActionOriginKind`
 
 # 0.9.13
 

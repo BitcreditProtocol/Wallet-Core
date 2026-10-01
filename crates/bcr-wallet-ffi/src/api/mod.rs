@@ -1553,6 +1553,25 @@ impl From<PaymentRequestListState> for bcr_wallet_core::types::PaymentRequestSta
     }
 }
 
+impl From<bcr_wallet_core::types::PaymentRequestState> for PaymentRequestListState {
+    fn from(value: bcr_wallet_core::types::PaymentRequestState) -> Self {
+        match value {
+            bcr_wallet_core::types::PaymentRequestState::Pending => {
+                PaymentRequestListState::Pending
+            }
+            bcr_wallet_core::types::PaymentRequestState::Paid { .. } => {
+                PaymentRequestListState::Paid
+            }
+            bcr_wallet_core::types::PaymentRequestState::Canceled => {
+                PaymentRequestListState::Canceled
+            }
+            bcr_wallet_core::types::PaymentRequestState::Rejected => {
+                PaymentRequestListState::Rejected
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PaymentRequestDirection {
     Incoming,
@@ -1594,6 +1613,10 @@ pub struct PaymentRequest {
     pub description: Option<String>,
     pub deadline: Option<u64>,
     pub created_at: u64,
+    pub state: PaymentRequestListState,
+    pub paid_tx_id: Option<String>,
+    pub direction: PaymentRequestDirection,
+    pub history: Vec<PaymentRequestHistoryEntry>,
 }
 
 impl From<bcr_wallet_core::types::PaymentRequest> for PaymentRequest {
@@ -1606,7 +1629,59 @@ impl From<bcr_wallet_core::types::PaymentRequest> for PaymentRequest {
             description: value.description,
             deadline: value.deadline,
             created_at: value.created_at,
+            paid_tx_id: paid_tx_id(&value.state),
+            state: value.state.into(),
+            direction: value.direction.into(),
+            history: value.history.into_iter().map(Into::into).collect(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum PaymentRequestActionOriginKind {
+    Local,
+    Remote,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PaymentRequestHistoryEntry {
+    pub state: PaymentRequestListState,
+    pub paid_tx_id: Option<String>,
+    pub applied: bool,
+    pub actor: Option<String>,
+    pub at: u64,
+    pub origin: PaymentRequestActionOriginKind,
+    pub event_id: Option<String>,
+    pub reason: Option<String>,
+}
+
+impl From<bcr_wallet_core::types::PaymentRequestHistoryEntry> for PaymentRequestHistoryEntry {
+    fn from(value: bcr_wallet_core::types::PaymentRequestHistoryEntry) -> Self {
+        let (origin, event_id) = match value.origin {
+            bcr_wallet_core::types::PaymentRequestActionOrigin::Local => {
+                (PaymentRequestActionOriginKind::Local, None)
+            }
+            bcr_wallet_core::types::PaymentRequestActionOrigin::Remote { event_id } => {
+                (PaymentRequestActionOriginKind::Remote, Some(event_id))
+            }
+        };
+        Self {
+            paid_tx_id: paid_tx_id(&value.state),
+            state: value.state.into(),
+            applied: value.applied,
+            actor: value.actor.map(|a| a.to_string()),
+            at: value.at,
+            origin,
+            event_id,
+            reason: value.reason,
+        }
+    }
+}
+
+fn paid_tx_id(state: &bcr_wallet_core::types::PaymentRequestState) -> Option<String> {
+    match state {
+        bcr_wallet_core::types::PaymentRequestState::Paid { tx_id } => Some(tx_id.to_string()),
+        _ => None,
     }
 }
 

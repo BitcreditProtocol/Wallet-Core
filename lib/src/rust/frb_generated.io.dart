@@ -355,6 +355,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<PaymentRequest> dco_decode_list_payment_request(dynamic raw);
 
   @protected
+  List<PaymentRequestHistoryEntry>
+  dco_decode_list_payment_request_history_entry(dynamic raw);
+
+  @protected
   List<PaymentRequestListState> dco_decode_list_payment_request_list_state(
     dynamic raw,
   );
@@ -425,7 +429,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PaymentRequest dco_decode_payment_request(dynamic raw);
 
   @protected
+  PaymentRequestActionOriginKind dco_decode_payment_request_action_origin_kind(
+    dynamic raw,
+  );
+
+  @protected
   PaymentRequestDirection dco_decode_payment_request_direction(dynamic raw);
+
+  @protected
+  PaymentRequestHistoryEntry dco_decode_payment_request_history_entry(
+    dynamic raw,
+  );
 
   @protected
   PaymentRequestListState dco_decode_payment_request_list_state(dynamic raw);
@@ -1228,6 +1242,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<PaymentRequestHistoryEntry>
+  sse_decode_list_payment_request_history_entry(SseDeserializer deserializer);
+
+  @protected
   List<PaymentRequestListState> sse_decode_list_payment_request_list_state(
     SseDeserializer deserializer,
   );
@@ -1318,7 +1336,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PaymentRequest sse_decode_payment_request(SseDeserializer deserializer);
 
   @protected
+  PaymentRequestActionOriginKind sse_decode_payment_request_action_origin_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   PaymentRequestDirection sse_decode_payment_request_direction(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  PaymentRequestHistoryEntry sse_decode_payment_request_history_entry(
     SseDeserializer deserializer,
   );
 
@@ -2289,6 +2317,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_payment_request_history_entry(
+    List<PaymentRequestHistoryEntry> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_payment_request_list_state(
     List<PaymentRequestListState> self,
     SseSerializer serializer,
@@ -2409,8 +2443,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_payment_request_action_origin_kind(
+    PaymentRequestActionOriginKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_payment_request_direction(
     PaymentRequestDirection self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_payment_request_history_entry(
+    PaymentRequestHistoryEntry self,
     SseSerializer serializer,
   );
 

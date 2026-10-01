@@ -977,8 +977,13 @@ pub async fn cmd_list_prs(app_state: &AppState, name: &str, id: &str) -> Result<
     push_break(&mut res);
     for ppr in incoming_pprs {
         res.push_str(&format!(
-            "Id: {}, NodeId: {}, Amount: {}, Direction: {:?}, State: {:?}\n",
-            ppr.id, ppr.node_id, ppr.amount, ppr.direction, ppr.state
+            "Id: {}, NodeId: {}, Amount: {}, Direction: {:?}, State: {:?}, History: {}\n",
+            ppr.id,
+            ppr.node_id,
+            ppr.amount,
+            ppr.direction,
+            ppr.state,
+            format_history(&ppr.history)
         ));
         push_break(&mut res);
     }
@@ -987,8 +992,13 @@ pub async fn cmd_list_prs(app_state: &AppState, name: &str, id: &str) -> Result<
     push_break(&mut res);
     for ppr in outgoing_pprs {
         res.push_str(&format!(
-            "Id: {}, NodeId: {}, Amount: {}, Direction: {:?}, State: {:?}\n",
-            ppr.id, ppr.node_id, ppr.amount, ppr.direction, ppr.state
+            "Id: {}, NodeId: {}, Amount: {}, Direction: {:?}, State: {:?}, History: {}\n",
+            ppr.id,
+            ppr.node_id,
+            ppr.amount,
+            ppr.direction,
+            ppr.state,
+            format_history(&ppr.history)
         ));
         push_break(&mut res);
     }
@@ -1013,12 +1023,42 @@ pub async fn cmd_get_pr(
     ));
     push_break(&mut res);
     res.push_str(&format!(
-        "Id: {} NodeId: {} Amount: {}\n",
-        ppr.id, ppr.node_id, ppr.amount
+        "Id: {} NodeId: {} Amount: {} Direction: {:?} State: {:?}\n",
+        ppr.id, ppr.node_id, ppr.amount, ppr.direction, ppr.state
     ));
+    res.push_str(&format!("History: {}\n", format_history(&ppr.history)));
     push_break(&mut res);
     push_break(&mut res);
     Ok(res)
+}
+
+fn format_history(history: &[bcr_wallet_core::types::PaymentRequestHistoryEntry]) -> String {
+    if history.is_empty() {
+        return "(none)".to_string();
+    }
+    history
+        .iter()
+        .map(|h| {
+            let actor = h
+                .actor
+                .as_ref()
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            format!(
+                "[{:?} applied={} by={} at={} origin={:?}{}]",
+                h.state,
+                h.applied,
+                actor,
+                h.at,
+                h.origin,
+                h.reason
+                    .as_ref()
+                    .map(|r| format!(" reason={r}"))
+                    .unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub async fn cmd_pay_pr(

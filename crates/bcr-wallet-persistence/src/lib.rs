@@ -11,8 +11,8 @@ use bcr_common::core::NodeId;
 use bcr_common::ecash;
 use bcr_wallet_core::contact::Contact;
 use bcr_wallet_core::types::{
-    ForeignMintProof, PaymentRequestDirection, PaymentRequestState, Transaction,
-    TransactionLinkReason, TransactionStatus,
+    ForeignMintProof, PaymentRequestDirection, PaymentRequestState, PaymentRequestTransition,
+    PaymentRequestTransitionOutcome, Transaction, TransactionLinkReason, TransactionStatus,
 };
 use bcr_wallet_core::{
     SendSync,
@@ -228,7 +228,18 @@ pub trait PaymentRequestStoreApi: SendSync {
         direction: PaymentRequestDirection,
         states: &[PaymentRequestState],
     ) -> Result<Vec<PaymentRequest>>;
-    async fn set_payment_request_state(&self, id: Uuid, state: PaymentRequestState) -> Result<()>;
+    async fn apply_payment_request_transition(
+        &self,
+        id: Uuid,
+        transition: PaymentRequestTransition,
+    ) -> Result<PaymentRequestTransitionOutcome>;
+    async fn apply_remote_payment_request_transition(
+        &self,
+        id: Uuid,
+        counterparty: NodeId,
+        direction: PaymentRequestDirection,
+        transition: PaymentRequestTransition,
+    ) -> Result<Option<PaymentRequestTransitionOutcome>>;
     // delete repo
     async fn delete_repo(&self) -> Result<()>;
 }
