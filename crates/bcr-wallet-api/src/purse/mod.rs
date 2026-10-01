@@ -10,13 +10,14 @@ use std::{
     collections::{BTreeSet, HashMap},
     sync::Arc,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 pub struct Purse<Wlt> {
     pub repo: Box<dyn PurseRepository>,
     pub contact_repos: HashMap<bitcoin::Network, Arc<dyn ContactStoreApi>>,
     pub wallets: Arc<RwLock<HashMap<String, Arc<RwLock<Wlt>>>>>,
+    pub migrations: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl<Wlt> Purse<Wlt> {
@@ -28,6 +29,7 @@ impl<Wlt> Purse<Wlt> {
             repo: Box::new(repo),
             contact_repos,
             wallets: Arc::new(RwLock::new(HashMap::default())),
+            migrations: Mutex::default(),
         })
     }
 
@@ -118,38 +120,73 @@ where
     }
 
     pub async fn migrate_rabid_wallets(&self) -> Result<HashMap<String, url::Url>> {
+        let wlts: Vec<_> = {
+            let wlts = self.wallets.read().await;
+            wlts.iter().map(|(id, w)| (id.clone(), w.clone())).collect()
+        };
         let mut res = HashMap::new();
-        let wlts = self.wallets.read().await;
-        for (wallet_id, wlt) in wlts.iter() {
-            tracing::info!("Checking if alpha is rabid..");
-            let is_rabid = wlt.read().await.is_wallet_mint_rabid().await?;
-            if is_rabid {
-                tracing::warn!("Alpha is rabid - finding substitute");
-                let substitute_url = wlt.read().await.mint_substitute().await?;
-
-                let wallet_name = wlt.read().await.name();
-                if let Some(substitute_url) = substitute_url {
-                    tracing::info!(
-                        "Wallet {} is found rabid, migrating to substitute beta {}",
-                        wallet_name,
-                        substitute_url
-                    );
-                    let substitute_client =
-                        crate::external::mint::HttpClientExt::new(substitute_url);
-                    let new_mint_url = wlt
-                        .write()
-                        .await
-                        .migrate_pockets_substitute(Arc::new(substitute_client))
-                        .await?;
-                    res.insert(wallet_id.clone(), new_mint_url);
-                    self.repo.store(wlt.read().await.config()?).await?;
+        let mut failure = None;
+        for (wallet_id, wlt) in wlts {
+            match self.migrate_rabid_wallet(&wallet_id, &wlt).await {
+                Ok(Some(new_mint_url)) => {
+                    res.insert(wallet_id, new_mint_url);
                 }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::error!("Migration of wallet {wallet_id} failed: {e}");
+                    failure.get_or_insert(e);
+                }
+            }
+        }
+        match failure {
+            Some(e) => Err(e),
+            None => Ok(res),
+        }
+    }
+
+    async fn migrate_rabid_wallet(
+        &self,
+        wallet_id: &str,
+        wlt: &RwLock<Wlt>,
+    ) -> Result<Option<url::Url>> {
+        let guard = self
+            .migrations
+            .lock()
+            .await
+            .entry(wallet_id.to_owned())
+            .or_default()
+            .clone();
+        let _guard = guard.lock().await;
+
+        tracing::info!("Checking if alpha is rabid..");
+        if !wlt.read().await.is_wallet_mint_rabid().await? {
+            if wlt.read().await.has_migration_journal().await? {
+                tracing::info!("Finishing a migrated wallet whose config or journal was not saved");
+                self.repo.store(wlt.read().await.config()?).await?;
+                wlt.read().await.finish_migration().await?;
             } else {
                 tracing::info!("Alpha is not rabid - nothing to migrate.");
             }
+            return Ok(None);
         }
-
-        Ok(res)
+        tracing::warn!("Alpha is rabid - finding substitute");
+        let Some(substitute_url) = wlt.read().await.mint_substitute().await? else {
+            return Ok(None);
+        };
+        let wallet_name = wlt.read().await.name();
+        tracing::info!(
+            "Wallet {} is found rabid, migrating to substitute beta {}",
+            wallet_name,
+            substitute_url
+        );
+        let new_mint_url = wlt
+            .write()
+            .await
+            .migrate_pockets_substitute(substitute_url)
+            .await?;
+        self.repo.store(wlt.read().await.config()?).await?;
+        wlt.read().await.finish_migration().await?;
+        Ok(Some(new_mint_url))
     }
 
     pub async fn wallets_nostr_connected(&self) -> HashMap<String, bool> {
@@ -377,6 +414,7 @@ mod tests {
             repo: db,
             contact_repos,
             wallets: Arc::new(RwLock::new(HashMap::default())),
+            migrations: Mutex::default(),
         }
     }
 
@@ -468,6 +506,7 @@ mod tests {
         });
         wlt.expect_migrate_pockets_substitute()
             .returning(|_| Ok(url::Url::from_str("https://substitute.example.com").unwrap()));
+        wlt.expect_finish_migration().times(1).returning(|| Ok(()));
 
         let wallet = Arc::new(RwLock::new(wlt));
         let _wlt_id = purse.add_wallet(wallet).await.expect("can create wallet");
@@ -477,6 +516,178 @@ mod tests {
             .await
             .expect("migrate rabid wallets works");
         assert!(!migrated.is_empty());
+    }
+
+    fn rabid_wallet(id: &'static str, finish_failures: usize) -> MockWalletApi {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let migrated = Arc::new(AtomicBool::new(false));
+        let journaled = Arc::new(AtomicBool::new(false));
+        let failures = Arc::new(AtomicUsize::new(finish_failures));
+        let mut wlt = MockWalletApi::new();
+        wlt.expect_name().returning(move || id.to_owned());
+        let m = migrated.clone();
+        wlt.expect_is_wallet_mint_rabid()
+            .returning(move || Ok(!m.load(Ordering::SeqCst)));
+        wlt.expect_mint_substitute().returning(|| {
+            Ok(Some(
+                url::Url::from_str("https://substitute.example.com").unwrap(),
+            ))
+        });
+        let (m, j) = (migrated.clone(), journaled.clone());
+        wlt.expect_migrate_pockets_substitute()
+            .times(1)
+            .returning(move |url| {
+                m.store(true, Ordering::SeqCst);
+                j.store(true, Ordering::SeqCst);
+                Ok(url)
+            });
+        wlt.expect_config().returning(move || {
+            Ok(WalletConfig {
+                wallet_id: id.to_owned(),
+                ..wlt_cfg()
+            })
+        });
+        let j = journaled.clone();
+        wlt.expect_has_migration_journal()
+            .returning(move || Ok(j.load(Ordering::SeqCst)));
+        let j = journaled.clone();
+        wlt.expect_finish_migration().returning(move || {
+            if failures.load(Ordering::SeqCst) > 0 {
+                failures.fetch_sub(1, Ordering::SeqCst);
+                return Err(Error::Swap("journal clear failed".into()));
+            }
+            j.store(false, Ordering::SeqCst);
+            Ok(())
+        });
+        wlt
+    }
+
+    fn insert_wallets(
+        purse: &super::Purse<MockWalletApi>,
+        wallets: Vec<(&'static str, MockWalletApi)>,
+    ) {
+        let mut map = purse.wallets.try_write().unwrap();
+        for (id, wlt) in wallets {
+            map.insert(id.to_owned(), Arc::new(RwLock::new(wlt)));
+        }
+    }
+
+    #[tokio::test]
+    async fn migrate_finalise_config_store_failure_is_stored_on_retry_and_carries_on() {
+        let mut db = MockPurseRepository::new();
+        let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stored = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let st = stored.clone();
+        db.expect_store().returning(move |cfg| {
+            if cfg.wallet_id == "wlt-1" && !failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return Err(bcr_wallet_persistence::error::Error::Redb(redb::Error::Io(
+                    std::io::Error::other("disk full"),
+                )));
+            }
+            st.lock().unwrap().push(cfg.wallet_id);
+            Ok(())
+        });
+        let purse = purse(Box::new(db));
+        insert_wallets(
+            &purse,
+            vec![
+                ("wlt-1", rabid_wallet("wlt-1", 0)),
+                ("wlt-2", rabid_wallet("wlt-2", 0)),
+            ],
+        );
+
+        purse
+            .migrate_rabid_wallets()
+            .await
+            .expect_err("the failed config store is reported");
+        assert_eq!(*stored.lock().unwrap(), vec!["wlt-2".to_owned()]);
+        for id in ["wlt-1", "wlt-2"] {
+            let journaled = purse
+                .get_wallet(id)
+                .await
+                .unwrap()
+                .read()
+                .await
+                .has_migration_journal()
+                .await
+                .unwrap();
+            assert_eq!(journaled, id == "wlt-1");
+        }
+
+        purse
+            .migrate_rabid_wallets()
+            .await
+            .expect("retry stores the config");
+        assert_eq!(
+            *stored.lock().unwrap(),
+            vec!["wlt-2".to_owned(), "wlt-1".to_owned()]
+        );
+        let wlt = purse.get_wallet("wlt-1").await.unwrap();
+        assert!(!wlt.read().await.has_migration_journal().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn migrate_finalise_journal_clear_failure_is_cleared_on_retry() {
+        let mut db = MockPurseRepository::new();
+        db.expect_store().times(2).returning(|_| Ok(()));
+        let purse = purse(Box::new(db));
+        insert_wallets(&purse, vec![("wlt-1", rabid_wallet("wlt-1", 1))]);
+
+        purse
+            .migrate_rabid_wallets()
+            .await
+            .expect_err("the failed journal clear is reported");
+        purse
+            .migrate_rabid_wallets()
+            .await
+            .expect("retry clears the journal");
+        let wlt = purse.get_wallet("wlt-1").await.unwrap();
+        assert!(!wlt.read().await.has_migration_journal().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn migrate_finalise_guard_serialises_migrations_of_one_wallet() {
+        let mut db = MockPurseRepository::new();
+        db.expect_store().times(1).returning(|_| Ok(()));
+        let purse = purse(Box::new(db));
+        let mut wlt = MockWalletApi::new();
+        let rabid = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        wlt.expect_name().returning(|| "wallet-1".to_owned());
+        let r = rabid.clone();
+        wlt.expect_is_wallet_mint_rabid()
+            .returning(move || Ok(r.load(std::sync::atomic::Ordering::SeqCst)));
+        wlt.expect_mint_substitute().returning(|| {
+            Ok(Some(
+                url::Url::from_str("https://substitute.example.com").unwrap(),
+            ))
+        });
+        let r = rabid.clone();
+        wlt.expect_migrate_pockets_substitute()
+            .times(1)
+            .returning(move |url| {
+                r.store(false, std::sync::atomic::Ordering::SeqCst);
+                Ok(url)
+            });
+        wlt.expect_config().returning(|| Ok(wlt_cfg()));
+        wlt.expect_finish_migration().times(1).returning(|| Ok(()));
+        wlt.expect_has_migration_journal().returning(|| Ok(false));
+        let wlt = Arc::new(RwLock::new(wlt));
+        purse
+            .wallets
+            .write()
+            .await
+            .insert("wlt-1".to_owned(), wlt.clone());
+
+        let held = wlt.write().await;
+        let (a, b, _) = tokio::join!(
+            purse.migrate_rabid_wallets(),
+            purse.migrate_rabid_wallets(),
+            async {
+                tokio::task::yield_now().await;
+                drop(held);
+            }
+        );
+        assert_eq!(a.unwrap().len() + b.unwrap().len(), 1);
     }
 
     const NODE_ID_1: &str =

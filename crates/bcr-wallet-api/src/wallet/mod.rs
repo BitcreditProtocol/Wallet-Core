@@ -33,7 +33,8 @@ use bcr_wallet_core::{
     util::{from_mint_url, to_mint_url},
 };
 use bcr_wallet_persistence::{
-    ContactStoreApi, NostrRepository, PaymentRequestStoreApi, TransactionRepository,
+    ContactStoreApi, MigrationJournalEntry, MigrationJournalHeader, MigrationJournalRepository,
+    MigrationJournalState, NostrRepository, PaymentRequestStoreApi, TransactionRepository,
 };
 use bcr_wallet_transport::{ConsumerApi, NostrEventChannel, TransportApi};
 use bitcoin::{
@@ -65,6 +66,7 @@ pub struct Wallet {
     contact_repo: Arc<dyn ContactStoreApi>,
     payment_request_repo: Box<dyn PaymentRequestStoreApi>,
     debit: Box<dyn DebitPocketApi>,
+    journal: Arc<dyn MigrationJournalRepository>,
     name: String,
     id: String,
     pub_key: secp256k1::PublicKey,
@@ -90,6 +92,7 @@ impl Wallet {
         contact_repo: Arc<dyn ContactStoreApi>,
         payment_request_repo: Box<dyn PaymentRequestStoreApi>,
         debit: Box<dyn DebitPocketApi>,
+        journal: Arc<dyn MigrationJournalRepository>,
         name: String,
         id: String,
         pub_key: secp256k1::PublicKey,
@@ -111,6 +114,7 @@ impl Wallet {
             contact_repo,
             payment_request_repo,
             debit,
+            journal,
             name,
             id,
             pub_key,
@@ -302,6 +306,172 @@ impl Wallet {
 
     pub fn network(&self) -> bitcoin::Network {
         self.network
+    }
+
+    async fn recover_lost_swap(
+        &self,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+        client: Arc<dyn ClowderMintConnector>,
+    ) -> bool {
+        match self.debit.restore_local_proofs(keysets_info, client).await {
+            Ok(restored) => restored > 0,
+            Err(e) => {
+                tracing::error!("Could not restore the outputs of a lost swap: {e}");
+                false
+            }
+        }
+    }
+
+    async fn swap_exchanged(
+        &self,
+        substitute: Arc<dyn ClowderMintConnector>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+        proofs: Vec<Proof>,
+        swap_config: SwapConfig,
+    ) -> Result<Amount> {
+        let ys = proofs
+            .iter()
+            .map(|p| p.y())
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let total = proofs.total_amount()?;
+        match self
+            .debit
+            .receive_proofs(substitute.clone(), keysets_info, proofs, swap_config)
+            .await
+        {
+            Ok((amount, _)) => Ok(amount),
+            Err(e) => {
+                tracing::error!("Could not swap exchanged proofs at substitute: {e}");
+                if util::all_spent(substitute.as_ref(), ys).await
+                    && self.recover_lost_swap(keysets_info, substitute).await
+                {
+                    Ok(total)
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    async fn exchange_journaled(
+        &self,
+        substitute: &dyn ClowderMintConnector,
+        header: &MigrationJournalHeader,
+        y: cashu::PublicKey,
+        entry: MigrationJournalEntry,
+    ) -> Result<Vec<Proof>> {
+        if entry.state != MigrationJournalState::Sent {
+            self.journal.update(y, MigrationJournalState::Sent).await?;
+        }
+        let secrets = [entry.proof.secret.clone()];
+        let beta_proofs = util::post_offline_exchange(
+            substitute,
+            header.substitute_clowder_id,
+            &header.alpha_id,
+            &header.evidence_digest,
+            vec![entry.proof],
+            &entry.exchange_key,
+        )
+        .await?;
+        let unlocked =
+            util::unlock_offline_exchanged(beta_proofs.clone(), &secrets, &entry.exchange_key)?;
+        self.journal
+            .update(y, MigrationJournalState::Exchanged(beta_proofs))
+            .await?;
+        Ok(unlocked)
+    }
+
+    async fn journaled_tx(
+        &self,
+        tx: &Transaction,
+    ) -> Result<
+        Option<(
+            MigrationJournalHeader,
+            Vec<(cashu::PublicKey, MigrationJournalEntry)>,
+        )>,
+    > {
+        let Some((header, mut entries)) = self.journal.load().await? else {
+            return Ok(None);
+        };
+        let mut journaled: Vec<_> = tx
+            .ys
+            .iter()
+            .filter_map(|y| entries.remove(y).map(|e| (*y, e)))
+            .collect();
+        if journaled.is_empty() {
+            return Ok(None);
+        }
+        if journaled.len() != tx.ys.len() {
+            return Err(Error::PartlyJournaledTransaction(tx.id));
+        }
+        journaled.sort_by_key(|(y, _)| *y);
+        Ok(Some((header, journaled)))
+    }
+
+    async fn reclaim_journaled(
+        &self,
+        header: MigrationJournalHeader,
+        entries: Vec<(cashu::PublicKey, MigrationJournalEntry)>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+    ) -> Result<Amount> {
+        if let Some(amount) = reclaimed_amount(&entries) {
+            return Ok(amount);
+        }
+        let mut unlocked = Vec::new();
+        let mut ys = Vec::new();
+        for (y, entry) in entries {
+            match entry.state {
+                MigrationJournalState::Swapped => continue,
+                MigrationJournalState::Exchanged(beta_proofs) => {
+                    unlocked.extend(util::unlock_offline_exchanged(
+                        beta_proofs,
+                        &[entry.proof.secret],
+                        &entry.exchange_key,
+                    )?);
+                }
+                _ => match self
+                    .exchange_journaled(self.client.as_ref(), &header, y, entry)
+                    .await
+                {
+                    Ok(proofs) => unlocked.extend(proofs),
+                    Err(e) => {
+                        self.journal.update(y, MigrationJournalState::Held).await?;
+                        return Err(e);
+                    }
+                },
+            }
+            ys.push(y);
+        }
+        let amount = if unlocked.is_empty() {
+            Amount::ZERO
+        } else {
+            self.swap_exchanged(
+                self.client.clone(),
+                keysets_info,
+                unlocked,
+                self.swap_config(),
+            )
+            .await?
+        };
+        for y in ys {
+            self.journal
+                .update(y, MigrationJournalState::Reclaimed(amount))
+                .await?;
+        }
+        Ok(amount)
+    }
+
+    async fn finish_reclaim(
+        &self,
+        entries: &[(cashu::PublicKey, MigrationJournalEntry)],
+    ) -> Result<()> {
+        for (y, _) in entries {
+            self.journal
+                .update(*y, MigrationJournalState::Swapped)
+                .await?;
+        }
+        self.journal.clear().await?;
+        Ok(())
     }
 
     fn swap_config(&self) -> SwapConfig {
@@ -521,7 +691,7 @@ impl Wallet {
     pub async fn refresh_tx(&self, tx_id: Uuid) -> Result<bool> {
         let mut updated = false;
         let tx = self.tx_repo.load_tx(tx_id).await?;
-        if !util::tx_can_be_refreshed(&tx) {
+        if !util::tx_can_be_refreshed(&tx) || self.journaled_tx(&tx).await?.is_some() {
             return Ok(updated);
         }
         let request = cashu::CheckStateRequest { ys: tx.ys.clone() };
@@ -687,6 +857,14 @@ impl Wallet {
         let infos = self.get_wallet_mint_keyset_infos().await?;
         self.refresh_tx(tx_id).await?;
         let tx = self.load_tx(tx_id).await?;
+        let journaled = self.journaled_tx(&tx).await?;
+        if tx.status == TransactionStatus::Settled
+            && let Some((_, entries)) = &journaled
+            && let Some(amount) = reclaimed_amount(entries)
+        {
+            self.finish_reclaim(entries).await?;
+            return Ok(amount);
+        }
 
         // Only Outgoing and Pending transactions can be reclaimed
         if !util::tx_can_be_refreshed(&tx) {
@@ -698,10 +876,20 @@ impl Wallet {
 
         // Reclaim proofs
         tracing::debug!("Reclaim Debit Transaction {tx_id}");
-        let amount = self
-            .debit
-            .reclaim_proofs(&tx.ys, &infos, self.client.clone(), self.swap_config())
-            .await?;
+        let amount = match journaled.clone() {
+            Some((header, entries)) => {
+                let migrated = self.client.mint_url() == &header.substitute_url;
+                if !migrated || tx.payment_type == PaymentType::OnChain {
+                    return Err(Error::TransactionCantBeReclaimed(tx_id));
+                }
+                self.reclaim_journaled(header, entries, &infos).await?
+            }
+            None => {
+                self.debit
+                    .reclaim_proofs(&tx.ys, &infos, self.client.clone(), self.swap_config())
+                    .await?
+            }
+        };
 
         // If amount is zero - this means the transaction was already claimed - we set the transaction to Settled
         if amount == Amount::ZERO {
@@ -749,6 +937,9 @@ impl Wallet {
             self.tx_repo
                 .link_txs(tx_id, reclaim_txid, TransactionLinkReason::Reclaim)
                 .await?;
+        }
+        if let Some((_, entries)) = &journaled {
+            self.finish_reclaim(entries).await?;
         }
 
         Ok(amount)
@@ -902,46 +1093,17 @@ impl Wallet {
         // Ephemeral P2PK secret
         let wallet_pk = cashu::SecretKey::generate();
 
-        let (fingerprints, secrets) = util::proofs_to_fingerprints(proofs)?;
-
-        let hash_locks: Vec<Sha256> = secrets
-            .iter()
-            .map(|secret| Sha256::hash(&secret.to_bytes()))
-            .collect();
-        let exchange_digest = bcr_common::wire::exchange::exchange_digest(
+        let secrets: Vec<_> = proofs.iter().map(|p| p.secret.clone()).collect();
+        let beta_proofs = util::post_offline_exchange(
+            substitute_client,
+            substitute_clowder_id,
             &alpha_id,
             &evidence_digest,
-            &fingerprints,
-            &hash_locks,
-            &wallet_pk.public_key(),
-        );
-        let keypair = secp256k1::Keypair::from_secret_key(secp256k1::global::SECP256K1, &wallet_pk);
-        let wallet_signature = secp256k1::global::SECP256K1.sign_schnorr(
-            &bcr_common::wire::exchange::exchange_message(&exchange_digest),
-            &keypair,
-        );
-        let mut beta_proofs = substitute_client
-            .post_offline_exchange(
-                fingerprints.clone(),
-                hash_locks.clone(),
-                *wallet_pk.public_key(),
-                wallet_signature,
-                substitute_clowder_id,
-            )
-            .await?;
-        let by_hash_lock: HashMap<Sha256, cashu::secret::Secret> = secrets
-            .into_iter()
-            .map(|s| (Sha256::hash(&s.to_bytes()), s))
-            .collect();
-        for p in beta_proofs.iter_mut() {
-            let hash_lock = util::htlc_hash_lock(p)
-                .ok_or_else(|| Error::Swap("issued proof is not HTLC locked".into()))?;
-            let secret = by_hash_lock
-                .get(&hash_lock)
-                .ok_or_else(|| Error::Swap("issued proof carries an unknown hash lock".into()))?;
-            util::sign_htlc_proof(p, &secret.to_string(), &wallet_pk)?;
-        }
-        Ok(beta_proofs)
+            proofs,
+            &wallet_pk,
+        )
+        .await?;
+        util::unlock_offline_exchanged(beta_proofs, &secrets, &wallet_pk)
     }
 
     pub async fn online_exchange(
@@ -1334,6 +1496,13 @@ impl Wallet {
     }
 }
 
+fn reclaimed_amount(entries: &[(cashu::PublicKey, MigrationJournalEntry)]) -> Option<Amount> {
+    entries.iter().find_map(|(_, e)| match e.state {
+        MigrationJournalState::Reclaimed(amount) => Some(amount),
+        _ => None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use ::nostr::{
@@ -1357,9 +1526,10 @@ mod tests {
             PaymentRequestState, PaymentResultCallback, TimeRange, TransactionFees,
         },
     };
+    use bcr_wallet_persistence::PocketRepository;
     use bcr_wallet_persistence::{
-        MockContactStoreApi, MockNostrRepository, MockPaymentRequestStoreApi,
-        MockTransactionRepository,
+        MockContactStoreApi, MockMigrationJournalRepository, MockNostrRepository,
+        MockPaymentRequestStoreApi, MockTransactionRepository,
         test_utils::tests::{test_other_pub_key, test_pub_key, valid_payment_address_testnet},
     };
     use bcr_wallet_transport::{NostrEventChannel, error::Error as TransportError};
@@ -1439,6 +1609,7 @@ mod tests {
         pub client: MockClowderMintConnector,
         pub tx_repo: MockTransactionRepository,
         pub debit: MockDebitPocket,
+        pub journal: MockMigrationJournalRepository,
         pub nostr_repo: MockNostrRepository,
         pub contact_repo: MockContactStoreApi,
         pub payment_request_repo: MockPaymentRequestStoreApi,
@@ -1453,6 +1624,7 @@ mod tests {
             client,
             tx_repo: MockTransactionRepository::new(),
             debit: MockDebitPocket::new(),
+            journal: MockMigrationJournalRepository::new(),
             nostr_repo: MockNostrRepository::new(),
             contact_repo: MockContactStoreApi::new(),
             payment_request_repo: MockPaymentRequestStoreApi::new(),
@@ -1487,6 +1659,7 @@ mod tests {
             Arc::new(ctx.contact_repo),
             Box::new(ctx.payment_request_repo),
             Box::new(ctx.debit),
+            Arc::new(ctx.journal),
             "wallet-1".to_owned(),
             "w-1".to_owned(),
             test_pub_key(),
@@ -2434,6 +2607,7 @@ mod tests {
     #[tokio::test]
     async fn test_reclaim_tx_errors_if_transaction_cant_be_reclaimed() {
         let mut ctx = wallet_ctx();
+        ctx.journal.expect_load().returning(|| Ok(None));
         let tx_id = Uuid::new_v4();
 
         ctx.client
@@ -2463,6 +2637,7 @@ mod tests {
     #[tokio::test]
     async fn test_reclaim_tx_sets_settled_if_nothing_reclaimed() {
         let mut ctx = wallet_ctx();
+        ctx.journal.expect_load().returning(|| Ok(None));
         let tx_id = Uuid::new_v4();
         let tx = reclaimable_tx(Amount::from(10));
 
@@ -2506,6 +2681,7 @@ mod tests {
     #[tokio::test]
     async fn test_reclaim_tx_creates_second_linked_tx() {
         let mut ctx = wallet_ctx();
+        ctx.journal.expect_load().returning(|| Ok(None));
         let tx_id = Uuid::new_v4();
         let tx = reclaimable_tx(Amount::from(10));
 
@@ -4769,5 +4945,1148 @@ mod tests {
             .expect("returned token contains valid substitute proofs");
         assert_eq!(token_proofs.total_amount().unwrap(), send_amount);
         assert_eq!(token_proofs.len(), 1);
+    }
+
+    type SentExchange = (
+        Vec<bcr_common::wire::keys::ProofFingerprint>,
+        Vec<Sha256>,
+        secp256k1::PublicKey,
+        secp256k1::schnorr::Signature,
+    );
+
+    struct MigrateExchangeCtx {
+        db: Arc<bcr_wallet_persistence::redb::Database>,
+        keys: secp256k1::Keypair,
+        substitute_url: url::Url,
+        substitute_clowder_id: secp256k1::PublicKey,
+        alpha_proofs: Vec<cashu::Proof>,
+        beta_proofs: HashMap<Sha256, cashu::Proof>,
+        beta_info: ecash::KeySetInfo,
+        sent: Arc<std::sync::Mutex<Vec<SentExchange>>>,
+        swap_failures: Arc<std::sync::Mutex<usize>>,
+        failed_swap_landed: bool,
+        restore_finds_nothing: bool,
+        swap_fee: Amount,
+        credited: Arc<std::sync::Mutex<Amount>>,
+        exchange_error: &'static str,
+        check_states: Arc<std::sync::atomic::AtomicUsize>,
+        beta_alpha: Arc<std::sync::Mutex<Option<secp256k1::PublicKey>>>,
+    }
+
+    impl MigrateExchangeCtx {
+        fn new(amounts: &[Amount]) -> Self {
+            let db = Arc::new(
+                redb::Builder::new()
+                    .create_with_backend(redb::backends::InMemoryBackend::new())
+                    .unwrap(),
+            );
+            let (_, alpha_keyset) = core_tests::generate_random_ecash_keyset();
+            let mut alpha_proofs = core_tests::generate_random_ecash_proofs(&alpha_keyset, amounts);
+            add_test_dleqs(&mut alpha_proofs);
+            let (beta_info, beta_keyset) = core_tests::generate_random_ecash_keyset();
+            let mut beta_proofs = HashMap::new();
+            for alpha in alpha_proofs.iter() {
+                let mut beta =
+                    core_tests::generate_random_ecash_proofs(&beta_keyset, &[alpha.amount])
+                        .remove(0);
+                let hash_lock = Sha256::hash(&alpha.secret.to_bytes());
+                beta.secret =
+                    cashu::SpendingConditions::new_htlc_hash(&hash_lock.to_string(), None)
+                        .unwrap()
+                        .try_into()
+                        .unwrap();
+                beta_proofs.insert(hash_lock, beta);
+            }
+            Self {
+                db,
+                keys: secp256k1::Keypair::from_secret_key(
+                    SECP256K1,
+                    &secp256k1::SecretKey::from_slice(&[9u8; 32]).unwrap(),
+                ),
+                substitute_url: url::Url::from_str("https://substitute.example").unwrap(),
+                substitute_clowder_id: test_other_pub_key(),
+                alpha_proofs,
+                beta_proofs,
+                beta_info: beta_info.into(),
+                sent: Arc::new(std::sync::Mutex::new(Vec::new())),
+                swap_failures: Arc::new(std::sync::Mutex::new(0)),
+                failed_swap_landed: false,
+                restore_finds_nothing: false,
+                swap_fee: Amount::ZERO,
+                credited: Arc::new(std::sync::Mutex::new(Amount::ZERO)),
+                exchange_error: "connection reset",
+                check_states: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                beta_alpha: Arc::new(std::sync::Mutex::new(None)),
+            }
+        }
+
+        fn pocket_db(&self) -> Arc<bcr_wallet_persistence::redb::pocket::PocketDB> {
+            Arc::new(
+                bcr_wallet_persistence::redb::pocket::PocketDB::new(
+                    self.db.clone(),
+                    "w-1",
+                    &CurrencyUnit::Sat,
+                    self.keys,
+                )
+                .unwrap(),
+            )
+        }
+
+        fn y(&self, i: usize) -> cashu::PublicKey {
+            self.alpha_proofs[i].y().unwrap()
+        }
+
+        fn sorted_ys(&self) -> Vec<cashu::PublicKey> {
+            let mut ys: Vec<_> = (0..self.alpha_proofs.len()).map(|i| self.y(i)).collect();
+            ys.sort();
+            ys
+        }
+
+        fn take_sent(&self) -> Vec<SentExchange> {
+            std::mem::take(&mut *self.sent.lock().unwrap())
+        }
+
+        fn substitute(
+            &self,
+            fail: Vec<cashu::PublicKey>,
+            digest: [u8; 32],
+        ) -> MockClowderMintConnector {
+            let mut substitute = MockClowderMintConnector::new();
+            let clowder_id = self.substitute_clowder_id;
+            substitute
+                .expect_get_clowder_id()
+                .returning(move || Ok(clowder_id));
+            substitute.expect_get_alpha_offline().returning(move |_| {
+                Ok(wire_clowder::OfflineResponse {
+                    offline: true,
+                    evidence_digest: Some(digest),
+                })
+            });
+            let beta_proofs = self.beta_proofs.clone();
+            let sent = self.sent.clone();
+            let exchange_error = self.exchange_error;
+            substitute.expect_post_offline_exchange().returning(
+                move |fingerprints, hashes, wallet_pk, signature, received_clowder_id| {
+                    assert_eq!(received_clowder_id, clowder_id);
+                    assert_eq!(fingerprints.len(), 1);
+                    let failed = fail.contains(&fingerprints[0].y);
+                    let hash = hashes[0];
+                    sent.lock()
+                        .unwrap()
+                        .push((fingerprints, hashes, wallet_pk, signature));
+                    if failed {
+                        return Err(bcr_common::client::mint::Error::Internal(
+                            exchange_error.to_string(),
+                        ));
+                    }
+                    Ok(vec![beta_proofs[&hash].clone()])
+                },
+            );
+            let beta_url = url::Url::from_str("https://substitute-beta.example").unwrap();
+            substitute.expect_get_clowder_betas().returning(move || {
+                Ok(vec![ClowderBeta {
+                    url: beta_url.clone(),
+                    clowder_id: test_pub_key(),
+                }])
+            });
+            let beta_info = self.beta_info.clone();
+            substitute
+                .expect_get_mint_keysets()
+                .returning(move || Ok(vec![beta_info.clone()]));
+            let state = if self.failed_swap_landed {
+                cashu::State::Spent
+            } else {
+                cashu::State::Unspent
+            };
+            let check_states = self.check_states.clone();
+            substitute.expect_post_check_state().returning(move |req| {
+                check_states.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(req
+                    .ys
+                    .into_iter()
+                    .map(|y| cashu::ProofState {
+                        y,
+                        state,
+                        witness: None,
+                    })
+                    .collect())
+            });
+            substitute
+                .expect_mint_url()
+                .return_const(self.substitute_url.clone());
+            substitute
+        }
+
+        async fn wallet(
+            &self,
+            pdb: Arc<bcr_wallet_persistence::redb::pocket::PocketDB>,
+            pocket_ys: Vec<cashu::PublicKey>,
+            substitute: MockClowderMintConnector,
+            received: Arc<std::sync::Mutex<Vec<cashu::Proof>>>,
+        ) -> Arc<RwLock<Wallet>> {
+            let mut ctx = wallet_ctx();
+            ctx.client
+                .expect_mint_url()
+                .return_const(url::Url::from_str("https://alpha.example").unwrap());
+            let beta_kid = self.beta_info.id;
+            ctx.debit
+                .expect_delete_unmigratable_proofs()
+                .times(1)
+                .return_once(move |substitute| {
+                    assert!(substitute.contains(&beta_kid));
+                    Ok(pocket_ys)
+                });
+            let beta_alpha = self.beta_alpha.clone();
+            ctx.debit
+                .expect_set_beta_provider()
+                .returning(move |provider| *beta_alpha.lock().unwrap() = Some(provider.alpha_id()));
+            ctx.debit.expect_unit().return_const(CurrencyUnit::Sat);
+            ctx.nostr_transport.expect_relays().return_const(vec![]);
+            let swap_failures = self.swap_failures.clone();
+            let landed_swaps = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let (landed, r) = (landed_swaps.clone(), received.clone());
+            let failed_swap_landed = self.failed_swap_landed;
+            let (swap_fee, credited) = (self.swap_fee, self.credited.clone());
+            ctx.debit
+                .expect_receive_proofs()
+                .returning(move |_, _, proofs, _| {
+                    let mut failures = swap_failures.lock().unwrap();
+                    if *failures > 0 {
+                        *failures -= 1;
+                        if failed_swap_landed {
+                            landed.lock().unwrap().extend(proofs);
+                        }
+                        return Err(Error::Swap("connection reset".into()));
+                    }
+                    let amount = proofs.total_amount().unwrap() - swap_fee;
+                    *credited.lock().unwrap() += amount;
+                    r.lock().unwrap().extend(proofs);
+                    Ok((amount, vec![]))
+                });
+            let beta_kid = self.beta_info.id;
+            let restore_finds_nothing = self.restore_finds_nothing;
+            ctx.debit
+                .expect_restore_local_proofs()
+                .returning(move |infos, _| {
+                    assert!(infos.contains_key(&beta_kid));
+                    let restored = std::mem::take(&mut *landed_swaps.lock().unwrap());
+                    if restore_finds_nothing {
+                        return Ok(0);
+                    }
+                    let n = restored.len();
+                    received.lock().unwrap().extend(restored);
+                    Ok(n)
+                });
+            ctx.debit
+                .expect_balance()
+                .returning(|_| Ok(PocketBalance::default()));
+            let wlt = wallet(ctx).await;
+            let substitute: Arc<dyn ClowderMintConnector> = Arc::new(substitute);
+            let substitute_url = self.substitute_url.clone();
+            {
+                let mut w = wlt.write().await;
+                w.journal = pdb;
+                w.client_factory = Box::new(move |url| {
+                    if url == substitute_url {
+                        substitute.clone()
+                    } else {
+                        let mut beta = MockClowderMintConnector::new();
+                        beta.expect_get_alpha_status().returning(|_| {
+                            Ok(wire_clowder::AlphaStateResponse {
+                                state: wire_clowder::SimpleAlphaState::Online(0),
+                            })
+                        });
+                        Arc::new(beta)
+                    }
+                });
+            }
+            wlt
+        }
+
+        async fn store_unspent(&self, pdb: &bcr_wallet_persistence::redb::pocket::PocketDB) {
+            for proof in self.alpha_proofs.iter() {
+                pdb.store_new(proof.clone()).await.unwrap();
+            }
+        }
+    }
+
+    fn journal_states(
+        entries: &HashMap<cashu::PublicKey, bcr_wallet_persistence::MigrationJournalEntry>,
+    ) -> HashMap<cashu::PublicKey, &'static str> {
+        use bcr_wallet_persistence::MigrationJournalState as S;
+        entries
+            .iter()
+            .map(|(y, e)| {
+                let state = match e.state {
+                    S::Pending => "pending",
+                    S::Sent => "sent",
+                    S::Exchanged(_) => "exchanged",
+                    S::Swapped => "swapped",
+                    S::Held => "held",
+                    S::Reclaimed(_) => "reclaimed",
+                };
+                (*y, state)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn migrate_exchange_lost_response_resends_identical_request() {
+        let t = MigrateExchangeCtx::new(&[Amount::from(8), Amount::from(16)]);
+        let pdb = t.pocket_db();
+        t.store_unspent(&pdb).await;
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                t.sorted_ys(),
+                t.substitute(t.sorted_ys(), [7u8; 32]),
+                received.clone(),
+            )
+            .await;
+        let err = wlt
+            .write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::MigrationIncomplete(2)));
+        assert_eq!(
+            wlt.read().await.client.mint_url().as_str(),
+            "https://alpha.example/"
+        );
+        let first = t.take_sent();
+        assert_eq!(first.len(), 2);
+        drop(wlt);
+        drop(pdb);
+
+        let reopened = t.pocket_db();
+        assert!(reopened.list_all().await.unwrap().is_empty());
+        let (header, entries) = reopened.load().await.unwrap().unwrap();
+        assert_eq!(header.evidence_digest, [7u8; 32]);
+        assert!(journal_states(&entries).values().all(|s| *s == "sent"));
+
+        let wlt = t
+            .wallet(
+                reopened.clone(),
+                vec![],
+                t.substitute(vec![], [7u8; 32]),
+                received.clone(),
+            )
+            .await;
+        let mint = wlt
+            .write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .expect("retry completes");
+        assert_eq!(mint, t.substitute_url);
+        assert_eq!(t.take_sent(), first);
+
+        let (_, entries) = reopened.load().await.unwrap().unwrap();
+        assert!(journal_states(&entries).values().all(|s| *s == "swapped"));
+        let received = received.lock().unwrap();
+        assert_eq!(received.len(), 2);
+        assert!(received.iter().all(|p| p.witness.is_some()));
+        assert_eq!(received.total_amount().unwrap(), Amount::from(24));
+    }
+
+    #[tokio::test]
+    async fn migrate_exchange_error_on_proof_k_keeps_it_journaled() {
+        let t = MigrateExchangeCtx::new(&[Amount::from(1), Amount::from(2), Amount::from(4)]);
+        let pdb = t.pocket_db();
+        t.store_unspent(&pdb).await;
+        let k = t.sorted_ys()[1];
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                t.sorted_ys(),
+                t.substitute(vec![k], [7u8; 32]),
+                received.clone(),
+            )
+            .await;
+        let err = wlt
+            .write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::MigrationIncomplete(1)));
+        assert!(received.lock().unwrap().is_empty());
+        let first = t.take_sent();
+        assert_eq!(first.len(), 3);
+        let first_k = first.iter().find(|s| s.0[0].y == k).unwrap().clone();
+
+        assert!(pdb.list_all().await.unwrap().is_empty());
+        let (_, entries) = pdb.load().await.unwrap().unwrap();
+        let states = journal_states(&entries);
+        assert_eq!(states.len(), 3);
+        assert_eq!(states[&k], "sent");
+        assert_eq!(states.values().filter(|s| **s == "exchanged").count(), 2);
+
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                vec![],
+                t.substitute(vec![], [7u8; 32]),
+                received.clone(),
+            )
+            .await;
+        wlt.write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .expect("retry completes");
+        assert_eq!(t.take_sent(), vec![first_k]);
+        let (_, entries) = pdb.load().await.unwrap().unwrap();
+        assert!(journal_states(&entries).values().all(|s| *s == "swapped"));
+        assert_eq!(
+            received.lock().unwrap().total_amount().unwrap(),
+            Amount::from(7)
+        );
+    }
+
+    #[tokio::test]
+    async fn migrate_exchange_new_digest_refused_keeps_entry_sent() {
+        let t = MigrateExchangeCtx::new(&[Amount::from(8)]);
+        let pdb = t.pocket_db();
+        t.store_unspent(&pdb).await;
+        let y = t.y(0);
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                vec![y],
+                t.substitute(vec![y], [7u8; 32]),
+                received.clone(),
+            )
+            .await;
+        wlt.write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .unwrap_err();
+        let first = t.take_sent();
+
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                vec![],
+                t.substitute(vec![y], [8u8; 32]),
+                received.clone(),
+            )
+            .await;
+        let err = wlt
+            .write()
+            .await
+            .migrate_pockets_substitute(url::Url::from_str("https://other.example").unwrap())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::MigrationIncomplete(1)));
+        assert_eq!(t.take_sent(), first);
+
+        let (header, entries) = pdb.load().await.unwrap().unwrap();
+        assert_eq!(header.evidence_digest, [7u8; 32]);
+        assert_eq!(journal_states(&entries)[&y], "sent");
+        let (request, _, _) = util::build_offline_exchange_request(
+            &test_pub_key(),
+            &[7u8; 32],
+            vec![entries[&y].proof.clone()],
+            &entries[&y].exchange_key,
+        )
+        .unwrap();
+        assert_eq!(first[0].3, request.wallet_signature);
+        assert!(received.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn migrate_exchange_pendingspent_proof_is_held_not_sent() {
+        let t = MigrateExchangeCtx::new(&[Amount::from(8), Amount::from(16)]);
+        let pdb = t.pocket_db();
+        pdb.store_new(t.alpha_proofs[0].clone()).await.unwrap();
+        pdb.store_pendingspent(t.alpha_proofs[1].clone())
+            .await
+            .unwrap();
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                t.sorted_ys(),
+                t.substitute(vec![], [7u8; 32]),
+                received.clone(),
+            )
+            .await;
+        wlt.write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .expect("migration works");
+        let sent = t.take_sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0[0].y, t.y(0));
+        let (_, entries) = pdb.load().await.unwrap().unwrap();
+        let states = journal_states(&entries);
+        assert_eq!(states[&t.y(0)], "swapped");
+        assert_eq!(states[&t.y(1)], "held");
+        assert_eq!(
+            received.lock().unwrap().total_amount().unwrap(),
+            Amount::from(8)
+        );
+    }
+
+    #[tokio::test]
+    async fn migrate_finalise_swap_failure_stays_on_alpha_until_retry_swaps_all() {
+        let t = MigrateExchangeCtx::new(&[Amount::from(8), Amount::from(16)]);
+        *t.swap_failures.lock().unwrap() = 1;
+        let pdb = t.pocket_db();
+        t.store_unspent(&pdb).await;
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                t.sorted_ys(),
+                t.substitute(vec![], [7u8; 32]),
+                received.clone(),
+            )
+            .await;
+        let err = wlt
+            .write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::MigrationIncomplete(2)));
+        assert_eq!(
+            wlt.read().await.client.mint_url().as_str(),
+            "https://alpha.example/"
+        );
+        assert_eq!(wlt.read().await.clowder_id, test_pub_key());
+        assert_eq!(t.take_sent().len(), 2);
+        assert!(received.lock().unwrap().is_empty());
+        let (_, entries) = pdb.load().await.unwrap().unwrap();
+        assert!(journal_states(&entries).values().all(|s| *s == "exchanged"));
+
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                vec![],
+                t.substitute(vec![], [7u8; 32]),
+                received.clone(),
+            )
+            .await;
+        let mint = wlt
+            .write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .expect("retry completes");
+        assert_eq!(mint, t.substitute_url);
+        assert!(t.take_sent().is_empty());
+        assert_eq!(wlt.read().await.clowder_id, t.substitute_clowder_id);
+        let (_, entries) = pdb.load().await.unwrap().unwrap();
+        assert!(journal_states(&entries).values().all(|s| *s == "swapped"));
+        assert_eq!(
+            received.lock().unwrap().total_amount().unwrap(),
+            Amount::from(24)
+        );
+
+        wlt.read().await.finish_migration().await.unwrap();
+        assert!(pdb.load().await.unwrap().is_none());
+    }
+
+    struct SwappedUpdateFails(Arc<bcr_wallet_persistence::redb::pocket::PocketDB>);
+
+    #[async_trait::async_trait]
+    impl MigrationJournalRepository for SwappedUpdateFails {
+        async fn put(
+            &self,
+            header: MigrationJournalHeader,
+            entries: Vec<(cashu::PublicKey, cashu::SecretKey)>,
+        ) -> bcr_wallet_persistence::error::Result<()> {
+            self.0.put(header, entries).await
+        }
+        async fn update(
+            &self,
+            y: cashu::PublicKey,
+            state: MigrationJournalState,
+        ) -> bcr_wallet_persistence::error::Result<()> {
+            if state == MigrationJournalState::Swapped {
+                return Err(bcr_wallet_persistence::error::Error::MigrationJournalEntryNotFound(y));
+            }
+            self.0.update(y, state).await
+        }
+        async fn load(
+            &self,
+        ) -> bcr_wallet_persistence::error::Result<
+            Option<(
+                MigrationJournalHeader,
+                HashMap<cashu::PublicKey, MigrationJournalEntry>,
+            )>,
+        > {
+            self.0.load().await
+        }
+        async fn clear(&self) -> bcr_wallet_persistence::error::Result<()> {
+            self.0.clear().await
+        }
+    }
+
+    #[tokio::test]
+    async fn migrate_finalise_journal_failure_after_swap_restores_alpha_betas() {
+        let t = MigrateExchangeCtx::new(&[Amount::from(8)]);
+        let pdb = t.pocket_db();
+        t.store_unspent(&pdb).await;
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                t.sorted_ys(),
+                t.substitute(vec![], [7u8; 32]),
+                received.clone(),
+            )
+            .await;
+        wlt.write().await.journal = Arc::new(SwappedUpdateFails(pdb.clone()));
+        wlt.write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(wlt.read().await.clowder_id, test_pub_key());
+        assert_eq!(*t.beta_alpha.lock().unwrap(), Some(test_pub_key()));
+    }
+
+    #[tokio::test]
+    async fn migrate_finalise_lost_swap_response_is_not_swapped_again() {
+        let mut t = MigrateExchangeCtx::new(&[Amount::from(8)]);
+        t.failed_swap_landed = true;
+        *t.swap_failures.lock().unwrap() = 1;
+        let pdb = t.pocket_db();
+        t.store_unspent(&pdb).await;
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                t.sorted_ys(),
+                t.substitute(vec![], [7u8; 32]),
+                received.clone(),
+            )
+            .await;
+        let mint = wlt
+            .write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .expect("a swap the substitute already spent completes the migration");
+        assert_eq!(mint, t.substitute_url);
+        assert_eq!(*t.swap_failures.lock().unwrap(), 0);
+        assert_eq!(
+            received.lock().unwrap().total_amount().unwrap(),
+            Amount::from(8)
+        );
+        let (_, entries) = pdb.load().await.unwrap().unwrap();
+        assert_eq!(journal_states(&entries)[&t.y(0)], "swapped");
+    }
+
+    #[tokio::test]
+    async fn migrate_finalise_lost_swap_unrestored_stays_on_alpha() {
+        let mut t = MigrateExchangeCtx::new(&[Amount::from(8)]);
+        t.failed_swap_landed = true;
+        t.restore_finds_nothing = true;
+        *t.swap_failures.lock().unwrap() = 1;
+        let pdb = t.pocket_db();
+        t.store_unspent(&pdb).await;
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                t.sorted_ys(),
+                t.substitute(vec![], [7u8; 32]),
+                received.clone(),
+            )
+            .await;
+        let err = wlt
+            .write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::MigrationIncomplete(1)));
+        assert_eq!(
+            wlt.read().await.client.mint_url().as_str(),
+            "https://alpha.example/"
+        );
+        let (_, entries) = pdb.load().await.unwrap().unwrap();
+        assert_eq!(journal_states(&entries)[&t.y(0)], "exchanged");
+    }
+
+    #[tokio::test]
+    async fn migrate_finalise_unreachable_betas_keep_the_migration_incomplete() {
+        let t = MigrateExchangeCtx::new(&[Amount::from(1), Amount::from(2)]);
+        let pdb = t.pocket_db();
+        t.store_unspent(&pdb).await;
+        let k = t.sorted_ys()[1];
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                t.sorted_ys(),
+                t.substitute(vec![k], [7u8; 32]),
+                Arc::new(std::sync::Mutex::new(Vec::new())),
+            )
+            .await;
+        let err = wlt
+            .write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::MigrationIncomplete(1)));
+
+        let mut offline = MockClowderMintConnector::new();
+        offline.expect_get_alpha_status().returning(|_| {
+            Err(bcr_common::client::mint::Error::Internal(
+                "offline".to_string(),
+            ))
+        });
+        wlt.write().await.beta_clients = BTreeMap::from([(
+            url::Url::from_str("https://alpha-beta.example").unwrap(),
+            Arc::new(offline) as Arc<dyn ClowderMintConnector>,
+        )]);
+        let mut repo = bcr_wallet_persistence::MockPurseRepository::new();
+        repo.expect_store().returning(|_| Ok(()));
+        let purse = crate::purse::Purse {
+            repo: Box::new(repo),
+            contact_repos: HashMap::new(),
+            wallets: Arc::new(RwLock::new(HashMap::from([(
+                "w-1".to_owned(),
+                wlt.clone(),
+            )]))),
+            migrations: Default::default(),
+        };
+        let err = purse.migrate_rabid_wallets().await.unwrap_err();
+        assert!(matches!(err, Error::MigrationIncomplete(2)));
+        let (_, entries) = pdb.load().await.unwrap().unwrap();
+        let states = journal_states(&entries);
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[&k], "sent");
+    }
+
+    #[tokio::test]
+    async fn migrate_finalise_crash_before_config_store_resumes_from_swapped() {
+        let t = MigrateExchangeCtx::new(&[Amount::from(8), Amount::from(16)]);
+        let pdb = t.pocket_db();
+        t.store_unspent(&pdb).await;
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                t.sorted_ys(),
+                t.substitute(vec![], [7u8; 32]),
+                received.clone(),
+            )
+            .await;
+        wlt.write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .expect("migration works");
+        assert_eq!(t.take_sent().len(), 2);
+        drop(wlt);
+
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                vec![],
+                t.substitute(vec![], [7u8; 32]),
+                received.clone(),
+            )
+            .await;
+        let mint = wlt
+            .write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .expect("retry on the alpha config completes");
+        assert_eq!(mint, t.substitute_url);
+        assert!(t.take_sent().is_empty());
+        assert_eq!(
+            received.lock().unwrap().total_amount().unwrap(),
+            Amount::from(24)
+        );
+        let (_, entries) = pdb.load().await.unwrap().unwrap();
+        assert!(journal_states(&entries).values().all(|s| *s == "swapped"));
+
+        wlt.read().await.finish_migration().await.unwrap();
+        assert!(pdb.load().await.unwrap().is_none());
+    }
+
+    struct HeldCtx {
+        t: MigrateExchangeCtx,
+        pdb: Arc<bcr_wallet_persistence::redb::pocket::PocketDB>,
+        wlt: Arc<RwLock<Wallet>>,
+        purse: crate::purse::Purse<Wallet>,
+        t1: Uuid,
+    }
+
+    const HELD_AMOUNTS: [u64; 7] = [512, 256, 128, 4, 64, 32, 4];
+    const HELD_FROM: usize = 4;
+
+    impl HeldCtx {
+        async fn migrated(exchange_error: Option<&'static str>, payment_type: PaymentType) -> Self {
+            let amounts: Vec<_> = HELD_AMOUNTS.iter().map(|a| Amount::from(*a)).collect();
+            let mut t = MigrateExchangeCtx::new(&amounts);
+            t.swap_fee = Amount::from(1);
+            let pdb = t.pocket_db();
+            for (i, proof) in t.alpha_proofs.iter().enumerate() {
+                if i < HELD_FROM {
+                    pdb.store_new(proof.clone()).await.unwrap();
+                } else {
+                    pdb.store_pendingspent(proof.clone()).await.unwrap();
+                }
+            }
+            let held: Vec<_> = (HELD_FROM..HELD_AMOUNTS.len()).map(|i| t.y(i)).collect();
+            let fail = match exchange_error {
+                Some(e) => {
+                    t.exchange_error = e;
+                    held.clone()
+                }
+                None => vec![],
+            };
+            let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let wlt = t
+                .wallet(
+                    pdb.clone(),
+                    t.sorted_ys(),
+                    t.substitute(fail, [7u8; 32]),
+                    received,
+                )
+                .await;
+
+            let mut rabid = MockClowderMintConnector::new();
+            rabid.expect_get_alpha_status().returning(|_| {
+                Ok(wire_clowder::AlphaStateResponse {
+                    state: wire_clowder::SimpleAlphaState::Rabid("rabid".to_string()),
+                })
+            });
+            let substitute_url = t.substitute_url.clone();
+            rabid.expect_get_alpha_substitute().returning(move |_| {
+                Ok(wire_clowder::ConnectedMintResponse {
+                    mint: substitute_url.clone(),
+                    clowder: url::Url::from_str("https://clowder.example").unwrap(),
+                    node_id: test_pub_key(),
+                })
+            });
+            let t1 = {
+                let mut w = wlt.write().await;
+                w.tx_repo = Box::new(
+                    bcr_wallet_persistence::redb::transaction::TransactionDB::new(
+                        t.db.clone(),
+                        "w-1",
+                    )
+                    .unwrap(),
+                );
+                w.beta_clients = BTreeMap::from([(
+                    url::Url::from_str("https://alpha-beta.example").unwrap(),
+                    Arc::new(rabid) as Arc<dyn ClowderMintConnector>,
+                )]);
+                let mut tx = reclaimable_tx(Amount::from(100));
+                tx.payment_type = payment_type;
+                tx.ys = held;
+                w.tx_repo.store_tx(tx).await.unwrap()
+            };
+
+            let mut repo = bcr_wallet_persistence::MockPurseRepository::new();
+            repo.expect_store().returning(|_| Ok(()));
+            let purse = crate::purse::Purse {
+                repo: Box::new(repo),
+                contact_repos: HashMap::new(),
+                wallets: Arc::new(RwLock::new(HashMap::from([(
+                    "w-1".to_owned(),
+                    wlt.clone(),
+                )]))),
+                migrations: Default::default(),
+            };
+            let migrated = purse
+                .migrate_rabid_wallets()
+                .await
+                .expect("migration works");
+            assert_eq!(
+                migrated.values().collect::<Vec<_>>(),
+                vec![&t.substitute_url]
+            );
+            let sent = t.take_sent();
+            assert_eq!(sent.len(), HELD_FROM);
+            let ctx = Self {
+                t,
+                pdb,
+                wlt,
+                purse,
+                t1,
+            };
+            assert_eq!(ctx.wlt.read().await.mint_url(), ctx.t.substitute_url);
+            assert_eq!(ctx.credited(), Amount::from(899));
+            assert_eq!(ctx.held_states().await, vec!["held"; 3]);
+            assert_eq!(ctx.t1_status().await, TransactionStatus::Pending);
+            assert!(ctx.wlt.read().await.has_migration_journal().await.unwrap());
+            assert!(
+                ctx.purse
+                    .migrate_rabid_wallets()
+                    .await
+                    .expect("a migrated wallet with held proofs is not incomplete")
+                    .is_empty()
+            );
+            ctx
+        }
+
+        fn held_ys(&self) -> Vec<cashu::PublicKey> {
+            (HELD_FROM..HELD_AMOUNTS.len())
+                .map(|i| self.t.y(i))
+                .collect()
+        }
+
+        fn credited(&self) -> Amount {
+            *self.t.credited.lock().unwrap()
+        }
+
+        async fn held_states(&self) -> Vec<&'static str> {
+            let journal = self.pdb.load().await.unwrap();
+            let Some((_, entries)) = journal else {
+                return vec![];
+            };
+            assert_eq!(entries.len(), 3);
+            let states = journal_states(&entries);
+            self.held_ys().iter().map(|y| states[y]).collect()
+        }
+
+        async fn exchange_keys(&self) -> Vec<cashu::SecretKey> {
+            let (_, entries) = self.pdb.load().await.unwrap().unwrap();
+            self.held_ys()
+                .iter()
+                .map(|y| entries[y].exchange_key.clone())
+                .collect()
+        }
+
+        async fn t1_status(&self) -> TransactionStatus {
+            self.wlt.read().await.load_tx(self.t1).await.unwrap().status
+        }
+
+        async fn assert_reclaimed(&self, amount: Amount) {
+            assert_eq!(amount, Amount::from(99));
+            let w = self.wlt.read().await;
+            let t1 = w.load_tx(self.t1).await.unwrap();
+            assert_eq!(t1.status, TransactionStatus::Settled);
+            assert_eq!(t1.linked_txs.len(), 1);
+            assert_eq!(t1.linked_txs[0].reason, TransactionLinkReason::Reclaim);
+            let reclaim = w.load_tx(t1.linked_txs[0].tx_id).await.unwrap();
+            assert_eq!(reclaim.status, TransactionStatus::Canceled);
+            assert_eq!(reclaim.fees.swap, Amount::from(1));
+            assert_eq!(self.credited(), Amount::from(899 + 99));
+            assert!(!w.has_migration_journal().await.unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn migrate_held_refresh_sends_nothing_to_substitute() {
+        let h = HeldCtx::migrated(None, PaymentType::Token).await;
+        let checks = h.t.check_states.load(std::sync::atomic::Ordering::SeqCst);
+        h.wlt.read().await.refresh_txs().await.unwrap();
+        assert_eq!(
+            h.t.check_states.load(std::sync::atomic::Ordering::SeqCst),
+            checks
+        );
+        assert_eq!(h.t1_status().await, TransactionStatus::Pending);
+        assert_eq!(h.held_states().await, vec!["held"; 3]);
+    }
+
+    #[tokio::test]
+    async fn migrate_held_reclaim_exchanges_and_swaps() {
+        let h = HeldCtx::migrated(None, PaymentType::Token).await;
+        let amount = h.wlt.read().await.reclaim_tx(h.t1).await.unwrap();
+        let sent: Vec<_> = h.t.take_sent().iter().map(|s| s.0[0].y).collect();
+        let mut held = h.held_ys();
+        held.sort();
+        assert_eq!(sent, held);
+        h.assert_reclaimed(amount).await;
+    }
+
+    #[tokio::test]
+    async fn migrate_held_reclaim_refused_exchange_stays_held() {
+        let h = HeldCtx::migrated(
+            Some("proof already exchanged under another digest"),
+            PaymentType::Token,
+        )
+        .await;
+        let keys = h.exchange_keys().await;
+        h.wlt.read().await.reclaim_tx(h.t1).await.unwrap_err();
+        assert_eq!(h.held_states().await, vec!["held"; 3]);
+        assert_eq!(h.exchange_keys().await, keys);
+        assert_eq!(h.t1_status().await, TransactionStatus::Pending);
+        assert_eq!(h.credited(), Amount::from(899));
+        assert!(h.purse.migrate_rabid_wallets().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn migrate_held_reclaim_swap_failure_resumes_without_second_exchange() {
+        let h = HeldCtx::migrated(None, PaymentType::Token).await;
+        *h.t.swap_failures.lock().unwrap() = 1;
+        h.wlt.read().await.reclaim_tx(h.t1).await.unwrap_err();
+        assert_eq!(h.held_states().await, vec!["exchanged"; 3]);
+        assert_eq!(h.t1_status().await, TransactionStatus::Pending);
+        assert_eq!(h.credited(), Amount::from(899));
+        assert_eq!(h.t.take_sent().len(), 3);
+
+        let amount = h.wlt.read().await.reclaim_tx(h.t1).await.unwrap();
+        assert!(h.t.take_sent().is_empty());
+        h.assert_reclaimed(amount).await;
+    }
+
+    #[tokio::test]
+    async fn migrate_held_melt_is_not_reclaimed() {
+        let h = HeldCtx::migrated(None, PaymentType::OnChain).await;
+        let err = h.wlt.read().await.reclaim_tx(h.t1).await.unwrap_err();
+        assert!(matches!(err, Error::TransactionCantBeReclaimed(id) if id == h.t1));
+        assert!(h.t.take_sent().is_empty());
+        assert_eq!(h.held_states().await, vec!["held"; 3]);
+        assert_eq!(h.t1_status().await, TransactionStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn migrate_held_leftover_journal_refuses_migration_off_the_substitute() {
+        let h = HeldCtx::migrated(None, PaymentType::OnChain).await;
+        let next = url::Url::from_str("https://next-substitute.example").unwrap();
+        let err = h
+            .wlt
+            .write()
+            .await
+            .migrate_pockets_substitute(next)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Database(bcr_wallet_persistence::error::Error::MigrationJournalHeaderMismatch)
+        ));
+        assert_eq!(h.wlt.read().await.mint_url(), h.t.substitute_url);
+        assert!(h.t.take_sent().is_empty());
+        assert_eq!(h.held_states().await, vec!["held"; 3]);
+    }
+
+    #[tokio::test]
+    async fn migrate_held_partly_journaled_tx_is_refused() {
+        let h = HeldCtx::migrated(None, PaymentType::Token).await;
+        let mut tx = reclaimable_tx(Amount::from(100));
+        tx.ys = vec![h.held_ys()[0], h.t.y(0)];
+        let tx_id = h.wlt.read().await.tx_repo.store_tx(tx).await.unwrap();
+        let err = h.wlt.read().await.reclaim_tx(tx_id).await.unwrap_err();
+        assert!(matches!(err, Error::PartlyJournaledTransaction(id) if id == tx_id));
+        assert!(h.t.take_sent().is_empty());
+        assert_eq!(h.held_states().await, vec!["held"; 3]);
+    }
+
+    #[tokio::test]
+    async fn migrate_held_reclaim_before_switch_is_refused() {
+        let t = MigrateExchangeCtx::new(&[Amount::from(8), Amount::from(16)]);
+        let pdb = t.pocket_db();
+        pdb.store_new(t.alpha_proofs[0].clone()).await.unwrap();
+        pdb.store_pendingspent(t.alpha_proofs[1].clone())
+            .await
+            .unwrap();
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let wlt = t
+            .wallet(
+                pdb.clone(),
+                t.sorted_ys(),
+                t.substitute(vec![t.y(0)], [7u8; 32]),
+                received,
+            )
+            .await;
+        let err = wlt
+            .write()
+            .await
+            .migrate_pockets_substitute(t.substitute_url.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::MigrationIncomplete(1)));
+        t.take_sent();
+
+        let mut alpha = MockClowderMintConnector::new();
+        alpha
+            .expect_mint_url()
+            .return_const(url::Url::from_str("https://alpha.example").unwrap());
+        alpha.expect_get_mint_keysets().returning(|| Ok(vec![]));
+        let t1 = {
+            let mut w = wlt.write().await;
+            w.client = Arc::new(alpha);
+            w.tx_repo = Box::new(
+                bcr_wallet_persistence::redb::transaction::TransactionDB::new(t.db.clone(), "w-1")
+                    .unwrap(),
+            );
+            let mut tx = reclaimable_tx(Amount::from(16));
+            tx.ys = vec![t.y(1)];
+            w.tx_repo.store_tx(tx).await.unwrap()
+        };
+        let err = wlt.read().await.reclaim_tx(t1).await.unwrap_err();
+        assert!(matches!(err, Error::TransactionCantBeReclaimed(id) if id == t1));
+        assert!(t.take_sent().is_empty());
+        let (_, entries) = pdb.load().await.unwrap().unwrap();
+        let states = journal_states(&entries);
+        assert_eq!(states[&t.y(0)], "sent");
+        assert_eq!(states[&t.y(1)], "held");
+    }
+
+    impl HeldCtx {
+        async fn swap_without_bookkeeping(&self) {
+            let w = self.wlt.read().await;
+            let tx = w.load_tx(self.t1).await.unwrap();
+            let (header, entries) = w.journaled_tx(&tx).await.unwrap().unwrap();
+            let infos = w.get_wallet_mint_keyset_infos().await.unwrap();
+            let amount = w.reclaim_journaled(header, entries, &infos).await.unwrap();
+            assert_eq!(amount, Amount::from(99));
+            drop(w);
+            assert_eq!(self.held_states().await, vec!["reclaimed"; 3]);
+            assert_eq!(self.t.take_sent().len(), 3);
+        }
+    }
+
+    #[tokio::test]
+    async fn migrate_held_reclaim_crash_before_bookkeeping_records_it_on_retry() {
+        let h = HeldCtx::migrated(None, PaymentType::Token).await;
+        h.swap_without_bookkeeping().await;
+        assert_eq!(h.t1_status().await, TransactionStatus::Pending);
+        let checks = h.t.check_states.load(std::sync::atomic::Ordering::SeqCst);
+
+        let amount = h.wlt.read().await.reclaim_tx(h.t1).await.unwrap();
+        assert!(h.t.take_sent().is_empty());
+        assert_eq!(
+            h.t.check_states.load(std::sync::atomic::Ordering::SeqCst),
+            checks
+        );
+        h.assert_reclaimed(amount).await;
+    }
+
+    #[tokio::test]
+    async fn migrate_held_reclaim_crash_before_clear_clears_on_retry() {
+        let h = HeldCtx::migrated(None, PaymentType::Token).await;
+        h.swap_without_bookkeeping().await;
+        h.wlt
+            .read()
+            .await
+            .tx_repo
+            .update_status(h.t1, TransactionStatus::Settled)
+            .await
+            .unwrap();
+
+        let amount = h.wlt.read().await.reclaim_tx(h.t1).await.unwrap();
+        assert_eq!(amount, Amount::from(99));
+        assert!(h.t.take_sent().is_empty());
+        assert_eq!(h.credited(), Amount::from(899 + 99));
+        assert!(!h.wlt.read().await.has_migration_journal().await.unwrap());
     }
 }

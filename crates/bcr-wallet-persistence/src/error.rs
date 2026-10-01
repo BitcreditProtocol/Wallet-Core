@@ -45,6 +45,12 @@ pub enum Error {
     InvalidProofState(cashu::PublicKey),
     #[error("proof in local DB not found: {0}")]
     ProofNotFound(cashu::PublicKey),
+    #[error("proof already in migration journal: {0}")]
+    ProofAlreadyJournaled(cashu::PublicKey),
+    #[error("migration journal holds entries for another outage")]
+    MigrationJournalHeaderMismatch,
+    #[error("migration journal entry not found: {0}")]
+    MigrationJournalEntryNotFound(cashu::PublicKey),
     #[error("mint op not found: {0}")]
     MintNotFound(String),
     #[error("melt op not found: {0}")]

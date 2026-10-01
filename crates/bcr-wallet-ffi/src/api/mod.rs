@@ -2606,6 +2606,10 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::InvalidClowderPath => WalletError::internal(value.to_string()),
             BcrWalletError::BetaNotFound(_) => WalletError::internal(value.to_string()),
             BcrWalletError::NoSubstitute => WalletError::internal(value.to_string()),
+            BcrWalletError::MigrationIncomplete(_) => WalletError::network(value.to_string()),
+            BcrWalletError::PartlyJournaledTransaction(_) => {
+                WalletError::internal(value.to_string())
+            }
             BcrWalletError::Unsupported(_) => WalletError {
                 kind: WalletErrorKind::Unsupported,
                 code: WalletErrorCode::Unsupported,

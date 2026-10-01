@@ -154,6 +154,10 @@ pub enum Error {
     Database(#[from] bcr_wallet_persistence::error::Error),
     #[error("Transport Error: {0}")]
     Transport(#[from] bcr_wallet_transport::error::Error),
+    #[error("migration incomplete: {0} alpha proofs not migrated yet")]
+    MigrationIncomplete(usize),
+    #[error("transaction {0} is only partly in the migration journal")]
+    PartlyJournaledTransaction(uuid::Uuid),
     #[error("Dev Mode is disabled")]
     NoDevMode,
     #[error("melt quote commitment does not match request")]
