@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1502509236;
+  int get rustContentHash => -1857723457;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -279,6 +279,10 @@ abstract class RustLibApi extends BaseApi {
     required WalletPaymentByContactRequest req,
   });
 
+  Future<WalletTransactionIdResponse> crateApiWalletPayToNodeId({
+    required WalletPaymentByNodeIdRequest req,
+  });
+
   Future<WalletPreparePaymentResponse> crateApiWalletPrepareMelt({
     required WalletPrepareMeltRequest req,
   });
@@ -298,6 +302,10 @@ abstract class RustLibApi extends BaseApi {
 
   Future<WalletPreparePaymentResponse> crateApiWalletPreparePayToContact({
     required WalletPreparePaymentByContactRequest req,
+  });
+
+  Future<WalletPreparePaymentResponse> crateApiWalletPreparePayToNodeId({
+    required WalletPreparePaymentByNodeIdRequest req,
   });
 
   Future<WalletProtestMeltResponse> crateApiWalletProtestMelt({
@@ -2149,6 +2157,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<WalletTransactionIdResponse> crateApiWalletPayToNodeId({
+    required WalletPaymentByNodeIdRequest req,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_wallet_payment_by_node_id_request(
+            req,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 57,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_wallet_transaction_id_response,
+          decodeErrorData: sse_decode_wallet_error,
+        ),
+        constMeta: kCrateApiWalletPayToNodeIdConstMeta,
+        argValues: [req],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWalletPayToNodeIdConstMeta => const TaskConstMeta(
+    debugName: "wallet_pay_to_node_id",
+    argNames: ["req"],
+  );
+
+  @override
   Future<WalletPreparePaymentResponse> crateApiWalletPrepareMelt({
     required WalletPrepareMeltRequest req,
   }) {
@@ -2160,7 +2203,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 57,
+            funcId: 58,
             port: port_,
           );
         },
@@ -2193,7 +2236,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 58,
+            funcId: 59,
             port: port_,
           );
         },
@@ -2229,7 +2272,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 59,
+            funcId: 60,
             port: port_,
           );
         },
@@ -2266,7 +2309,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 60,
+            funcId: 61,
             port: port_,
           );
         },
@@ -2302,7 +2345,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 61,
+            funcId: 62,
             port: port_,
           );
         },
@@ -2324,6 +2367,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<WalletPreparePaymentResponse> crateApiWalletPreparePayToNodeId({
+    required WalletPreparePaymentByNodeIdRequest req,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_wallet_prepare_payment_by_node_id_request(
+            req,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 63,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_wallet_prepare_payment_response,
+          decodeErrorData: sse_decode_wallet_error,
+        ),
+        constMeta: kCrateApiWalletPreparePayToNodeIdConstMeta,
+        argValues: [req],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWalletPreparePayToNodeIdConstMeta =>
+      const TaskConstMeta(
+        debugName: "wallet_prepare_pay_to_node_id",
+        argNames: ["req"],
+      );
+
+  @override
   Future<WalletProtestMeltResponse> crateApiWalletProtestMelt({
     required WalletProtestMeltRequest req,
   }) {
@@ -2335,7 +2414,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 62,
+            funcId: 64,
             port: port_,
           );
         },
@@ -2365,7 +2444,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 63,
+            funcId: 65,
             port: port_,
           );
         },
@@ -2395,7 +2474,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 64,
+            funcId: 66,
             port: port_,
           );
         },
@@ -2425,7 +2504,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 65,
+            funcId: 67,
             port: port_,
           );
         },
@@ -2458,7 +2537,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 66,
+            funcId: 68,
             port: port_,
           );
         },
@@ -2490,7 +2569,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 67,
+            funcId: 69,
             port: port_,
           );
         },
@@ -2527,7 +2606,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 68,
+            funcId: 70,
             port: port_,
           );
         },
@@ -2560,7 +2639,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 69,
+            funcId: 71,
             port: port_,
           );
         },
@@ -2597,7 +2676,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 70,
+            funcId: 72,
             port: port_,
           );
         },
@@ -2628,7 +2707,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 71,
+            funcId: 73,
             port: port_,
           );
         },
@@ -2662,7 +2741,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 72,
+            funcId: 74,
             port: port_,
           );
         },
@@ -2700,7 +2779,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 73,
+            funcId: 75,
             port: port_,
           );
         },
@@ -2734,7 +2813,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 74,
+            funcId: 76,
             port: port_,
           );
         },
@@ -2764,7 +2843,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 75,
+            funcId: 77,
             port: port_,
           );
         },
@@ -2803,7 +2882,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 76,
+            funcId: 78,
             port: port_,
           );
         },
@@ -3217,6 +3296,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  WalletPaymentByNodeIdRequest
+  dco_decode_box_autoadd_wallet_payment_by_node_id_request(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_wallet_payment_by_node_id_request(raw);
+  }
+
+  @protected
   WalletPaymentByTokenRequest
   dco_decode_box_autoadd_wallet_payment_by_token_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -3256,6 +3342,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_wallet_prepare_payment_by_contact_request(raw);
+  }
+
+  @protected
+  WalletPreparePaymentByNodeIdRequest
+  dco_decode_box_autoadd_wallet_prepare_payment_by_node_id_request(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_wallet_prepare_payment_by_node_id_request(raw);
   }
 
   @protected
@@ -4537,6 +4632,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  WalletPaymentByNodeIdRequest dco_decode_wallet_payment_by_node_id_request(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return WalletPaymentByNodeIdRequest(
+      walletId: dco_decode_String(arr[0]),
+      rid: dco_decode_String(arr[1]),
+    );
+  }
+
+  @protected
   WalletPaymentByTokenRequest dco_decode_wallet_payment_by_token_request(
     dynamic raw,
   ) {
@@ -4626,6 +4735,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return WalletPreparePaymentByContactRequest(
       walletId: dco_decode_String(arr[0]),
       contactId: dco_decode_String(arr[1]),
+      amount: dco_decode_u_64(arr[2]),
+      description: dco_decode_opt_String(arr[3]),
+    );
+  }
+
+  @protected
+  WalletPreparePaymentByNodeIdRequest
+  dco_decode_wallet_prepare_payment_by_node_id_request(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return WalletPreparePaymentByNodeIdRequest(
+      walletId: dco_decode_String(arr[0]),
+      nodeId: dco_decode_String(arr[1]),
       amount: dco_decode_u_64(arr[2]),
       description: dco_decode_opt_String(arr[3]),
     );
@@ -5332,6 +5456,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  WalletPaymentByNodeIdRequest
+  sse_decode_box_autoadd_wallet_payment_by_node_id_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_wallet_payment_by_node_id_request(deserializer));
+  }
+
+  @protected
   WalletPaymentByTokenRequest
   sse_decode_box_autoadd_wallet_payment_by_token_request(
     SseDeserializer deserializer,
@@ -5377,6 +5510,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_wallet_prepare_payment_by_contact_request(deserializer));
+  }
+
+  @protected
+  WalletPreparePaymentByNodeIdRequest
+  sse_decode_box_autoadd_wallet_prepare_payment_by_node_id_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_wallet_prepare_payment_by_node_id_request(deserializer));
   }
 
   @protected
@@ -6860,6 +7002,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  WalletPaymentByNodeIdRequest sse_decode_wallet_payment_by_node_id_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_walletId = sse_decode_String(deserializer);
+    var var_rid = sse_decode_String(deserializer);
+    return WalletPaymentByNodeIdRequest(walletId: var_walletId, rid: var_rid);
+  }
+
+  @protected
   WalletPaymentByTokenRequest sse_decode_wallet_payment_by_token_request(
     SseDeserializer deserializer,
   ) {
@@ -6951,6 +7103,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return WalletPreparePaymentByContactRequest(
       walletId: var_walletId,
       contactId: var_contactId,
+      amount: var_amount,
+      description: var_description,
+    );
+  }
+
+  @protected
+  WalletPreparePaymentByNodeIdRequest
+  sse_decode_wallet_prepare_payment_by_node_id_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_walletId = sse_decode_String(deserializer);
+    var var_nodeId = sse_decode_String(deserializer);
+    var var_amount = sse_decode_u_64(deserializer);
+    var var_description = sse_decode_opt_String(deserializer);
+    return WalletPreparePaymentByNodeIdRequest(
+      walletId: var_walletId,
+      nodeId: var_nodeId,
       amount: var_amount,
       description: var_description,
     );
@@ -7686,6 +7856,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_wallet_payment_by_node_id_request(
+    WalletPaymentByNodeIdRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_wallet_payment_by_node_id_request(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_wallet_payment_by_token_request(
     WalletPaymentByTokenRequest self,
     SseSerializer serializer,
@@ -7731,6 +7910,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_wallet_prepare_payment_by_contact_request(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_wallet_prepare_payment_by_node_id_request(
+    WalletPreparePaymentByNodeIdRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_wallet_prepare_payment_by_node_id_request(self, serializer);
   }
 
   @protected
@@ -8997,6 +9185,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_wallet_payment_by_node_id_request(
+    WalletPaymentByNodeIdRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.walletId, serializer);
+    sse_encode_String(self.rid, serializer);
+  }
+
+  @protected
   void sse_encode_wallet_payment_by_token_request(
     WalletPaymentByTokenRequest self,
     SseSerializer serializer,
@@ -9067,6 +9265,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.walletId, serializer);
     sse_encode_String(self.contactId, serializer);
+    sse_encode_u_64(self.amount, serializer);
+    sse_encode_opt_String(self.description, serializer);
+  }
+
+  @protected
+  void sse_encode_wallet_prepare_payment_by_node_id_request(
+    WalletPreparePaymentByNodeIdRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.walletId, serializer);
+    sse_encode_String(self.nodeId, serializer);
     sse_encode_u_64(self.amount, serializer);
     sse_encode_opt_String(self.description, serializer);
   }

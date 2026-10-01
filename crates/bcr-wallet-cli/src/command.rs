@@ -297,7 +297,6 @@ pub async fn cmd_pay_to_contact(
     amount: u64,
     description: Option<String>,
 ) -> Result<String> {
-    let mut res = String::new();
     let payment_summary = app_state
         .wallet_prepare_pay_to_contact(id.to_owned(), contact_id.to_owned(), amount, description)
         .await?;
@@ -308,15 +307,61 @@ pub async fn cmd_pay_to_contact(
         payment_summary.unit,
         format_fees(payment_summary.fees),
     );
-    let result = app_state
+    let tx_id = app_state
         .wallet_pay_to_contact(id.to_owned(), payment_summary.request_id.to_string())
         .await?;
 
+    Ok(format_node_payment(
+        &format!("Contact {contact_id}"),
+        name,
+        id,
+        &payment_summary,
+        tx_id,
+    ))
+}
+
+pub async fn cmd_pay_to_node_id(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    node_id: &str,
+    amount: u64,
+    description: Option<String>,
+) -> Result<String> {
+    let payment_summary = app_state
+        .wallet_prepare_pay_to_node_id(id.to_owned(), node_id.to_owned(), amount, description)
+        .await?;
+
+    info!(
+        "Payment Summary: Amount: {}, Unit: {}, {}",
+        payment_summary.amount,
+        payment_summary.unit,
+        format_fees(payment_summary.fees),
+    );
+    let tx_id = app_state
+        .wallet_pay_to_node_id(id.to_owned(), payment_summary.request_id.to_string())
+        .await?;
+
+    Ok(format_node_payment(
+        &format!("Node ID {node_id}"),
+        name,
+        id,
+        &payment_summary,
+        tx_id,
+    ))
+}
+
+fn format_node_payment(
+    target: &str,
+    name: &str,
+    id: &str,
+    payment_summary: &PaymentSummary,
+    tx_id: Uuid,
+) -> String {
+    let mut res = String::new();
     push_break(&mut res);
     push_break(&mut res);
-    res.push_str(&format!(
-        "Pay to Contact {contact_id} for {name}, Wallet ID: {id}.\n"
-    ));
+    res.push_str(&format!("Pay to {target} for {name}, Wallet ID: {id}.\n"));
     push_break(&mut res);
     res.push_str(&format!("Payment Summary: {}", payment_summary.request_id));
     res.push_str(&format!(
@@ -326,9 +371,8 @@ pub async fn cmd_pay_to_contact(
         format_fees(payment_summary.fees)
     ));
     push_break(&mut res);
-    res.push_str(&format!("Transaction ID: {}", result));
-
-    Ok(res)
+    res.push_str(&format!("Transaction ID: {}", tx_id));
+    res
 }
 
 pub async fn cmd_send_payment(
@@ -860,7 +904,6 @@ pub async fn cmd_request_payment_from_contact(
     contact_id: &str,
     amount: u64,
 ) -> Result<String> {
-    let mut res = String::new();
     app_state
         .wallet_request_payment_from_contact(
             id.to_owned(),
@@ -870,13 +913,39 @@ pub async fn cmd_request_payment_from_contact(
             None,
         )
         .await?;
+    Ok(format_payment_request(
+        &format!("Contact {contact_id}"),
+        name,
+        amount,
+    ))
+}
+
+pub async fn cmd_request_payment_from_node_id(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    node_id: &str,
+    amount: u64,
+) -> Result<String> {
+    app_state
+        .wallet_request_payment_from_node_id(id.to_owned(), node_id.to_owned(), amount, None, None)
+        .await?;
+    Ok(format_payment_request(
+        &format!("Node ID {node_id}"),
+        name,
+        amount,
+    ))
+}
+
+fn format_payment_request(target: &str, name: &str, amount: u64) -> String {
+    let mut res = String::new();
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!(
-        "Request Payment over {amount} from Contact {contact_id} for {name}:\n"
+        "Request Payment over {amount} from {target} for {name}:\n"
     ));
     push_break(&mut res);
-    Ok(res)
+    res
 }
 
 pub async fn cmd_subscribe_to_prs(app_state: &AppState, _name: &str, id: &str) -> Result<String> {
