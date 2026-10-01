@@ -1,3 +1,4 @@
+use crate::types::{PaymentRequestDirection, PaymentRequestState};
 use bcr_common::{
     cashu::{self, Amount, CurrencyUnit, MintUrl, Proof},
     core::NodeId,
@@ -170,7 +171,22 @@ pub enum PaymentRequestActionKind {
     Reject,
 }
 
-/// `actor` must match the authenticated Nostr seal sender.
+impl PaymentRequestActionKind {
+    pub fn actor_transition(&self) -> (PaymentRequestState, PaymentRequestDirection) {
+        match self {
+            Self::Cancel => (
+                PaymentRequestState::Canceled,
+                PaymentRequestDirection::Outgoing,
+            ),
+            Self::Reject => (
+                PaymentRequestState::Rejected,
+                PaymentRequestDirection::Incoming,
+            ),
+        }
+    }
+}
+
+/// `actor` must match the Nostr seal sender.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct PaymentRequestActionPayload {
     pub payment_request_id: Uuid,

@@ -647,7 +647,7 @@ impl AppState {
                         },
                     };
 
-                    if let Some(payment_request_id) = wallet.read().await.subscribed_payment_request(received_evt).await {
+                    if let Some(payment_request_id) = wallet.read().await.handle_payment_request_event(received_evt).await {
                         item_callback(payment_request_id);
                     }
                 }

@@ -92,6 +92,15 @@ pub enum PaymentRequestDirection {
     Outgoing,
 }
 
+impl PaymentRequestDirection {
+    pub fn opposite(&self) -> Self {
+        match self {
+            Self::Incoming => Self::Outgoing,
+            Self::Outgoing => Self::Incoming,
+        }
+    }
+}
+
 /// Where a payment request state transition came from.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PaymentRequestActionOrigin {

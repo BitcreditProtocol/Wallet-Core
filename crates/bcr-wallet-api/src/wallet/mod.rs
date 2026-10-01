@@ -1262,7 +1262,7 @@ impl Wallet {
         Ok(payment_req_id)
     }
 
-    pub(crate) async fn subscribed_payment_request(
+    pub(crate) async fn handle_payment_request_event(
         &self,
         event: bcr_wallet_transport::NostrWalletEvent,
     ) -> Option<Uuid> {
@@ -1333,16 +1333,7 @@ impl Wallet {
         payment_req_id: Uuid,
         action: PaymentRequestActionKind,
     ) -> Result<()> {
-        let (target_state, direction) = match action {
-            PaymentRequestActionKind::Cancel => (
-                PaymentRequestState::Canceled,
-                PaymentRequestDirection::Outgoing,
-            ),
-            PaymentRequestActionKind::Reject => (
-                PaymentRequestState::Rejected,
-                PaymentRequestDirection::Incoming,
-            ),
-        };
+        let (target_state, direction) = action.actor_transition();
         let Some(req) = self
             .payment_request_repo
             .get_payment_request(payment_req_id)
@@ -1451,22 +1442,13 @@ impl Wallet {
             );
             return Ok(false);
         }
-        let (target_state, direction) = match payload.action {
-            PaymentRequestActionKind::Cancel => (
-                PaymentRequestState::Canceled,
-                PaymentRequestDirection::Incoming,
-            ),
-            PaymentRequestActionKind::Reject => (
-                PaymentRequestState::Rejected,
-                PaymentRequestDirection::Outgoing,
-            ),
-        };
+        let (target_state, actor_direction) = payload.action.actor_transition();
         let outcome = self
             .payment_request_repo
             .apply_remote_payment_request_transition(
                 payment_req_id,
                 payload.actor.clone(),
-                direction,
+                actor_direction.opposite(),
                 PaymentRequestTransition {
                     target_state,
                     actor: Some(payload.actor),
@@ -4399,7 +4381,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_subscribed_payment_request_notifies_stored_or_known_requests_only() {
+    async fn test_handle_payment_request_event_notifies_stored_or_known_requests_only() {
         let mut ctx = wallet_ctx();
         let mut results = vec![
             Err(
@@ -4423,11 +4405,17 @@ mod tests {
         let id = Uuid::new_v4();
         let authentic = || contact_payment_request_event(id, node_id(NODE_ID_1).npub());
 
-        assert_eq!(wlt.subscribed_payment_request(authentic()).await, Some(id));
-        assert_eq!(wlt.subscribed_payment_request(authentic()).await, Some(id));
-        assert_eq!(wlt.subscribed_payment_request(authentic()).await, None);
         assert_eq!(
-            wlt.subscribed_payment_request(contact_payment_request_event(
+            wlt.handle_payment_request_event(authentic()).await,
+            Some(id)
+        );
+        assert_eq!(
+            wlt.handle_payment_request_event(authentic()).await,
+            Some(id)
+        );
+        assert_eq!(wlt.handle_payment_request_event(authentic()).await, None);
+        assert_eq!(
+            wlt.handle_payment_request_event(contact_payment_request_event(
                 id,
                 node_id(NODE_ID_2).npub()
             ))
@@ -4437,7 +4425,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_subscribed_payment_request_notifies_visible_actions_only() {
+    async fn test_handle_payment_request_event_notifies_visible_actions_only() {
         let mut ctx = wallet_ctx();
         let mut results = vec![
             Err(
@@ -4467,11 +4455,11 @@ mod tests {
             event_id: EventId::from_byte_array([0u8; 32]),
         };
 
-        assert_eq!(wlt.subscribed_payment_request(action()).await, Some(id));
-        assert_eq!(wlt.subscribed_payment_request(action()).await, None);
-        assert_eq!(wlt.subscribed_payment_request(action()).await, None);
+        assert_eq!(wlt.handle_payment_request_event(action()).await, Some(id));
+        assert_eq!(wlt.handle_payment_request_event(action()).await, None);
+        assert_eq!(wlt.handle_payment_request_event(action()).await, None);
         assert_eq!(
-            wlt.subscribed_payment_request(
+            wlt.handle_payment_request_event(
                 bcr_wallet_transport::NostrWalletEvent::ContactPayment {
                     sender: node_id(NODE_ID_1).npub(),
                     payload: ContactPaymentPayload {
