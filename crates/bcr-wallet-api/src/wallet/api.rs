@@ -265,9 +265,11 @@ impl WalletApi for super::Wallet {
         result_callback: PaymentResultCallback,
     ) -> Result<()> {
         let deadline = tokio::time::Instant::now() + max_wait;
-        let poll_interval = core::time::Duration::from_millis(500);
 
         loop {
+            let paid = self.payment_request_paid.notified();
+            tokio::pin!(paid);
+            paid.as_mut().enable();
             match self.payment_request_repo.get_payment_request(p_id).await {
                 Ok(Some(req)) => {
                     if let PaymentRequestState::Paid { tx_id } = req.state {
@@ -298,7 +300,7 @@ impl WalletApi for super::Wallet {
                     result_callback(None);
                     return Ok(());
                 },
-                _ = tokio::time::sleep(poll_interval) => {},
+                _ = paid => {},
             }
         }
     }
@@ -1427,8 +1429,11 @@ impl WalletApi for super::Wallet {
                 other => other.into(),
             })?;
         match outcome {
-            PaymentRequestTransitionOutcome::Applied
-            | PaymentRequestTransitionOutcome::AlreadyApplied => Ok(()),
+            PaymentRequestTransitionOutcome::Applied => {
+                self.payment_request_paid.notify_waiters();
+                Ok(())
+            }
+            PaymentRequestTransitionOutcome::AlreadyApplied => Ok(()),
             PaymentRequestTransitionOutcome::Conflicted => {
                 Err(Error::PaymentRequestInWrongState(payment_req_id))
             }

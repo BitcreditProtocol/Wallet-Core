@@ -23,7 +23,7 @@
     * `WalletCreateShareableRemotePaymentResponse` gains `payment_request_id` for `wallet_check_received_payment`
     * Paying a payment request no longer requires a contact
     * Still receive incoming and retry queued cdk18 payments for one release
-* Receive and settle payment requests in the background; `wallet_check_received_payment` only reports the stored state
+* Receive and settle payment requests in the background; `wallet_check_received_payment` only reports the stored state and returns as soon as the request is paid, without polling
     * A shareable request paid by an older wallet stays `Pending`, since it sends no `payment_request_id`
 * Breaking DB change: migration 0005 rewrites stored `Cdk18` payment types to `PaymentRequest`
 

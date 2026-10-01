@@ -55,7 +55,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -72,6 +72,7 @@ pub struct Wallet {
     id: String,
     pub_key: secp256k1::PublicKey,
     current_payment: Mutex<Option<PayReference>>,
+    payment_request_paid: Notify,
     clowder_id: secp256k1::PublicKey,
     client_factory: Box<dyn Fn(url::Url) -> Arc<dyn ClowderMintConnector> + Send + Sync>,
     swap_expiry: time::Duration,
@@ -125,6 +126,7 @@ impl Wallet {
             id,
             pub_key,
             current_payment: Mutex::new(None),
+            payment_request_paid: Notify::new(),
             beta_clients,
             clowder_id,
             client_factory,
@@ -2000,16 +2002,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_check_received_payment_request_reports_paid_without_receiving() {
+    async fn test_check_received_payment_wakes_when_request_is_marked_paid() {
         let mut ctx = wallet_ctx();
         let pid = Uuid::new_v4();
         let tx_id = Uuid::new_v4();
+        let (pending_read_tx, pending_read_rx) = tokio::sync::oneshot::channel();
         let mut seq = mockall::Sequence::new();
         ctx.payment_request_repo
             .expect_get_payment_request()
             .times(1)
             .in_sequence(&mut seq)
-            .returning(move |id| {
+            .return_once(move |id| {
+                pending_read_tx.send(()).expect("test receiver still alive");
                 Ok(Some(payment_request_with(
                     id,
                     PaymentRequestDirection::Outgoing,
@@ -2030,24 +2034,44 @@ mod tests {
         ctx.debit.expect_receive_proofs().never();
         ctx.payment_request_repo
             .expect_apply_payment_request_transition()
-            .never();
+            .times(1)
+            .returning(|_, _| Ok(PaymentRequestTransitionOutcome::Applied));
         let wlt = wallet(ctx).await;
 
         let results = Arc::new(std::sync::Mutex::new(Vec::new()));
         let results_cb = results.clone();
         let callback: PaymentResultCallback = Arc::new(move |r| results_cb.lock().unwrap().push(r));
 
+        let waiter = wlt.clone();
+        let check = tokio::spawn(async move {
+            waiter
+                .read()
+                .await
+                .check_received_payment(
+                    std::time::Duration::from_secs(5),
+                    pid,
+                    CancellationToken::new(),
+                    callback,
+                )
+                .await
+        });
+        pending_read_rx.await.unwrap();
         wlt.read()
             .await
-            .check_received_payment(
-                std::time::Duration::from_secs(5),
+            .mark_payment_request_as_paid(
                 pid,
-                CancellationToken::new(),
-                callback,
+                tx_id,
+                node_id(NODE_ID_1),
+                PaymentRequestActionOrigin::Local,
             )
             .await
             .unwrap();
 
+        tokio::time::timeout(Duration::from_millis(100), check)
+            .await
+            .expect("waiter should wake on the paid transition, not on a timer")
+            .unwrap()
+            .unwrap();
         assert_eq!(*results.lock().unwrap(), vec![Some(tx_id)]);
     }
 
