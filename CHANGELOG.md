@@ -3,29 +3,19 @@
 * Added filtered logging
 * Start listening to and processing Nostr messages AFTER all initialization completed (especially restore)
 * Upgrade bcr-common and use new ecash types
-* Add API to request a payment from a node id without adding a contact
-    * Add endpoint `wallet_request_payment_from_node_id` with `WalletRequestPaymentFromNodeIdRequest` as input
-* Deterministic wallet state: the same inputs give the same proof selection, swap plan and keyset choice (`prepare_send`, `mint_onchain`), and a stable order for `wallet_get_transaction_ids`, contacts, payment requests and the nostr retry queue
-* Race-safe wallet state: NUT-13 counters use compare-and-swap so concurrent swaps never reuse secrets and restore never lowers a counter, stored proofs are never overwritten, proofs are reserved all-or-nothing, and background recovery leaves Pending proofs of a running payment or melt alone
-* `wallet_check_pending_mints` uses the mint quote id as the transaction id and records each mint once
-* Send reject and cancel of a payment request to the other party over Nostr (#298)
-    * New Nostr event `PaymentRequestAction`, older clients ignore it
-    * `wallet_subscribe_to_payment_requests` also fires when the other party cancels or rejects
-* Make payment request state changes a single compare-and-set, a payment always wins over a stale cancel or reject
-    * Keep every change, including conflicts, in an append-only history (no DB migration, existing rows read with an empty history)
-* Check incoming Nostr contact payments, payment requests and payment request actions against the authenticated sender and the wallet's network
-* Extend `PaymentRequest` with `state`, `direction`, `history` and `paid_tx_id` (breaking API change)
-    * Add `PaymentRequestHistoryEntry` and `PaymentRequestActionOriginKind`
-* Replace cdk18 (NUT-18) payment requests with our own node id payment request (breaking API change)
-    * Remove endpoints `wallet_prepare_payment` and `wallet_prepare_payment_request` with their types and `Cdk18PaymentRequest`
-    * Rename `PaymentType::Cdk18` to `PaymentType::PaymentRequest`, also used for payments of payment requests instead of `PaymentType::Contact`
-    * `PaymentRequest.node_id` is now optional
-    * `WalletCreateShareableRemotePaymentResponse` gains `payment_request_id` for `wallet_check_received_payment`
-    * Paying a payment request no longer requires a contact
-    * Still receive incoming and retry queued cdk18 payments for one release
-* Receive and settle payment requests in the background; `wallet_check_received_payment` only reports the stored state and returns as soon as the request is paid, without polling
-    * A shareable request paid by an older wallet stays `Pending`, since it sends no `payment_request_id`
-* Breaking DB change: migration 0005 rewrites stored `Cdk18` payment types to `PaymentRequest`
+* Add endpoint `wallet_request_payment_from_node_id` with `WalletRequestPaymentFromNodeIdRequest` as input
+* Make wallet state deterministic and race-safe, `wallet_check_pending_mints` records each mint once
+* Send payment request reject and cancel over Nostr with event `PaymentRequestAction` (#298)
+    * `wallet_subscribe_to_payment_requests` also fires on the other party's cancel or reject
+* Check incoming Nostr events against the authenticated sender and the wallet's network
+* Add `state`, `direction`, `history` and `paid_tx_id` to `PaymentRequest` (breaking API change)
+* Replace cdk18 payment requests with node id payment requests (breaking API change)
+    * Remove `wallet_prepare_payment`, `wallet_prepare_payment_request` and `Cdk18PaymentRequest`
+    * Rename `PaymentType::Cdk18` to `PaymentType::PaymentRequest`, also used instead of `Contact` for payment request payments (breaking DB change)
+    * `PaymentRequest.node_id` is optional, paying a payment request no longer needs a contact
+    * Add `payment_request_id` to `WalletCreateShareableRemotePaymentResponse`, pass it to `wallet_check_received_payment`
+    * `wallet_check_received_payment` returns as soon as the request is paid, requests paid by older wallets stay `Pending`
+    * Legacy cdk18 payments are still received and retried for one more release
 
 # 0.9.13
 
