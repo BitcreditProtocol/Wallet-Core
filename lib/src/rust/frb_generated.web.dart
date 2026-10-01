@@ -213,14 +213,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_wallet_prepare_payment_by_token_request(dynamic raw);
 
   @protected
-  WalletPreparePaymentReqRequest
-  dco_decode_box_autoadd_wallet_prepare_payment_req_request(dynamic raw);
-
-  @protected
-  WalletPreparePaymentRequest
-  dco_decode_box_autoadd_wallet_prepare_payment_request(dynamic raw);
-
-  @protected
   WalletProtestMeltRequest dco_decode_box_autoadd_wallet_protest_melt_request(
     dynamic raw,
   );
@@ -289,9 +281,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BtcTxStatusResponse dco_decode_btc_tx_status_response(dynamic raw);
-
-  @protected
-  Cdk18PaymentRequest dco_decode_cdk_18_payment_request(dynamic raw);
 
   @protected
   Contact dco_decode_contact(dynamic raw);
@@ -697,20 +686,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_wallet_prepare_payment_by_token_request(dynamic raw);
 
   @protected
-  WalletPreparePaymentReqRequest dco_decode_wallet_prepare_payment_req_request(
-    dynamic raw,
-  );
-
-  @protected
-  WalletPreparePaymentReqResponse
-  dco_decode_wallet_prepare_payment_req_response(dynamic raw);
-
-  @protected
-  WalletPreparePaymentRequest dco_decode_wallet_prepare_payment_request(
-    dynamic raw,
-  );
-
-  @protected
   WalletPreparePaymentResponse dco_decode_wallet_prepare_payment_response(
     dynamic raw,
   );
@@ -1052,18 +1027,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletPreparePaymentReqRequest
-  sse_decode_box_autoadd_wallet_prepare_payment_req_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletPreparePaymentRequest
-  sse_decode_box_autoadd_wallet_prepare_payment_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   WalletProtestMeltRequest sse_decode_box_autoadd_wallet_protest_melt_request(
     SseDeserializer deserializer,
   );
@@ -1146,11 +1109,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BtcTxStatusResponse sse_decode_btc_tx_status_response(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  Cdk18PaymentRequest sse_decode_cdk_18_payment_request(
     SseDeserializer deserializer,
   );
 
@@ -1668,20 +1626,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  WalletPreparePaymentReqRequest sse_decode_wallet_prepare_payment_req_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletPreparePaymentReqResponse
-  sse_decode_wallet_prepare_payment_req_response(SseDeserializer deserializer);
-
-  @protected
-  WalletPreparePaymentRequest sse_decode_wallet_prepare_payment_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   WalletPreparePaymentResponse sse_decode_wallet_prepare_payment_response(
     SseDeserializer deserializer,
   );
@@ -2100,18 +2044,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_wallet_prepare_payment_req_request(
-    WalletPreparePaymentReqRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_wallet_prepare_payment_request(
-    WalletPreparePaymentRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_box_autoadd_wallet_protest_melt_request(
     WalletProtestMeltRequest self,
     SseSerializer serializer,
@@ -2204,12 +2136,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_btc_tx_status_response(
     BtcTxStatusResponse self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_cdk_18_payment_request(
-    Cdk18PaymentRequest self,
     SseSerializer serializer,
   );
 
@@ -2846,24 +2772,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_prepare_payment_by_token_request(
     WalletPreparePaymentByTokenRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_prepare_payment_req_request(
-    WalletPreparePaymentReqRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_prepare_payment_req_response(
-    WalletPreparePaymentReqResponse self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_prepare_payment_request(
-    WalletPreparePaymentRequest self,
     SseSerializer serializer,
   );
 

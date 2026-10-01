@@ -17,18 +17,11 @@ pub struct SwapConfig {
 
 #[derive(Debug, Clone)]
 pub enum WalletPaymentType {
-    Cdk18 {
-        transport: cashu::Transport,
-        id: Option<String>,
-    },
     OnChain,
     Token,
-    Contact {
-        contact_id: Uuid,
-        payment_request_id: Option<Uuid>,
-    },
-    SharedPaymentRequest {
+    PaymentRequest {
         node_id: NodeId,
+        payment_request_id: Option<Uuid>,
     },
 }
 

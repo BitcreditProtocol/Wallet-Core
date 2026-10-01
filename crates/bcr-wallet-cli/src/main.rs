@@ -62,12 +62,6 @@ enum Commands {
     RenameWallet { id: String, new_name: String },
     #[command(name = "receive")]
     Receive { id: String, token: String },
-    #[command(name = "request_payment")]
-    RequestPayment {
-        id: String,
-        amount: u64,
-        description: Option<String>,
-    },
     #[command(name = "send_payment")]
     SendPayment { id: String, input: String },
     #[command(name = "pay_by_token")]
@@ -297,29 +291,6 @@ async fn main() -> Result<()> {
                 &format!("Restoring wallet for {}", cli.wallet),
                 command::cmd_restore_wallet(&app_state, &cli.wallet, &settings.wallets[&id])
                     .await?,
-            )?;
-        }
-        Commands::RequestPayment {
-            id,
-            amount,
-            description,
-        } => {
-            emit(
-                cli.json,
-                &format!(
-                    "Requesting Payment for {}, Amount: {amount}, Description: {description:?}",
-                    cli.wallet
-                ),
-                text(
-                    command::cmd_request_payment(
-                        &app_state,
-                        &cli.wallet,
-                        amount,
-                        &id,
-                        description.clone(),
-                    )
-                    .await?,
-                ),
             )?;
         }
         Commands::SendPayment { id, input } => {

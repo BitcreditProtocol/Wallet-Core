@@ -141,7 +141,7 @@ pub enum PaymentRequestTransitionOutcome {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PaymentRequest {
     pub id: Uuid,
-    pub node_id: NodeId,
+    pub node_id: Option<NodeId>,
     pub amount: Amount,
     pub unit: CurrencyUnit,
     pub description: Option<String>,
@@ -164,7 +164,7 @@ impl PaymentRequest {
     ) -> Self {
         Self {
             id: Uuid::new_v4(),
-            node_id,
+            node_id: Some(node_id),
             amount,
             unit,
             description,
@@ -178,7 +178,7 @@ impl PaymentRequest {
     }
 
     pub fn new_outgoing(
-        node_id: NodeId,
+        node_id: Option<NodeId>,
         amount: Amount,
         unit: CurrencyUnit,
         description: Option<String>,
@@ -207,7 +207,7 @@ impl PaymentRequest {
     ) -> Self {
         Self {
             id,
-            node_id,
+            node_id: Some(node_id),
             amount: Amount::ZERO,
             unit: CurrencyUnit::Sat,
             description: None,
@@ -225,7 +225,7 @@ impl From<ContactPaymentRequestPayload> for PaymentRequest {
     fn from(value: ContactPaymentRequestPayload) -> Self {
         Self {
             id: value.id,
-            node_id: value.sender,
+            node_id: Some(value.sender),
             amount: value.amount,
             unit: value.unit,
             description: value.memo,
@@ -295,7 +295,8 @@ pub enum PaymentType {
     #[default]
     NotApplicable,
     Token,
-    Cdk18,
+    #[strum(to_string = "PaymentRequest", serialize = "Cdk18")]
+    PaymentRequest,
     OnChain,
     Swap,
     Contact,

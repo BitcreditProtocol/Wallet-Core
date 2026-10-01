@@ -65,6 +65,10 @@ Non-negotiables:
   and every user-visible change adds a line there naming the endpoint or type it touches. Pushing a
   `v*` tag runs `.github/workflows/cd_precompiled.yml`, which builds and signs iOS and Android binaries
   of `crates/bcr-wallet-ffi` via `cargokit/build_tool`; apps fetch them by crate hash, else build locally.
+  Bump only once the current version is tagged; until then new entries join its section.
+- **Signals and checks live in one place.** Wake waiters from the code that writes a state instead
+  of polling storage on a timer, and validate input once in the layer that owns the rule (sender
+  authenticity is `is_authentic_sender` in the wallet, not the transport).
 - **Names and mappings.** Name a function by what it does (`handle_*` for one event, no `get_`
   prefix) and derive a value that follows from another through one method on the type.
 - **Tests and comments.** Test invariants a later change could break, not `From` mappings or

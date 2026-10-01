@@ -288,15 +288,6 @@ impl TransportApi for Transport {
         Ok(event.id)
     }
 
-    async fn cdk18_transport(&self) -> Result<cdk18::Transport> {
-        Ok(cdk18::Transport {
-            _type: cdk18::TransportType::Nostr,
-            target: Nip19Profile::new(self.client.signer.public_key(), self.client.relays.clone())
-                .to_bech32()?,
-            tags: vec![vec![String::from("n"), String::from("17")]],
-        })
-    }
-
     async fn shutdown(&self) {
         self.client.client.shutdown().await;
     }
@@ -349,25 +340,11 @@ impl TransportApi for Transport {
         {
             let result: Result<()> = match &queued_message.recipient {
                 Some(target) => {
-                    // first, see if it's a cdk18 payload
-                    if serde_json::from_str::<cdk18::PaymentRequestPayload>(&queued_message.payload)
-                        .is_err()
-                    {
-                        match base58::decode(&queued_message.payload) {
-                            Ok(decoded) => {
-                                if let Err(e) = borsh::from_slice::<EventEnvelope>(&decoded) {
-                                    tracing::error!("Failed to parse private retry payload: {e}");
-                                    failed_ids.push(queued_message.id.clone());
-                                    continue;
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to parse private retry payload: {e}");
-                                failed_ids.push(queued_message.id.clone());
-                                continue;
-                            }
-                        }
-                    };
+                    if !is_private_payload(&queued_message.payload) {
+                        tracing::error!("Failed to parse private retry payload");
+                        failed_ids.push(queued_message.id.clone());
+                        continue;
+                    }
 
                     match self
                         .send_private_msg(target.to_owned(), queued_message.payload)
@@ -644,6 +621,11 @@ async fn should_process(
             .unwrap_or(false)
 }
 
+fn is_private_payload(payload: &str) -> bool {
+    serde_json::from_str::<cdk18::PaymentRequestPayload>(payload).is_ok()
+        || base58::decode(payload).is_ok_and(|d| borsh::from_slice::<EventEnvelope>(&d).is_ok())
+}
+
 fn valid_time(kind: Kind, created: Timestamp, since: Timestamp) -> bool {
     if !matches!(kind, Kind::EncryptedDirectMessage | Kind::GiftWrap) {
         created >= since
@@ -655,7 +637,10 @@ fn valid_time(kind: Kind, created: Timestamp, since: Timestamp) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bcr_common::core::NodeId;
+    use bcr_common::{
+        cashu::{CurrencyUnit, MintUrl},
+        core::NodeId,
+    };
     use bcr_wallet_core::event::PaymentRequestActionKind;
     use std::str::FromStr;
 
@@ -705,5 +690,37 @@ mod tests {
             payload.payment_request_id
         );
         assert_eq!(received_payload.action, payload.action);
+    }
+
+    #[test]
+    fn legacy_cdk18_and_envelope_payloads_are_retried() {
+        let cdk18 = serde_json::to_string(&cdk18::PaymentRequestPayload {
+            id: None,
+            memo: None,
+            mint: MintUrl::from_str("https://mint.example").unwrap(),
+            unit: CurrencyUnit::Sat,
+            proofs: vec![],
+        })
+        .unwrap();
+        let envelope: EventEnvelope = bcr_wallet_core::event::Event::new_contact_payment_request(
+            ContactPaymentRequestPayload::new(
+                NodeId::from_str(
+                    "bitcrt03205b8dec12bc9e879f5b517aa32192a2550e88adcee3e54ec2c7294802568fef",
+                )
+                .unwrap(),
+                0.into(),
+                CurrencyUnit::Sat,
+                None,
+                None,
+                MintUrl::from_str("https://mint.example").unwrap(),
+            ),
+        )
+        .try_into()
+        .unwrap();
+        let envelope = base58::encode(&borsh::to_vec(&envelope).unwrap());
+
+        assert!(is_private_payload(&cdk18));
+        assert!(is_private_payload(&envelope));
+        assert!(!is_private_payload("not a payload"));
     }
 }

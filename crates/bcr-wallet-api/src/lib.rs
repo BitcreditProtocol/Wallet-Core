@@ -50,7 +50,6 @@ pub struct AppState {
     purse: Arc<purse::Purse<wallet::Wallet>>,
     db: Arc<Database>,
     cfg: AppStateConfig,
-    http_cl: Arc<reqwest::Client>,
     btc_cl: Arc<external::bitcoin::BitcoinClient>,
 }
 
@@ -72,7 +71,6 @@ impl AppState {
             .map(|(network, db)| (network, db as Arc<dyn ContactStoreApi>))
             .collect();
 
-        let http_cl = Arc::new(bcr_common::client::reqwest_client());
         let purse = purse::Purse::new(pursedb, contact_repos).await?;
         let btc_cl = Arc::new(external::bitcoin::BitcoinClient::new(
             cfg.esplora_base_urls.clone(),
@@ -81,7 +79,6 @@ impl AppState {
             purse: Arc::new(purse),
             db,
             cfg,
-            http_cl,
             btc_cl,
         };
         appstate.load_wallets().await?;
@@ -478,7 +475,7 @@ impl AppState {
         let p_id = Uuid::from_str(&rid)?;
 
         let wallet = self.get_wallet(&wallet_id).await?;
-        let (tx_id, token) = wallet.read().await.pay(p_id, &self.http_cl, tstamp).await?;
+        let (tx_id, token) = wallet.read().await.pay(p_id, tstamp).await?;
 
         Ok(CreatedToken {
             tx_id,
@@ -516,7 +513,7 @@ impl AppState {
         let p_id = Uuid::from_str(&rid)?;
 
         let wallet = self.get_wallet(&wallet_id).await?;
-        let (tx_id, _) = wallet.read().await.pay(p_id, &self.http_cl, tstamp).await?;
+        let (tx_id, _) = wallet.read().await.pay(p_id, tstamp).await?;
 
         Ok(tx_id)
     }
@@ -526,19 +523,19 @@ impl AppState {
         wallet_id: String,
         amount: u64,
         description: Option<String>,
-    ) -> Result<String> {
+    ) -> Result<(String, String)> {
         tracing::debug!(
             "wallet_create_shareable_remote_payment_request({wallet_id}, {amount}, {description:?})"
         );
         let amount = cashu::Amount::from(amount);
         let wallet = self.get_wallet(&wallet_id).await?;
         let unit = wallet.read().await.debit_unit();
-        let payment_request = wallet
+        let (payment_request_id, payment_request) = wallet
             .read()
             .await
             .create_shareable_remote_payment_request(amount, unit, description)
             .await?;
-        Ok(payment_request)
+        Ok((payment_request_id.to_string(), payment_request))
     }
 
     pub async fn wallet_prepare_pay_shared_payment_request(
@@ -565,7 +562,7 @@ impl AppState {
         let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         let p_id = Uuid::from_str(&rid)?;
         let wallet = self.get_wallet(&wallet_id).await?;
-        let (tx_id, _) = wallet.read().await.pay(p_id, &self.http_cl, tstamp).await?;
+        let (tx_id, _) = wallet.read().await.pay(p_id, tstamp).await?;
         Ok(tx_id)
     }
 
@@ -711,7 +708,7 @@ impl AppState {
         let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         let p_id = Uuid::from_str(&rid)?;
         let wallet = self.get_wallet(&wallet_id).await?;
-        let (tx_id, _) = wallet.read().await.pay(p_id, &self.http_cl, tstamp).await?;
+        let (tx_id, _) = wallet.read().await.pay(p_id, tstamp).await?;
         Ok(tx_id)
     }
 
@@ -814,7 +811,7 @@ impl AppState {
         let wallet = self.get_wallet(&wallet_id).await?;
         let p_id = Uuid::from_str(&rid)?;
 
-        let (tx_id, _) = wallet.read().await.pay(p_id, &self.http_cl, tstamp).await?;
+        let (tx_id, _) = wallet.read().await.pay(p_id, tstamp).await?;
 
         Ok(tx_id)
     }
@@ -901,19 +898,6 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn wallet_prepare_cdk18_payment(
-        &self,
-        wallet_id: String,
-        input: String,
-    ) -> Result<PaymentSummary> {
-        tracing::debug!("wallet_prepare_cdk18_payment({wallet_id}, {input})");
-
-        let wallet = self.get_wallet(&wallet_id).await?;
-        let summary = wallet.read().await.prepare_pay_cdk18(input).await?;
-
-        Ok(summary)
-    }
-
     pub async fn wallet_pay(&self, wallet_id: String, rid: String) -> Result<Uuid> {
         let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         tracing::debug!("wallet_pay({wallet_id}, {rid}, {tstamp})");
@@ -921,31 +905,8 @@ impl AppState {
         let wallet = self.get_wallet(&wallet_id).await?;
         let p_id = Uuid::from_str(&rid)?;
 
-        let (tx_id, _) = wallet.read().await.pay(p_id, &self.http_cl, tstamp).await?;
+        let (tx_id, _) = wallet.read().await.pay(p_id, tstamp).await?;
         Ok(tx_id)
-    }
-
-    pub async fn wallet_prepare_payment_request(
-        &self,
-        wallet_id: String,
-        amount: u64,
-        description: Option<String>,
-    ) -> Result<Cdk18PaymentRequest> {
-        tracing::debug!("wallet_prepare_pay_request({wallet_id}, {amount}, {description:?})");
-
-        let amount = cashu::Amount::from(amount);
-
-        let wallet = self.get_wallet(&wallet_id).await?;
-        let unit = wallet.read().await.debit_unit();
-        let request = wallet
-            .read()
-            .await
-            .prepare_cdk18_payment_request(amount, unit, description)
-            .await?;
-        Ok(Cdk18PaymentRequest {
-            p_id: request.payment_id.clone().unwrap_or_default(),
-            request: request.to_string(),
-        })
     }
 
     pub async fn wallet_check_received_payment(
@@ -1301,12 +1262,6 @@ pub fn is_valid_token(token: &str) -> Result<Token> {
 }
 
 // FFI types
-
-#[derive(Default, Clone, Debug)]
-pub struct Cdk18PaymentRequest {
-    pub request: String,
-    pub p_id: String,
-}
 
 #[derive(Default, Clone, Debug)]
 pub struct WalletCurrencyUnit {
