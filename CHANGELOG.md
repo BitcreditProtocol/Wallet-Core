@@ -1,16 +1,3 @@
-# 0.9.15
-
-* Replace cdk18 (NUT-18) payment requests with our own node id payment request (breaking API change)
-    * Remove endpoints `wallet_prepare_payment` and `wallet_prepare_payment_request` with their types and `Cdk18PaymentRequest`
-    * Rename `PaymentType::Cdk18` to `PaymentType::PaymentRequest`, also used for payments of payment requests instead of `PaymentType::Contact`
-    * `PaymentRequest.node_id` is now optional
-    * `WalletCreateShareableRemotePaymentResponse` gains `payment_request_id` for `wallet_check_received_payment`
-    * Paying a payment request no longer requires a contact
-    * Still receive incoming and retry queued cdk18 payments for one release
-* Receive and settle payment requests in the background; `wallet_check_received_payment` only reports the stored state
-    * A shareable request paid by an older wallet stays `Pending`, since it sends no `payment_request_id`
-* Breaking DB change: migration 0005 rewrites stored `Cdk18` payment types to `PaymentRequest`
-
 # 0.9.14
 
 * Added filtered logging
@@ -29,6 +16,16 @@
 * Check incoming Nostr contact payments, payment requests and payment request actions against the authenticated sender and the wallet's network
 * Extend `PaymentRequest` with `state`, `direction`, `history` and `paid_tx_id` (breaking API change)
     * Add `PaymentRequestHistoryEntry` and `PaymentRequestActionOriginKind`
+* Replace cdk18 (NUT-18) payment requests with our own node id payment request (breaking API change)
+    * Remove endpoints `wallet_prepare_payment` and `wallet_prepare_payment_request` with their types and `Cdk18PaymentRequest`
+    * Rename `PaymentType::Cdk18` to `PaymentType::PaymentRequest`, also used for payments of payment requests instead of `PaymentType::Contact`
+    * `PaymentRequest.node_id` is now optional
+    * `WalletCreateShareableRemotePaymentResponse` gains `payment_request_id` for `wallet_check_received_payment`
+    * Paying a payment request no longer requires a contact
+    * Still receive incoming and retry queued cdk18 payments for one release
+* Receive and settle payment requests in the background; `wallet_check_received_payment` only reports the stored state
+    * A shareable request paid by an older wallet stays `Pending`, since it sends no `payment_request_id`
+* Breaking DB change: migration 0005 rewrites stored `Cdk18` payment types to `PaymentRequest`
 
 # 0.9.13
 
