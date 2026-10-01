@@ -170,6 +170,12 @@ enum Commands {
         contact_id: String,
         amount: u64,
     },
+    #[command(name = "req_payment_from_node_id")]
+    RequestPaymentFromNodeId {
+        id: String,
+        node_id: String,
+        amount: u64,
+    },
     #[command(name = "subscribe_to_prs")]
     SubscribeToPaymentRequests { id: String },
     #[command(name = "list_prs")]
@@ -634,6 +640,26 @@ async fn main() -> Result<()> {
                         &cli.wallet,
                         &id,
                         &contact_id,
+                        amount,
+                    )
+                    .await?,
+                ),
+            )?;
+        }
+        Commands::RequestPaymentFromNodeId {
+            id,
+            node_id,
+            amount,
+        } => {
+            emit(
+                cli.json,
+                &format!("Request Payment Requests for {}", cli.wallet),
+                text(
+                    command::cmd_request_payment_from_node_id(
+                        &app_state,
+                        &cli.wallet,
+                        &id,
+                        &node_id,
                         amount,
                     )
                     .await?,

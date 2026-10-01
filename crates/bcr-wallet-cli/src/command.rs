@@ -904,7 +904,6 @@ pub async fn cmd_request_payment_from_contact(
     contact_id: &str,
     amount: u64,
 ) -> Result<String> {
-    let mut res = String::new();
     app_state
         .wallet_request_payment_from_contact(
             id.to_owned(),
@@ -914,13 +913,39 @@ pub async fn cmd_request_payment_from_contact(
             None,
         )
         .await?;
+    Ok(format_payment_request(
+        &format!("Contact {contact_id}"),
+        name,
+        amount,
+    ))
+}
+
+pub async fn cmd_request_payment_from_node_id(
+    app_state: &AppState,
+    name: &str,
+    id: &str,
+    node_id: &str,
+    amount: u64,
+) -> Result<String> {
+    app_state
+        .wallet_request_payment_from_node_id(id.to_owned(), node_id.to_owned(), amount, None, None)
+        .await?;
+    Ok(format_payment_request(
+        &format!("Node ID {node_id}"),
+        name,
+        amount,
+    ))
+}
+
+fn format_payment_request(target: &str, name: &str, amount: u64) -> String {
+    let mut res = String::new();
     push_break(&mut res);
     push_break(&mut res);
     res.push_str(&format!(
-        "Request Payment over {amount} from Contact {contact_id} for {name}:\n"
+        "Request Payment over {amount} from {target} for {name}:\n"
     ));
     push_break(&mut res);
-    Ok(res)
+    res
 }
 
 pub async fn cmd_subscribe_to_prs(app_state: &AppState, _name: &str, id: &str) -> Result<String> {
