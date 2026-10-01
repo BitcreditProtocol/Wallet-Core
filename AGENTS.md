@@ -65,6 +65,8 @@ Non-negotiables:
   and every user-visible change adds a line there naming the endpoint or type it touches. Pushing a
   `v*` tag runs `.github/workflows/cd_precompiled.yml`, which builds and signs iOS and Android binaries
   of `crates/bcr-wallet-ffi` via `cargokit/build_tool`; apps fetch them by crate hash, else build locally.
+- **Changelog style.** Follow the existing concise, in-house bullet style: state the change in one
+  sentence and include technical detail or caveats only when users need them.
 
 ## Common Gotchas
 

@@ -19,7 +19,6 @@ pub async fn restore_keysetid(
 ) -> Result<usize> {
     let mut zero_response_counter = 0;
     let mut total_proofs_restored = 0;
-    let mut dbcursor = db.counter(kid).await?;
     let mut cursor = 0; // always start at 0 for restore
     while zero_response_counter < EMPTY_RESPONSES_BEFORE_ABORT {
         let restored_proofs = restore_batch(seed, kid, client, db, cursor, BATCH_SIZE).await?;
@@ -28,11 +27,7 @@ pub async fn restore_keysetid(
             zero_response_counter += 1;
         } else {
             zero_response_counter = 0;
-            if cursor > dbcursor {
-                db.increment_counter(kid, dbcursor, cursor - dbcursor)
-                    .await?;
-                dbcursor = cursor;
-            }
+            db.advance_counter_to(kid, cursor).await?;
         }
         total_proofs_restored += restored_proofs;
     }
@@ -130,8 +125,11 @@ mod tests {
     use super::*;
     use crate::external::mint::MockClowderMintConnector;
     use bcr_common::{core::signature, core_tests};
-    use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
-    use cashu::{Amount, nut07 as cdk07};
+    use bcr_wallet_persistence::{
+        MockPocketRepository,
+        test_utils::tests::{in_memory_pocket_db, wallet_id, zero_seed},
+    };
+    use cashu::{Amount, CurrencyUnit, nut07 as cdk07};
     use mockall::predicate::eq;
     use rand::RngExt;
 
@@ -331,7 +329,8 @@ mod tests {
         assert_eq!(restored_proofs, BATCH_SIZE as usize);
     }
 
-    async fn restore_keysetid_1stbatch_with_counter(stored: u32, increments: usize) {
+    #[tokio::test]
+    async fn restore_keysetid_1stbatch() {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
@@ -341,10 +340,6 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(keyset.clone()));
         let mut db = MockPocketRepository::new();
-        db.expect_counter()
-            .times(1)
-            .with(eq(mintkeyset.id))
-            .returning(move |_| Ok(stored));
         let cloned_mintkeyset = mintkeyset.clone();
         client
             .expect_post_restore()
@@ -380,10 +375,10 @@ mod tests {
         db.expect_store_new()
             .times(BATCH_SIZE as usize)
             .returning(|p| Ok(p.y().unwrap()));
-        db.expect_increment_counter()
-            .times(increments)
-            .with(eq(mintkeyset.id), eq(0), eq(BATCH_SIZE))
-            .returning(|_, _, _| Ok(()));
+        db.expect_advance_counter_to()
+            .times(1)
+            .with(eq(mintkeyset.id), eq(BATCH_SIZE))
+            .returning(|_, _| Ok(()));
         client
             .expect_post_restore()
             .times(EMPTY_RESPONSES_BEFORE_ABORT)
@@ -393,16 +388,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(total_restored, BATCH_SIZE as usize);
-    }
-
-    #[tokio::test]
-    async fn restore_keysetid_1stbatch() {
-        restore_keysetid_1stbatch_with_counter(0, 1).await;
-    }
-
-    #[tokio::test]
-    async fn restore_keysetid_never_lowers_counter() {
-        restore_keysetid_1stbatch_with_counter(3 * BATCH_SIZE, 0).await;
     }
 
     #[tokio::test]
@@ -416,10 +401,6 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(keyset.clone()));
         let mut db = MockPocketRepository::new();
-        db.expect_counter()
-            .times(1)
-            .with(eq(mintkeyset.id))
-            .returning(move |_| Ok(0));
         client
             .expect_post_restore()
             .times(1)
@@ -459,10 +440,10 @@ mod tests {
         db.expect_store_new()
             .times(BATCH_SIZE as usize)
             .returning(|p| Ok(p.y().unwrap()));
-        db.expect_increment_counter()
+        db.expect_advance_counter_to()
             .times(1)
-            .with(eq(mintkeyset.id), eq(0), eq(2 * BATCH_SIZE))
-            .returning(|_, _, _| Ok(()));
+            .with(eq(mintkeyset.id), eq(2 * BATCH_SIZE))
+            .returning(|_, _| Ok(()));
         client
             .expect_post_restore()
             .times(EMPTY_RESPONSES_BEFORE_ABORT)
@@ -485,10 +466,6 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(keyset.clone()));
         let mut db = MockPocketRepository::new();
-        db.expect_counter()
-            .times(1)
-            .with(eq(mintkeyset.id))
-            .returning(move |_| Ok(0));
         client
             .expect_post_restore()
             .times(1)
@@ -529,10 +506,10 @@ mod tests {
         db.expect_store_new()
             .times((BATCH_SIZE / 3) as usize)
             .returning(|p| Ok(p.y().unwrap()));
-        db.expect_increment_counter()
+        db.expect_advance_counter_to()
             .times(1)
-            .with(eq(mintkeyset.id), eq(0), eq(2 * BATCH_SIZE))
-            .returning(|_, _, _| Ok(()));
+            .with(eq(mintkeyset.id), eq(2 * BATCH_SIZE))
+            .returning(|_, _| Ok(()));
         client
             .expect_post_restore()
             .times(EMPTY_RESPONSES_BEFORE_ABORT)
@@ -543,5 +520,70 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(total_restored, (BATCH_SIZE / 3) as usize);
+    }
+
+    #[tokio::test]
+    async fn restore_never_lowers_a_higher_existing_counter() {
+        let seed = zero_seed();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = mintkeyset.id;
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+
+        let db = in_memory_pocket_db(&wallet_id(), CurrencyUnit::Sat);
+        db.reserve_counter(kid, 500).await.expect("reserve works");
+
+        let mut client = MockClowderMintConnector::new();
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(keyset.clone()));
+        let cloned_mintkeyset = mintkeyset.clone();
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |request| {
+                let cdk09::RestoreRequest { outputs } = request;
+                let signatures = outputs
+                    .iter()
+                    .map(|blind| {
+                        let mut bblind = blind.clone();
+                        bblind.amount = Amount::from(1u64);
+                        signature::sign_ecash(&cloned_mintkeyset, &bblind)
+                            .expect("signatures should be generated")
+                    })
+                    .collect::<Vec<_>>();
+                Ok(outputs.into_iter().zip(signatures).collect::<Vec<_>>())
+            });
+        client
+            .expect_post_check_state()
+            .times(1)
+            .returning(move |request| {
+                let states: Vec<cdk07::ProofState> = request
+                    .ys
+                    .iter()
+                    .map(|y| cdk07::ProofState {
+                        state: cdk07::State::Unspent,
+                        y: *y,
+                        witness: None,
+                    })
+                    .collect();
+                Ok(states)
+            });
+        client
+            .expect_post_restore()
+            .times(EMPTY_RESPONSES_BEFORE_ABORT)
+            .returning(|_| Ok(vec![]));
+
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let total_restored = restore_keysetid(&seed, kid, &arc_client, &db)
+            .await
+            .unwrap();
+        assert_eq!(total_restored, BATCH_SIZE as usize);
+
+        assert_eq!(
+            db.counter(kid).await.unwrap(),
+            500,
+            "restore must not regress an already-higher counter"
+        );
     }
 }

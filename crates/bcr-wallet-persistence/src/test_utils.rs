@@ -3,6 +3,21 @@ pub mod tests {
     use bitcoin::secp256k1;
     use std::str::FromStr;
 
+    #[cfg(feature = "redb")]
+    pub fn in_memory_pocket_db(
+        wallet_id: &str,
+        unit: bcr_common::cashu::CurrencyUnit,
+    ) -> crate::redb::pocket::PocketDB {
+        let db = std::sync::Arc::new(
+            ::redb::Builder::new()
+                .create_with_backend(::redb::backends::InMemoryBackend::new())
+                .expect("can create in-memory redb"),
+        );
+        let keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        crate::redb::pocket::PocketDB::new(db, wallet_id, &unit, keypair)
+            .expect("can create PocketDB")
+    }
+
     pub fn zero_seed() -> Seed {
         [0u8; 64]
     }
