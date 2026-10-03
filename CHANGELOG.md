@@ -21,6 +21,8 @@
     * Add endpoint `wallet_prepare_pay_to_node_id` with `WalletPreparePaymentByNodeIdRequest` as input
     * Add endpoint `wallet_pay_to_node_id` with `WalletPaymentByNodeIdRequest` as input
     * `wallet_prepare_pay_payment_request` rejects a request in a unit other than the wallet's
+* `wallet_receive_token` and `is_valid_token` reject tokens over 128 KiB or with duplicate proofs, token material is no longer logged
+* Validate onchain melt quotes and restore responses (DLEQ, requested outputs, check states) returned by the mint
 
 # 0.9.13
 

@@ -1,4 +1,4 @@
-use crate::{ClowderMintConnector, error::Result};
+use crate::{ClowderMintConnector, error::Error, error::Result};
 use bcr_common::{
     cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09},
     ecash,
@@ -56,39 +56,27 @@ async fn restore_batch(
     let mut premints_cursor = premints.iter();
     for (output, signature) in resp.into_iter() {
         let premint = loop {
-            let premint = premints_cursor
-                .next()
-                .expect("premint cursor should have next item");
+            let Some(premint) = premints_cursor.next() else {
+                return Err(Error::RestoreUnexpectedOutput);
+            };
             if premint.blinded_message == output {
                 break premint;
             }
         };
+        let Some(dleq) = &signature.dleq else {
+            return Err(Error::MissingDleq);
+        };
         let Some(key) = keyset.keys.get(&signature.amount) else {
-            tracing::error!(
-                "No mint key for amount: {} in kid: {}",
-                signature.amount,
-                keyset.id,
-            );
-            continue;
+            return Err(Error::RestoreUnknownKeysetAmount(signature.amount, kid));
         };
-        let result = cashu::dhke::unblind_message(&signature.c, &premint.r, key);
-        let Ok(c) = result else {
-            tracing::error!(
-                "unblind_message fail: kid: {}, amount {}",
-                signature.amount,
-                keyset.id,
-            );
-            continue;
-        };
-        let mut proof = cdk00::Proof::new(
-            signature.amount,
-            signature.keyset_id,
-            premint.secret.clone(),
-            c,
-        );
-        if let Some(dleq) = signature.dleq {
-            proof.dleq = Some(cashu::ProofDleq::new(dleq.e, dleq.s, premint.r.clone()));
-        }
+        signature.verify_dleq(*key, output.blinded_secret)?;
+        let c = cashu::dhke::unblind_message(&signature.c, &premint.r, key)?;
+        let mut proof = cdk00::Proof::new(signature.amount, kid.into(), premint.secret.clone(), c);
+        proof.dleq = Some(cashu::ProofDleq::new(
+            dleq.e.clone(),
+            dleq.s.clone(),
+            premint.r.clone(),
+        ));
         let y = proof.y()?;
         proofs.insert(y, proof);
     }
@@ -100,18 +88,24 @@ async fn restore_batch(
         ys: proofs.keys().cloned().collect(),
     };
     let states = client.post_check_state(request).await?;
-    for state in states.into_iter() {
-        match state.state {
+    if states.len() != proofs_len {
+        return Err(Error::RestoreUnexpectedCheckState);
+    }
+    let restored = states
+        .into_iter()
+        .map(|state| {
+            proofs
+                .remove(&state.y)
+                .map(|proof| (state.state, proof))
+                .ok_or(Error::RestoreUnexpectedCheckState)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for (state, proof) in restored {
+        match state {
             cdk07::State::Unspent => {
-                let proof = proofs
-                    .remove(&state.y)
-                    .expect("y in response comes from proofs");
                 db.store_new(proof).await?;
             }
             cdk07::State::Pending | cdk07::State::PendingSpent => {
-                let proof = proofs
-                    .remove(&state.y)
-                    .expect("y in response comes from proofs");
                 db.store_pendingspent(proof).await?;
             }
             _ => {}
@@ -129,6 +123,17 @@ mod tests {
     use cashu::{Amount, nut07 as cdk07};
     use mockall::predicate::eq;
     use rand::RngExt;
+
+    fn sign_restored_output(
+        keyset: &ecash::MintKeySet,
+        blind: &cdk00::BlindedMessage,
+    ) -> cashu::BlindSignature {
+        let signable = cdk00::BlindedMessage {
+            amount: Amount::from(1),
+            ..blind.clone()
+        };
+        signature::sign_ecash(keyset, &signable).expect("signature should be generated")
+    }
 
     #[tokio::test]
     async fn restore_batch_empty_response() {
@@ -517,5 +522,201 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(total_restored, (BATCH_SIZE / 3) as usize);
+    }
+
+    type Restored = Vec<(cdk00::BlindedMessage, cashu::BlindSignature)>;
+
+    fn mock_restore(
+        respond: impl Fn(&ecash::MintKeySet, Vec<cdk00::BlindedMessage>) -> Restored + Send + 'static,
+    ) -> (ecash::Id, MockClowderMintConnector) {
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = mintkeyset.id;
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let mut client = MockClowderMintConnector::new();
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |request| Ok(respond(&mintkeyset, request.outputs)));
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(keyset.clone()));
+        (kid, client)
+    }
+
+    fn sign_all(
+        keyset: &ecash::MintKeySet,
+        outputs: Vec<cdk00::BlindedMessage>,
+        tamper: impl Fn(&mut cashu::BlindSignature),
+    ) -> Restored {
+        outputs
+            .into_iter()
+            .map(|blind| {
+                let mut signature = sign_restored_output(keyset, &blind);
+                tamper(&mut signature);
+                (blind, signature)
+            })
+            .collect()
+    }
+
+    fn mock_check_state(
+        client: &mut MockClowderMintConnector,
+        respond: impl Fn(Vec<cdk01::PublicKey>) -> Vec<cdk07::ProofState> + Send + 'static,
+    ) {
+        client
+            .expect_post_check_state()
+            .times(1)
+            .returning(move |request| Ok(respond(request.ys)));
+    }
+
+    fn proof_state(y: cdk01::PublicKey, state: cdk07::State) -> cdk07::ProofState {
+        cdk07::ProofState {
+            y,
+            state,
+            witness: None,
+        }
+    }
+
+    async fn run_restore_batch(
+        kid: ecash::Id,
+        client: MockClowderMintConnector,
+        db: &MockPocketRepository,
+    ) -> Result<usize> {
+        let client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        super::restore_batch(&zero_seed(), kid, &client, db, 0, BATCH_SIZE).await
+    }
+
+    async fn restore_batch_error(
+        respond: impl Fn(&ecash::MintKeySet, Vec<cdk00::BlindedMessage>) -> Restored + Send + 'static,
+    ) -> Error {
+        let (kid, client) = mock_restore(respond);
+        run_restore_batch(kid, client, &MockPocketRepository::new())
+            .await
+            .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn restore_batch_unrequested_output() {
+        let err = restore_batch_error(|keyset, _| {
+            let other =
+                cdk00::PreMintSecrets::restore_batch(keyset.id.into(), &zero_seed(), 1000, 1001)
+                    .expect("premints should be generated");
+            sign_all(keyset, other.blinded_messages(), |_| {})
+        })
+        .await;
+        assert!(matches!(err, Error::RestoreUnexpectedOutput));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_out_of_order_output() {
+        let err = restore_batch_error(|keyset, mut outputs| {
+            outputs.swap(0, 1);
+            sign_all(keyset, outputs, |_| {})
+        })
+        .await;
+        assert!(matches!(err, Error::RestoreUnexpectedOutput));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_duplicate_output() {
+        let err = restore_batch_error(|keyset, outputs| {
+            sign_all(keyset, vec![outputs[0].clone(), outputs[0].clone()], |_| {})
+        })
+        .await;
+        assert!(matches!(err, Error::RestoreUnexpectedOutput));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_missing_dleq() {
+        let err = restore_batch_error(|keyset, outputs| {
+            sign_all(keyset, outputs, |signature| signature.dleq = None)
+        })
+        .await;
+        assert!(matches!(err, Error::MissingDleq));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_invalid_dleq() {
+        let err = restore_batch_error(|keyset, outputs| {
+            sign_all(keyset, outputs, |signature| {
+                let dleq = signature.dleq.as_mut().expect("dleq should be present");
+                std::mem::swap(&mut dleq.e, &mut dleq.s);
+            })
+        })
+        .await;
+        assert!(matches!(err, Error::Cdk12(_)));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_unknown_keyset_amount() {
+        let err = restore_batch_error(|keyset, outputs| {
+            sign_all(keyset, outputs, |signature| {
+                signature.amount = Amount::from(3u64)
+            })
+        })
+        .await;
+        assert!(matches!(err, Error::RestoreUnknownKeysetAmount(_, _)));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_wrong_keyset_id() {
+        let (_, other_keyset) = core_tests::generate_random_ecash_keyset();
+        let other_id: cashu::nut02::Id = other_keyset.id.into();
+        let (kid, mut client) = mock_restore(move |keyset, outputs| {
+            sign_all(keyset, outputs, |signature| signature.keyset_id = other_id)
+        });
+        mock_check_state(&mut client, |ys| {
+            ys.into_iter()
+                .map(|y| proof_state(y, cdk07::State::Unspent))
+                .collect()
+        });
+        let expected_kid: cashu::nut02::Id = kid.into();
+        let mut db = MockPocketRepository::new();
+        db.expect_store_new()
+            .times(BATCH_SIZE as usize)
+            .returning(move |p| {
+                assert_eq!(p.keyset_id, expected_kid);
+                Ok(p.y().expect("proof should have y"))
+            });
+
+        let restored_proofs = run_restore_batch(kid, client, &db).await.unwrap();
+        assert_eq!(restored_proofs, BATCH_SIZE as usize);
+    }
+
+    async fn restore_batch_check_state_error(
+        respond: impl Fn(Vec<cdk01::PublicKey>) -> Vec<cdk07::ProofState> + Send + 'static,
+    ) -> Error {
+        let (kid, mut client) = mock_restore(|keyset, outputs| sign_all(keyset, outputs, |_| {}));
+        mock_check_state(&mut client, respond);
+        run_restore_batch(kid, client, &MockPocketRepository::new())
+            .await
+            .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn restore_batch_duplicate_check_state_y_stores_nothing() {
+        let err = restore_batch_check_state_error(|mut ys| {
+            ys[1] = ys[0];
+            let mut states: Vec<_> = ys
+                .into_iter()
+                .map(|y| proof_state(y, cdk07::State::Unspent))
+                .collect();
+            states[0].state = cdk07::State::Spent;
+            states
+        })
+        .await;
+        assert!(matches!(err, Error::RestoreUnexpectedCheckState));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_missing_check_state_y_stores_nothing() {
+        let err = restore_batch_check_state_error(|mut ys| {
+            ys.pop();
+            ys.into_iter()
+                .map(|y| proof_state(y, cdk07::State::Unspent))
+                .collect()
+        })
+        .await;
+        assert!(matches!(err, Error::RestoreUnexpectedCheckState));
     }
 }

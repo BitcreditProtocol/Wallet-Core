@@ -1015,18 +1015,6 @@ impl WalletApi for super::Wallet {
                 .debit
                 .return_proofs_to_send_for_offline_payment(request_id)
                 .await?;
-            // TODO: just for demo - remove afterwards
-            tracing::warn!(
-                "Offline Pay by Token - Local Token: {}",
-                Token::BitcrV5(
-                    BitcrTokenV5::new(
-                        self.clowder_node_id(),
-                        self.debit.unit(),
-                        local_proofs.values().map(|p| p.to_owned().into()).collect()
-                    )
-                    .with_mint_url(to_mint_url(self.client.mint_url()).to_string())
-                )
-            );
             tracing::debug!("Offline Pay by Token: Offline Exchange");
             // Do offline exchange
             let substitute_proofs = self
