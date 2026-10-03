@@ -1,4 +1,4 @@
-use crate::{ClowderMintConnector, error::Result};
+use crate::{ClowderMintConnector, error::Error, error::Result};
 use bcr_common::{
     cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09},
     ecash,
@@ -61,39 +61,27 @@ async fn restore_batch(
     let mut premints_cursor = premints.iter();
     for (output, signature) in resp.into_iter() {
         let premint = loop {
-            let premint = premints_cursor
-                .next()
-                .expect("premint cursor should have next item");
+            let Some(premint) = premints_cursor.next() else {
+                return Err(Error::RestoreUnexpectedOutput);
+            };
             if premint.blinded_message == output {
                 break premint;
             }
         };
+        let Some(dleq) = &signature.dleq else {
+            return Err(Error::MissingDleq);
+        };
         let Some(key) = keyset.keys.get(&signature.amount) else {
-            tracing::error!(
-                "No mint key for amount: {} in kid: {}",
-                signature.amount,
-                keyset.id,
-            );
-            continue;
+            return Err(Error::RestoreUnknownKeysetAmount(signature.amount, kid));
         };
-        let result = cashu::dhke::unblind_message(&signature.c, &premint.r, key);
-        let Ok(c) = result else {
-            tracing::error!(
-                "unblind_message fail: kid: {}, amount {}",
-                signature.amount,
-                keyset.id,
-            );
-            continue;
-        };
-        let mut proof = cdk00::Proof::new(
-            signature.amount,
-            signature.keyset_id,
-            premint.secret.clone(),
-            c,
-        );
-        if let Some(dleq) = signature.dleq {
-            proof.dleq = Some(cashu::ProofDleq::new(dleq.e, dleq.s, premint.r.clone()));
-        }
+        signature.verify_dleq(*key, output.blinded_secret)?;
+        let c = cashu::dhke::unblind_message(&signature.c, &premint.r, key)?;
+        let mut proof = cdk00::Proof::new(signature.amount, kid.into(), premint.secret.clone(), c);
+        proof.dleq = Some(cashu::ProofDleq::new(
+            dleq.e.clone(),
+            dleq.s.clone(),
+            premint.r.clone(),
+        ));
         let y = proof.y()?;
         proofs.insert(y, proof);
     }
@@ -105,22 +93,23 @@ async fn restore_batch(
         ys: proofs.keys().cloned().collect(),
     };
     let states = client.post_check_state(request).await?;
+    let mut new_proofs = Vec::new();
+    let mut pendingspent_proofs = Vec::new();
     for state in states.into_iter() {
+        let proof = proofs
+            .remove(&state.y)
+            .ok_or(Error::RestoreUnexpectedCheckState)?;
         match state.state {
-            cdk07::State::Unspent => {
-                let proof = proofs
-                    .remove(&state.y)
-                    .expect("y in response comes from proofs");
-                db.store_new(proof).await?;
-            }
-            cdk07::State::Pending | cdk07::State::PendingSpent => {
-                let proof = proofs
-                    .remove(&state.y)
-                    .expect("y in response comes from proofs");
-                db.store_pendingspent(proof).await?;
-            }
+            cdk07::State::Unspent => new_proofs.push(proof),
+            cdk07::State::Pending | cdk07::State::PendingSpent => pendingspent_proofs.push(proof),
             _ => {}
         }
+    }
+    for proof in new_proofs {
+        db.store_new(proof).await?;
+    }
+    for proof in pendingspent_proofs {
+        db.store_pendingspent(proof).await?;
     }
     Ok(proofs_len)
 }
@@ -134,6 +123,18 @@ mod tests {
     use cashu::{Amount, nut07 as cdk07};
     use mockall::predicate::eq;
     use rand::RngExt;
+
+    /// Signs a restored output at a real keyset amount, as fixtures carry no zero-amount key.
+    fn sign_restored_output(
+        keyset: &ecash::MintKeySet,
+        blind: &cdk00::BlindedMessage,
+    ) -> cashu::BlindSignature {
+        let signable = cdk00::BlindedMessage {
+            amount: Amount::from(1),
+            ..blind.clone()
+        };
+        signature::sign_ecash(keyset, &signable).expect("signature should be generated")
+    }
 
     #[tokio::test]
     async fn restore_batch_empty_response() {
@@ -543,5 +544,356 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(total_restored, (BATCH_SIZE / 3) as usize);
+    }
+
+    #[tokio::test]
+    async fn restore_batch_unrequested_output() {
+        let seed = zero_seed();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let mut client = MockClowderMintConnector::new();
+        let db = MockPocketRepository::new();
+        let cloned = mintkeyset.clone();
+        client.expect_post_restore().times(1).returning(move |_| {
+            let other_premints =
+                cdk00::PreMintSecrets::restore_batch(cloned.id.into(), &zero_seed(), 1000, 1001)
+                    .expect("premints should be generated");
+            let other_blind = other_premints.blinded_messages().remove(0);
+            let signature = sign_restored_output(&cloned, &other_blind);
+            Ok(vec![(other_blind, signature)])
+        });
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&mintkeyset, None)));
+
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let result = super::restore_batch(&seed, keyset.id, &arc_client, &db, 0, BATCH_SIZE).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::RestoreUnexpectedOutput)
+        ));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_out_of_order_output() {
+        let seed = zero_seed();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let mut client = MockClowderMintConnector::new();
+        let db = MockPocketRepository::new();
+        let cloned = mintkeyset.clone();
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |request| {
+                let outputs = request.outputs;
+                let sign = |b: &cdk00::BlindedMessage| sign_restored_output(&cloned, b);
+                let s0 = sign(&outputs[1]);
+                let s1 = sign(&outputs[0]);
+                Ok(vec![(outputs[1].clone(), s0), (outputs[0].clone(), s1)])
+            });
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&mintkeyset, None)));
+
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let result = super::restore_batch(&seed, keyset.id, &arc_client, &db, 0, 2).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::RestoreUnexpectedOutput)
+        ));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_wrong_keyset_id() {
+        let seed = zero_seed();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let (_, other_keyset) = core_tests::generate_random_ecash_keyset();
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let mut client = MockClowderMintConnector::new();
+        let mut db = MockPocketRepository::new();
+        let cloned = mintkeyset.clone();
+        let other_id: cashu::nut02::Id = other_keyset.id.into();
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |request| {
+                let outputs = request.outputs;
+                let signatures = outputs
+                    .iter()
+                    .map(|blind| {
+                        let mut signature = sign_restored_output(&cloned, blind);
+                        signature.keyset_id = other_id;
+                        signature
+                    })
+                    .collect::<Vec<_>>();
+                Ok(outputs.into_iter().zip(signatures).collect::<Vec<_>>())
+            });
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&mintkeyset, None)));
+        client
+            .expect_post_check_state()
+            .times(1)
+            .returning(move |request| {
+                let states = request
+                    .ys
+                    .iter()
+                    .map(|y| cdk07::ProofState {
+                        y: *y,
+                        state: cdk07::State::Unspent,
+                        witness: None,
+                    })
+                    .collect();
+                Ok(states)
+            });
+        let expected_kid: cashu::nut02::Id = keyset.id.into();
+        db.expect_store_new()
+            .times(BATCH_SIZE as usize)
+            .returning(move |p| {
+                assert_eq!(p.keyset_id, expected_kid);
+                Ok(p.y().expect("proof should have y"))
+            });
+
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let restored_proofs =
+            super::restore_batch(&seed, keyset.id, &arc_client, &db, 0, BATCH_SIZE)
+                .await
+                .unwrap();
+        assert_eq!(restored_proofs, BATCH_SIZE as usize);
+    }
+
+    #[tokio::test]
+    async fn restore_batch_missing_dleq() {
+        let seed = zero_seed();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let mut client = MockClowderMintConnector::new();
+        let db = MockPocketRepository::new();
+        let cloned = mintkeyset.clone();
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |request| {
+                let outputs = request.outputs;
+                let signatures = outputs
+                    .iter()
+                    .map(|blind| {
+                        let mut signature = sign_restored_output(&cloned, blind);
+                        signature.dleq = None;
+                        signature
+                    })
+                    .collect::<Vec<_>>();
+                Ok(outputs.into_iter().zip(signatures).collect::<Vec<_>>())
+            });
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&mintkeyset, None)));
+
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let result = super::restore_batch(&seed, keyset.id, &arc_client, &db, 0, BATCH_SIZE).await;
+        assert!(matches!(result, Err(crate::error::Error::MissingDleq)));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_invalid_dleq() {
+        let seed = zero_seed();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let mut client = MockClowderMintConnector::new();
+        let db = MockPocketRepository::new();
+        let cloned = mintkeyset.clone();
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |request| {
+                let outputs = request.outputs;
+                let signatures = outputs
+                    .iter()
+                    .map(|blind| {
+                        let mut signature = sign_restored_output(&cloned, blind);
+                        let dleq = signature.dleq.as_mut().expect("dleq should be present");
+                        std::mem::swap(&mut dleq.e, &mut dleq.s);
+                        signature
+                    })
+                    .collect::<Vec<_>>();
+                Ok(outputs.into_iter().zip(signatures).collect::<Vec<_>>())
+            });
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&mintkeyset, None)));
+
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let result = super::restore_batch(&seed, keyset.id, &arc_client, &db, 0, BATCH_SIZE).await;
+        assert!(matches!(result, Err(crate::error::Error::Cdk12(_))));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_duplicate_output() {
+        let seed = zero_seed();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let mut client = MockClowderMintConnector::new();
+        let db = MockPocketRepository::new();
+        let cloned = mintkeyset.clone();
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |request| {
+                let outputs = request.outputs;
+                let signature = sign_restored_output(&cloned, &outputs[0]);
+                Ok(vec![
+                    (outputs[0].clone(), signature.clone()),
+                    (outputs[0].clone(), signature),
+                ])
+            });
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&mintkeyset, None)));
+
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let result = super::restore_batch(&seed, keyset.id, &arc_client, &db, 0, BATCH_SIZE).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::RestoreUnexpectedOutput)
+        ));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_unknown_keyset_amount() {
+        let seed = zero_seed();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let mut client = MockClowderMintConnector::new();
+        let db = MockPocketRepository::new();
+        let cloned = mintkeyset.clone();
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |request| {
+                let outputs = request.outputs;
+                let signatures = outputs
+                    .iter()
+                    .map(|blind| {
+                        let mut signature = sign_restored_output(&cloned, blind);
+                        signature.amount = Amount::from(3u64);
+                        signature
+                    })
+                    .collect::<Vec<_>>();
+                Ok(outputs.into_iter().zip(signatures).collect::<Vec<_>>())
+            });
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&mintkeyset, None)));
+
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let result = super::restore_batch(&seed, keyset.id, &arc_client, &db, 0, BATCH_SIZE).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::RestoreUnknownKeysetAmount(_, _))
+        ));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_duplicate_check_state_y() {
+        let seed = zero_seed();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let mut client = MockClowderMintConnector::new();
+        let db = MockPocketRepository::new();
+        let cloned = mintkeyset.clone();
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |request| {
+                let outputs = request.outputs;
+                let sign = |b: &cdk00::BlindedMessage| sign_restored_output(&cloned, b);
+                let signatures = outputs.iter().map(sign).collect::<Vec<_>>();
+                Ok(outputs.into_iter().zip(signatures).collect::<Vec<_>>())
+            });
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&mintkeyset, None)));
+        client
+            .expect_post_check_state()
+            .times(1)
+            .returning(move |request| {
+                let y = request.ys[0];
+                Ok(vec![
+                    cdk07::ProofState {
+                        y,
+                        state: cdk07::State::Unspent,
+                        witness: None,
+                    },
+                    cdk07::ProofState {
+                        y,
+                        state: cdk07::State::Unspent,
+                        witness: None,
+                    },
+                ])
+            });
+
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let result = super::restore_batch(&seed, keyset.id, &arc_client, &db, 0, BATCH_SIZE).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::RestoreUnexpectedCheckState)
+        ));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_spent_then_unspent_for_same_y_is_rejected() {
+        let seed = zero_seed();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let mut client = MockClowderMintConnector::new();
+        let db = MockPocketRepository::new();
+        let cloned = mintkeyset.clone();
+        client
+            .expect_post_restore()
+            .times(1)
+            .returning(move |request| {
+                let outputs = request.outputs;
+                let sign = |b: &cdk00::BlindedMessage| sign_restored_output(&cloned, b);
+                let signatures = outputs.iter().map(sign).collect::<Vec<_>>();
+                Ok(outputs.into_iter().zip(signatures).collect::<Vec<_>>())
+            });
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&mintkeyset, None)));
+        client
+            .expect_post_check_state()
+            .times(1)
+            .returning(move |request| {
+                let y = request.ys[0];
+                Ok(vec![
+                    cdk07::ProofState {
+                        y,
+                        state: cdk07::State::Spent,
+                        witness: None,
+                    },
+                    cdk07::ProofState {
+                        y,
+                        state: cdk07::State::Unspent,
+                        witness: None,
+                    },
+                ])
+            });
+
+        let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let result = super::restore_batch(&seed, keyset.id, &arc_client, &db, 0, BATCH_SIZE).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::RestoreUnexpectedCheckState)
+        ));
     }
 }

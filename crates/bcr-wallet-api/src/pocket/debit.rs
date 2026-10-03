@@ -916,6 +916,7 @@ impl DebitPocketApi for Pocket {
                     proofs,
                     bitcoin::Amount::from_sat(amount),
                     bitcoin::Amount::from_sat(network_fee),
+                    bitcoin::Amount::from_sat(melt_fee),
                     parsed_address,
                     swap_config.alpha_pk,
                     attestation,
@@ -2898,7 +2899,12 @@ mod tests {
         connector
             .expect_post_melt_quote_onchain()
             .times(1)
-            .returning(move |_, _, _, _, _, __| {
+            .withf(move |_, a, nf, mf, _, _, _| {
+                *a == bitcoin::Amount::from_sat(amount)
+                    && *nf == bitcoin::Amount::from_sat(network_fee)
+                    && *mf == bitcoin::Amount::from_sat(melt_fee)
+            })
+            .returning(move |_, _, _, _, _, _, __| {
                 Ok(MeltQuoteResult {
                     quote_id,
                     expiry,

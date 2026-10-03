@@ -16,6 +16,8 @@
     * Add `payment_request_id` to `WalletCreateShareableRemotePaymentResponse`, pass it to `wallet_check_received_payment`
     * `wallet_check_received_payment` returns as soon as the request is paid, requests paid by older wallets stay `Pending`
     * Legacy cdk18 payments are still received and retried for one more release
+* `wallet_receive_token` and `is_valid_token` reject tokens over 128 KiB or with duplicate proofs, token material is no longer logged
+* Validate onchain melt quotes and restore responses (DLEQ, requested outputs, check states) returned by the mint
 
 # 0.9.13
 
