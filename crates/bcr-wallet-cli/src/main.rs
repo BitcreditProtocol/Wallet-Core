@@ -77,6 +77,13 @@ enum Commands {
         amount: u64,
         description: Option<String>,
     },
+    #[command(name = "pay_to_node_id")]
+    PayToNodeId {
+        id: String,
+        node_id: String,
+        amount: u64,
+        description: Option<String>,
+    },
     #[command(name = "reclaim")]
     Reclaim { id: String, tx_id: String },
     #[command(name = "recover_stale")]
@@ -161,6 +168,12 @@ enum Commands {
     RequestPaymentFromContact {
         id: String,
         contact_id: String,
+        amount: u64,
+    },
+    #[command(name = "req_payment_from_node_id")]
+    RequestPaymentFromNodeId {
+        id: String,
+        node_id: String,
         amount: u64,
     },
     #[command(name = "subscribe_to_prs")]
@@ -339,6 +352,31 @@ async fn main() -> Result<()> {
                         &cli.wallet,
                         &id,
                         &contact_id,
+                        amount,
+                        description.clone(),
+                    )
+                    .await?,
+                ),
+            )?;
+        }
+        Commands::PayToNodeId {
+            id,
+            node_id,
+            amount,
+            description,
+        } => {
+            emit(
+                cli.json,
+                &format!(
+                    "Payment to Node ID {node_id} for {}, Amount: {amount}, Description: {description:?}",
+                    cli.wallet
+                ),
+                text(
+                    command::cmd_pay_to_node_id(
+                        &app_state,
+                        &cli.wallet,
+                        &id,
+                        &node_id,
                         amount,
                         description.clone(),
                     )
@@ -602,6 +640,26 @@ async fn main() -> Result<()> {
                         &cli.wallet,
                         &id,
                         &contact_id,
+                        amount,
+                    )
+                    .await?,
+                ),
+            )?;
+        }
+        Commands::RequestPaymentFromNodeId {
+            id,
+            node_id,
+            amount,
+        } => {
+            emit(
+                cli.json,
+                &format!("Request Payment Requests for {}", cli.wallet),
+                text(
+                    command::cmd_request_payment_from_node_id(
+                        &app_state,
+                        &cli.wallet,
+                        &id,
+                        &node_id,
                         amount,
                     )
                     .await?,

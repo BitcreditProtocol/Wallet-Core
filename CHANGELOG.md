@@ -16,6 +16,10 @@
     * Add `payment_request_id` to `WalletCreateShareableRemotePaymentResponse`, pass it to `wallet_check_received_payment`
     * `wallet_check_received_payment` returns as soon as the request is paid, requests paid by older wallets stay `Pending`
     * Legacy cdk18 payments are still received and retried for one more release
+* Add API to pay a node id without adding a contact
+    * Add endpoint `wallet_prepare_pay_to_node_id` with `WalletPreparePaymentByNodeIdRequest` as input
+    * Add endpoint `wallet_pay_to_node_id` with `WalletPaymentByNodeIdRequest` as input
+    * `wallet_prepare_pay_payment_request` rejects a request in a unit other than the wallet's
 
 # 0.9.13
 

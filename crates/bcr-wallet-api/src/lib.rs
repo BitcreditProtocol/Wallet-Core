@@ -518,6 +518,41 @@ impl AppState {
         Ok(tx_id)
     }
 
+    pub async fn wallet_prepare_pay_to_node_id(
+        &self,
+        wallet_id: String,
+        node_id: String,
+        amount: u64,
+        description: Option<String>,
+    ) -> Result<PaymentSummary> {
+        tracing::debug!(
+            "wallet_prepare_pay_to_node_id({wallet_id}, {node_id}, {amount}, {description:?})"
+        );
+        let amount = cashu::Amount::from(amount);
+        let wallet = self.get_wallet(&wallet_id).await?;
+        let unit = wallet.read().await.debit_unit();
+        let node_id = NodeId::from_str(&node_id)?;
+
+        let summary = wallet
+            .read()
+            .await
+            .prepare_pay_to_node_id(node_id, amount, unit, description)
+            .await?;
+
+        Ok(summary)
+    }
+
+    pub async fn wallet_pay_to_node_id(&self, wallet_id: String, rid: String) -> Result<Uuid> {
+        let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
+        tracing::debug!("wallet_pay_to_node_id({wallet_id}, {rid}, {tstamp})");
+        let p_id = Uuid::from_str(&rid)?;
+
+        let wallet = self.get_wallet(&wallet_id).await?;
+        let (tx_id, _) = wallet.read().await.pay(p_id, tstamp).await?;
+
+        Ok(tx_id)
+    }
+
     pub async fn wallet_create_shareable_remote_payment_request(
         &self,
         wallet_id: String,

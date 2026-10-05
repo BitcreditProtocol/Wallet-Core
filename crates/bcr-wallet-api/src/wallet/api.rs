@@ -110,6 +110,13 @@ pub trait WalletApi: SendSync {
         unit: CurrencyUnit,
         description: Option<String>,
     ) -> Result<PaymentSummary>;
+    async fn prepare_pay_to_node_id(
+        &self,
+        node_id: NodeId,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+    ) -> Result<PaymentSummary>;
     async fn offline_pay_by_token(
         &self,
         request_id: Uuid,
@@ -928,28 +935,29 @@ impl WalletApi for super::Wallet {
         let Some(contact) = self.contact_repo.get_contact(contact_id).await? else {
             return Err(Error::ContactNotFound(contact_id.to_string()));
         };
-        let Some(node_id) = contact.node_id.clone() else {
+        let Some(node_id) = contact.node_id else {
             return Err(Error::ContactMustHaveNodeId(contact.id.to_string()));
         };
         self.refresh_contact_relays(&contact.id).await;
+        self.prepare_pay_node_id(node_id, amount, None, description)
+            .await
+    }
 
-        let infos = self.get_wallet_mint_keyset_infos().await?;
-
-        let s_summary = self.debit.prepare_send(amount, &infos).await?;
-        let mut summary = PaymentSummary::from(s_summary);
-        summary.ptype = PaymentType::Contact;
-        let pref = PayReference {
-            request_id: summary.request_id,
-            unit: summary.unit.clone(),
-            fees: summary.fees,
-            ptype: WalletPaymentType::PaymentRequest {
-                node_id,
-                payment_request_id: None,
-            },
-            memo: description,
-        };
-        *self.current_payment.lock().await = Some(pref);
-        Ok(summary)
+    async fn prepare_pay_to_node_id(
+        &self,
+        node_id: NodeId,
+        amount: Amount,
+        unit: CurrencyUnit,
+        description: Option<String>,
+    ) -> Result<PaymentSummary> {
+        if unit != self.debit.unit() {
+            return Err(Error::InvalidCurrencyUnit(unit.to_string()));
+        }
+        if node_id.network() != self.network() {
+            return Err(Error::InvalidNetwork(self.network(), node_id.network()));
+        }
+        self.prepare_pay_node_id(node_id, amount, None, description)
+            .await
     }
 
     // * Check if our alpha is offline
@@ -1225,8 +1233,6 @@ impl WalletApi for super::Wallet {
         &self,
         payment_req: String,
     ) -> Result<PaymentSummary> {
-        let infos = self.get_wallet_mint_keyset_infos().await?;
-
         if let Ok(decoded_event) = base58::decode(&payment_req)
             && let Ok(deserialized_event) = borsh::from_slice::<EventEnvelope>(&decoded_event)
         {
@@ -1246,24 +1252,13 @@ impl WalletApi for super::Wallet {
                                 deserialized_payload.sender.network(),
                             ));
                         }
-                        let s_summary = self
-                            .debit
-                            .prepare_send(deserialized_payload.amount, &infos)
-                            .await?;
-                        let mut summary = PaymentSummary::from(s_summary);
-                        summary.ptype = PaymentType::PaymentRequest;
-                        let pref = PayReference {
-                            request_id: summary.request_id,
-                            unit: summary.unit.clone(),
-                            fees: summary.fees,
-                            ptype: WalletPaymentType::PaymentRequest {
-                                node_id: deserialized_payload.sender,
-                                payment_request_id: Some(deserialized_payload.id),
-                            },
-                            memo: deserialized_payload.memo,
-                        };
-                        *self.current_payment.lock().await = Some(pref);
-                        Ok(summary)
+                        self.prepare_pay_node_id(
+                            deserialized_payload.sender,
+                            deserialized_payload.amount,
+                            Some(deserialized_payload.id),
+                            deserialized_payload.memo,
+                        )
+                        .await
                     } else {
                         Err(Error::UnknownPaymentRequest(payment_req))
                     }
@@ -1369,26 +1364,14 @@ impl WalletApi for super::Wallet {
         if req.state != PaymentRequestState::Pending {
             return Err(Error::PaymentRequestInWrongState(payment_req_id));
         }
-        let Some(node_id) = req.node_id.clone() else {
+        let Some(node_id) = req.node_id else {
             return Err(Error::PaymentRequestInWrongState(payment_req_id));
         };
-        let infos = self.get_wallet_mint_keyset_infos().await?;
-
-        let s_summary = self.debit.prepare_send(req.amount, &infos).await?;
-        let mut summary = PaymentSummary::from(s_summary);
-        summary.ptype = PaymentType::PaymentRequest;
-        let pref = PayReference {
-            request_id: summary.request_id,
-            unit: summary.unit.clone(),
-            fees: summary.fees,
-            ptype: WalletPaymentType::PaymentRequest {
-                node_id,
-                payment_request_id: Some(req.id),
-            },
-            memo: req.description,
-        };
-        *self.current_payment.lock().await = Some(pref);
-        Ok(summary)
+        if req.unit != self.debit.unit() {
+            return Err(Error::InvalidCurrencyUnit(req.unit.to_string()));
+        }
+        self.prepare_pay_node_id(node_id, req.amount, Some(req.id), req.description)
+            .await
     }
 
     async fn reject_payment_request(&self, payment_req_id: Uuid) -> Result<()> {

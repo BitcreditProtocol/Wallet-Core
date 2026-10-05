@@ -831,6 +831,42 @@ pub async fn wallet_pay_to_contact(
 }
 
 #[frb]
+pub async fn wallet_prepare_pay_to_node_id(
+    req: WalletPreparePaymentByNodeIdRequest,
+) -> Result<WalletPreparePaymentResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let payment_summary = app_state
+        .wallet_prepare_pay_to_node_id(req.wallet_id, req.node_id, req.amount, req.description)
+        .await?;
+    Ok(WalletPreparePaymentResponse {
+        payment_summary: PaymentSummary {
+            request_id: payment_summary.request_id.to_string(),
+            unit: payment_summary.unit.to_string(),
+            amount: u64::from(payment_summary.amount),
+            fees: payment_summary.fees.into(),
+            reserved_fees: u64::from(payment_summary.reserved_fees),
+            expiry: payment_summary.expiry,
+            ptype: PaymentType::from(bcr_wallet_core::types::PaymentType::from(
+                payment_summary.ptype,
+            )),
+        },
+    })
+}
+
+#[frb]
+pub async fn wallet_pay_to_node_id(
+    req: WalletPaymentByNodeIdRequest,
+) -> Result<WalletTransactionIdResponse, WalletError> {
+    let app_state = get_app_state().await;
+    let res = app_state
+        .wallet_pay_to_node_id(req.wallet_id, req.rid)
+        .await?;
+    Ok(WalletTransactionIdResponse {
+        tx_id: res.to_string(),
+    })
+}
+
+#[frb]
 pub async fn wallet_request_payment_from_contact(
     req: WalletRequestPaymentFromContactRequest,
 ) -> Result<WalletRequestPaymentFromContactResponse, WalletError> {
@@ -2214,6 +2250,20 @@ pub struct WalletPreparePaymentByContactRequest {
 
 #[derive(Debug, Clone)]
 pub struct WalletPaymentByContactRequest {
+    pub wallet_id: String,
+    pub rid: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletPreparePaymentByNodeIdRequest {
+    pub wallet_id: String,
+    pub node_id: String,
+    pub amount: u64,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletPaymentByNodeIdRequest {
     pub wallet_id: String,
     pub rid: String,
 }
