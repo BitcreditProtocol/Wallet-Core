@@ -351,8 +351,8 @@ impl Pocket {
         }
 
         let input_ys: HashSet<cdk01::PublicKey> = inputs.keys().copied().collect();
-        if let Some(record) = self.find_matching_commitment(&input_ys).await? {
-            if let Some(result) = self
+        if let Some(record) = self.find_matching_commitment(&input_ys).await?
+            && let Some(result) = self
                 .resume_committed_swap(
                     client.clone(),
                     keysets_info,
@@ -361,9 +361,8 @@ impl Pocket {
                     swap_config.clone(),
                 )
                 .await?
-            {
-                return Ok(result);
-            }
+        {
+            return Ok(result);
         }
 
         let keysets_info: HashMap<cashu::Id, KeySetInfo> = keysets_info
