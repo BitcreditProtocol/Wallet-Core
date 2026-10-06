@@ -21,7 +21,7 @@ use bcr_wallet_core::types::{
 use bcr_wallet_persistence::{MeltCommitmentRecord, MintMeltRepository, PocketRepository};
 use bitcoin::secp256k1;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 use uuid::Uuid;
@@ -175,6 +175,168 @@ impl Pocket {
         Ok(infos)
     }
 
+    async fn find_matching_commitment(
+        &self,
+        input_ys: &HashSet<cdk01::PublicKey>,
+    ) -> Result<Option<bcr_wallet_persistence::SwapCommitmentRecord>> {
+        let commitments = self.pdb.list_commitments().await?;
+        Ok(commitments.into_iter().find(|record| {
+            record.inputs.len() == input_ys.len() && record.inputs.iter().all(|y| input_ys.contains(y))
+        }))
+    }
+
+    async fn finalize_resumed_signatures(
+        &self,
+        client: Arc<dyn ClowderMintConnector>,
+        premints: &HashMap<ecash::Id, cdk00::PreMintSecrets>,
+        signatures: Vec<cdk00::BlindSignature>,
+    ) -> Result<Amount> {
+        let mut sigs_by_kid: HashMap<ecash::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
+        for signature in signatures {
+            sigs_by_kid
+                .entry(signature.keyset_id.into())
+                .or_default()
+                .push(signature);
+        }
+        let mut total = Amount::ZERO;
+        for (kid, sigs) in sigs_by_kid {
+            let Some(premint) = premints.get(&kid) else {
+                tracing::warn!("resumed swap: no stored premint for keyset {kid}");
+                continue;
+            };
+            let keyset = client.get_mint_keyset(kid).await?;
+            let proofs = unblind_proofs(&keyset, sigs, premint.clone());
+            for proof in proofs {
+                let amount = proof.amount;
+                self.pdb.store_new(proof).await?;
+                total += amount;
+            }
+        }
+        Ok(total)
+    }
+
+    async fn resume_via_restore(
+        &self,
+        client: Arc<dyn ClowderMintConnector>,
+        record: &bcr_wallet_persistence::SwapCommitmentRecord,
+    ) -> Result<Option<(Amount, Vec<cdk01::PublicKey>)>> {
+        let premints_by_output: HashMap<cashu::PublicKey, (ecash::Id, cdk00::PreMint)> = record
+            .premints
+            .iter()
+            .flat_map(|(kid, premint)| {
+                premint
+                    .iter()
+                    .map(move |pm| (pm.blinded_message.blinded_secret, (*kid, pm.clone())))
+            })
+            .collect();
+
+        let restored = client
+            .post_restore(cashu::RestoreRequest {
+                outputs: record.outputs.clone(),
+            })
+            .await?;
+        if restored.is_empty() {
+            return Ok(None);
+        }
+
+        let mut keysets: HashMap<ecash::Id, KeySet> = HashMap::new();
+        let mut total = Amount::ZERO;
+        let mut stored_ys = Vec::new();
+        for (blinded_message, signature) in restored {
+            let Some((kid, premint)) = premints_by_output.get(&blinded_message.blinded_secret)
+            else {
+                continue;
+            };
+            if !keysets.contains_key(kid) {
+                let keyset = client.get_mint_keyset(*kid).await?;
+                keysets.insert(*kid, keyset);
+            }
+            let keyset = keysets.get(kid).expect("keyset should be here");
+            match bcr_common::core::signature::unblind_ecash_signature(
+                keyset,
+                premint.clone(),
+                signature,
+            ) {
+                Ok(proof) => {
+                    let amount = proof.amount;
+                    let y = proof.y()?;
+                    self.pdb.store_new(proof).await?;
+                    total += amount;
+                    stored_ys.push(y);
+                }
+                Err(e) => tracing::error!("unblind_ecash_signature failed during restore: {e}"),
+            }
+        }
+
+        if stored_ys.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((total, stored_ys)))
+    }
+
+    async fn resume_committed_swap(
+        &self,
+        client: Arc<dyn ClowderMintConnector>,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+        inputs: &HashMap<cdk01::PublicKey, cdk00::Proof>,
+        record: bcr_wallet_persistence::SwapCommitmentRecord,
+        swap_config: SwapConfig,
+    ) -> Result<Option<(Amount, Vec<cdk01::PublicKey>)>> {
+        let ys = record.inputs.clone();
+        let committed_proofs: Vec<cdk00::Proof> = record
+            .inputs
+            .iter()
+            .filter_map(|y| inputs.get(y).cloned())
+            .collect();
+
+        match client
+            .post_swap_committed(committed_proofs, record.outputs.clone(), record.commitment)
+            .await
+        {
+            Ok(signatures) => {
+                let amount = self
+                    .finalize_resumed_signatures(client, &record.premints, signatures)
+                    .await?;
+                self.pdb.delete_commitment(record.commitment).await?;
+                return Ok(Some((amount, ys)));
+            }
+            Err(Error::MintClientResourceNotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+
+        if let Some(result) = self.resume_via_restore(client.clone(), &record).await? {
+            self.pdb.delete_commitment(record.commitment).await?;
+            return Ok(Some(result));
+        }
+
+        match self
+            .protest_swap(record.commitment, keysets_info, client, swap_config)
+            .await?
+        {
+            ProtestResult {
+                status: wire_common::ProtestStatus::Resolved,
+                result: Some(result),
+            } => Ok(Some(result)),
+            ProtestResult {
+                status: wire_common::ProtestStatus::Resolved,
+                result: None,
+            } => Err(Error::MintingError(
+                "swap protest resolved but no result returned".to_string(),
+            )),
+            ProtestResult {
+                status: wire_common::ProtestStatus::Rabid,
+                ..
+            } => {
+                self.pdb.delete_commitment(record.commitment).await?;
+                Ok(None)
+            }
+            ProtestResult {
+                status: wire_common::ProtestStatus::Offline,
+                ..
+            } => Ok(Some((Amount::ZERO, Vec::new()))),
+        }
+    }
+
     async fn digest_proofs(
         &self,
         client: Arc<dyn ClowderMintConnector>,
@@ -182,14 +344,31 @@ impl Pocket {
         inputs: HashMap<cdk01::PublicKey, cdk00::Proof>,
         swap_config: SwapConfig,
     ) -> Result<(Amount, Vec<cdk01::PublicKey>)> {
-        let keysets_info: HashMap<cashu::Id, KeySetInfo> = keysets_info
-            .iter()
-            .map(|(id, info)| ((*id).into(), info.clone()))
-            .collect();
         if inputs.is_empty() {
             tracing::warn!("DbPocket::digest_proofs: empty inputs");
             return Ok((Amount::ZERO, Vec::new()));
         }
+
+        let input_ys: HashSet<cdk01::PublicKey> = inputs.keys().copied().collect();
+        if let Some(record) = self.find_matching_commitment(&input_ys).await? {
+            if let Some(result) = self
+                .resume_committed_swap(
+                    client.clone(),
+                    keysets_info,
+                    &inputs,
+                    record,
+                    swap_config.clone(),
+                )
+                .await?
+            {
+                return Ok(result);
+            }
+        }
+
+        let keysets_info: HashMap<cashu::Id, KeySetInfo> = keysets_info
+            .iter()
+            .map(|(id, info)| ((*id).into(), info.clone()))
+            .collect();
         // prepare data
         let (ys, swap_proofs): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
 
@@ -3207,5 +3386,221 @@ mod tests {
                     .unwrap(),
             Amount::from(24u64)
         );
+    }
+
+    #[tokio::test]
+    async fn swap_retry_never_reached_mint_replays_commitment() {
+        let amount = Amount::from(24u64);
+        let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = test_kinfos(info);
+
+        let input_amounts = [Amount::from(16u64), Amount::from(8u64)];
+        let input_proofs = core_tests::generate_random_ecash_proofs(&mintkeyset, &input_amounts);
+        let input_ys: Vec<cashu::PublicKey> = input_proofs
+            .iter()
+            .map(|p| p.y().expect("y works"))
+            .collect();
+        let input_proofs_map: HashMap<cashu::PublicKey, cdk00::Proof> = input_proofs
+            .iter()
+            .map(|p| (p.y().unwrap(), p.clone()))
+            .collect();
+
+        let premint = cdk00::PreMintSecrets::random(
+            kid.into(),
+            amount,
+            &SplitTarget::None,
+            &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
+                &mintkeyset,
+                None,
+            )),
+        )
+        .unwrap();
+        let outputs = premint.blinded_messages();
+        let blind_sigs: Vec<cdk00::BlindSignature> = outputs
+            .iter()
+            .map(|bm| {
+                bcr_common::core::signature::sign_ecash(&mintkeyset, bm)
+                    .expect("signing should work")
+            })
+            .collect();
+        let stored_premints = HashMap::from([(kid, premint)]);
+
+        let ephemeral_keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
+        let wallet_key =
+            cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
+        let commitment_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xcd; 64])
+            .expect("valid sig bytes");
+
+        let mdb = MockMintMeltRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        let mut alpha_connector = MockClowderMintConnector::new();
+
+        pdb.expect_load_proofs()
+            .times(1)
+            .returning(move |_| Ok(input_proofs_map.clone()));
+
+        let record_inputs = input_ys.clone();
+        let record_outputs = outputs.clone();
+        let record_premints = stored_premints.clone();
+        pdb.expect_list_commitments().times(1).returning(move || {
+            Ok(vec![bcr_wallet_persistence::SwapCommitmentRecord {
+                inputs: record_inputs.clone(),
+                outputs: record_outputs.clone(),
+                expiry: 1000,
+                commitment: commitment_sig,
+                ephemeral_secret,
+                body_content: "dGVzdA==".to_string(),
+                wallet_key,
+                premints: record_premints.clone(),
+            }])
+        });
+
+        let keyset_clone = mintkeyset.clone();
+        alpha_connector
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
+
+        alpha_connector
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(move |_, _, _| Ok(blind_sigs.clone()));
+
+        pdb.expect_store_new().returning(|p| {
+            let y = p.y().expect("Hash to curve should not fail");
+            Ok(y)
+        });
+
+        pdb.expect_delete_commitment()
+            .times(1)
+            .withf(move |sig| *sig == commitment_sig)
+            .returning(|_| Ok(()));
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let reclaimed = pocket
+            .reclaim_proofs(
+                &input_ys,
+                &k_infos,
+                Arc::new(alpha_connector),
+                test_swap_config(),
+            )
+            .await
+            .expect("reclaim should resume via replay");
+
+        assert_eq!(reclaimed, amount);
+    }
+
+    #[tokio::test]
+    async fn swap_retry_dropped_response_recovers_via_restore() {
+        let amount = Amount::from(24u64);
+        let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = test_kinfos(info);
+
+        let input_amounts = [Amount::from(16u64), Amount::from(8u64)];
+        let input_proofs = core_tests::generate_random_ecash_proofs(&mintkeyset, &input_amounts);
+        let input_ys: Vec<cashu::PublicKey> = input_proofs
+            .iter()
+            .map(|p| p.y().expect("y works"))
+            .collect();
+        let input_proofs_map: HashMap<cashu::PublicKey, cdk00::Proof> = input_proofs
+            .iter()
+            .map(|p| (p.y().unwrap(), p.clone()))
+            .collect();
+
+        let premint = cdk00::PreMintSecrets::random(
+            kid.into(),
+            amount,
+            &SplitTarget::None,
+            &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
+                &mintkeyset,
+                None,
+            )),
+        )
+        .unwrap();
+        let outputs = premint.blinded_messages();
+        let blind_sigs: Vec<cdk00::BlindSignature> = outputs
+            .iter()
+            .map(|bm| {
+                bcr_common::core::signature::sign_ecash(&mintkeyset, bm)
+                    .expect("signing should work")
+            })
+            .collect();
+        let restored: Vec<(cdk00::BlindedMessage, cdk00::BlindSignature)> = outputs
+            .iter()
+            .cloned()
+            .zip(blind_sigs.iter().cloned())
+            .collect();
+        let stored_premints = HashMap::from([(kid, premint)]);
+
+        let ephemeral_keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
+        let wallet_key =
+            cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
+        let commitment_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xef; 64])
+            .expect("valid sig bytes");
+
+        let mdb = MockMintMeltRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        let mut alpha_connector = MockClowderMintConnector::new();
+
+        pdb.expect_load_proofs()
+            .times(1)
+            .returning(move |_| Ok(input_proofs_map.clone()));
+
+        let record_inputs = input_ys.clone();
+        let record_outputs = outputs.clone();
+        let record_premints = stored_premints.clone();
+        pdb.expect_list_commitments().times(1).returning(move || {
+            Ok(vec![bcr_wallet_persistence::SwapCommitmentRecord {
+                inputs: record_inputs.clone(),
+                outputs: record_outputs.clone(),
+                expiry: 1000,
+                commitment: commitment_sig,
+                ephemeral_secret,
+                body_content: "dGVzdA==".to_string(),
+                wallet_key,
+                premints: record_premints.clone(),
+            }])
+        });
+
+        let keyset_clone = mintkeyset.clone();
+        alpha_connector
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
+
+        alpha_connector
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(|_, _, _| Err(Error::MintClientResourceNotFound("gone".to_string())));
+
+        alpha_connector
+            .expect_post_restore()
+            .times(1)
+            .returning(move |_| Ok(restored.clone()));
+
+        pdb.expect_store_new().returning(|p| {
+            let y = p.y().expect("Hash to curve should not fail");
+            Ok(y)
+        });
+
+        pdb.expect_delete_commitment()
+            .times(1)
+            .withf(move |sig| *sig == commitment_sig)
+            .returning(|_| Ok(()));
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let reclaimed = pocket
+            .reclaim_proofs(
+                &input_ys,
+                &k_infos,
+                Arc::new(alpha_connector),
+                test_swap_config(),
+            )
+            .await
+            .expect("reclaim should resume via restore");
+
+        assert_eq!(reclaimed, amount);
     }
 }
