@@ -1,6 +1,6 @@
 use bcr_common::{
     cashu::{self},
-    cdk_common, ecash,
+    cdk_common,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -51,12 +51,6 @@ pub enum Error {
     MeltNotFound(String),
     #[error("melt commitment not found: {0}")]
     MeltCommitmentNotFound(String),
-    #[error("counter kid mismatch")]
-    CounterKidMismatch,
-    #[error("counter changed concurrently: {0}")]
-    CounterConflict(ecash::Id),
-    #[error("counter in local DB not found: {0}")]
-    CounterNotFound(ecash::Id),
     #[error("{0}")]
     Custom(String),
     #[error("Contact already exists {0}")]
