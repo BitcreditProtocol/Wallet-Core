@@ -5,6 +5,7 @@
 * Upgrade bcr-common and use new ecash types
 * Add endpoint `wallet_request_payment_from_node_id` with `WalletRequestPaymentFromNodeIdRequest` as input
 * Make wallet state deterministic and race-safe, `wallet_check_pending_mints` records each mint once
+* Reserve keyset counters in a single atomic redb transaction so concurrent swaps never reuse secrets
 * Send payment request reject and cancel over Nostr with event `PaymentRequestAction` (#298)
     * `wallet_subscribe_to_payment_requests` also fires on the other party's cancel or reject
 * Check incoming Nostr events against the authenticated sender and the wallet's network

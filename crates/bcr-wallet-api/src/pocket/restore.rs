@@ -19,7 +19,6 @@ pub async fn restore_keysetid(
 ) -> Result<usize> {
     let mut zero_response_counter = 0;
     let mut total_proofs_restored = 0;
-    let mut dbcursor = db.counter(kid).await?;
     let mut cursor = 0; // always start at 0 for restore
     while zero_response_counter < EMPTY_RESPONSES_BEFORE_ABORT {
         let restored_proofs = restore_batch(seed, kid, client, db, cursor, BATCH_SIZE).await?;
@@ -28,11 +27,7 @@ pub async fn restore_keysetid(
             zero_response_counter += 1;
         } else {
             zero_response_counter = 0;
-            if cursor > dbcursor {
-                db.increment_counter(kid, dbcursor, cursor - dbcursor)
-                    .await?;
-                dbcursor = cursor;
-            }
+            db.advance_counter_to(kid, cursor).await?;
         }
         total_proofs_restored += restored_proofs;
     }
@@ -331,7 +326,8 @@ mod tests {
         assert_eq!(restored_proofs, BATCH_SIZE as usize);
     }
 
-    async fn restore_keysetid_1stbatch_with_counter(stored: u32, increments: usize) {
+    #[tokio::test]
+    async fn restore_keysetid_1stbatch() {
         let seed = zero_seed();
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
@@ -341,10 +337,6 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(keyset.clone()));
         let mut db = MockPocketRepository::new();
-        db.expect_counter()
-            .times(1)
-            .with(eq(mintkeyset.id))
-            .returning(move |_| Ok(stored));
         let cloned_mintkeyset = mintkeyset.clone();
         client
             .expect_post_restore()
@@ -380,10 +372,10 @@ mod tests {
         db.expect_store_new()
             .times(BATCH_SIZE as usize)
             .returning(|p| Ok(p.y().unwrap()));
-        db.expect_increment_counter()
-            .times(increments)
-            .with(eq(mintkeyset.id), eq(0), eq(BATCH_SIZE))
-            .returning(|_, _, _| Ok(()));
+        db.expect_advance_counter_to()
+            .times(1)
+            .with(eq(mintkeyset.id), eq(BATCH_SIZE))
+            .returning(|_, _| Ok(()));
         client
             .expect_post_restore()
             .times(EMPTY_RESPONSES_BEFORE_ABORT)
@@ -393,16 +385,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(total_restored, BATCH_SIZE as usize);
-    }
-
-    #[tokio::test]
-    async fn restore_keysetid_1stbatch() {
-        restore_keysetid_1stbatch_with_counter(0, 1).await;
-    }
-
-    #[tokio::test]
-    async fn restore_keysetid_never_lowers_counter() {
-        restore_keysetid_1stbatch_with_counter(3 * BATCH_SIZE, 0).await;
     }
 
     #[tokio::test]
@@ -416,10 +398,6 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(keyset.clone()));
         let mut db = MockPocketRepository::new();
-        db.expect_counter()
-            .times(1)
-            .with(eq(mintkeyset.id))
-            .returning(move |_| Ok(0));
         client
             .expect_post_restore()
             .times(1)
@@ -459,10 +437,10 @@ mod tests {
         db.expect_store_new()
             .times(BATCH_SIZE as usize)
             .returning(|p| Ok(p.y().unwrap()));
-        db.expect_increment_counter()
+        db.expect_advance_counter_to()
             .times(1)
-            .with(eq(mintkeyset.id), eq(0), eq(2 * BATCH_SIZE))
-            .returning(|_, _, _| Ok(()));
+            .with(eq(mintkeyset.id), eq(2 * BATCH_SIZE))
+            .returning(|_, _| Ok(()));
         client
             .expect_post_restore()
             .times(EMPTY_RESPONSES_BEFORE_ABORT)
@@ -485,10 +463,6 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(keyset.clone()));
         let mut db = MockPocketRepository::new();
-        db.expect_counter()
-            .times(1)
-            .with(eq(mintkeyset.id))
-            .returning(move |_| Ok(0));
         client
             .expect_post_restore()
             .times(1)
@@ -529,10 +503,10 @@ mod tests {
         db.expect_store_new()
             .times((BATCH_SIZE / 3) as usize)
             .returning(|p| Ok(p.y().unwrap()));
-        db.expect_increment_counter()
+        db.expect_advance_counter_to()
             .times(1)
-            .with(eq(mintkeyset.id), eq(0), eq(2 * BATCH_SIZE))
-            .returning(|_, _, _| Ok(()));
+            .with(eq(mintkeyset.id), eq(2 * BATCH_SIZE))
+            .returning(|_, _| Ok(()));
         client
             .expect_post_restore()
             .times(EMPTY_RESPONSES_BEFORE_ABORT)

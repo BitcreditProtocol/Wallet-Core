@@ -1527,14 +1527,10 @@ mod tests {
             .times(1)
             .with(eq(kid))
             .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&cloned_keyset, None)));
-        pdb.expect_counter()
+        pdb.expect_reserve_counter()
             .times(1)
-            .with(eq(kid))
-            .returning(|_| Ok(0));
-        pdb.expect_increment_counter()
-            .times(1)
-            .with(eq(kid), eq(0), eq(2))
-            .returning(|_, _, _| Ok(()));
+            .with(eq(kid), eq(2))
+            .returning(|_, _| Ok(0));
         setup_commitment_mocks(&mut connector, &mut pdb);
         connector
             .expect_post_swap_committed()
@@ -1554,6 +1550,87 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cashed, Amount::from(24u64));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_receive_proofs_never_reuses_counter_indices() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = test_kinfos(info);
+
+        let pdb: Arc<dyn PocketRepository> = Arc::new(
+            bcr_wallet_persistence::test_utils::tests::in_memory_pocket_db(
+                &bcr_wallet_persistence::test_utils::tests::wallet_id(),
+                CurrencyUnit::Sat,
+            ),
+        );
+        let mdb: Arc<dyn MintMeltRepository> = Arc::new(MockMintMeltRepository::new());
+
+        let seen_outputs: Arc<Mutex<Vec<cdk00::BlindedMessage>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let mut connector = MockClowderMintConnector::new();
+        let cloned_keyset = keyset.clone();
+        connector
+            .expect_get_mint_keyset()
+            .times(2)
+            .with(eq(kid))
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&cloned_keyset, None)));
+        let seen_for_commit = seen_outputs.clone();
+        connector
+            .expect_post_swap_commitment()
+            .times(2)
+            .returning(move |_, outputs, _, _, _| {
+                let mut seen = seen_for_commit.lock().unwrap();
+                for output in &outputs {
+                    assert!(
+                        !seen.contains(output),
+                        "blinded message reused across concurrent swaps"
+                    );
+                }
+                seen.extend(outputs);
+                Ok(mock_commitment_result())
+            });
+        let sign_keyset = keyset.clone();
+        connector
+            .expect_post_swap_committed()
+            .times(2)
+            .returning(move |_, outp, _| {
+                let amounts = outp.iter().map(|b| b.amount).collect::<Vec<_>>();
+                Ok(core_tests::generate_ecash_signatures(
+                    &sign_keyset,
+                    &amounts,
+                ))
+            });
+        let connector: Arc<dyn ClowderMintConnector> = Arc::new(connector);
+
+        let pocket = Arc::new(pocket(pdb, mdb));
+
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let pocket = pocket.clone();
+            let connector = connector.clone();
+            let k_infos = k_infos.clone();
+            let proofs = core_tests::generate_random_ecash_proofs(
+                &keyset,
+                &[Amount::from(8u64), Amount::from(16u64)],
+            );
+            handles.push(tokio::spawn(async move {
+                pocket
+                    .receive_proofs(connector, &k_infos, proofs, test_swap_config())
+                    .await
+                    .expect("receive_proofs should succeed")
+            }));
+        }
+
+        for handle in handles {
+            handle.await.expect("task should not panic");
+        }
+
+        assert_eq!(
+            seen_outputs.lock().unwrap().len(),
+            4,
+            "both concurrent swaps should have minted their outputs"
+        );
     }
 
     #[tokio::test]
@@ -1587,14 +1664,10 @@ mod tests {
                 map.insert(proofs_clone[1].y().unwrap(), proofs_clone[1].clone());
                 Ok(map)
             });
-        pdb.expect_counter()
+        pdb.expect_reserve_counter()
             .times(1)
-            .with(eq(kid))
-            .returning(|_| Ok(0));
-        pdb.expect_increment_counter()
-            .times(1)
-            .with(eq(kid), eq(0), eq(2))
-            .returning(|_, _, _| Ok(()));
+            .with(eq(kid), eq(2))
+            .returning(|_, _| Ok(0));
         setup_commitment_mocks(&mut connector, &mut pdb);
         connector
             .expect_post_swap_committed()
@@ -1660,14 +1733,10 @@ mod tests {
             map.insert(proofs_clone[1].y().unwrap(), proofs_clone[1].clone());
             Ok(map)
         });
-        pdb.expect_counter()
+        pdb.expect_reserve_counter()
             .times(1)
-            .with(eq(kid))
-            .returning(|_| Ok(0));
-        pdb.expect_increment_counter()
-            .times(1)
-            .with(eq(kid), eq(0), eq(1))
-            .returning(|_, _, _| Ok(()));
+            .with(eq(kid), eq(1))
+            .returning(|_, _| Ok(0));
         let proofs_clone_mark = proofs.clone();
         pdb.expect_mark_pending_as_spent()
             .times(1)
@@ -1922,13 +1991,10 @@ mod tests {
         let mut pdb = MockPocketRepository::new();
         let mut connector = MockClowderMintConnector::new();
 
-        pdb.expect_counter()
+        pdb.expect_reserve_counter()
             .times(1)
-            .with(eq(kid))
-            .returning(|_| Ok(0));
-        pdb.expect_increment_counter()
-            .times(1)
-            .returning(|_, _, _| Ok(()));
+            .with(eq(kid), always())
+            .returning(|_, _| Ok(0));
 
         mdb.expect_store_mint()
             .times(1)
@@ -2305,8 +2371,9 @@ mod tests {
             .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
 
         // Mocks for digest_proofs swap (runs against alpha)
-        pdb.expect_counter().with(eq(kid)).returning(|_| Ok(0));
-        pdb.expect_increment_counter().returning(|_, _, _| Ok(()));
+        pdb.expect_reserve_counter()
+            .with(eq(kid), always())
+            .returning(|_, _| Ok(0));
         setup_commitment_mocks(&mut alpha_connector, &mut pdb);
         let swap_keyset = mintkeyset.clone();
         alpha_connector
