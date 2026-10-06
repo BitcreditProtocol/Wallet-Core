@@ -60,6 +60,7 @@ pub mod tests {
         connector: &mut crate::external::mint::MockClowderMintConnector,
         db: &mut bcr_wallet_persistence::MockPocketRepository,
     ) {
+        db.expect_list_commitments().returning(|| Ok(vec![]));
         connector
             .expect_post_swap_commitment()
             .times(1)
