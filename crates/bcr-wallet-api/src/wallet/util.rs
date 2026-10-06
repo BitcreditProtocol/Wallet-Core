@@ -12,10 +12,16 @@ use bcr_common::{
     core::swap::wallet::prepare_swap,
     ecash,
     ecash::KeySet,
-    wire::keys::ProofFingerprint,
+    wire::{
+        exchange::{self, OfflineExchangeRequest},
+        keys::ProofFingerprint,
+    },
 };
 use bcr_wallet_core::types::Transaction;
-use bitcoin::{hashes::sha256::Hash as Sha256, secp256k1};
+use bitcoin::{
+    hashes::{Hash, sha256::Hash as Sha256},
+    secp256k1,
+};
 use secp256k1::schnorr::Signature;
 
 //////////////////////////////////// utils
@@ -39,6 +45,95 @@ pub fn proofs_to_fingerprints(
     }
 
     Ok((fingerprints, secrets))
+}
+
+pub fn build_offline_exchange_request(
+    alpha_id: &secp256k1::PublicKey,
+    evidence_digest: &[u8; 32],
+    proofs: Vec<Proof>,
+    wallet_sk: &cashu::SecretKey,
+) -> Result<(OfflineExchangeRequest, [u8; 32], Vec<cashu::secret::Secret>)> {
+    let (fingerprints, secrets) = proofs_to_fingerprints(proofs)?;
+    let hashes: Vec<Sha256> = secrets
+        .iter()
+        .map(|secret| Sha256::hash(&secret.to_bytes()))
+        .collect();
+    let wallet_pk = wallet_sk.public_key();
+    let exchange_digest = exchange::exchange_digest(
+        alpha_id,
+        evidence_digest,
+        &fingerprints,
+        &hashes,
+        &wallet_pk,
+    );
+    let keypair = secp256k1::Keypair::from_secret_key(secp256k1::global::SECP256K1, wallet_sk);
+    let wallet_signature = secp256k1::global::SECP256K1
+        .sign_schnorr_no_aux_rand(&exchange::exchange_message(&exchange_digest), &keypair);
+    let request = OfflineExchangeRequest {
+        fingerprints,
+        hashes,
+        wallet_pk,
+        wallet_signature,
+    };
+    Ok((request, exchange_digest, secrets))
+}
+
+pub async fn post_offline_exchange(
+    substitute_client: &dyn ClowderMintConnector,
+    substitute_clowder_id: secp256k1::PublicKey,
+    alpha_id: &secp256k1::PublicKey,
+    evidence_digest: &[u8; 32],
+    proofs: Vec<Proof>,
+    wallet_sk: &cashu::SecretKey,
+) -> Result<Vec<Proof>> {
+    let (request, _, _) =
+        build_offline_exchange_request(alpha_id, evidence_digest, proofs, wallet_sk)?;
+    let beta_proofs = substitute_client
+        .post_offline_exchange(
+            request.fingerprints,
+            request.hashes,
+            *request.wallet_pk,
+            request.wallet_signature,
+            substitute_clowder_id,
+        )
+        .await?;
+    Ok(beta_proofs)
+}
+
+pub fn unlock_offline_exchanged(
+    mut beta_proofs: Vec<Proof>,
+    secrets: &[cashu::secret::Secret],
+    wallet_sk: &cashu::SecretKey,
+) -> Result<Vec<Proof>> {
+    let by_hash_lock: HashMap<Sha256, &cashu::secret::Secret> = secrets
+        .iter()
+        .map(|s| (Sha256::hash(&s.to_bytes()), s))
+        .collect();
+    for p in beta_proofs.iter_mut() {
+        let hash_lock = htlc_hash_lock(p)
+            .ok_or_else(|| Error::Swap("issued proof is not HTLC locked".into()))?;
+        let secret = by_hash_lock
+            .get(&hash_lock)
+            .ok_or_else(|| Error::Swap("issued proof carries an unknown hash lock".into()))?;
+        sign_htlc_proof(p, &secret.to_string(), wallet_sk)?;
+    }
+    Ok(beta_proofs)
+}
+
+pub async fn all_spent(client: &dyn ClowderMintConnector, ys: Vec<cashu::PublicKey>) -> bool {
+    let expected = ys.len();
+    match client
+        .post_check_state(cashu::CheckStateRequest { ys })
+        .await
+    {
+        Ok(states) => {
+            states.len() == expected && states.iter().all(|s| s.state == cashu::State::Spent)
+        }
+        Err(e) => {
+            tracing::warn!("Could not check proof states: {e}");
+            false
+        }
+    }
 }
 
 pub fn remove_dleq_from_proofs(mut proofs: Vec<Proof>) -> Vec<Proof> {
@@ -209,6 +304,7 @@ mod tests {
         types::{PaymentType, TransactionFees, TransactionStatus},
         util::to_mint_url,
     };
+    use bitcoin::hex::{DisplayHex, FromHex};
     use std::str::FromStr;
     use uuid::Uuid;
 
@@ -227,6 +323,99 @@ mod tests {
         let mut proofs = core_tests::generate_random_ecash_proofs(&keyset, amounts);
         add_test_dleqs(&mut proofs);
         proofs
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RetryFixture {
+        alpha_id: secp256k1::PublicKey,
+        evidence_digest: String,
+        wallet_sk: cashu::SecretKey,
+        proof: cashu::Proof,
+        request: serde_json::Value,
+        exchange_digest: String,
+        other_wallet_sk: cashu::SecretKey,
+        other_request: serde_json::Value,
+        other_exchange_digest: String,
+    }
+
+    fn retry_fixture() -> (RetryFixture, [u8; 32]) {
+        let fixture: RetryFixture = serde_json::from_str(include_str!(
+            "../../tests/fixtures/offline_exchange_retry.json"
+        ))
+        .expect("fixture parses");
+        let evidence_digest = <[u8; 32]>::from_hex(&fixture.evidence_digest).expect("hex");
+        (fixture, evidence_digest)
+    }
+
+    #[test]
+    fn offline_exchange_fixture_rebuilds_byte_identical() {
+        let (fixture, evidence_digest) = retry_fixture();
+        let build = || {
+            build_offline_exchange_request(
+                &fixture.alpha_id,
+                &evidence_digest,
+                vec![fixture.proof.clone()],
+                &fixture.wallet_sk,
+            )
+            .expect("builds")
+        };
+        let (first, first_digest, _) = build();
+        let (second, second_digest, _) = build();
+
+        assert_eq!(
+            serde_json::to_vec(&first).unwrap(),
+            serde_json::to_vec(&second).unwrap()
+        );
+        assert_eq!(first_digest, second_digest);
+        assert_eq!(serde_json::to_value(&first).unwrap(), fixture.request);
+        assert_eq!(first_digest.to_lower_hex_string(), fixture.exchange_digest);
+    }
+
+    #[test]
+    fn offline_exchange_fixture_digest_and_signature_match_request() {
+        let (fixture, evidence_digest) = retry_fixture();
+        let request: OfflineExchangeRequest =
+            serde_json::from_value(fixture.request).expect("request parses");
+        let digest = exchange::exchange_digest(
+            &fixture.alpha_id,
+            &evidence_digest,
+            &request.fingerprints,
+            &request.hashes,
+            &request.wallet_pk,
+        );
+
+        assert_eq!(request.wallet_pk, fixture.wallet_sk.public_key());
+        assert_eq!(digest.to_lower_hex_string(), fixture.exchange_digest);
+        secp256k1::global::SECP256K1
+            .verify_schnorr(
+                &request.wallet_signature,
+                &exchange::exchange_message(&digest),
+                &request.wallet_pk.x_only_public_key(),
+            )
+            .expect("BIP340 signature verifies");
+    }
+
+    #[test]
+    fn offline_exchange_fixture_other_key_changes_digest() {
+        let (fixture, evidence_digest) = retry_fixture();
+        let (other, other_digest, _) = build_offline_exchange_request(
+            &fixture.alpha_id,
+            &evidence_digest,
+            vec![fixture.proof.clone()],
+            &fixture.other_wallet_sk,
+        )
+        .expect("builds");
+
+        assert_eq!(serde_json::to_value(&other).unwrap(), fixture.other_request);
+        assert_eq!(
+            other_digest.to_lower_hex_string(),
+            fixture.other_exchange_digest
+        );
+        assert_ne!(fixture.other_exchange_digest, fixture.exchange_digest);
+        assert_eq!(
+            other.fingerprints[0].y,
+            fixture.proof.y().expect("y derives")
+        );
     }
 
     #[test]

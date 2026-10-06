@@ -21,7 +21,7 @@ use bcr_wallet_core::types::{
 use bcr_wallet_persistence::{MeltCommitmentRecord, MintMeltRepository, PocketRepository};
 use bitcoin::secp256k1;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 use uuid::Uuid;
@@ -510,24 +510,23 @@ impl super::PocketApi for Pocket {
         Ok(total_recovered)
     }
 
-    async fn delete_proofs(&self) -> Result<HashMap<ecash::Id, Vec<cdk00::Proof>>> {
-        let proofs = self.pdb.list_all().await?;
-
-        let mut proofs_by_keyset = HashMap::<ecash::Id, Vec<cdk00::Proof>>::new();
-
-        for y in proofs.iter() {
-            if let Some((proof, state)) = self.pdb.delete_proof(*y).await? {
-                // delete all, but return only unspent proofs
-                if matches!(state, cdk07::State::Unspent) {
-                    proofs_by_keyset
-                        .entry(proof.keyset_id.into())
-                        .or_default()
-                        .push(proof);
-                }
+    async fn delete_unmigratable_proofs(
+        &self,
+        substitute: &HashSet<ecash::Id>,
+    ) -> Result<Vec<cdk01::PublicKey>> {
+        let mut migratable = Vec::new();
+        for y in self.pdb.list_all().await? {
+            let (proof, state) = self.pdb.load_proof(y).await?;
+            if substitute.contains(&proof.keyset_id.into()) {
+                continue;
+            }
+            if matches!(state, cdk07::State::Unspent | cdk07::State::PendingSpent) {
+                migratable.push(y);
+            } else {
+                self.pdb.delete_proof(y).await?;
             }
         }
-
-        Ok(proofs_by_keyset)
+        Ok(migratable)
     }
 
     async fn return_proofs_to_send_for_offline_payment(
@@ -1372,6 +1371,112 @@ mod tests {
         let unit = CurrencyUnit::Sat;
         let seed = bip39::Mnemonic::generate(12).unwrap().to_seed("");
         super::Pocket::new(unit, pdb, mdb, seed, Arc::new(provider))
+    }
+
+    #[tokio::test]
+    async fn migrate_finalise_substitute_proofs_are_not_migrated_again() {
+        let (_, alpha_keyset) = core_tests::generate_random_ecash_keyset();
+        let (substitute_info, substitute_keyset) = core_tests::generate_random_ecash_keyset();
+        let alpha = core_tests::generate_random_ecash_proofs(&alpha_keyset, &[Amount::from(8u64)])
+            .remove(0);
+        let substitute =
+            core_tests::generate_random_ecash_proofs(&substitute_keyset, &[Amount::from(8u64)])
+                .remove(0);
+        let alpha_y = alpha.y().unwrap();
+        let substitute_y = substitute.y().unwrap();
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_list_all()
+            .returning(move || Ok(vec![alpha_y, substitute_y]));
+        pdb.expect_load_proof().returning(move |y| {
+            let proof = if y == alpha_y {
+                alpha.clone()
+            } else {
+                substitute.clone()
+            };
+            Ok((proof, cdk07::State::Unspent))
+        });
+        pdb.expect_delete_proof().never();
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()));
+        let migratable = pocket
+            .delete_unmigratable_proofs(&HashSet::from([substitute_info.id]))
+            .await
+            .unwrap();
+        assert_eq!(migratable, vec![alpha_y]);
+    }
+
+    #[tokio::test]
+    async fn migrate_held_proofs_are_outside_stale_and_cleanup_jobs() {
+        use bcr_wallet_persistence::{MigrationJournalHeader, MigrationJournalRepository};
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(8u64), Amount::from(16u64)],
+        );
+        let db = Arc::new(
+            redb::Builder::new()
+                .create_with_backend(redb::backends::InMemoryBackend::new())
+                .unwrap(),
+        );
+        let keys = secp256k1::Keypair::from_secret_key(
+            secp256k1::SECP256K1,
+            &secp256k1::SecretKey::from_slice(&[9u8; 32]).unwrap(),
+        );
+        let pdb = Arc::new(
+            bcr_wallet_persistence::redb::pocket::PocketDB::new(
+                db,
+                "w-1",
+                &CurrencyUnit::Sat,
+                keys,
+            )
+            .unwrap(),
+        );
+        let held = pdb.store_pendingspent(proofs[0].clone()).await.unwrap();
+        let spent = pdb.store_new(proofs[1].clone()).await.unwrap();
+        pdb.mark_as_pendingspent(vec![spent]).await.unwrap();
+        pdb.mark_pending_as_spent(spent).await.unwrap();
+        pdb.put(
+            MigrationJournalHeader {
+                substitute_url: url::Url::from_str("https://substitute.example").unwrap(),
+                substitute_clowder_id: bcr_wallet_persistence::test_utils::tests::test_pub_key(),
+                alpha_id: bcr_wallet_persistence::test_utils::tests::test_other_pub_key(),
+                evidence_digest: [7u8; 32],
+            },
+            vec![(held, cashu::SecretKey::generate())],
+        )
+        .await
+        .unwrap();
+
+        let mut client = MockClowderMintConnector::new();
+        client
+            .expect_post_check_state()
+            .times(2)
+            .returning(move |req| {
+                assert!(!req.ys.contains(&held));
+                Ok(req
+                    .ys
+                    .into_iter()
+                    .map(|y| cashu::ProofState {
+                        y,
+                        state: cdk07::State::Spent,
+                        witness: None,
+                    })
+                    .collect())
+            });
+        let client: Arc<dyn crate::ClowderMintConnector> = Arc::new(client);
+        let pocket = pocket(pdb.clone(), Arc::new(MockMintMeltRepository::new()));
+        let recovered = pocket
+            .recover_pending_stale_proofs(&[], &k_infos, client.clone(), test_swap_config())
+            .await
+            .unwrap();
+        assert_eq!(recovered, Amount::ZERO);
+        assert_eq!(pocket.clean_up_spent_proofs(client).await.unwrap(), 1);
+        let (_, entries) = pdb.load().await.unwrap().unwrap();
+        assert_eq!(
+            entries[&held].state,
+            bcr_wallet_persistence::MigrationJournalState::Held
+        );
     }
 
     #[tokio::test]
