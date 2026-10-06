@@ -181,7 +181,8 @@ impl Pocket {
     ) -> Result<Option<bcr_wallet_persistence::SwapCommitmentRecord>> {
         let commitments = self.pdb.list_commitments().await?;
         Ok(commitments.into_iter().find(|record| {
-            record.inputs.len() == input_ys.len() && record.inputs.iter().all(|y| input_ys.contains(y))
+            record.inputs.len() == input_ys.len()
+                && record.inputs.iter().all(|y| input_ys.contains(y))
         }))
     }
 
