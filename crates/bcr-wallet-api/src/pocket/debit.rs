@@ -970,6 +970,7 @@ impl DebitPocketApi for Pocket {
             HashMap<cashu::PublicKey, bcr_wallet_persistence::SwapCommitmentRecord>,
         > = None;
         let mut resumed_commitments = HashSet::new();
+        let mut resumed = Amount::ZERO;
         let mut to_digest = HashMap::new();
         for state in states.iter() {
             match state.state {
@@ -993,14 +994,18 @@ impl DebitPocketApi for Pocket {
                                 record.commitment
                             );
                             let commitment_inputs = self.pdb.load_proofs(&record.inputs).await?;
-                            self.resume_committed_swap(
-                                client.clone(),
-                                keysets_info,
-                                &commitment_inputs,
-                                record,
-                                swap_config.clone(),
-                            )
-                            .await?;
+                            if let Some((amount, _)) = self
+                                .resume_committed_swap(
+                                    client.clone(),
+                                    keysets_info,
+                                    &commitment_inputs,
+                                    record,
+                                    swap_config.clone(),
+                                )
+                                .await?
+                            {
+                                resumed += amount;
+                            }
                         }
                     } else {
                         tracing::warn!(
@@ -1038,7 +1043,7 @@ impl DebitPocketApi for Pocket {
             }
         }
         if to_digest.is_empty() {
-            return Ok(Amount::ZERO);
+            return Ok(resumed);
         }
         // attempt to recover the proofs collected for digesting
         let to_digest_ys: Vec<cashu::PublicKey> = to_digest.keys().cloned().collect();
@@ -1055,7 +1060,7 @@ impl DebitPocketApi for Pocket {
             }
         }
 
-        Ok(recovered)
+        Ok(resumed + recovered)
     }
 
     async fn clean_up_spent_proofs(&self, client: Arc<dyn ClowderMintConnector>) -> Result<usize> {
@@ -3803,7 +3808,7 @@ mod tests {
             .await
             .expect("a stale Spent proof with a live commitment must be recovered, not just marked spent");
 
-        assert_eq!(recovered, Amount::ZERO);
+        assert_eq!(recovered, amount);
     }
 
     #[tokio::test]
