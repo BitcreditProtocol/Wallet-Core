@@ -347,7 +347,10 @@ impl Pocket {
             ProtestResult {
                 status: wire_common::ProtestStatus::Offline,
                 ..
-            } => Ok(Some((Amount::ZERO, Vec::new()))),
+            } => Err(Error::MintClientServiceUnavailable(format!(
+                "mint unreachable while resuming swap commitment {}",
+                record.commitment
+            ))),
         }
     }
 
@@ -1326,11 +1329,6 @@ impl DebitPocketApi for Pocket {
                     )
                     .await
                 {
-                    Ok(Some((amount, ys))) if amount == Amount::ZERO && ys.is_empty() => {
-                        tracing::warn!(
-                            "Mint unreachable while recovering expired commitment {commitment_sig} - keeping it for a later pass."
-                        );
-                    }
                     Ok(_) => {
                         tracing::info!(
                             "Expired commitment {commitment_sig} resolved during recovery."
@@ -3628,6 +3626,73 @@ mod tests {
             .expect("reclaim should resume via restore");
 
         assert_eq!(reclaimed, amount);
+    }
+
+    #[tokio::test]
+    async fn resume_offline_keeps_inputs_pending() {
+        let amount = Amount::from(24u64);
+        let fx = swap_commitment_fixture(amount, 0x55, 1000);
+
+        let mdb = MockMintMeltRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        let mut alpha_connector = MockClowderMintConnector::new();
+        let mut beta_connector = MockClowderMintConnector::new();
+
+        let input_proofs_map = fx.input_proofs_map.clone();
+        pdb.expect_load_proofs()
+            .returning(move |_| Ok(input_proofs_map.clone()));
+
+        let record = fx.record.clone();
+        pdb.expect_list_commitments()
+            .times(1)
+            .returning(move || Ok(vec![record.clone()]));
+        let record = fx.record.clone();
+        pdb.expect_load_commitment()
+            .times(1)
+            .returning(move |_| Ok(record.clone()));
+
+        alpha_connector
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(|_, _, _| Err(Error::MintClientResourceNotFound("gone".to_string())));
+        alpha_connector
+            .expect_post_restore()
+            .times(1)
+            .returning(|_| Ok(vec![]));
+
+        beta_connector
+            .expect_post_protest_swap()
+            .times(1)
+            .returning(|_| {
+                Ok(wire_swap::SwapProtestResponse {
+                    status: wire_common::ProtestStatus::Offline,
+                    signatures: None,
+                })
+            });
+
+        pdb.expect_delete_commitment().times(0);
+        pdb.expect_store_new().times(0);
+
+        let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
+            &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+        );
+        let pocket = pocket_with_beta(
+            Arc::new(pdb),
+            Arc::new(mdb),
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
+            alpha_id,
+        );
+        let err = pocket
+            .reclaim_proofs(
+                &fx.input_ys,
+                &fx.k_infos,
+                Arc::new(alpha_connector),
+                test_swap_config(),
+            )
+            .await
+            .expect_err("an offline mint must not look like a finished zero-amount swap");
+
+        assert!(matches!(err, Error::MintClientServiceUnavailable(_)));
     }
 
     #[tokio::test]
