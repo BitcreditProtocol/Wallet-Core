@@ -3628,20 +3628,19 @@ mod tests {
         assert_eq!(reclaimed, amount);
     }
 
-    #[tokio::test]
-    async fn resume_offline_keeps_inputs_pending() {
-        let amount = Amount::from(24u64);
-        let fx = swap_commitment_fixture(amount, 0x55, 1000);
-
-        let mdb = MockMintMeltRepository::new();
-        let mut pdb = MockPocketRepository::new();
-        let mut alpha_connector = MockClowderMintConnector::new();
+    /// Mocks a commitment resume whose replay is rejected, whose restore finds
+    /// nothing and whose protest reports the mint Offline; the record must
+    /// survive and no input may be marked spent or swapped over again.
+    fn offline_resume_pocket(
+        fx: &SwapCommitmentFixture,
+        mut pdb: MockPocketRepository,
+        alpha_connector: &mut MockClowderMintConnector,
+    ) -> super::Pocket {
         let mut beta_connector = MockClowderMintConnector::new();
 
         let input_proofs_map = fx.input_proofs_map.clone();
         pdb.expect_load_proofs()
             .returning(move |_| Ok(input_proofs_map.clone()));
-
         let record = fx.record.clone();
         pdb.expect_list_commitments()
             .times(1)
@@ -3650,6 +3649,9 @@ mod tests {
         pdb.expect_load_commitment()
             .times(1)
             .returning(move |_| Ok(record.clone()));
+        pdb.expect_delete_commitment().times(0);
+        pdb.expect_store_new().times(0);
+        pdb.expect_mark_pending_as_spent().times(0);
 
         alpha_connector
             .expect_post_swap_committed()
@@ -3659,6 +3661,7 @@ mod tests {
             .expect_post_restore()
             .times(1)
             .returning(|_| Ok(vec![]));
+        alpha_connector.expect_get_mint_keyset().times(0);
 
         beta_connector
             .expect_post_protest_swap()
@@ -3670,18 +3673,23 @@ mod tests {
                 })
             });
 
-        pdb.expect_delete_commitment().times(0);
-        pdb.expect_store_new().times(0);
-
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
             &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
         );
-        let pocket = pocket_with_beta(
+        pocket_with_beta(
             Arc::new(pdb),
-            Arc::new(mdb),
+            Arc::new(MockMintMeltRepository::new()),
             vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
             alpha_id,
-        );
+        )
+    }
+
+    #[tokio::test]
+    async fn resume_offline_keeps_inputs_pending_on_reclaim() {
+        let fx = swap_commitment_fixture(Amount::from(24u64), 0x55, 1000);
+        let mut alpha_connector = MockClowderMintConnector::new();
+
+        let pocket = offline_resume_pocket(&fx, MockPocketRepository::new(), &mut alpha_connector);
         let err = pocket
             .reclaim_proofs(
                 &fx.input_ys,
@@ -3691,6 +3699,45 @@ mod tests {
             )
             .await
             .expect_err("an offline mint must not look like a finished zero-amount swap");
+
+        assert!(matches!(err, Error::MintClientServiceUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn resume_offline_keeps_inputs_pending_on_stale_recovery() {
+        let fx = swap_commitment_fixture(Amount::from(24u64), 0x56, 1000);
+        let mut pdb = MockPocketRepository::new();
+        let mut alpha_connector = MockClowderMintConnector::new();
+
+        let input_proofs_map = fx.input_proofs_map.clone();
+        pdb.expect_list_pending()
+            .times(1)
+            .returning(move || Ok(input_proofs_map.clone()));
+        alpha_connector
+            .expect_post_check_state()
+            .times(1)
+            .returning(|request| {
+                Ok(request
+                    .ys
+                    .iter()
+                    .map(|y| cdk07::ProofState {
+                        y: *y,
+                        state: cdk07::State::Unspent,
+                        witness: None,
+                    })
+                    .collect())
+            });
+
+        let pocket = offline_resume_pocket(&fx, pdb, &mut alpha_connector);
+        let err = pocket
+            .recover_pending_stale_proofs(
+                &[],
+                &fx.k_infos,
+                Arc::new(alpha_connector),
+                test_swap_config(),
+            )
+            .await
+            .expect_err("an offline mint must not mark the stale inputs spent");
 
         assert!(matches!(err, Error::MintClientServiceUnavailable(_)));
     }

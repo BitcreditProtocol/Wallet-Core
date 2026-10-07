@@ -21,6 +21,8 @@
     * Add endpoint `wallet_prepare_pay_to_node_id` with `WalletPreparePaymentByNodeIdRequest` as input
     * Add endpoint `wallet_pay_to_node_id` with `WalletPaymentByNodeIdRequest` as input
     * `wallet_prepare_pay_payment_request` rejects a request in a unit other than the wallet's
+* A swap retry resumes its stored commitment instead of building new outputs over the same inputs
+    * `wallet_reclaim_transaction` and `wallet_recover_pending_stale_proofs` fail with `MintClientServiceUnavailable` while the mint is unreachable during the resume, instead of settling the transaction or marking its proofs spent
 
 # 0.9.13
 
