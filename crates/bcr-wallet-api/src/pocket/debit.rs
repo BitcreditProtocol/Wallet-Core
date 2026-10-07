@@ -3685,7 +3685,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_offline_keeps_inputs_pending_on_reclaim() {
+    async fn resume_offline_keeps_inputs_pending() {
         let fx = swap_commitment_fixture(Amount::from(24u64), 0x55, 1000);
         let mut alpha_connector = MockClowderMintConnector::new();
 
