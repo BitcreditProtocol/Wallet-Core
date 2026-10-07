@@ -222,6 +222,21 @@ pub mod tests {
                 quote_id: Uuid,
             ) -> Result<MeltProtestResult>;
             async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>>;
+            async fn lock_exchange(
+                &self,
+                record: bcr_wallet_persistence::ExchangeRecord,
+                keysets: HashMap<ecash::Id, bcr_common::ecash::KeySet>,
+                alpha_client: Arc<dyn ClowderMintConnector>,
+                swap_config: SwapConfig,
+                alpha_beta: Arc<dyn crate::pocket::BetaProvider>,
+            ) -> Result<Vec<cashu::Proof>>;
+            async fn delete_exchange_record(&self, hash_lock: bitcoin::hashes::sha256::Hash) -> Result<()>;
+            async fn recover_exchange_commitments(&self, tstamp: u64) -> Result<usize>;
+            async fn recover_unanswered_lock_swaps(
+                &self,
+                tstamp: u64,
+                client_factory: &crate::external::mint::ClientFactory,
+            ) -> Result<()>;
         }
     }
 }
