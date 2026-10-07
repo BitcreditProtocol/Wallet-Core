@@ -36,6 +36,10 @@ pub struct SwapCommitmentRecord {
     pub premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
     /// The substitute mint the commitment was made with; `None` is the wallet's own mint
     pub substitute_clowder_id: Option<secp256k1::PublicKey>,
+    /// The exact proofs committed, DLEQ-stripped as they were sent to the mint. A receive's
+    /// inputs are the sender's proofs and are never stored in the wallet's own proof table,
+    /// so replaying or protesting the commitment on retry/expiry needs them here instead.
+    pub input_proofs: Vec<cdk00::Proof>,
 }
 
 ///////////////////////////////////////////// MeltCommitmentRecord

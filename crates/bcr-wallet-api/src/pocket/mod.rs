@@ -359,6 +359,7 @@ pub(crate) async fn committed_swap(
             wallet_key: commit_result.wallet_key,
             premints,
             substitute_clowder_id,
+            input_proofs: inputs.clone(),
         })
         .await?;
     }

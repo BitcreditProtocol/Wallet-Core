@@ -139,6 +139,8 @@ pub(super) fn from_stored_foreign_mint_proof_v1(
 pub(super) enum StoredCommitment {
     V1(EncryptedCommitmentPayloadV1),
     V2(EncryptedCommitmentPayloadV2),
+    V3(EncryptedCommitmentPayloadV3),
+    V4(EncryptedCommitmentPayloadV4),
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
@@ -148,6 +150,16 @@ pub(super) struct EncryptedCommitmentPayloadV1 {
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub(super) struct EncryptedCommitmentPayloadV2 {
+    pub ciphertext: Vec<u8>,
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct EncryptedCommitmentPayloadV3 {
+    pub ciphertext: Vec<u8>,
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct EncryptedCommitmentPayloadV4 {
     pub ciphertext: Vec<u8>,
 }
 
@@ -194,8 +206,30 @@ pub(super) struct StoredCommitmentPayloadV2 {
     substitute_clowder_id: secp256k1::PublicKey,
 }
 
-/// Own-mint records keep the V1 layout so older builds can still read them;
-/// only substitute-mint records are written as V2.
+/// Own-mint commitment, carrying the exact proofs it committed. A receive's inputs are
+/// the sender's proofs and are never stored in the wallet's own proof table, so without
+/// this a resume or protest after an expiry has nothing to replay or protest with.
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredCommitmentPayloadV3 {
+    base: StoredCommitmentPayloadV1,
+    input_proofs: Vec<StoredProofPayloadV1>,
+}
+
+/// A commitment made with a substitute mint, carrying its committed proofs too.
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredCommitmentPayloadV4 {
+    base: StoredCommitmentPayloadV1,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    substitute_clowder_id: secp256k1::PublicKey,
+    input_proofs: Vec<StoredProofPayloadV1>,
+}
+
+/// V1/V2 are read-only legacy layouts kept for commitments stored before this field
+/// existed; every new commitment carries its input proofs, as V3 (own-mint) or V4
+/// (substitute-mint).
 pub(super) fn to_stored_commitment(
     record: SwapCommitmentRecord,
     keys: bitcoin::secp256k1::Keypair,
@@ -210,24 +244,31 @@ pub(super) fn to_stored_commitment(
         wallet_key: record.wallet_key,
         premints: record.premints,
     };
+    let input_proofs: Vec<StoredProofPayloadV1> = record
+        .input_proofs
+        .into_iter()
+        .map(StoredProofPayloadV1::from)
+        .collect();
     match record.substitute_clowder_id {
         None => {
+            let payload = StoredCommitmentPayloadV3 { base, input_proofs };
             let encoded =
-                borsh::to_vec(&base).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                borsh::to_vec(&payload).map_err(|e| Error::BorshSerialization(e.to_string()))?;
             let ciphertext = crypto::encrypt_ecies(&encoded, &keys.public_key())?;
-            Ok(StoredCommitment::V1(EncryptedCommitmentPayloadV1 {
+            Ok(StoredCommitment::V3(EncryptedCommitmentPayloadV3 {
                 ciphertext,
             }))
         }
         Some(substitute_clowder_id) => {
-            let payload = StoredCommitmentPayloadV2 {
+            let payload = StoredCommitmentPayloadV4 {
                 base,
                 substitute_clowder_id,
+                input_proofs,
             };
             let encoded =
                 borsh::to_vec(&payload).map_err(|e| Error::BorshSerialization(e.to_string()))?;
             let ciphertext = crypto::encrypt_ecies(&encoded, &keys.public_key())?;
-            Ok(StoredCommitment::V2(EncryptedCommitmentPayloadV2 {
+            Ok(StoredCommitment::V4(EncryptedCommitmentPayloadV4 {
                 ciphertext,
             }))
         }
@@ -238,18 +279,30 @@ pub(super) fn from_stored_commitment(
     commitment: StoredCommitment,
     keys: bitcoin::secp256k1::Keypair,
 ) -> Result<SwapCommitmentRecord> {
-    let (c, substitute_clowder_id) = match commitment {
+    let (c, substitute_clowder_id, input_proofs) = match commitment {
         StoredCommitment::V1(encrypted) => {
             let decrypted = crypto::decrypt_ecies(&encrypted.ciphertext, &keys.secret_key())?;
             let c: StoredCommitmentPayloadV1 = borsh::from_slice(&decrypted)
                 .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-            (c, None)
+            (c, None, Vec::new())
         }
         StoredCommitment::V2(encrypted) => {
             let decrypted = crypto::decrypt_ecies(&encrypted.ciphertext, &keys.secret_key())?;
             let c: StoredCommitmentPayloadV2 = borsh::from_slice(&decrypted)
                 .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-            (c.base, Some(c.substitute_clowder_id))
+            (c.base, Some(c.substitute_clowder_id), Vec::new())
+        }
+        StoredCommitment::V3(encrypted) => {
+            let decrypted = crypto::decrypt_ecies(&encrypted.ciphertext, &keys.secret_key())?;
+            let c: StoredCommitmentPayloadV3 = borsh::from_slice(&decrypted)
+                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            (c.base, None, c.input_proofs)
+        }
+        StoredCommitment::V4(encrypted) => {
+            let decrypted = crypto::decrypt_ecies(&encrypted.ciphertext, &keys.secret_key())?;
+            let c: StoredCommitmentPayloadV4 = borsh::from_slice(&decrypted)
+                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            (c.base, Some(c.substitute_clowder_id), c.input_proofs)
         }
     };
 
@@ -265,6 +318,7 @@ pub(super) fn from_stored_commitment(
         wallet_key: c.wallet_key,
         premints: c.premints,
         substitute_clowder_id,
+        input_proofs: input_proofs.into_iter().map(cdk00::Proof::from).collect(),
     })
 }
 
@@ -1476,6 +1530,7 @@ mod tests {
             wallet_key,
             premints: HashMap::new(),
             substitute_clowder_id: None,
+            input_proofs: vec![],
         })
         .await
         .expect("store_commitment works");
@@ -1513,29 +1568,76 @@ mod tests {
             )),
             premints: HashMap::new(),
             substitute_clowder_id,
+            input_proofs: vec![test_proof()],
         }
     }
 
     #[test]
-    fn own_mint_commitment_keeps_v1_layout_and_substitute_round_trips_through_v2() {
+    fn own_mint_commitment_writes_v3_and_substitute_writes_v4_with_input_proofs() {
         let keys = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let substitute = test_clowder_id();
 
-        let own = to_stored_commitment(test_commitment_record(1, None), keys).unwrap();
-        assert!(matches!(own, StoredCommitment::V1(_)));
-        assert_eq!(
-            from_stored_commitment(own, keys)
-                .unwrap()
-                .substitute_clowder_id,
-            None
-        );
+        let own_record = test_commitment_record(1, None);
+        let own_input_proofs = own_record.input_proofs.clone();
+        let own = to_stored_commitment(own_record, keys).unwrap();
+        assert!(matches!(own, StoredCommitment::V3(_)));
+        let decoded_own = from_stored_commitment(own, keys).unwrap();
+        assert_eq!(decoded_own.substitute_clowder_id, None);
+        assert_eq!(decoded_own.input_proofs, own_input_proofs);
 
-        let tagged =
-            to_stored_commitment(test_commitment_record(2, Some(substitute)), keys).unwrap();
-        assert!(matches!(tagged, StoredCommitment::V2(_)));
+        let tagged_record = test_commitment_record(2, Some(substitute));
+        let tagged_input_proofs = tagged_record.input_proofs.clone();
+        let tagged = to_stored_commitment(tagged_record, keys).unwrap();
+        assert!(matches!(tagged, StoredCommitment::V4(_)));
         let decoded = from_stored_commitment(tagged, keys).unwrap();
         assert_eq!(decoded.substitute_clowder_id, Some(substitute));
         assert_eq!(decoded.body_content, "test_content");
+        assert_eq!(decoded.input_proofs, tagged_input_proofs);
+    }
+
+    #[test]
+    fn legacy_v1_and_v2_commitments_decode_with_empty_input_proofs() {
+        let keys = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let substitute = test_clowder_id();
+
+        let base = StoredCommitmentPayloadV1 {
+            inputs: vec![test_proof().y().expect("valid y")],
+            outputs: vec![],
+            expiry: 1000,
+            commitment: secp256k1::schnorr::Signature::from_slice(&[9u8; 64]).unwrap(),
+            ephemeral_secret: secp256k1::SecretKey::from_keypair(&secp256k1::Keypair::new_global(
+                &mut secp256k1::rand::thread_rng(),
+            ))
+            .secret_bytes()
+            .to_vec(),
+            body_content: "legacy".to_string(),
+            wallet_key: cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(
+                &secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+            )),
+            premints: HashMap::new(),
+        };
+
+        let v1_encoded = borsh::to_vec(&base).unwrap();
+        let v1_ciphertext = crypto::encrypt_ecies(&v1_encoded, &keys.public_key()).unwrap();
+        let v1 = StoredCommitment::V1(EncryptedCommitmentPayloadV1 {
+            ciphertext: v1_ciphertext,
+        });
+        let decoded_v1 = from_stored_commitment(v1, keys).unwrap();
+        assert_eq!(decoded_v1.substitute_clowder_id, None);
+        assert!(decoded_v1.input_proofs.is_empty());
+
+        let v2_payload = StoredCommitmentPayloadV2 {
+            base,
+            substitute_clowder_id: substitute,
+        };
+        let v2_encoded = borsh::to_vec(&v2_payload).unwrap();
+        let v2_ciphertext = crypto::encrypt_ecies(&v2_encoded, &keys.public_key()).unwrap();
+        let v2 = StoredCommitment::V2(EncryptedCommitmentPayloadV2 {
+            ciphertext: v2_ciphertext,
+        });
+        let decoded_v2 = from_stored_commitment(v2, keys).unwrap();
+        assert_eq!(decoded_v2.substitute_clowder_id, Some(substitute));
+        assert!(decoded_v2.input_proofs.is_empty());
     }
 
     #[tokio::test]

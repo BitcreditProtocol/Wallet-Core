@@ -156,6 +156,7 @@ fn migrate_commitment_table_to_envelope_and_encryption(
             wallet_key: c.wallet_key,
             premints: premints_from_storage(c.premints),
             substitute_clowder_id: None,
+            input_proofs: Vec::new(),
         };
         let stored_commitment_v1 = pocket::to_stored_commitment(record, keys.to_owned())?;
 
@@ -926,10 +927,12 @@ mod tests {
             borsh::from_slice(stored.value().as_slice()).expect("deserialize stored commitment");
 
         match envelope {
-            StoredCommitment::V1(payload) => {
+            StoredCommitment::V3(payload) => {
                 assert!(!payload.ciphertext.is_empty());
             }
-            StoredCommitment::V2(_) => panic!("legacy commitments migrate to V1"),
+            StoredCommitment::V1(_) | StoredCommitment::V2(_) | StoredCommitment::V4(_) => {
+                panic!("legacy commitments migrate to V3 (no input proofs to carry)")
+            }
         }
     }
 

@@ -219,25 +219,6 @@ impl Pocket {
         }))
     }
 
-    /// The record's input proofs the wallet still has, or an empty map when it has none
-    /// (a receive commits over the sender's proofs, which are never stored locally): a
-    /// record a resume cannot find proofs for must not abort the whole recovery pass.
-    async fn load_commitment_inputs(
-        &self,
-        record: &bcr_wallet_persistence::SwapCommitmentRecord,
-    ) -> HashMap<cdk01::PublicKey, cdk00::Proof> {
-        match self.pdb.load_proofs(&record.inputs).await {
-            Ok(inputs) => inputs,
-            Err(e) => {
-                tracing::warn!(
-                    "commitment {}: stored inputs not found locally ({e}) - resuming via restore/protest only",
-                    record.commitment
-                );
-                HashMap::new()
-            }
-        }
-    }
-
     async fn finalize_resumed_signatures(
         &self,
         client: Arc<dyn ClowderMintConnector>,
@@ -392,19 +373,16 @@ impl Pocket {
         &self,
         client: Arc<dyn ClowderMintConnector>,
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
-        inputs: &HashMap<cdk01::PublicKey, cdk00::Proof>,
         record: bcr_wallet_persistence::SwapCommitmentRecord,
         swap_config: SwapConfig,
     ) -> Result<Option<(Amount, Vec<cdk01::PublicKey>)>> {
         let ys = record.inputs.clone();
-        let committed_proofs: Vec<cdk00::Proof> = record
-            .inputs
-            .iter()
-            .filter_map(|y| inputs.get(y).cloned())
-            .collect();
-        // A receive's inputs are the sender's proofs and are never stored locally, so a
-        // resume over those records never has them to offer: replaying with a partial or
-        // empty input set would only mislead the mint, so go straight to restore/protest.
+        // The record carries the exact (DLEQ-stripped) proofs it committed - a receive's
+        // inputs are the sender's proofs and are never stored in the wallet's own proof
+        // table, so this is the only place a resume can find them. A record stored before
+        // this field existed has none: replaying with a partial or empty input set would
+        // only mislead the mint, so go straight to restore/protest instead.
+        let committed_proofs = record.input_proofs.clone();
         let have_all_inputs = committed_proofs.len() == ys.len();
         let committed_proofs = crate::wallet::util::remove_dleq_from_proofs(committed_proofs);
 
@@ -485,13 +463,7 @@ impl Pocket {
             .find_matching_commitment(&input_ys, None, false)
             .await?
             && let Some(result) = self
-                .resume_committed_swap(
-                    client.clone(),
-                    keysets_info,
-                    &inputs,
-                    record,
-                    swap_config.clone(),
-                )
+                .resume_committed_swap(client.clone(), keysets_info, record, swap_config.clone())
                 .await?
         {
             return Ok(result);
@@ -1173,12 +1145,10 @@ impl DebitPocketApi for Pocket {
                                 "Pending Stale Proof returned as SPENT from Mint - resuming its commitment {} before marking SPENT",
                                 record.commitment
                             );
-                            let commitment_inputs = self.load_commitment_inputs(&record).await;
                             match self
                                 .resume_committed_swap(
                                     client.clone(),
                                     keysets_info,
-                                    &commitment_inputs,
                                     record,
                                     swap_config.clone(),
                                 )
@@ -1554,12 +1524,10 @@ impl DebitPocketApi for Pocket {
                     "Swap commitment {commitment_sig} expired at {} (now: {tstamp}) - attempting recovery before deleting.",
                     record.expiry,
                 );
-                let inputs = self.load_commitment_inputs(&record).await;
                 match self
                     .resume_committed_swap(
                         client.clone(),
                         keysets_info,
-                        &inputs,
                         record,
                         swap_config.clone(),
                     )
@@ -1650,14 +1618,13 @@ impl DebitPocketApi for Pocket {
                 "commitment {commitment_sig} was made with substitute mint {substitute}"
             )));
         }
-        let loaded_proofs = self.pdb.load_proofs(&record.inputs).await?;
         let ephemeral_keypair =
             secp256k1::Keypair::from_secret_key(secp256k1::SECP256K1, &record.ephemeral_secret);
         let wallet_signature = super::sign_content_b64(&record.body_content, &ephemeral_keypair)?;
 
         let request = wire_swap::SwapProtestRequest {
             alpha_id: self.beta.alpha_id(),
-            proofs: loaded_proofs.into_values().collect(),
+            proofs: record.input_proofs.clone(),
             content: record.body_content,
             commitment: record.commitment,
             wallet_signature,
@@ -1957,6 +1924,7 @@ mod tests {
             wallet_key,
             premints: stored_premints,
             substitute_clowder_id: None,
+            input_proofs: input_proofs.clone(),
         };
 
         SwapCommitmentFixture {
@@ -2910,10 +2878,6 @@ mod tests {
             .iter()
             .map(|p| p.y().expect("y works"))
             .collect();
-        let input_proofs_map: HashMap<cashu::PublicKey, cdk00::Proof> = input_proofs
-            .iter()
-            .map(|p| (p.y().unwrap(), p.clone()))
-            .collect();
 
         // Generate premint secrets and sign them — these are the ORIGINAL blinding factors
         let premint = cdk00::PreMintSecrets::random(
@@ -2955,6 +2919,7 @@ mod tests {
         let record_commitment = commitment_sig;
         let record_wallet_key = wallet_key;
         let record_premints = stored_premints.clone();
+        let record_input_proofs = input_proofs.clone();
         pdb.expect_load_commitment().times(1).returning(move |_| {
             Ok(bcr_wallet_persistence::SwapCommitmentRecord {
                 inputs: record_inputs.clone(),
@@ -2966,13 +2931,9 @@ mod tests {
                 wallet_key: record_wallet_key,
                 premints: record_premints.clone(),
                 substitute_clowder_id: None,
+                input_proofs: record_input_proofs.clone(),
             })
         });
-
-        let proofs_map = input_proofs_map.clone();
-        pdb.expect_load_proofs()
-            .times(1)
-            .returning(move |_| Ok(proofs_map.clone()));
 
         // Beta handles the protest request
         beta_connector
@@ -3052,10 +3013,6 @@ mod tests {
             .iter()
             .map(|p| p.y().expect("y works"))
             .collect();
-        let input_proofs_map: HashMap<cashu::PublicKey, cdk00::Proof> = input_proofs
-            .iter()
-            .map(|p| (p.y().unwrap(), p.clone()))
-            .collect();
 
         let ephemeral_keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
@@ -3074,6 +3031,7 @@ mod tests {
         let record_secret = ephemeral_secret;
         let record_commitment = commitment_sig;
         let record_wallet_key = wallet_key;
+        let record_input_proofs = input_proofs.clone();
         pdb.expect_load_commitment().times(1).returning(move |_| {
             Ok(bcr_wallet_persistence::SwapCommitmentRecord {
                 inputs: record_inputs.clone(),
@@ -3085,13 +3043,9 @@ mod tests {
                 wallet_key: record_wallet_key,
                 premints: HashMap::new(),
                 substitute_clowder_id: None,
+                input_proofs: record_input_proofs.clone(),
             })
         });
-
-        let proofs_map = input_proofs_map.clone();
-        pdb.expect_load_proofs()
-            .times(1)
-            .returning(move |_| Ok(proofs_map.clone()));
 
         beta_connector
             .expect_post_protest_swap()
@@ -4181,9 +4135,6 @@ mod tests {
     ) -> super::Pocket {
         let mut beta_connector = MockClowderMintConnector::new();
 
-        let input_proofs_map = fx.input_proofs_map.clone();
-        pdb.expect_load_proofs()
-            .returning(move |_| Ok(input_proofs_map.clone()));
         let record = fx.record.clone();
         pdb.expect_list_commitments()
             .times(1)
@@ -4232,7 +4183,13 @@ mod tests {
         let fx = swap_commitment_fixture(Amount::from(24u64), 0x55, 1000);
         let mut alpha_connector = MockClowderMintConnector::new();
 
-        let pocket = offline_resume_pocket(&fx, MockPocketRepository::new(), &mut alpha_connector);
+        let mut pdb = MockPocketRepository::new();
+        let input_proofs_map = fx.input_proofs_map.clone();
+        pdb.expect_load_proofs()
+            .times(1)
+            .returning(move |_| Ok(input_proofs_map.clone()));
+
+        let pocket = offline_resume_pocket(&fx, pdb, &mut alpha_connector);
         let err = pocket
             .reclaim_proofs(
                 &fx.input_ys,
@@ -4276,10 +4233,6 @@ mod tests {
         pdb.expect_list_commitments()
             .times(1)
             .returning(move || Ok(vec![record.clone()]));
-        let input_proofs_map = fx.input_proofs_map.clone();
-        pdb.expect_load_proofs()
-            .times(1)
-            .returning(move |_| Ok(input_proofs_map.clone()));
 
         let keyset_clone = fx.mintkeyset.clone();
         alpha_connector
@@ -4402,11 +4355,6 @@ mod tests {
         let mut pdb = MockPocketRepository::new();
         let mut alpha_connector = MockClowderMintConnector::new();
 
-        let input_proofs_map = fx.input_proofs_map.clone();
-        pdb.expect_load_proofs()
-            .times(1)
-            .returning(move |_| Ok(input_proofs_map.clone()));
-
         let record = fx.record.clone();
         pdb.expect_list_commitments()
             .times(1)
@@ -4455,10 +4403,6 @@ mod tests {
         let mut pdb = MockPocketRepository::new();
         let mut alpha_connector = MockClowderMintConnector::new();
         let mut beta_connector = MockClowderMintConnector::new();
-
-        let input_proofs_map = fx.input_proofs_map.clone();
-        pdb.expect_load_proofs()
-            .returning(move |_| Ok(input_proofs_map.clone()));
 
         let record = fx.record.clone();
         pdb.expect_list_commitments()
@@ -4520,10 +4464,6 @@ mod tests {
         let mut alpha_connector = MockClowderMintConnector::new();
         let mut beta_connector = MockClowderMintConnector::new();
 
-        let input_proofs_map = fx.input_proofs_map.clone();
-        pdb.expect_load_proofs()
-            .returning(move |_| Ok(input_proofs_map.clone()));
-
         let record = fx.record.clone();
         pdb.expect_list_commitments()
             .times(1)
@@ -4580,6 +4520,188 @@ mod tests {
             )
             .await
             .expect("a commitment the mint never executed must be deleted, not kept forever");
+    }
+
+    #[tokio::test]
+    async fn expired_receive_commitment_is_recovered_via_protest() {
+        // A receive's inputs are the sender's proofs: receive_proofs never stores them
+        // locally, so unlike every other swap path, the real repository here never has
+        // them under their Ys. If post_swap_committed's response is lost and the user
+        // never retries before the commitment expires, check_pending_commitments must
+        // still be able to replay/restore/protest it using what the commitment itself
+        // persisted, not what the (still empty) proof table has.
+        let (info, mint_keyset) = core_tests::generate_random_ecash_keyset();
+        let keysets_info = test_kinfos(info);
+        let sender_proofs = core_tests::generate_random_ecash_proofs(
+            &mint_keyset,
+            &[Amount::from(16u64), Amount::from(8u64)],
+        );
+        let total_amount = Amount::from(24u64);
+
+        let pdb = Arc::new(
+            bcr_wallet_persistence::redb::pocket::PocketDB::in_memory("wallet", &CurrencyUnit::Sat)
+                .expect("in-memory pocket db"),
+        );
+
+        let committed_outputs: Arc<Mutex<Option<Vec<cdk00::BlindedMessage>>>> =
+            Arc::new(Mutex::new(None));
+        let committed_outputs_clone = committed_outputs.clone();
+
+        let mut receive_client = MockClowderMintConnector::new();
+        let keyset_for_receive = mint_keyset.clone();
+        receive_client
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_for_receive, None)));
+        receive_client
+            .expect_post_swap_commitment()
+            .times(1)
+            .returning(move |inputs, outputs, _, _, _| {
+                let mut result = mock_commitment_result();
+                result.inputs_ys = inputs.iter().map(|p| p.y().unwrap()).collect();
+                result.outputs = outputs.clone();
+                // already expired by the time check_pending_commitments runs below
+                result.expiry = 100;
+                *committed_outputs_clone.lock().unwrap() = Some(outputs);
+                Ok(result)
+            });
+        receive_client
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(|_, _, _| {
+                Err(Error::Transport(
+                    bcr_wallet_transport::error::Error::Network("connection dropped".to_string()),
+                ))
+            });
+
+        let mut beta_connector = MockClowderMintConnector::new();
+        setup_attestation_mock(&mut beta_connector);
+        let signing_keyset = mint_keyset.clone();
+        beta_connector
+            .expect_post_protest_swap()
+            .times(1)
+            .returning(move |_req| {
+                let outputs = committed_outputs
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .expect("commitment was stored before the protest");
+                let amounts: Vec<_> = outputs.iter().map(|o| o.amount).collect();
+                Ok(wire_swap::SwapProtestResponse {
+                    status: wire_common::ProtestStatus::Resolved,
+                    signatures: Some(core_tests::generate_ecash_signatures(
+                        &signing_keyset,
+                        &amounts,
+                    )),
+                })
+            });
+
+        let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
+            &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+        );
+        let seed: Seed = [3u8; 64];
+        let beta_provider = crate::pocket::RandomBetaProvider::new(
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
+            alpha_id,
+        )
+        .expect("can create beta provider");
+        let pocket = super::Pocket::new(
+            CurrencyUnit::Sat,
+            pdb.clone(),
+            Arc::new(MockMintMeltRepository::new()),
+            seed,
+            Arc::new(beta_provider),
+        );
+
+        pocket
+            .receive_proofs(
+                Arc::new(receive_client),
+                &keysets_info,
+                sender_proofs,
+                test_swap_config(),
+            )
+            .await
+            .expect_err("a dropped post_swap_committed response must surface as an error");
+
+        let pending = pdb.list_commitments().await.expect("list commitments");
+        assert_eq!(
+            pending.len(),
+            1,
+            "the dropped receive left its commitment pending"
+        );
+        assert!(
+            pdb.list_unspent().await.expect("list unspent").is_empty(),
+            "nothing is credited yet"
+        );
+
+        // A fresh retry client: the mint genuinely never executed the commitment
+        // (replay is rejected, restore finds nothing), so recovery must fall through
+        // to protest using the commitment's own stored inputs.
+        let swap_committed_calls = Arc::new(Mutex::new(0u32));
+        let swap_committed_calls_clone = swap_committed_calls.clone();
+        let retry_signing_keyset = mint_keyset.clone();
+        let mut retry_client = MockClowderMintConnector::new();
+        let keyset_for_retry = mint_keyset.clone();
+        retry_client
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_for_retry, None)));
+        retry_client
+            .expect_post_swap_committed()
+            .returning(move |_, outputs, _| {
+                let mut calls = swap_committed_calls_clone.lock().unwrap();
+                *calls += 1;
+                if *calls == 1 {
+                    // the resumed replay of the original (expired) commitment
+                    Err(Error::MintClientResourceNotFound("gone".to_string()))
+                } else {
+                    // the fresh swap digest_proofs runs over the protest's unblinded proofs
+                    let amounts: Vec<_> = outputs.iter().map(|o| o.amount).collect();
+                    Ok(core_tests::generate_ecash_signatures(
+                        &retry_signing_keyset,
+                        &amounts,
+                    ))
+                }
+            });
+        retry_client
+            .expect_post_restore()
+            .times(1)
+            .returning(|_| Ok(vec![]));
+        retry_client
+            .expect_post_swap_commitment()
+            .times(1)
+            .returning(|inputs, outputs, _, _, _| {
+                let mut result = mock_commitment_result();
+                result.inputs_ys = inputs.iter().map(|p| p.y().unwrap()).collect();
+                result.outputs = outputs;
+                Ok(result)
+            });
+
+        pocket
+            .check_pending_commitments(
+                200,
+                &keysets_info,
+                Arc::new(retry_client),
+                test_swap_config(),
+            )
+            .await
+            .expect("recovery must not fail even though the inputs were never stored locally");
+
+        assert!(
+            pdb.list_commitments()
+                .await
+                .expect("list commitments")
+                .is_empty(),
+            "the resolved commitment must be deleted"
+        );
+        let credited: Amount = pdb
+            .list_unspent()
+            .await
+            .expect("list unspent")
+            .values()
+            .fold(Amount::ZERO, |acc, p| acc + p.amount);
+        assert_eq!(
+            credited, total_amount,
+            "the received amount must be credited after the protest resolves"
+        );
     }
 
     /// A substitute swap whose `post_swap_committed` response was dropped, left
