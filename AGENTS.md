@@ -31,7 +31,7 @@ Dart: stale generated bindings surface only in a consuming app.
 Non-negotiables:
 - NEVER hand-edit `crates/bcr-wallet-ffi/src/frb_generated.rs` or `lib/src/rust/**`;
   regenerate them (Key Patterns). Edits are overwritten and the two sides drift.
-- NEVER commit a wallet database or a mnemonic holding real funds: the wallet stores bearer ecash
+- NEVER commit a wallet database or a mnemonic holding real funds: the wallet stores bearer e-cash
   proofs, so a leaked seed is spent money. `crates/bcr-wallet-cli/*.toml` are testnet dev wallets;
   the `.db` files beside them are gitignored on purpose.
 - A change to a persisted record layout MUST ship a migration (Key Patterns); a record the
