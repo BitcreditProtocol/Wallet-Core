@@ -23,6 +23,7 @@
     * `wallet_prepare_pay_payment_request` rejects a request in a unit other than the wallet's
 * A swap retry resumes its stored commitment instead of building new outputs over the same inputs
     * `wallet_reclaim_transaction` and `wallet_recover_pending_stale_proofs` fail with `MintClientServiceUnavailable` while the mint is unreachable during the resume, instead of settling the transaction or marking its proofs spent
+    * `wallet_recover_pending_stale_proofs` resumes a stale proof's stored commitment before marking it spent, instead of discarding mint-signed outputs it never recorded
 
 # 0.9.13
 

@@ -966,13 +966,47 @@ impl DebitPocketApi for Pocket {
             ys: pendings.keys().cloned().collect(),
         };
         let states = client.post_check_state(req).await?;
+        let mut commitments_by_y: Option<
+            HashMap<cashu::PublicKey, bcr_wallet_persistence::SwapCommitmentRecord>,
+        > = None;
+        let mut resumed_commitments = HashSet::new();
         let mut to_digest = HashMap::new();
         for state in states.iter() {
             match state.state {
                 cdk07::State::Spent => {
-                    tracing::warn!(
-                        "Pending Stale Proof returned as SPENT from Mint - not recovering and setting to SPENT"
-                    );
+                    let commitments_by_y = match &commitments_by_y {
+                        Some(map) => map,
+                        None => {
+                            let mut map = HashMap::new();
+                            for record in self.pdb.list_commitments().await? {
+                                for y in &record.inputs {
+                                    map.insert(*y, record.clone());
+                                }
+                            }
+                            commitments_by_y.insert(map)
+                        }
+                    };
+                    if let Some(record) = commitments_by_y.get(&state.y).cloned() {
+                        if resumed_commitments.insert(record.commitment) {
+                            tracing::warn!(
+                                "Pending Stale Proof returned as SPENT from Mint - resuming its commitment {} before marking SPENT",
+                                record.commitment
+                            );
+                            let commitment_inputs = self.pdb.load_proofs(&record.inputs).await?;
+                            self.resume_committed_swap(
+                                client.clone(),
+                                keysets_info,
+                                &commitment_inputs,
+                                record,
+                                swap_config.clone(),
+                            )
+                            .await?;
+                        }
+                    } else {
+                        tracing::warn!(
+                            "Pending Stale Proof returned as SPENT from Mint - not recovering and setting to SPENT"
+                        );
+                    }
                     if let Err(e) = self.pdb.mark_pending_as_spent(state.y).await {
                         tracing::error!(
                             "Error setting stale proof {} from Pending/PendingSpent to Spent: {e}",
@@ -3699,6 +3733,114 @@ mod tests {
             )
             .await
             .expect_err("an offline mint must not look like a finished zero-amount swap");
+
+        assert!(matches!(err, Error::MintClientServiceUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn recover_pending_stale_proof_resumes_commitment_instead_of_marking_spent() {
+        let amount = Amount::from(24u64);
+        let fx = swap_commitment_fixture(amount, 0x57, 1000);
+        let mut pdb = MockPocketRepository::new();
+        let mut alpha_connector = MockClowderMintConnector::new();
+
+        let input_proofs_map = fx.input_proofs_map.clone();
+        pdb.expect_list_pending()
+            .times(1)
+            .returning(move || Ok(input_proofs_map.clone()));
+        alpha_connector
+            .expect_post_check_state()
+            .times(1)
+            .returning(|request| {
+                Ok(request
+                    .ys
+                    .iter()
+                    .map(|y| cdk07::ProofState {
+                        y: *y,
+                        state: cdk07::State::Spent,
+                        witness: None,
+                    })
+                    .collect())
+            });
+
+        let record = fx.record.clone();
+        pdb.expect_list_commitments()
+            .times(1)
+            .returning(move || Ok(vec![record.clone()]));
+        let input_proofs_map = fx.input_proofs_map.clone();
+        pdb.expect_load_proofs()
+            .times(1)
+            .returning(move |_| Ok(input_proofs_map.clone()));
+
+        let keyset_clone = fx.mintkeyset.clone();
+        alpha_connector
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
+        let blind_sigs = fx.blind_sigs.clone();
+        alpha_connector
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(move |_, _, _| Ok(blind_sigs.clone()));
+
+        pdb.expect_store_new().returning(|p| {
+            let y = p.y().expect("Hash to curve should not fail");
+            Ok(y)
+        });
+
+        let commitment_sig = fx.record.commitment;
+        pdb.expect_delete_commitment()
+            .times(1)
+            .withf(move |sig| *sig == commitment_sig)
+            .returning(|_| Ok(()));
+        let input_proofs_map = fx.input_proofs_map.clone();
+        pdb.expect_mark_pending_as_spent()
+            .times(fx.input_ys.len())
+            .returning(move |y| Ok(input_proofs_map.get(&y).expect("known stale proof").clone()));
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()));
+        let recovered = pocket
+            .recover_pending_stale_proofs(&[], &fx.k_infos, Arc::new(alpha_connector), test_swap_config())
+            .await
+            .expect("a stale Spent proof with a live commitment must be recovered, not just marked spent");
+
+        assert_eq!(recovered, Amount::ZERO);
+    }
+
+    #[tokio::test]
+    async fn resume_offline_keeps_inputs_pending_on_stale_spent_recovery() {
+        let fx = swap_commitment_fixture(Amount::from(24u64), 0x58, 1000);
+        let mut pdb = MockPocketRepository::new();
+        let mut alpha_connector = MockClowderMintConnector::new();
+
+        let input_proofs_map = fx.input_proofs_map.clone();
+        pdb.expect_list_pending()
+            .times(1)
+            .returning(move || Ok(input_proofs_map.clone()));
+        alpha_connector
+            .expect_post_check_state()
+            .times(1)
+            .returning(|request| {
+                Ok(request
+                    .ys
+                    .iter()
+                    .map(|y| cdk07::ProofState {
+                        y: *y,
+                        state: cdk07::State::Spent,
+                        witness: None,
+                    })
+                    .collect())
+            });
+
+        let pocket = offline_resume_pocket(&fx, pdb, &mut alpha_connector);
+        let err = pocket
+            .recover_pending_stale_proofs(
+                &[],
+                &fx.k_infos,
+                Arc::new(alpha_connector),
+                test_swap_config(),
+            )
+            .await
+            .expect_err("an offline mint must not mark a stale Spent proof's inputs spent");
 
         assert!(matches!(err, Error::MintClientServiceUnavailable(_)));
     }
