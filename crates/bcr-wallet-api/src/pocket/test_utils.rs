@@ -229,6 +229,15 @@ pub mod tests {
                 quote_id: Uuid,
             ) -> Result<MeltProtestResult>;
             async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>>;
+            async fn htlc_lock(
+                &self,
+                tstamp: u64,
+                alpha_client: Arc<dyn ClowderMintConnector>,
+                proofs: Vec<cashu::Proof>,
+                key_locks: Vec<secp256k1::PublicKey>,
+                swap_config: SwapConfig,
+                beta_provider: crate::pocket::RandomBetaProvider,
+            ) -> Result<crate::pocket::debit::HtlcLock>;
         }
     }
 }

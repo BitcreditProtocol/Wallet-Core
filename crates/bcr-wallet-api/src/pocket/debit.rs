@@ -104,6 +104,27 @@ pub trait DebitPocketApi: super::PocketApi {
     ) -> Result<ProtestResult>;
     async fn protest_melt(&self, quote_id: Uuid) -> Result<MeltProtestResult>;
     async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>>;
+    /// HTLC-locks foreign-mint proofs for an intermint exchange at the mint of
+    /// `swap_config.alpha_pk`, resuming a commitment stored over the same inputs.
+    /// The locked proofs belong to the exchange and are never stored as the wallet's.
+    async fn htlc_lock(
+        &self,
+        tstamp: u64,
+        alpha_client: Arc<dyn ClowderMintConnector>,
+        proofs: Vec<cashu::Proof>,
+        key_locks: Vec<secp256k1::PublicKey>,
+        swap_config: SwapConfig,
+        beta_provider: RandomBetaProvider,
+    ) -> Result<HtlcLock>;
+}
+
+/// Proofs HTLC-locked for an intermint exchange, with the preimage key whose hash
+/// locks them and the wallet key that signs them
+#[derive(Debug, Clone)]
+pub struct HtlcLock {
+    pub proofs: Vec<cashu::Proof>,
+    pub preimage: cashu::SecretKey,
+    pub wallet_key: cashu::SecretKey,
 }
 
 #[derive(Debug, Clone)]
@@ -185,13 +206,15 @@ impl Pocket {
         &self,
         input_ys: &HashSet<cdk01::PublicKey>,
         substitute_clowder_id: Option<secp256k1::PublicKey>,
+        htlc_locked: bool,
     ) -> Result<Option<bcr_wallet_persistence::SwapCommitmentRecord>> {
         let commitments = match substitute_clowder_id {
             None => self.pdb.list_commitments().await?,
             Some(id) => self.pdb.list_substitute_commitments(id).await?,
         };
         Ok(commitments.into_iter().find(|record| {
-            record.inputs.len() == input_ys.len()
+            is_htlc_locked(record) == htlc_locked
+                && record.inputs.len() == input_ys.len()
                 && record.inputs.iter().all(|y| input_ys.contains(y))
         }))
     }
@@ -291,10 +314,10 @@ impl Pocket {
         Ok(Some((total, stored_ys)))
     }
 
-    /// Resumes a substitute-mint commitment over the same inputs: replays it while
-    /// it is live, else restores its outputs. `None` means the expired commitment
+    /// Resumes a commitment made with another mint over the same inputs: replays it
+    /// while it is live, else restores its outputs. `None` means the expired commitment
     /// was never executed and has been dropped, so a fresh swap may run.
-    async fn resume_substitute_swap(
+    async fn resume_foreign_swap(
         &self,
         client: Arc<dyn ClowderMintConnector>,
         keysets: &HashMap<ecash::Id, KeySet>,
@@ -325,7 +348,7 @@ impl Pocket {
                     return Ok(Some(proofs));
                 }
                 Err(e) => tracing::warn!(
-                    "replaying substitute commitment {} failed: {e} - trying restore",
+                    "replaying foreign commitment {} failed: {e} - trying restore",
                     record.commitment
                 ),
             }
@@ -338,7 +361,7 @@ impl Pocket {
         }
         if live {
             return Err(Error::Swap(format!(
-                "substitute commitment {} is live but neither replayed nor restored",
+                "foreign commitment {} is live but neither replayed nor restored",
                 record.commitment
             )));
         }
@@ -433,7 +456,9 @@ impl Pocket {
         }
 
         let input_ys: HashSet<cdk01::PublicKey> = inputs.keys().copied().collect();
-        if let Some(record) = self.find_matching_commitment(&input_ys, None).await?
+        if let Some(record) = self
+            .find_matching_commitment(&input_ys, None, false)
+            .await?
             && let Some(result) = self
                 .resume_committed_swap(
                     client.clone(),
@@ -867,11 +892,11 @@ impl super::PocketApi for Pocket {
             input_ys.insert(proof.y()?);
         }
         let resumed = match self
-            .find_matching_commitment(&input_ys, Some(substitute_clowder_id))
+            .find_matching_commitment(&input_ys, Some(substitute_clowder_id), false)
             .await?
         {
             Some(record) => {
-                self.resume_substitute_swap(substitute_client.clone(), &keysets, &proofs, record)
+                self.resume_foreign_swap(substitute_client.clone(), &keysets, &proofs, record)
                     .await?
             }
             None => None,
@@ -1018,6 +1043,21 @@ impl super::PocketApi for Pocket {
 
         Ok(())
     }
+}
+
+/// Whether the record's outputs carry a NUT-14 HTLC spending condition, i.e. it locks
+/// proofs for an intermint exchange instead of swapping them for the wallet
+fn is_htlc_locked(record: &bcr_wallet_persistence::SwapCommitmentRecord) -> bool {
+    record
+        .premints
+        .values()
+        .flat_map(|premint| premint.iter())
+        .any(|premint| {
+            matches!(
+                cashu::SpendingConditions::try_from(&premint.secret),
+                Ok(cashu::SpendingConditions::HTLCConditions { .. })
+            )
+        })
 }
 
 /// Unblinds swap signatures with the premints and keysets of their keyset ids
@@ -1727,6 +1767,61 @@ impl DebitPocketApi for Pocket {
             .into_iter()
             .map(|r| (r.quote_id, r.expiry))
             .collect())
+    }
+
+    async fn htlc_lock(
+        &self,
+        tstamp: u64,
+        alpha_client: Arc<dyn ClowderMintConnector>,
+        proofs: Vec<cashu::Proof>,
+        key_locks: Vec<secp256k1::PublicKey>,
+        swap_config: SwapConfig,
+        beta_provider: RandomBetaProvider,
+    ) -> Result<HtlcLock> {
+        let mut ys = Vec::with_capacity(proofs.len());
+        for proof in &proofs {
+            ys.push(proof.y()?);
+        }
+        let (preimage, wallet_key) = crate::wallet::util::htlc_lock_keys(&self.seed, &ys);
+        let input_ys: HashSet<cdk01::PublicKey> = ys.into_iter().collect();
+
+        let resumed = match self
+            .find_matching_commitment(&input_ys, Some(swap_config.alpha_pk), true)
+            .await?
+        {
+            Some(record) => {
+                let mut keysets = HashMap::with_capacity(record.premints.len());
+                for kid in record.premints.keys() {
+                    keysets.insert(*kid, alpha_client.get_mint_keyset(*kid).await?);
+                }
+                self.resume_foreign_swap(alpha_client.clone(), &keysets, &proofs, record)
+                    .await?
+            }
+            None => None,
+        };
+
+        let proofs = match resumed {
+            Some(locked) => locked,
+            None => {
+                crate::wallet::util::htlc_lock(
+                    tstamp,
+                    alpha_client.as_ref(),
+                    self.pdb.as_ref(),
+                    proofs,
+                    bitcoin::hashes::Hash::hash(&preimage.to_secret_bytes()),
+                    key_locks,
+                    *wallet_key.public_key(),
+                    swap_config,
+                    &beta_provider,
+                )
+                .await?
+            }
+        };
+        Ok(HtlcLock {
+            proofs,
+            preimage,
+            wallet_key,
+        })
     }
 }
 

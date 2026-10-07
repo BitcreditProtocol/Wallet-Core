@@ -14,8 +14,12 @@ use bcr_common::{
     ecash::KeySet,
     wire::keys::ProofFingerprint,
 };
-use bcr_wallet_core::types::Transaction;
-use bitcoin::{hashes::sha256::Hash as Sha256, secp256k1};
+use bcr_wallet_core::types::{Seed, Transaction};
+use bcr_wallet_persistence::PocketRepository;
+use bitcoin::{
+    hashes::{Hash, HashEngine, sha256::Hash as Sha256},
+    secp256k1,
+};
 use secp256k1::schnorr::Signature;
 
 //////////////////////////////////// utils
@@ -76,9 +80,43 @@ pub fn htlc_hash_lock(proof: &Proof) -> Option<Sha256> {
     }
 }
 
+/// The HTLC preimage key and wallet (refund) key for locking the proofs with the given Ys,
+/// derived from the seed so a retry over the same inputs rebuilds the same lock
+pub fn htlc_lock_keys(
+    seed: &Seed,
+    ys: &[cashu::PublicKey],
+) -> (cashu::SecretKey, cashu::SecretKey) {
+    let mut ys: Vec<[u8; 33]> = ys.iter().map(|y| y.to_bytes()).collect();
+    ys.sort_unstable();
+    (
+        tagged_secret_key("bcr-wallet/htlc-preimage/v1", seed, &ys),
+        tagged_secret_key("bcr-wallet/htlc-wallet-key/v1", seed, &ys),
+    )
+}
+
+fn tagged_secret_key(tag: &str, seed: &Seed, ys: &[[u8; 33]]) -> cashu::SecretKey {
+    let tag_hash = Sha256::hash(tag.as_bytes());
+    (0..=u8::MAX)
+        .find_map(|counter| {
+            let mut engine = Sha256::engine();
+            engine.input(tag_hash.as_byte_array());
+            engine.input(tag_hash.as_byte_array());
+            engine.input(seed);
+            for y in ys {
+                engine.input(y);
+            }
+            if counter > 0 {
+                engine.input(&[counter]);
+            }
+            cashu::SecretKey::from_slice(Sha256::from_engine(engine).as_byte_array()).ok()
+        })
+        .expect("one of 256 hashes is a valid secret key")
+}
+
 pub async fn htlc_lock(
     tstamp: u64,
     client: &dyn ClowderMintConnector,
+    db: &dyn PocketRepository,
     proofs: Vec<cashu::Proof>,
     hash_lock: Sha256,
     key_locks: Vec<secp256k1::PublicKey>,
@@ -141,13 +179,13 @@ pub async fn htlc_lock(
     let attestation = beta.attest(&proofs).await?;
     let signatures = crate::pocket::committed_swap(
         client,
-        None,
+        Some(db),
         proofs,
         blinds,
         &swap_config,
-        std::collections::HashMap::new(),
+        premints.clone(),
         attestation,
-        None,
+        Some(swap_config.alpha_pk),
     )
     .await?;
 
