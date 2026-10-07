@@ -34,6 +34,8 @@ pub struct SwapCommitmentRecord {
     pub body_content: String,
     pub wallet_key: cashu::PublicKey,
     pub premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
+    /// The substitute mint the commitment was made with; `None` is the wallet's own mint
+    pub substitute_clowder_id: Option<secp256k1::PublicKey>,
 }
 
 ///////////////////////////////////////////// MeltCommitmentRecord
@@ -79,7 +81,13 @@ pub trait PocketRepository: SendSync {
         commitment: secp256k1::schnorr::Signature,
     ) -> Result<SwapCommitmentRecord>;
     async fn delete_commitment(&self, commitment: secp256k1::schnorr::Signature) -> Result<()>;
+    /// Commitments made with the wallet's own mint only
     async fn list_commitments(&self) -> Result<Vec<SwapCommitmentRecord>>;
+    /// Commitments made with the given substitute mint only
+    async fn list_substitute_commitments(
+        &self,
+        substitute_clowder_id: secp256k1::PublicKey,
+    ) -> Result<Vec<SwapCommitmentRecord>>;
     async fn delete_repo(&self) -> Result<()>;
 
     async fn store_foreign_mint_proof(

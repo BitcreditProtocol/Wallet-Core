@@ -138,10 +138,16 @@ pub(super) fn from_stored_foreign_mint_proof_v1(
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub(super) enum StoredCommitment {
     V1(EncryptedCommitmentPayloadV1),
+    V2(EncryptedCommitmentPayloadV2),
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub(super) struct EncryptedCommitmentPayloadV1 {
+    pub ciphertext: Vec<u8>,
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct EncryptedCommitmentPayloadV2 {
     pub ciphertext: Vec<u8>,
 }
 
@@ -177,11 +183,24 @@ pub(super) struct StoredCommitmentPayloadV1 {
     premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
 }
 
-pub(super) fn to_stored_commitment_v1(
+/// A commitment made with a substitute mint, tagged with that mint's clowder id
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredCommitmentPayloadV2 {
+    base: StoredCommitmentPayloadV1,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    substitute_clowder_id: secp256k1::PublicKey,
+}
+
+/// Own-mint records keep the V1 layout so older builds can still read them;
+/// only substitute-mint records are written as V2.
+pub(super) fn to_stored_commitment(
     record: SwapCommitmentRecord,
     keys: bitcoin::secp256k1::Keypair,
 ) -> Result<StoredCommitment> {
-    let payload = StoredCommitmentPayloadV1 {
+    let base = StoredCommitmentPayloadV1 {
         inputs: record.inputs,
         outputs: record.outputs,
         expiry: record.expiry,
@@ -191,21 +210,48 @@ pub(super) fn to_stored_commitment_v1(
         wallet_key: record.wallet_key,
         premints: record.premints,
     };
-    let encoded = borsh::to_vec(&payload).map_err(|e| Error::BorshSerialization(e.to_string()))?;
-    let encrypted = crypto::encrypt_ecies(&encoded, &keys.public_key())?;
-    Ok(StoredCommitment::V1(EncryptedCommitmentPayloadV1 {
-        ciphertext: encrypted,
-    }))
+    match record.substitute_clowder_id {
+        None => {
+            let encoded =
+                borsh::to_vec(&base).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            let ciphertext = crypto::encrypt_ecies(&encoded, &keys.public_key())?;
+            Ok(StoredCommitment::V1(EncryptedCommitmentPayloadV1 {
+                ciphertext,
+            }))
+        }
+        Some(substitute_clowder_id) => {
+            let payload = StoredCommitmentPayloadV2 {
+                base,
+                substitute_clowder_id,
+            };
+            let encoded =
+                borsh::to_vec(&payload).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            let ciphertext = crypto::encrypt_ecies(&encoded, &keys.public_key())?;
+            Ok(StoredCommitment::V2(EncryptedCommitmentPayloadV2 {
+                ciphertext,
+            }))
+        }
+    }
 }
 
-pub(super) fn from_stored_commitment_v1(
+pub(super) fn from_stored_commitment(
     commitment: StoredCommitment,
     keys: bitcoin::secp256k1::Keypair,
 ) -> Result<SwapCommitmentRecord> {
-    let StoredCommitment::V1(encrypted_payload) = commitment;
-    let decrypted = crypto::decrypt_ecies(&encrypted_payload.ciphertext, &keys.secret_key())?;
-    let c: StoredCommitmentPayloadV1 =
-        borsh::from_slice(&decrypted).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+    let (c, substitute_clowder_id) = match commitment {
+        StoredCommitment::V1(encrypted) => {
+            let decrypted = crypto::decrypt_ecies(&encrypted.ciphertext, &keys.secret_key())?;
+            let c: StoredCommitmentPayloadV1 = borsh::from_slice(&decrypted)
+                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            (c, None)
+        }
+        StoredCommitment::V2(encrypted) => {
+            let decrypted = crypto::decrypt_ecies(&encrypted.ciphertext, &keys.secret_key())?;
+            let c: StoredCommitmentPayloadV2 = borsh::from_slice(&decrypted)
+                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            (c.base, Some(c.substitute_clowder_id))
+        }
+    };
 
     let secret = secp256k1::SecretKey::from_slice(&c.ephemeral_secret)
         .map_err(|e| Error::Custom(format!("invalid ephemeral secret: {e}")))?;
@@ -218,6 +264,7 @@ pub(super) fn from_stored_commitment_v1(
         body_content: c.body_content,
         wallet_key: c.wallet_key,
         premints: c.premints,
+        substitute_clowder_id,
     })
 }
 
@@ -414,6 +461,13 @@ impl PocketDB {
             foreign_mint_proof_table,
             keys,
         })
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn in_memory(wallet_id: &str, unit: &CurrencyUnit) -> Result<Self> {
+        let db = redb::Builder::new().create_with_backend(redb::backends::InMemoryBackend::new())?;
+        let keys = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        Self::new(Arc::new(db), wallet_id, unit, keys)
     }
 
     fn store_new_sync(
@@ -670,7 +724,7 @@ impl PocketDB {
         keys: bitcoin::secp256k1::Keypair,
     ) -> Result<()> {
         let commitment = record.commitment;
-        let entry = to_stored_commitment_v1(record, keys)?;
+        let entry = to_stored_commitment(record, keys)?;
         let write_txn = db.begin_write()?;
 
         {
@@ -701,7 +755,7 @@ impl PocketDB {
                         let deserialized: StoredCommitment =
                             borsh::from_slice(e.value().as_slice())
                                 .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                        let record = from_stored_commitment_v1(deserialized, keys)?;
+                        let record = from_stored_commitment(deserialized, keys)?;
                         Ok(record)
                     }
                     None => Err(Error::Custom(format!(
@@ -722,6 +776,7 @@ impl PocketDB {
         db: Arc<Database>,
         commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         keys: bitcoin::secp256k1::Keypair,
+        substitute_clowder_id: Option<secp256k1::PublicKey>,
     ) -> Result<Vec<SwapCommitmentRecord>> {
         let read_txn = db.begin_read()?;
 
@@ -731,8 +786,10 @@ impl PocketDB {
                 for (_, v) in table.range::<&[u8]>(..)?.flatten() {
                     let deserialized: StoredCommitment = borsh::from_slice(v.value().as_slice())
                         .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                    let record = from_stored_commitment_v1(deserialized, keys)?;
-                    res.push(record);
+                    let record = from_stored_commitment(deserialized, keys)?;
+                    if record.substitute_clowder_id == substitute_clowder_id {
+                        res.push(record);
+                    }
                 }
                 Ok(res)
             }
@@ -1086,7 +1143,20 @@ impl PocketRepository for PocketDB {
         let db_clone = self.db.clone();
         let table = self.commitment_table;
         let keys = self.keys;
-        spawn_blocking(move || Self::list_commitments_sync(db_clone, table, keys)).await?
+        spawn_blocking(move || Self::list_commitments_sync(db_clone, table, keys, None)).await?
+    }
+
+    async fn list_substitute_commitments(
+        &self,
+        substitute_clowder_id: secp256k1::PublicKey,
+    ) -> Result<Vec<SwapCommitmentRecord>> {
+        let db_clone = self.db.clone();
+        let table = self.commitment_table;
+        let keys = self.keys;
+        spawn_blocking(move || {
+            Self::list_commitments_sync(db_clone, table, keys, Some(substitute_clowder_id))
+        })
+        .await?
     }
 
     async fn delete_repo(&self) -> Result<()> {
@@ -1405,6 +1475,7 @@ mod tests {
             body_content: "test_content".to_string(),
             wallet_key,
             premints: HashMap::new(),
+            substitute_clowder_id: None,
         })
         .await
         .expect("store_commitment works");
@@ -1421,6 +1492,94 @@ mod tests {
             .await
             .expect("delete_commitment works");
         assert!(repo.load_commitment(sig).await.is_err());
+    }
+
+    fn test_commitment_record(
+        sig_byte: u8,
+        substitute_clowder_id: Option<secp256k1::PublicKey>,
+    ) -> crate::SwapCommitmentRecord {
+        let ephemeral_keypair =
+            secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng());
+        crate::SwapCommitmentRecord {
+            inputs: vec![test_proof().y().expect("valid y")],
+            outputs: vec![],
+            expiry: 1000u64,
+            commitment: secp256k1::schnorr::Signature::from_slice(&[sig_byte; 64])
+                .expect("valid sig bytes"),
+            ephemeral_secret: secp256k1::SecretKey::from_keypair(&ephemeral_keypair),
+            body_content: "test_content".to_string(),
+            wallet_key: cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(
+                &ephemeral_keypair,
+            )),
+            premints: HashMap::new(),
+            substitute_clowder_id,
+        }
+    }
+
+    #[test]
+    fn own_mint_commitment_keeps_v1_layout_and_substitute_round_trips_through_v2() {
+        let keys = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let substitute = test_clowder_id();
+
+        let own = to_stored_commitment(test_commitment_record(1, None), keys).unwrap();
+        assert!(matches!(own, StoredCommitment::V1(_)));
+        assert_eq!(
+            from_stored_commitment(own, keys)
+                .unwrap()
+                .substitute_clowder_id,
+            None
+        );
+
+        let tagged =
+            to_stored_commitment(test_commitment_record(2, Some(substitute)), keys).unwrap();
+        assert!(matches!(tagged, StoredCommitment::V2(_)));
+        let decoded = from_stored_commitment(tagged, keys).unwrap();
+        assert_eq!(decoded.substitute_clowder_id, Some(substitute));
+        assert_eq!(decoded.body_content, "test_content");
+    }
+
+    #[tokio::test]
+    async fn list_commitments_is_scoped_to_its_mint() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let substitute = test_clowder_id();
+        let other_substitute = test_clowder_id();
+
+        let own = test_commitment_record(1, None);
+        let tagged = test_commitment_record(2, Some(substitute));
+        let other = test_commitment_record(3, Some(other_substitute));
+        for record in [own.clone(), tagged.clone(), other.clone()] {
+            repo.store_commitment(record).await.unwrap();
+        }
+
+        let sigs = |records: Vec<crate::SwapCommitmentRecord>| {
+            records
+                .into_iter()
+                .map(|r| r.commitment)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            sigs(repo.list_commitments().await.unwrap()),
+            vec![own.commitment]
+        );
+        assert_eq!(
+            sigs(repo.list_substitute_commitments(substitute).await.unwrap()),
+            vec![tagged.commitment]
+        );
+        assert_eq!(
+            sigs(
+                repo.list_substitute_commitments(other_substitute)
+                    .await
+                    .unwrap()
+            ),
+            vec![other.commitment]
+        );
+        assert_eq!(
+            repo.load_commitment(tagged.commitment)
+                .await
+                .unwrap()
+                .substitute_clowder_id,
+            Some(substitute)
+        );
     }
 
     fn test_clowder_id() -> secp256k1::PublicKey {

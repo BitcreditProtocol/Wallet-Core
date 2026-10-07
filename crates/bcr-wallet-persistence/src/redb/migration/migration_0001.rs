@@ -155,8 +155,9 @@ fn migrate_commitment_table_to_envelope_and_encryption(
             body_content: c.body_content,
             wallet_key: c.wallet_key,
             premints: premints_from_storage(c.premints),
+            substitute_clowder_id: None,
         };
-        let stored_commitment_v1 = pocket::to_stored_commitment_v1(record, keys.to_owned())?;
+        let stored_commitment_v1 = pocket::to_stored_commitment(record, keys.to_owned())?;
 
         let migrated_commitment_bytes = borsh::to_vec(&stored_commitment_v1)
             .map_err(|e| Error::BorshSerialization(e.to_string()))?;
@@ -272,7 +273,7 @@ mod tests {
     use super::*;
     use crate::redb::{
         migration::collect_wallet_namespace,
-        pocket::{StoredCommitment, StoredProof, from_stored_commitment_v1, from_stored_proof_v1},
+        pocket::{StoredCommitment, StoredProof, from_stored_commitment, from_stored_proof_v1},
     };
     use bcr_common::{
         cashu::{Amount, CurrencyUnit},
@@ -831,7 +832,7 @@ mod tests {
         let envelope: StoredCommitment = borsh::from_slice(stored.value().as_slice())
             .expect("deserialize stored commitment envelope");
 
-        from_stored_commitment_v1(envelope, keys).expect("decrypt migrated commitment")
+        from_stored_commitment(envelope, keys).expect("decrypt migrated commitment")
     }
 
     fn assert_commitment_matches_record(legacy: &Commitment, migrated: &SwapCommitmentRecord) {
@@ -928,6 +929,7 @@ mod tests {
             StoredCommitment::V1(payload) => {
                 assert!(!payload.ciphertext.is_empty());
             }
+            StoredCommitment::V2(_) => panic!("legacy commitments migrate to V1"),
         }
     }
 
