@@ -1173,8 +1173,7 @@ impl DebitPocketApi for Pocket {
                                 "Pending Stale Proof returned as SPENT from Mint - resuming its commitment {} before marking SPENT",
                                 record.commitment
                             );
-                            let commitment_inputs =
-                                self.load_commitment_inputs(&record).await;
+                            let commitment_inputs = self.load_commitment_inputs(&record).await;
                             match self
                                 .resume_committed_swap(
                                     client.clone(),
