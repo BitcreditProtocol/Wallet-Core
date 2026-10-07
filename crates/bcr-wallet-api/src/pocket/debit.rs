@@ -295,6 +295,7 @@ impl Pocket {
             .iter()
             .filter_map(|y| inputs.get(y).cloned())
             .collect();
+        let committed_proofs = crate::wallet::util::remove_dleq_from_proofs(committed_proofs);
 
         match client
             .post_swap_committed(committed_proofs, record.outputs.clone(), record.commitment)
