@@ -3725,8 +3725,7 @@ mod tests {
         let substitute_clowder_id = secp256k1::PublicKey::from_keypair(&substitute_keypair);
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        pdb.expect_counter().returning(|_| Ok(0));
-        pdb.expect_increment_counter().returning(|_, _, _| Ok(()));
+        pdb.expect_reserve_counter().returning(|_, _| Ok(0));
         pdb.expect_list_substitute_commitments()
             .times(1)
             .returning(|_| Ok(vec![]));
@@ -3872,8 +3871,7 @@ mod tests {
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        pdb.expect_counter().returning(|_| Ok(0));
-        pdb.expect_increment_counter().returning(|_, _, _| Ok(()));
+        pdb.expect_reserve_counter().returning(|_, _| Ok(0));
         pdb.expect_list_substitute_commitments()
             .times(1)
             .returning(|_| Ok(vec![]));
@@ -4027,10 +4025,10 @@ mod tests {
         });
 
         let mut restore_pdb = MockPocketRepository::new();
-        restore_pdb.expect_counter().returning(|_| Ok(0));
+        restore_pdb.expect_reserve_counter().returning(|_, _| Ok(0));
         restore_pdb
-            .expect_increment_counter()
-            .returning(|_, _, _| Ok(()));
+            .expect_advance_counter_to()
+            .returning(|_, _| Ok(()));
         let recovered_amount = Arc::new(Mutex::new(Amount::ZERO));
         let recovered_amount_clone = recovered_amount.clone();
         restore_pdb.expect_store_new().returning(move |p| {
