@@ -147,6 +147,7 @@ pub async fn htlc_lock(
         &swap_config,
         std::collections::HashMap::new(),
         attestation,
+        None,
     )
     .await?;
 

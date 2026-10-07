@@ -184,8 +184,12 @@ impl Pocket {
     async fn find_matching_commitment(
         &self,
         input_ys: &HashSet<cdk01::PublicKey>,
+        substitute_clowder_id: Option<secp256k1::PublicKey>,
     ) -> Result<Option<bcr_wallet_persistence::SwapCommitmentRecord>> {
-        let commitments = self.pdb.list_commitments().await?;
+        let commitments = match substitute_clowder_id {
+            None => self.pdb.list_commitments().await?,
+            Some(id) => self.pdb.list_substitute_commitments(id).await?,
+        };
         Ok(commitments.into_iter().find(|record| {
             record.inputs.len() == input_ys.len()
                 && record.inputs.iter().all(|y| input_ys.contains(y))
@@ -222,11 +226,12 @@ impl Pocket {
         Ok(total)
     }
 
-    async fn resume_via_restore(
+    /// Unblinds whatever the mint restores of the record's committed outputs
+    async fn restore_committed_outputs(
         &self,
         client: Arc<dyn ClowderMintConnector>,
         record: &bcr_wallet_persistence::SwapCommitmentRecord,
-    ) -> Result<Option<(Amount, Vec<cdk01::PublicKey>)>> {
+    ) -> Result<Vec<cdk00::Proof>> {
         let premints_by_output: HashMap<cashu::PublicKey, (ecash::Id, cdk00::PreMint)> = record
             .premints
             .iter()
@@ -242,13 +247,9 @@ impl Pocket {
                 outputs: record.outputs.clone(),
             })
             .await?;
-        if restored.is_empty() {
-            return Ok(None);
-        }
 
         let mut keysets: HashMap<ecash::Id, KeySet> = HashMap::new();
-        let mut total = Amount::ZERO;
-        let mut stored_ys = Vec::new();
+        let mut proofs = Vec::new();
         for (blinded_message, signature) in restored {
             let Some((kid, premint)) = premints_by_output.get(&blinded_message.blinded_secret)
             else {
@@ -264,21 +265,85 @@ impl Pocket {
                 premint.clone(),
                 signature,
             ) {
-                Ok(proof) => {
-                    let amount = proof.amount;
-                    let y = proof.y()?;
-                    self.pdb.store_new(proof).await?;
-                    total += amount;
-                    stored_ys.push(y);
-                }
+                Ok(proof) => proofs.push(proof),
                 Err(e) => tracing::error!("unblind_ecash_signature failed during restore: {e}"),
             }
         }
+        Ok(proofs)
+    }
 
-        if stored_ys.is_empty() {
+    async fn resume_via_restore(
+        &self,
+        client: Arc<dyn ClowderMintConnector>,
+        record: &bcr_wallet_persistence::SwapCommitmentRecord,
+    ) -> Result<Option<(Amount, Vec<cdk01::PublicKey>)>> {
+        let proofs = self.restore_committed_outputs(client, record).await?;
+        if proofs.is_empty() {
             return Ok(None);
         }
+        let mut total = Amount::ZERO;
+        let mut stored_ys = Vec::with_capacity(proofs.len());
+        for proof in proofs {
+            let amount = proof.amount;
+            stored_ys.push(self.pdb.store_new(proof).await?);
+            total += amount;
+        }
         Ok(Some((total, stored_ys)))
+    }
+
+    /// Resumes a substitute-mint commitment over the same inputs: replays it while
+    /// it is live, else restores its outputs. `None` means the expired commitment
+    /// was never executed and has been dropped, so a fresh swap may run.
+    async fn resume_substitute_swap(
+        &self,
+        client: Arc<dyn ClowderMintConnector>,
+        keysets: &HashMap<ecash::Id, KeySet>,
+        inputs: &[cdk00::Proof],
+        record: bcr_wallet_persistence::SwapCommitmentRecord,
+    ) -> Result<Option<Vec<cdk00::Proof>>> {
+        let now = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
+        let live = record.expiry >= now;
+        if live {
+            let mut by_y = HashMap::with_capacity(inputs.len());
+            for proof in inputs {
+                by_y.insert(proof.y()?, proof.clone());
+            }
+            let committed_inputs = crate::wallet::util::remove_dleq_from_proofs(
+                record
+                    .inputs
+                    .iter()
+                    .filter_map(|y| by_y.remove(y))
+                    .collect(),
+            );
+            match client
+                .post_swap_committed(committed_inputs, record.outputs.clone(), record.commitment)
+                .await
+            {
+                Ok(signatures) => {
+                    let proofs = unblind_by_keyset(keysets, &record.premints, signatures)?;
+                    self.pdb.delete_commitment(record.commitment).await?;
+                    return Ok(Some(proofs));
+                }
+                Err(e) => tracing::warn!(
+                    "replaying substitute commitment {} failed: {e} - trying restore",
+                    record.commitment
+                ),
+            }
+        }
+
+        let restored = self.restore_committed_outputs(client, &record).await?;
+        if !restored.is_empty() {
+            self.pdb.delete_commitment(record.commitment).await?;
+            return Ok(Some(restored));
+        }
+        if live {
+            return Err(Error::Swap(format!(
+                "substitute commitment {} is live but neither replayed nor restored",
+                record.commitment
+            )));
+        }
+        self.pdb.delete_commitment(record.commitment).await?;
+        Ok(None)
     }
 
     async fn resume_committed_swap(
@@ -368,7 +433,7 @@ impl Pocket {
         }
 
         let input_ys: HashSet<cdk01::PublicKey> = inputs.keys().copied().collect();
-        if let Some(record) = self.find_matching_commitment(&input_ys).await?
+        if let Some(record) = self.find_matching_commitment(&input_ys, None).await?
             && let Some(result) = self
                 .resume_committed_swap(
                     client.clone(),
@@ -771,11 +836,10 @@ impl super::PocketApi for Pocket {
             "Swapping to unlocked substitute proofs {swap_plan:?} - {change_amount} will be used for fees and stored temporarily as foreign mint proofs."
         );
 
-        // prepare the premints
-        let mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets> = BTreeMap::new();
-        let mut remaining_payment = send_amount;
         // collect payments by kid, so we can reconstruct it after the swap
+        let mut remaining_payment = send_amount;
         let mut payment_targets_by_kid: HashMap<ecash::Id, Amount> = HashMap::new();
+        let mut split_targets: Vec<(ecash::Id, Amount, SplitTarget)> = Vec::new();
 
         for (kid, amount) in swap_plan {
             let keyset_payment_target = std::cmp::min(amount, remaining_payment);
@@ -789,18 +853,7 @@ impl super::PocketApi for Pocket {
                 // change - doesn't matter how we get it
                 SplitTarget::default()
             };
-
-            let kid: ecash::Id = kid.into();
-            let premint = premint_from_counter(
-                self.pdb.as_ref(),
-                &self.seed,
-                kid,
-                amount,
-                &target,
-                &keysets[&kid],
-            )
-            .await?;
-            premints.insert(kid, premint);
+            split_targets.push((kid.into(), amount, target));
         }
 
         if remaining_payment != Amount::ZERO {
@@ -809,40 +862,74 @@ impl super::PocketApi for Pocket {
             )));
         }
 
-        let blinds: Vec<cdk00::BlindedMessage> = premints
-            .values()
-            .flat_map(|premint| premint.blinded_messages())
-            .collect();
+        let mut input_ys = HashSet::with_capacity(proofs.len());
+        for proof in &proofs {
+            input_ys.insert(proof.y()?);
+        }
+        let resumed = match self
+            .find_matching_commitment(&input_ys, Some(substitute_clowder_id))
+            .await?
+        {
+            Some(record) => {
+                self.resume_substitute_swap(substitute_client.clone(), &keysets, &proofs, record)
+                    .await?
+            }
+            None => None,
+        };
 
-        let attestation = beta_provider.attest(&proofs).await?;
-        let signatures = super::committed_swap(
-            substitute_client.as_ref(),
-            None,
-            proofs,
-            blinds,
-            &swap_config,
-            premints.iter().map(|(k, v)| (*k, v.clone())).collect(),
-            attestation,
-        )
-        .await?;
+        let swapped = match resumed {
+            Some(swapped) => swapped,
+            None => {
+                let mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets> = BTreeMap::new();
+                for (kid, amount, target) in split_targets {
+                    let premint = premint_from_counter(
+                        self.pdb.as_ref(),
+                        &self.seed,
+                        kid,
+                        amount,
+                        &target,
+                        &keysets[&kid],
+                    )
+                    .await?;
+                    premints.insert(kid, premint);
+                }
+
+                let blinds: Vec<cdk00::BlindedMessage> = premints
+                    .values()
+                    .flat_map(|premint| premint.blinded_messages())
+                    .collect();
+                let premints: HashMap<ecash::Id, cdk00::PreMintSecrets> =
+                    premints.into_iter().collect();
+
+                let attestation = beta_provider.attest(&proofs).await?;
+                let signatures = super::committed_swap(
+                    substitute_client.as_ref(),
+                    Some(self.pdb.as_ref()),
+                    proofs,
+                    blinds,
+                    &swap_config,
+                    premints.clone(),
+                    attestation,
+                    Some(substitute_clowder_id),
+                )
+                .await?;
+                unblind_by_keyset(&keysets, &premints, signatures)?
+            }
+        };
 
         let mut on_target: Vec<cdk00::Proof> = Vec::new();
         let mut change_proofs: Vec<cdk00::Proof> = Vec::new();
 
-        let mut sigs_by_kid: HashMap<ecash::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
-        for signature in signatures {
-            sigs_by_kid
-                .entry(signature.keyset_id.into())
-                .and_modify(|v| v.push(signature.clone()))
-                .or_insert_with(|| vec![signature]);
+        let mut proofs_by_kid: HashMap<ecash::Id, Vec<cdk00::Proof>> = HashMap::new();
+        for proof in swapped {
+            proofs_by_kid
+                .entry(proof.keyset_id.into())
+                .or_default()
+                .push(proof);
         }
 
         let mut selected_amount = Amount::ZERO;
-        for (kid, sigs) in sigs_by_kid.into_iter() {
-            let premint = premints.remove(&kid).expect("premint should be here");
-            let keyset = keysets.get(&kid).expect("keyset should be here");
-            let mut proofs = unblind_proofs(keyset, sigs, premint);
-
+        for (kid, mut proofs) in proofs_by_kid.into_iter() {
             // get payment amount for this keyset
             let keyset_target_amount = payment_targets_by_kid.remove(&kid).unwrap_or(Amount::ZERO);
             let mut selected_amount_per_keyset = Amount::ZERO;
@@ -931,6 +1018,30 @@ impl super::PocketApi for Pocket {
 
         Ok(())
     }
+}
+
+/// Unblinds swap signatures with the premints and keysets of their keyset ids
+fn unblind_by_keyset(
+    keysets: &HashMap<ecash::Id, KeySet>,
+    premints: &HashMap<ecash::Id, cdk00::PreMintSecrets>,
+    signatures: Vec<cdk00::BlindSignature>,
+) -> Result<Vec<cdk00::Proof>> {
+    let mut sigs_by_kid: HashMap<ecash::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
+    for signature in signatures {
+        sigs_by_kid
+            .entry(signature.keyset_id.into())
+            .or_default()
+            .push(signature);
+    }
+    let mut proofs = Vec::new();
+    for (kid, sigs) in sigs_by_kid {
+        let keyset = keysets.get(&kid).ok_or(Error::UnknownKeysetId(kid))?;
+        let premint = premints
+            .get(&kid)
+            .ok_or_else(|| Error::Swap(format!("no premint for keyset {kid}")))?;
+        proofs.extend(unblind_proofs(keyset, sigs, premint.clone()));
+    }
+    Ok(proofs)
 }
 
 #[async_trait]
@@ -1469,6 +1580,11 @@ impl DebitPocketApi for Pocket {
         swap_config: SwapConfig,
     ) -> Result<ProtestResult> {
         let record = self.pdb.load_commitment(commitment_sig).await?;
+        if let Some(substitute) = record.substitute_clowder_id {
+            return Err(Error::Swap(format!(
+                "commitment {commitment_sig} was made with substitute mint {substitute}"
+            )));
+        }
         let loaded_proofs = self.pdb.load_proofs(&record.inputs).await?;
         let ephemeral_keypair =
             secp256k1::Keypair::from_secret_key(secp256k1::SECP256K1, &record.ephemeral_secret);
@@ -1720,6 +1836,7 @@ mod tests {
             body_content: "dGVzdA==".to_string(),
             wallet_key,
             premints: stored_premints,
+            substitute_clowder_id: None,
         };
 
         SwapCommitmentFixture {
@@ -2728,6 +2845,7 @@ mod tests {
                 body_content: "dGVzdA==".to_string(),
                 wallet_key: record_wallet_key,
                 premints: record_premints.clone(),
+                substitute_clowder_id: None,
             })
         });
 
@@ -2846,6 +2964,7 @@ mod tests {
                 body_content: "dGVzdA==".to_string(),
                 wallet_key: record_wallet_key,
                 premints: HashMap::new(),
+                substitute_clowder_id: None,
             })
         });
 
@@ -3488,6 +3607,16 @@ mod tests {
         let mut pdb = MockPocketRepository::new();
         pdb.expect_counter().returning(|_| Ok(0));
         pdb.expect_increment_counter().returning(|_, _, _| Ok(()));
+        pdb.expect_list_substitute_commitments()
+            .times(1)
+            .returning(|_| Ok(vec![]));
+        pdb.expect_store_commitment().times(1).returning(|record| {
+            assert!(record.substitute_clowder_id.is_some());
+            Ok(())
+        });
+        pdb.expect_delete_commitment()
+            .times(1)
+            .returning(|_| Ok(()));
         let mut substitute_client = MockClowderMintConnector::new();
 
         substitute_client
@@ -3625,6 +3754,16 @@ mod tests {
         let mut pdb = MockPocketRepository::new();
         pdb.expect_counter().returning(|_| Ok(0));
         pdb.expect_increment_counter().returning(|_, _, _| Ok(()));
+        pdb.expect_list_substitute_commitments()
+            .times(1)
+            .returning(|_| Ok(vec![]));
+        pdb.expect_store_commitment().times(1).returning(|record| {
+            assert!(record.substitute_clowder_id.is_some());
+            Ok(())
+        });
+        pdb.expect_delete_commitment()
+            .times(1)
+            .returning(|_| Ok(()));
 
         let mut substitute_client = MockClowderMintConnector::new();
         substitute_client
@@ -4323,5 +4462,434 @@ mod tests {
             )
             .await
             .expect("a commitment the mint never executed must be deleted, not kept forever");
+    }
+
+    /// A substitute swap whose `post_swap_committed` response was dropped, left
+    /// behind in a real repository the way a first attempt leaves it.
+    struct DroppedSubstituteSwap {
+        pdb: Arc<bcr_wallet_persistence::redb::pocket::PocketDB>,
+        seed: Seed,
+        mint_keyset: ecash::MintKeySet,
+        keysets_info: HashMap<ecash::Id, KeySetInfo>,
+        keysets: HashMap<ecash::Id, KeySet>,
+        input_proofs: Vec<cdk00::Proof>,
+        substitute_clowder_id: secp256k1::PublicKey,
+        other_substitute_clowder_id: secp256k1::PublicKey,
+        other_commitment: secp256k1::schnorr::Signature,
+        outputs: Vec<cdk00::BlindedMessage>,
+        commitment: secp256k1::schnorr::Signature,
+        send_amount: Amount,
+    }
+
+    fn substitute_id() -> secp256k1::PublicKey {
+        secp256k1::PublicKey::from_keypair(&secp256k1::Keypair::new_global(
+            &mut secp256k1::rand::thread_rng(),
+        ))
+    }
+
+    fn unused_beta_provider(alpha_id: secp256k1::PublicKey) -> RandomBetaProvider {
+        RandomBetaProvider::new(
+            vec![Arc::new(MockClowderMintConnector::new()) as Arc<dyn crate::ClowderMintConnector>],
+            alpha_id,
+        )
+        .expect("can create beta provider")
+    }
+
+    fn with_dleq(proofs: &[cdk00::Proof]) -> Vec<cdk00::Proof> {
+        proofs
+            .iter()
+            .cloned()
+            .map(|mut proof| {
+                proof.dleq = Some(cashu::ProofDleq::new(
+                    cashu::SecretKey::generate(),
+                    cashu::SecretKey::generate(),
+                    cashu::SecretKey::generate(),
+                ));
+                proof
+            })
+            .collect()
+    }
+
+    async fn dropped_substitute_swap(expiry: u64) -> DroppedSubstituteSwap {
+        let (info, mint_keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let keysets_info = test_kinfos(info);
+        let keysets = HashMap::from([(kid, bcr_wallet_core::util::to_keyset(&mint_keyset, None))]);
+        let input_proofs = core_tests::generate_random_ecash_proofs(
+            &mint_keyset,
+            &[Amount::from(8u64), Amount::from(2u64)],
+        );
+        let input_ys: Vec<cashu::PublicKey> = input_proofs.iter().map(|p| p.y().unwrap()).collect();
+        let substitute_clowder_id = substitute_id();
+        let other_substitute_clowder_id = substitute_id();
+        let seed: Seed = [7u8; 64];
+
+        let pdb = Arc::new(
+            bcr_wallet_persistence::redb::pocket::PocketDB::in_memory("wallet", &CurrencyUnit::Sat)
+                .expect("in-memory pocket db"),
+        );
+        let mut other = swap_commitment_fixture(Amount::from(10u64), 0x52, u64::MAX).record;
+        other.inputs = input_ys.clone();
+        other.substitute_clowder_id = Some(other_substitute_clowder_id);
+        let other_commitment = other.commitment;
+        pdb.store_commitment(other).await.unwrap();
+
+        let committed = Arc::new(Mutex::new(None));
+        let committed_clone = committed.clone();
+        let mut substitute_client = MockClowderMintConnector::new();
+        substitute_client
+            .expect_post_swap_commitment()
+            .times(1)
+            .returning(move |inputs, outputs, _, _, _| {
+                let mut result = mock_commitment_result();
+                result.inputs_ys = inputs.iter().map(|p| p.y().unwrap()).collect();
+                result.outputs = outputs.clone();
+                result.expiry = expiry;
+                *committed_clone.lock().unwrap() = Some((outputs, result.commitment));
+                Ok(result)
+            });
+        substitute_client
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(|_, _, _| {
+                Err(Error::MintClientServiceUnavailable(
+                    "connection reset".to_string(),
+                ))
+            });
+
+        let swap_config = test_swap_config();
+        let mut beta_connector = MockClowderMintConnector::new();
+        setup_attestation_mock(&mut beta_connector);
+        let beta_provider = RandomBetaProvider::new(
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
+            substitute_clowder_id,
+        )
+        .expect("can create beta provider");
+
+        let send_amount = Amount::from(8u64);
+        let pocket = super::Pocket::new(
+            CurrencyUnit::Sat,
+            pdb.clone(),
+            Arc::new(MockMintMeltRepository::new()),
+            seed,
+            Arc::new(test_beta_provider()),
+        );
+        pocket
+            .swap_to_unlocked_substitute_proofs(
+                input_proofs.clone(),
+                &keysets_info,
+                keysets.clone(),
+                Arc::new(substitute_client),
+                substitute_clowder_id,
+                beta_provider,
+                send_amount,
+                swap_config,
+            )
+            .await
+            .expect_err("a dropped post_swap_committed response fails the swap");
+
+        let (outputs, commitment) = committed.lock().unwrap().take().expect("committed once");
+        DroppedSubstituteSwap {
+            pdb,
+            seed,
+            mint_keyset,
+            keysets_info,
+            keysets,
+            input_proofs,
+            substitute_clowder_id,
+            other_substitute_clowder_id,
+            other_commitment,
+            outputs,
+            commitment,
+            send_amount,
+        }
+    }
+
+    impl DroppedSubstituteSwap {
+        fn pocket(&self) -> super::Pocket {
+            super::Pocket::new(
+                CurrencyUnit::Sat,
+                self.pdb.clone(),
+                Arc::new(MockMintMeltRepository::new()),
+                self.seed,
+                Arc::new(test_beta_provider()),
+            )
+        }
+
+        fn signatures(&self) -> Vec<cdk00::BlindSignature> {
+            self.outputs
+                .iter()
+                .map(|bm| bcr_common::core::signature::sign_ecash(&self.mint_keyset, bm).unwrap())
+                .collect()
+        }
+
+        async fn retry(
+            &self,
+            substitute_client: MockClowderMintConnector,
+            beta_provider: RandomBetaProvider,
+        ) -> Result<Vec<cdk00::Proof>> {
+            self.pocket()
+                .swap_to_unlocked_substitute_proofs(
+                    with_dleq(&self.input_proofs),
+                    &self.keysets_info,
+                    self.keysets.clone(),
+                    Arc::new(substitute_client),
+                    self.substitute_clowder_id,
+                    beta_provider,
+                    self.send_amount,
+                    test_swap_config(),
+                )
+                .await
+        }
+
+        async fn substitute_commitments(&self) -> Vec<secp256k1::schnorr::Signature> {
+            self.pdb
+                .list_substitute_commitments(self.substitute_clowder_id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|r| r.commitment)
+                .collect()
+        }
+
+        async fn assert_recovered(&self, on_target: Vec<cdk00::Proof>) {
+            assert_eq!(on_target.total_amount().unwrap(), Amount::from(8u64));
+            let change = self.pdb.load_foreign_mint_proofs().await.unwrap();
+            assert_eq!(change.len(), 1);
+            assert_eq!(change[0].clowder_id, self.substitute_clowder_id);
+            assert_eq!(change[0].proof.amount, Amount::from(2u64));
+            assert!(matches!(
+                change[0].reason,
+                ForeignMintProofReason::MintOffline
+            ));
+            assert!(self.substitute_commitments().await.is_empty());
+            let other = self
+                .pdb
+                .list_substitute_commitments(self.other_substitute_clowder_id)
+                .await
+                .unwrap();
+            assert_eq!(other.len(), 1);
+            assert_eq!(other[0].commitment, self.other_commitment);
+        }
+
+        fn restore_returning(
+            &self,
+            substitute_client: &mut MockClowderMintConnector,
+            signatures: Vec<cdk00::BlindSignature>,
+        ) {
+            let outputs = self.outputs.clone();
+            substitute_client
+                .expect_post_restore()
+                .times(1)
+                .returning(move |request| {
+                    assert_eq!(request.outputs, outputs);
+                    Ok(outputs.iter().cloned().zip(signatures.clone()).collect())
+                });
+            let keyset = bcr_wallet_core::util::to_keyset(&self.mint_keyset, None);
+            substitute_client
+                .expect_get_mint_keyset()
+                .returning(move |_| Ok(keyset.clone()));
+        }
+    }
+
+    #[tokio::test]
+    async fn substitute_swap_retry_replays_commitment() {
+        let fx = dropped_substitute_swap(u64::MAX).await;
+
+        let stored = fx
+            .pdb
+            .list_substitute_commitments(fx.substitute_clowder_id)
+            .await
+            .unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].commitment, fx.commitment);
+        assert_eq!(stored[0].outputs, fx.outputs);
+        assert_eq!(
+            stored[0].substitute_clowder_id,
+            Some(fx.substitute_clowder_id)
+        );
+        assert!(fx.pdb.list_commitments().await.unwrap().is_empty());
+
+        let mut substitute_client = MockClowderMintConnector::new();
+        substitute_client.expect_post_swap_commitment().times(0);
+        let expected_outputs = fx.outputs.clone();
+        let expected_commitment = fx.commitment;
+        let expected_inputs = fx.input_proofs.clone();
+        let signatures = fx.signatures();
+        substitute_client
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(move |inputs, outputs, commitment| {
+                assert!(inputs.iter().all(|p| p.dleq.is_none()));
+                let ys: Vec<_> = inputs.iter().map(|p| p.y().unwrap()).collect();
+                let expected_ys: Vec<_> = expected_inputs.iter().map(|p| p.y().unwrap()).collect();
+                assert_eq!(ys, expected_ys);
+                assert_eq!(outputs, expected_outputs);
+                assert_eq!(commitment, expected_commitment);
+                Ok(signatures.clone())
+            });
+
+        let on_target = fx
+            .retry(
+                substitute_client,
+                unused_beta_provider(fx.substitute_clowder_id),
+            )
+            .await
+            .expect("the retry replays the stored commitment");
+        fx.assert_recovered(on_target).await;
+    }
+
+    #[tokio::test]
+    async fn substitute_swap_retry_falls_back_to_restore() {
+        // live commitment, replay rejected: restore recovers the signed outputs
+        let fx = dropped_substitute_swap(u64::MAX).await;
+        let mut substitute_client = MockClowderMintConnector::new();
+        substitute_client.expect_post_swap_commitment().times(0);
+        substitute_client
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(|_, _, _| Err(Error::MintClientBadRequest("already spent".to_string())));
+        fx.restore_returning(&mut substitute_client, fx.signatures());
+        let on_target = fx
+            .retry(
+                substitute_client,
+                unused_beta_provider(fx.substitute_clowder_id),
+            )
+            .await
+            .expect("restore recovers the replay-rejected commitment");
+        fx.assert_recovered(on_target).await;
+
+        // expired commitment: no replay, restore recovers the signed outputs
+        let fx = dropped_substitute_swap(1).await;
+        let mut substitute_client = MockClowderMintConnector::new();
+        substitute_client.expect_post_swap_commitment().times(0);
+        substitute_client.expect_post_swap_committed().times(0);
+        fx.restore_returning(&mut substitute_client, fx.signatures());
+        let on_target = fx
+            .retry(
+                substitute_client,
+                unused_beta_provider(fx.substitute_clowder_id),
+            )
+            .await
+            .expect("restore recovers the expired commitment");
+        fx.assert_recovered(on_target).await;
+
+        // live commitment, replay rejected and nothing to restore: kept, retry fails
+        let fx = dropped_substitute_swap(u64::MAX).await;
+        let mut substitute_client = MockClowderMintConnector::new();
+        substitute_client.expect_post_swap_commitment().times(0);
+        substitute_client
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(|_, _, _| Err(Error::MintClientBadRequest("already spent".to_string())));
+        fx.restore_returning(&mut substitute_client, vec![]);
+        fx.retry(
+            substitute_client,
+            unused_beta_provider(fx.substitute_clowder_id),
+        )
+        .await
+        .expect_err("an unresolved live commitment must not be swapped over");
+        assert_eq!(fx.substitute_commitments().await, vec![fx.commitment]);
+
+        // expired commitment the mint never executed: deleted, fresh swap runs
+        let fx = dropped_substitute_swap(1).await;
+        let mut substitute_client = MockClowderMintConnector::new();
+        fx.restore_returning(&mut substitute_client, vec![]);
+        substitute_client
+            .expect_post_swap_commitment()
+            .times(1)
+            .returning(|inputs, outputs, _, _, _| {
+                let mut result = mock_commitment_result();
+                result.inputs_ys = inputs.iter().map(|p| p.y().unwrap()).collect();
+                result.outputs = outputs;
+                result.expiry = u64::MAX;
+                Ok(result)
+            });
+        let signing_keyset = fx.mint_keyset.clone();
+        substitute_client
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(move |_, outputs, _| {
+                Ok(outputs
+                    .iter()
+                    .map(|bm| bcr_common::core::signature::sign_ecash(&signing_keyset, bm).unwrap())
+                    .collect())
+            });
+        let mut beta_connector = MockClowderMintConnector::new();
+        setup_attestation_mock(&mut beta_connector);
+        let beta_provider = RandomBetaProvider::new(
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
+            fx.substitute_clowder_id,
+        )
+        .unwrap();
+        let on_target = fx
+            .retry(substitute_client, beta_provider)
+            .await
+            .expect("a fresh swap runs once the expired commitment is gone");
+        fx.assert_recovered(on_target).await;
+    }
+
+    #[tokio::test]
+    async fn substitute_commitment_never_resumed_against_own_mint() {
+        let fx = dropped_substitute_swap(1).await;
+        for proof in &fx.input_proofs {
+            fx.pdb.store_pendingspent(proof.clone()).await.unwrap();
+        }
+        assert!(fx.pdb.list_commitments().await.unwrap().is_empty());
+
+        let mut own_client = MockClowderMintConnector::new();
+        own_client.expect_post_swap_committed().times(0);
+        own_client.expect_post_restore().times(0);
+        own_client.expect_post_check_state().returning(|req| {
+            Ok(req
+                .ys
+                .iter()
+                .map(|y| cdk07::ProofState {
+                    y: *y,
+                    state: cdk07::State::Spent,
+                    witness: None,
+                })
+                .collect())
+        });
+        let own_client: Arc<dyn crate::ClowderMintConnector> = Arc::new(own_client);
+
+        let betas: Vec<Arc<dyn crate::ClowderMintConnector>> =
+            vec![Arc::new(MockClowderMintConnector::new())];
+        let pocket = pocket_with_beta(
+            fx.pdb.clone(),
+            Arc::new(MockMintMeltRepository::new()),
+            betas,
+            substitute_id(),
+        );
+
+        pocket
+            .check_pending_commitments(
+                u64::MAX,
+                &fx.keysets_info,
+                own_client.clone(),
+                test_swap_config(),
+            )
+            .await
+            .unwrap();
+        pocket
+            .recover_pending_stale_proofs(
+                &[],
+                &fx.keysets_info,
+                own_client.clone(),
+                test_swap_config(),
+            )
+            .await
+            .unwrap();
+        pocket
+            .protest_swap(
+                fx.commitment,
+                &fx.keysets_info,
+                own_client,
+                test_swap_config(),
+            )
+            .await
+            .expect_err("a substitute commitment is never protested at the own mint");
+
+        assert_eq!(fx.substitute_commitments().await, vec![fx.commitment]);
     }
 }

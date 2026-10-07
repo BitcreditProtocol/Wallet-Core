@@ -333,6 +333,7 @@ pub(crate) async fn committed_swap(
     swap_config: &SwapConfig,
     premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
     attestation: wire_attestation::IssuanceAttestation,
+    substitute_clowder_id: Option<bitcoin::secp256k1::PublicKey>,
 ) -> Result<Vec<cdk00::BlindSignature>> {
     // Remove dleqs from same-mint swaps to not give up a blinding factor
     let inputs = crate::wallet::util::remove_dleq_from_proofs(inputs);
@@ -357,6 +358,7 @@ pub(crate) async fn committed_swap(
             body_content: commit_result.body_content,
             wallet_key: commit_result.wallet_key,
             premints,
+            substitute_clowder_id,
         })
         .await?;
     }
@@ -401,6 +403,7 @@ async fn swap(
         &swap_config,
         premints.iter().map(|(k, v)| (*k, v.clone())).collect(),
         attestation,
+        None,
     )
     .await?;
 
@@ -498,6 +501,7 @@ async fn swap_proofs_to_target(
         &swap_config,
         premints.iter().map(|(k, v)| (*k, v.clone())).collect(),
         attestation,
+        None,
     )
     .await?;
     let mut on_target: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
