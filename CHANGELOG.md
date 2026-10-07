@@ -28,6 +28,7 @@
     * An offline payment's substitute swap stores its commitment and a retry replays or restores it instead of committing new outputs; it is stored as a new `StoredCommitment::V2` record tagged with the substitute mint, never resumed against the wallet's own mint (breaking DB change: older builds cannot read it)
     * An intermint receive's HTLC lock stores its commitment tagged with the alpha mint, and a retry over the same proofs replays or restores it instead of committing new outputs; its preimage and wallet key are derived from the seed and the input proofs, so the retry can still sign the locked proofs
     * A swap commitment now stores the exact proofs it committed, so a receive's commitment (whose inputs are the sender's proofs and are never stored in the wallet's own proof table) can still be replayed, restored or protested after an expiry instead of failing with `ProofNotFound`; stored as a new `StoredCommitment::V3`/`V4` record (breaking DB change: older builds cannot read it)
+    * A commitment stored before that field existed (or whose inputs it still lacks) falls back to the proof table to resume or protest, instead of sending the mint an empty proof list and leaving the record pending forever
 
 # 0.9.13
 

@@ -369,6 +369,35 @@ impl Pocket {
         Ok(None)
     }
 
+    /// The record's committed input proofs: its own `input_proofs` when it has them, else
+    /// whatever the proof table still holds under `record.inputs`. A record stored before
+    /// `input_proofs` existed (or migrated from one) has none; a receive's inputs are the
+    /// sender's proofs and are never stored locally either. Either way, a record a resume
+    /// cannot find proofs for must not abort the whole recovery pass, so a missing or
+    /// partial proof-table match is treated as "none" rather than propagated as an error.
+    async fn committed_input_proofs(
+        &self,
+        record: &bcr_wallet_persistence::SwapCommitmentRecord,
+    ) -> Vec<cdk00::Proof> {
+        if !record.input_proofs.is_empty() {
+            return record.input_proofs.clone();
+        }
+        match self.pdb.load_proofs(&record.inputs).await {
+            Ok(proofs) => record
+                .inputs
+                .iter()
+                .filter_map(|y| proofs.get(y).cloned())
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    "commitment {}: stored inputs not found locally ({e}) - resuming via restore/protest only",
+                    record.commitment
+                );
+                Vec::new()
+            }
+        }
+    }
+
     async fn resume_committed_swap(
         &self,
         client: Arc<dyn ClowderMintConnector>,
@@ -377,12 +406,9 @@ impl Pocket {
         swap_config: SwapConfig,
     ) -> Result<Option<(Amount, Vec<cdk01::PublicKey>)>> {
         let ys = record.inputs.clone();
-        // The record carries the exact (DLEQ-stripped) proofs it committed - a receive's
-        // inputs are the sender's proofs and are never stored in the wallet's own proof
-        // table, so this is the only place a resume can find them. A record stored before
-        // this field existed has none: replaying with a partial or empty input set would
-        // only mislead the mint, so go straight to restore/protest instead.
-        let committed_proofs = record.input_proofs.clone();
+        // Replaying with a partial or empty input set would only mislead the mint, so
+        // go straight to restore/protest instead when we don't have them all.
+        let committed_proofs = self.committed_input_proofs(&record).await;
         let have_all_inputs = committed_proofs.len() == ys.len();
         let committed_proofs = crate::wallet::util::remove_dleq_from_proofs(committed_proofs);
 
@@ -1621,10 +1647,11 @@ impl DebitPocketApi for Pocket {
         let ephemeral_keypair =
             secp256k1::Keypair::from_secret_key(secp256k1::SECP256K1, &record.ephemeral_secret);
         let wallet_signature = super::sign_content_b64(&record.body_content, &ephemeral_keypair)?;
+        let proofs = self.committed_input_proofs(&record).await;
 
         let request = wire_swap::SwapProtestRequest {
             alpha_id: self.beta.alpha_id(),
-            proofs: record.input_proofs.clone(),
+            proofs,
             content: record.body_content,
             commitment: record.commitment,
             wallet_signature,
@@ -4701,6 +4728,129 @@ mod tests {
         assert_eq!(
             credited, total_amount,
             "the received amount must be credited after the protest resolves"
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_legacy_commitment_without_input_proofs_recovers_via_protest_using_proof_table()
+    {
+        // A record written before `input_proofs` existed (V1/V2, or a V3 a migration
+        // writes with no proofs to carry) has an empty `input_proofs`. Unlike a receive,
+        // this is the wallet's own swap: its inputs are still sitting in the proof table,
+        // and resume/protest must still find them there instead of sending the mint an
+        // empty proof list forever.
+        let fx = swap_commitment_fixture(Amount::from(24u64), 0x60, 1000);
+        let mut record = fx.record.clone();
+        record.input_proofs = Vec::new();
+
+        let pdb = Arc::new(
+            bcr_wallet_persistence::redb::pocket::PocketDB::in_memory("wallet", &CurrencyUnit::Sat)
+                .expect("in-memory pocket db"),
+        );
+        for proof in fx.input_proofs_map.values() {
+            pdb.store_pendingspent(proof.clone())
+                .await
+                .expect("store pending proof");
+        }
+        pdb.store_commitment(record.clone())
+            .await
+            .expect("store legacy commitment");
+
+        let mut alpha_connector = MockClowderMintConnector::new();
+        let keyset_clone = fx.mintkeyset.clone();
+        alpha_connector
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
+        let swap_committed_calls = Arc::new(Mutex::new(0u32));
+        let swap_committed_calls_clone = swap_committed_calls.clone();
+        let fresh_signing_keyset = fx.mintkeyset.clone();
+        alpha_connector
+            .expect_post_swap_committed()
+            .returning(move |_, outputs, _| {
+                let mut calls = swap_committed_calls_clone.lock().unwrap();
+                *calls += 1;
+                if *calls == 1 {
+                    // the resumed replay of the original (expired) commitment, over the
+                    // proofs found in the proof table
+                    Err(Error::MintClientResourceNotFound("gone".to_string()))
+                } else {
+                    // the fresh swap digest_proofs runs over the protest's unblinded proofs
+                    let amounts: Vec<_> = outputs.iter().map(|o| o.amount).collect();
+                    Ok(core_tests::generate_ecash_signatures(
+                        &fresh_signing_keyset,
+                        &amounts,
+                    ))
+                }
+            });
+        alpha_connector
+            .expect_post_restore()
+            .times(1)
+            .returning(|_| Ok(vec![]));
+        alpha_connector
+            .expect_post_swap_commitment()
+            .times(1)
+            .returning(|inputs, outputs, _, _, _| {
+                let mut result = mock_commitment_result();
+                result.inputs_ys = inputs.iter().map(|p| p.y().unwrap()).collect();
+                result.outputs = outputs;
+                Ok(result)
+            });
+
+        let protest_proofs: Arc<Mutex<Option<Vec<cdk00::Proof>>>> = Arc::new(Mutex::new(None));
+        let protest_proofs_clone = protest_proofs.clone();
+        let mut beta_connector = MockClowderMintConnector::new();
+        setup_attestation_mock(&mut beta_connector);
+        let blind_sigs = fx.blind_sigs.clone();
+        beta_connector
+            .expect_post_protest_swap()
+            .times(1)
+            .returning(move |req| {
+                *protest_proofs_clone.lock().unwrap() = Some(req.proofs.clone());
+                Ok(wire_swap::SwapProtestResponse {
+                    status: wire_common::ProtestStatus::Resolved,
+                    signatures: Some(blind_sigs.clone()),
+                })
+            });
+
+        let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
+            &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+        );
+        let pocket = pocket_with_beta(
+            pdb.clone(),
+            Arc::new(MockMintMeltRepository::new()),
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
+            alpha_id,
+        );
+
+        pocket
+            .check_pending_commitments(
+                2000,
+                &fx.k_infos,
+                Arc::new(alpha_connector),
+                test_swap_config(),
+            )
+            .await
+            .expect("recovery must fall back to the proof table and resolve via protest");
+
+        assert!(
+            pdb.list_commitments()
+                .await
+                .expect("list commitments")
+                .is_empty(),
+            "the resolved commitment must be deleted"
+        );
+
+        let mut expected: Vec<_> = fx.input_proofs_map.values().cloned().collect();
+        expected.sort_by_key(|p| p.y().unwrap());
+        let mut actual = protest_proofs
+            .lock()
+            .unwrap()
+            .take()
+            .expect("protest must have run");
+        actual.sort_by_key(|p| p.y().unwrap());
+        assert_eq!(
+            actual, expected,
+            "the protest must carry the proofs found in the proof table"
         );
     }
 
