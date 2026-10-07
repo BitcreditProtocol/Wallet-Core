@@ -998,7 +998,7 @@ impl DebitPocketApi for Pocket {
                                 record.commitment
                             );
                             let commitment_inputs = self.pdb.load_proofs(&record.inputs).await?;
-                            if let Some((amount, _)) = self
+                            match self
                                 .resume_committed_swap(
                                     client.clone(),
                                     keysets_info,
@@ -1006,9 +1006,26 @@ impl DebitPocketApi for Pocket {
                                     record,
                                     swap_config.clone(),
                                 )
-                                .await?
+                                .await
                             {
-                                resumed += amount;
+                                Ok(Some((amount, _))) => resumed += amount,
+                                Ok(None) => {}
+                                // An unreachable mint must still fail the whole call,
+                                // same as resuming it directly would: the caller needs
+                                // to see it and retry later, not read a partial batch
+                                // as success.
+                                Err(e @ Error::MintClientServiceUnavailable(_)) => return Err(e),
+                                // Any other resume failure (the protest itself was
+                                // rejected, ...) must not abort recovery for every
+                                // other stale proof in this batch, nor mark this one
+                                // spent before its commitment is actually resolved.
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to resume commitment for stale Spent proof {}: {e} - leaving it pending",
+                                        state.y
+                                    );
+                                    continue;
+                                }
                             }
                         }
                     } else {
