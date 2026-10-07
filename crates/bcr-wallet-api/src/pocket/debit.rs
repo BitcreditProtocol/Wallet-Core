@@ -219,6 +219,25 @@ impl Pocket {
         }))
     }
 
+    /// The record's input proofs the wallet still has, or an empty map when it has none
+    /// (a receive commits over the sender's proofs, which are never stored locally): a
+    /// record a resume cannot find proofs for must not abort the whole recovery pass.
+    async fn load_commitment_inputs(
+        &self,
+        record: &bcr_wallet_persistence::SwapCommitmentRecord,
+    ) -> HashMap<cdk01::PublicKey, cdk00::Proof> {
+        match self.pdb.load_proofs(&record.inputs).await {
+            Ok(inputs) => inputs,
+            Err(e) => {
+                tracing::warn!(
+                    "commitment {}: stored inputs not found locally ({e}) - resuming via restore/protest only",
+                    record.commitment
+                );
+                HashMap::new()
+            }
+        }
+    }
+
     async fn finalize_resumed_signatures(
         &self,
         client: Arc<dyn ClowderMintConnector>,
@@ -383,28 +402,34 @@ impl Pocket {
             .iter()
             .filter_map(|y| inputs.get(y).cloned())
             .collect();
+        // A receive's inputs are the sender's proofs and are never stored locally, so a
+        // resume over those records never has them to offer: replaying with a partial or
+        // empty input set would only mislead the mint, so go straight to restore/protest.
+        let have_all_inputs = committed_proofs.len() == ys.len();
         let committed_proofs = crate::wallet::util::remove_dleq_from_proofs(committed_proofs);
 
-        match client
-            .post_swap_committed(committed_proofs, record.outputs.clone(), record.commitment)
-            .await
-        {
-            Ok(signatures) => {
-                let amount = self
-                    .finalize_resumed_signatures(client, &record.premints, signatures)
-                    .await?;
-                self.pdb.delete_commitment(record.commitment).await?;
-                return Ok(Some((amount, ys)));
+        if have_all_inputs {
+            match client
+                .post_swap_committed(committed_proofs, record.outputs.clone(), record.commitment)
+                .await
+            {
+                Ok(signatures) => {
+                    let amount = self
+                        .finalize_resumed_signatures(client, &record.premints, signatures)
+                        .await?;
+                    self.pdb.delete_commitment(record.commitment).await?;
+                    return Ok(Some((amount, ys)));
+                }
+                // The mint rejecting the replay (not found, or a bad-request like an
+                // expired commitment) still means it never executed it, so fall through
+                // to restore and protest instead of leaving the record stuck forever.
+                Err(
+                    e @ (Error::Transport(_)
+                    | Error::MintClientServiceUnavailable(_)
+                    | Error::ReqwestClient(_)),
+                ) => return Err(e),
+                Err(_) => {}
             }
-            // The mint rejecting the replay (not found, or a bad-request like an
-            // expired commitment) still means it never executed it, so fall through
-            // to restore and protest instead of leaving the record stuck forever.
-            Err(
-                e @ (Error::Transport(_)
-                | Error::MintClientServiceUnavailable(_)
-                | Error::ReqwestClient(_)),
-            ) => return Err(e),
-            Err(_) => {}
         }
 
         if let Some(result) = self.resume_via_restore(client.clone(), &record).await? {
@@ -1148,7 +1173,8 @@ impl DebitPocketApi for Pocket {
                                 "Pending Stale Proof returned as SPENT from Mint - resuming its commitment {} before marking SPENT",
                                 record.commitment
                             );
-                            let commitment_inputs = self.pdb.load_proofs(&record.inputs).await?;
+                            let commitment_inputs =
+                                self.load_commitment_inputs(&record).await;
                             match self
                                 .resume_committed_swap(
                                     client.clone(),
@@ -1529,7 +1555,7 @@ impl DebitPocketApi for Pocket {
                     "Swap commitment {commitment_sig} expired at {} (now: {tstamp}) - attempting recovery before deleting.",
                     record.expiry,
                 );
-                let inputs = self.pdb.load_proofs(&record.inputs).await?;
+                let inputs = self.load_commitment_inputs(&record).await;
                 match self
                     .resume_committed_swap(
                         client.clone(),
