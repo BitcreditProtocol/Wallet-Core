@@ -307,8 +307,15 @@ impl Pocket {
                 self.pdb.delete_commitment(record.commitment).await?;
                 return Ok(Some((amount, ys)));
             }
-            Err(Error::MintClientResourceNotFound(_)) => {}
-            Err(e) => return Err(e),
+            // The mint rejecting the replay (not found, or a bad-request like an
+            // expired commitment) still means it never executed it, so fall through
+            // to restore and protest instead of leaving the record stuck forever.
+            Err(
+                e @ (Error::Transport(_)
+                | Error::MintClientServiceUnavailable(_)
+                | Error::ReqwestClient(_)),
+            ) => return Err(e),
+            Err(_) => {}
         }
 
         if let Some(result) = self.resume_via_restore(client.clone(), &record).await? {
@@ -3738,5 +3745,77 @@ mod tests {
             )
             .await
             .expect("an offline mint must not fail the check, only keep the record pending");
+    }
+
+    #[tokio::test]
+    async fn expired_commitment_never_executed_is_deleted() {
+        let amount = Amount::from(24u64);
+        let fx = swap_commitment_fixture(amount, 0x44, 500);
+
+        let mdb = MockMintMeltRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        let mut alpha_connector = MockClowderMintConnector::new();
+        let mut beta_connector = MockClowderMintConnector::new();
+
+        let input_proofs_map = fx.input_proofs_map.clone();
+        pdb.expect_load_proofs()
+            .returning(move |_| Ok(input_proofs_map.clone()));
+
+        let record = fx.record.clone();
+        pdb.expect_list_commitments()
+            .times(1)
+            .returning(move || Ok(vec![record.clone()]));
+        let record = fx.record.clone();
+        pdb.expect_load_commitment()
+            .times(1)
+            .returning(move |_| Ok(record.clone()));
+
+        alpha_connector
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(|_, _, _| {
+                Err(Error::MintClientBadRequest(
+                    "commitment has expired".to_string(),
+                ))
+            });
+        alpha_connector
+            .expect_post_restore()
+            .times(1)
+            .returning(|_| Ok(vec![]));
+
+        beta_connector
+            .expect_post_protest_swap()
+            .times(1)
+            .returning(|_| {
+                Ok(wire_swap::SwapProtestResponse {
+                    status: wire_common::ProtestStatus::Rabid,
+                    signatures: None,
+                })
+            });
+
+        let commitment_sig = fx.record.commitment;
+        pdb.expect_delete_commitment()
+            .times(1)
+            .withf(move |sig| *sig == commitment_sig)
+            .returning(|_| Ok(()));
+
+        let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
+            &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+        );
+        let pocket = pocket_with_beta(
+            Arc::new(pdb),
+            Arc::new(mdb),
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
+            alpha_id,
+        );
+        pocket
+            .check_pending_commitments(
+                1000,
+                &fx.k_infos,
+                Arc::new(alpha_connector),
+                test_swap_config(),
+            )
+            .await
+            .expect("a commitment the mint never executed must be deleted, not kept forever");
     }
 }
