@@ -789,14 +789,17 @@ impl super::PocketApi for Pocket {
                 SplitTarget::default()
             };
 
-            // no counter etc., since we're not persisting them anyway
-            let premint = cashu::PreMintSecrets::random(
+            let kid: ecash::Id = kid.into();
+            let premint = premint_from_counter(
+                self.pdb.as_ref(),
+                &self.seed,
                 kid,
                 amount,
                 &target,
-                &bcr_wallet_core::util::to_fee_and_amounts(&keysets[&kid.into()]),
-            )?;
-            premints.insert(kid.into(), premint);
+                &keysets[&kid],
+            )
+            .await?;
+            premints.insert(kid, premint);
         }
 
         if remaining_payment != Amount::ZERO {
@@ -1709,6 +1712,32 @@ mod tests {
             blind_sigs,
             record,
         }
+    }
+
+    /// digest_proofs feeds the same inputs and keyset info to prepare_swap on every
+    /// retry; a nondeterministic split would make a retry's outputs diverge from
+    /// the first attempt's, breaking commitment resume.
+    #[test]
+    fn prepare_swap_call_site_is_deterministic() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let keysets_info: HashMap<cashu::Id, KeySetInfo> = k_infos
+            .iter()
+            .map(|(id, info)| ((*id).into(), info.clone()))
+            .collect();
+        let amounts = [Amount::from(8u64), Amount::from(16u64), Amount::from(4u64)];
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
+
+        let first: BTreeMap<_, _> = prepare_swap(&proofs, &keysets_info)
+            .expect("prepare_swap works")
+            .into_iter()
+            .collect();
+        let second: BTreeMap<_, _> = prepare_swap(&proofs, &keysets_info)
+            .expect("prepare_swap works")
+            .into_iter()
+            .collect();
+
+        assert_eq!(first, second);
     }
 
     #[tokio::test]
@@ -3439,6 +3468,8 @@ mod tests {
         let substitute_clowder_id = secp256k1::PublicKey::from_keypair(&substitute_keypair);
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
+        pdb.expect_counter().returning(|_| Ok(0));
+        pdb.expect_increment_counter().returning(|_, _, _| Ok(()));
         let mut substitute_client = MockClowderMintConnector::new();
 
         substitute_client
@@ -3542,6 +3573,204 @@ mod tests {
                     .collect::<Vec<_>>()
                     .total_amount()
                     .unwrap(),
+            Amount::from(24u64)
+        );
+    }
+
+    /// The substitute swap's change is persisted as a ForeignMintProof; the
+    /// wallet never gets a second chance to re-derive it from the output it
+    /// keeps, so a seed-only restore (no persisted premint) must be able to
+    /// find it.
+    #[tokio::test]
+    async fn swap_to_unlocked_substitute_proofs_change_is_seed_derived() {
+        let (info, mint_keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+
+        let keysets_info = test_kinfos(info);
+        let keyset = bcr_wallet_core::util::to_keyset(&mint_keyset, None);
+        let keysets = HashMap::from([(kid, keyset.clone())]);
+
+        // 24 total, 16 payment, 8 change
+        let input_proofs = core_tests::generate_random_ecash_proofs(
+            &mint_keyset,
+            &[Amount::from(8u64), Amount::from(16u64)],
+        );
+        let send_amount = Amount::from(16u64);
+        let expected_change_amount = Amount::from(8u64);
+
+        let substitute_keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let substitute_clowder_id = secp256k1::PublicKey::from_keypair(&substitute_keypair);
+
+        let seed: Seed = [9u8; 64];
+
+        let mdb = MockMintMeltRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_counter().returning(|_| Ok(0));
+        pdb.expect_increment_counter().returning(|_, _, _| Ok(()));
+
+        let mut substitute_client = MockClowderMintConnector::new();
+        substitute_client
+            .expect_post_swap_commitment()
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(mock_commitment_result()));
+
+        let signing_keyset = mint_keyset.clone();
+        substitute_client
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(move |_inputs, outputs, _commitment| {
+                let amounts = outputs
+                    .iter()
+                    .map(|output| output.amount)
+                    .collect::<Vec<_>>();
+                Ok(core_tests::generate_ecash_signatures(
+                    &signing_keyset,
+                    &amounts,
+                ))
+            });
+
+        let stored_foreign_proofs = Arc::new(Mutex::new(Vec::<ForeignMintProof>::new()));
+        let stored_foreign_proofs_clone = stored_foreign_proofs.clone();
+        pdb.expect_store_foreign_mint_proof()
+            .times(1)
+            .returning(move |foreign_proof| {
+                let y = foreign_proof.proof.y().expect("valid y");
+                stored_foreign_proofs_clone
+                    .lock()
+                    .expect("stored proof mutex")
+                    .push(foreign_proof);
+                Ok(y)
+            });
+
+        let swap_config = test_swap_config();
+        let mut beta_connector = MockClowderMintConnector::new();
+        setup_attestation_mock(&mut beta_connector);
+        let beta_provider = RandomBetaProvider::new(
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
+            swap_config.alpha_pk,
+        )
+        .expect("can create beta provider");
+
+        let pocket = super::Pocket::new(
+            CurrencyUnit::Sat,
+            Arc::new(pdb),
+            Arc::new(mdb),
+            seed,
+            Arc::new(test_beta_provider()),
+        );
+
+        pocket
+            .swap_to_unlocked_substitute_proofs(
+                input_proofs,
+                &keysets_info,
+                keysets,
+                Arc::new(substitute_client),
+                substitute_clowder_id,
+                beta_provider,
+                send_amount,
+                swap_config,
+            )
+            .await
+            .expect("swap to unlocked substitute proofs works");
+
+        let stored_change = stored_foreign_proofs
+            .lock()
+            .expect("stored proof mutex")
+            .clone();
+        assert_eq!(stored_change.len(), 1);
+        assert_eq!(stored_change[0].proof.amount, expected_change_amount);
+
+        // the whole swap (payment and change together) was blinded in one
+        // premint_from_counter call at counter 0, over the full amount with
+        // the payment as its split target; a seed-only restore over that
+        // same range must find the change secret among what it recovers,
+        // with no persisted premint to fall back on.
+        let expected_full_premint = cdk00::PreMintSecrets::from_seed(
+            kid.into(),
+            0,
+            &seed,
+            Amount::from(24u64),
+            &SplitTarget::Value(send_amount),
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
+        )
+        .expect("premint derivation works");
+        let expected_blinds = expected_full_premint.blinded_messages();
+        assert!(
+            expected_full_premint
+                .secrets()
+                .iter()
+                .any(|secret| *secret == stored_change[0].proof.secret),
+            "the persisted change secret must be seed-derivable from counter 0"
+        );
+
+        let mut restore_client = MockClowderMintConnector::new();
+        let signing_keyset = mint_keyset.clone();
+        let expected_blinds_clone = expected_blinds.clone();
+        restore_client
+            .expect_post_restore()
+            .returning(move |request| {
+                // the mint matches a restore request by its blinded point alone, echoes
+                // back the request's own (zero-amount) message and signs with the real
+                // amount it originally minted under that point.
+                let matched: Vec<(cdk00::BlindedMessage, cashu::Amount)> = request
+                    .outputs
+                    .iter()
+                    .filter_map(|o| {
+                        expected_blinds_clone
+                            .iter()
+                            .find(|e| e.blinded_secret == o.blinded_secret)
+                            .map(|e| (o.clone(), e.amount))
+                    })
+                    .collect();
+                if matched.is_empty() {
+                    return Ok(vec![]);
+                }
+                let amounts: Vec<_> = matched.iter().map(|(_, amount)| *amount).collect();
+                let sigs = core_tests::generate_ecash_signatures(&signing_keyset, &amounts);
+                Ok(matched
+                    .into_iter()
+                    .map(|(output, _)| output)
+                    .zip(sigs)
+                    .collect())
+            });
+        let keyset_for_restore = mint_keyset.clone();
+        restore_client
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_for_restore, None)));
+        restore_client.expect_post_check_state().returning(|req| {
+            Ok(req
+                .ys
+                .iter()
+                .map(|y| cdk07::ProofState {
+                    y: *y,
+                    state: cdk07::State::Unspent,
+                    witness: None,
+                })
+                .collect())
+        });
+
+        let mut restore_pdb = MockPocketRepository::new();
+        restore_pdb.expect_counter().returning(|_| Ok(0));
+        restore_pdb
+            .expect_increment_counter()
+            .returning(|_, _, _| Ok(()));
+        let recovered_amount = Arc::new(Mutex::new(Amount::ZERO));
+        let recovered_amount_clone = recovered_amount.clone();
+        restore_pdb.expect_store_new().returning(move |p| {
+            *recovered_amount_clone
+                .lock()
+                .expect("recovered amount mutex") += p.amount;
+            Ok(p.y().expect("valid y"))
+        });
+
+        let restore_client: Arc<dyn crate::ClowderMintConnector> = Arc::new(restore_client);
+        let total_restored = restore::restore_keysetid(&seed, kid, &restore_client, &restore_pdb)
+            .await
+            .expect("restore works");
+
+        assert!(total_restored > 0, "the seed-only restore must find proofs");
+        assert_eq!(
+            *recovered_amount.lock().expect("recovered amount mutex"),
             Amount::from(24u64)
         );
     }

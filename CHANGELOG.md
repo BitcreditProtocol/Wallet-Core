@@ -24,6 +24,7 @@
 * A swap retry resumes its stored commitment instead of building new outputs over the same inputs
     * `wallet_reclaim_transaction` and `wallet_recover_pending_stale_proofs` fail with `MintClientServiceUnavailable` while the mint is unreachable during the resume, instead of settling the transaction or marking its proofs spent
     * `wallet_recover_pending_stale_proofs` resumes a stale proof's stored commitment before marking it spent, instead of discarding mint-signed outputs it never recorded
+    * A substitute swap's change is seed-derived instead of random, so it can be found by a seed-only restore
 
 # 0.9.13
 
