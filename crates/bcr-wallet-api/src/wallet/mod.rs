@@ -5215,6 +5215,8 @@ mod tests {
         }
     }
 
+    type Committed = (Vec<cashu::BlindedMessage>, secp256k1::schnorr::Signature);
+
     /// A wallet whose debit pocket is backed by an in-memory store, exchanging
     /// proofs of one alpha mint keyset; `locked` collects what each exchange sent on
     struct HtlcExchange {
@@ -5304,9 +5306,7 @@ mod tests {
         /// Accepts the commitment and records its outputs and signature
         fn expect_commitment(
             alpha: &mut MockClowderMintConnector,
-        ) -> Arc<
-            std::sync::Mutex<Option<(Vec<cashu::BlindedMessage>, secp256k1::schnorr::Signature)>>,
-        > {
+        ) -> Arc<std::sync::Mutex<Option<Committed>>> {
             let committed = Arc::new(std::sync::Mutex::new(None));
             let record = committed.clone();
             alpha.expect_post_swap_commitment().times(1).returning(
@@ -5437,6 +5437,26 @@ mod tests {
             assert_eq!(kept.len(), 1);
             assert_eq!(kept[0].commitment, commitment);
 
+            let keyset = bcr_wallet_core::util::to_keyset(&fx.keyset, None);
+            let substitute_premint = cashu::PreMintSecrets::random(
+                fx.kid.into(),
+                Amount::from(12),
+                &cashu::amount::SplitTarget::None,
+                &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
+            )
+            .unwrap();
+            let substitute_commitment =
+                secp256k1::schnorr::Signature::from_slice(&[1u8; 64]).unwrap();
+            fx.pdb
+                .store_commitment(bcr_wallet_persistence::SwapCommitmentRecord {
+                    outputs: substitute_premint.blinded_messages(),
+                    premints: HashMap::from([(fx.kid, substitute_premint)]),
+                    commitment: substitute_commitment,
+                    ..stored[0].clone()
+                })
+                .await
+                .unwrap();
+
             let mut alpha = fx.alpha_client();
             alpha.expect_post_swap_commitment().times(0);
             let signatures = fx.sign(&outputs);
@@ -5485,13 +5505,13 @@ mod tests {
             }
             assert!(fx.pdb.list_unspent().await.unwrap().is_empty());
             assert!(fx.pdb.load_foreign_mint_proofs().await.unwrap().is_empty());
-            assert!(
-                fx.pdb
-                    .list_substitute_commitments(fx.alpha_id)
-                    .await
-                    .unwrap()
-                    .is_empty()
-            );
+            let remaining = fx
+                .pdb
+                .list_substitute_commitments(fx.alpha_id)
+                .await
+                .unwrap();
+            assert_eq!(remaining.len(), 1);
+            assert_eq!(remaining[0].commitment, substitute_commitment);
         }
     }
 

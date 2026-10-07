@@ -26,6 +26,7 @@
     * `wallet_recover_pending_stale_proofs` resumes a stale proof's stored commitment before marking it spent, instead of discarding mint-signed outputs it never recorded
     * A substitute swap's change is seed-derived instead of random, so it can be found by a seed-only restore
     * An offline payment's substitute swap stores its commitment and a retry replays or restores it instead of committing new outputs; it is stored as a new `StoredCommitment::V2` record tagged with the substitute mint, never resumed against the wallet's own mint (breaking DB change: older builds cannot read it)
+    * An intermint receive's HTLC lock stores its commitment tagged with the alpha mint, and a retry over the same proofs replays or restores it instead of committing new outputs; its preimage and wallet key are derived from the seed and the input proofs, so the retry can still sign the locked proofs
 
 # 0.9.13
 
