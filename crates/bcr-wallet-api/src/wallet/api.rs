@@ -543,7 +543,11 @@ impl WalletApi for super::Wallet {
 
     async fn check_pending_commitments(&self) -> Result<()> {
         let now = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
-        self.debit.check_pending_commitments(now).await
+        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
+        let swap_config = self.swap_config();
+        self.debit
+            .check_pending_commitments(now, &keysets_info, self.client.clone(), swap_config)
+            .await
     }
 
     async fn protest_mint(&self, quote_id: Uuid) -> Result<WalletProtestResult> {

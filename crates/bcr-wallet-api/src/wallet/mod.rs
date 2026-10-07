@@ -3262,10 +3262,14 @@ mod tests {
     async fn test_check_pending_commitments_delegates_to_debit() {
         let mut ctx = wallet_ctx();
 
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
         ctx.debit
             .expect_check_pending_commitments()
             .times(1)
-            .returning(|_| Ok(()));
+            .returning(|_, _, _, _| Ok(()));
 
         let wlt = wallet(ctx).await;
 

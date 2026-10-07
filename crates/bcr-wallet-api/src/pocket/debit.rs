@@ -88,7 +88,13 @@ pub trait DebitPocketApi: super::PocketApi {
         qid: Uuid,
         client: Arc<dyn ClowderMintConnector>,
     ) -> Result<ProtestResult>;
-    async fn check_pending_commitments(&self, tstamp: u64) -> Result<()>;
+    async fn check_pending_commitments(
+        &self,
+        tstamp: u64,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+        client: Arc<dyn ClowderMintConnector>,
+        swap_config: SwapConfig,
+    ) -> Result<()>;
     async fn protest_swap(
         &self,
         commitment_sig: bitcoin::secp256k1::schnorr::Signature,
@@ -1283,7 +1289,13 @@ impl DebitPocketApi for Pocket {
         Ok(res)
     }
 
-    async fn check_pending_commitments(&self, tstamp: u64) -> Result<()> {
+    async fn check_pending_commitments(
+        &self,
+        tstamp: u64,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+        client: Arc<dyn ClowderMintConnector>,
+        swap_config: SwapConfig,
+    ) -> Result<()> {
         let commitments = self.pdb.list_commitments().await?;
         tracing::debug!(
             "check pending commitments for {} entries",
@@ -1291,12 +1303,38 @@ impl DebitPocketApi for Pocket {
         );
         for record in commitments {
             if record.expiry < tstamp {
+                let commitment_sig = record.commitment;
                 tracing::warn!(
-                    "Swap commitment {} expired at {} (now: {tstamp}) - deleting record.",
-                    record.commitment,
+                    "Swap commitment {commitment_sig} expired at {} (now: {tstamp}) - attempting recovery before deleting.",
                     record.expiry,
                 );
-                self.pdb.delete_commitment(record.commitment).await?;
+                let inputs = self.pdb.load_proofs(&record.inputs).await?;
+                match self
+                    .resume_committed_swap(
+                        client.clone(),
+                        keysets_info,
+                        &inputs,
+                        record,
+                        swap_config.clone(),
+                    )
+                    .await
+                {
+                    Ok(Some((amount, ys))) if amount == Amount::ZERO && ys.is_empty() => {
+                        tracing::warn!(
+                            "Mint unreachable while recovering expired commitment {commitment_sig} - keeping it for a later pass."
+                        );
+                    }
+                    Ok(_) => {
+                        tracing::info!(
+                            "Expired commitment {commitment_sig} resolved during recovery."
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to recover expired commitment {commitment_sig}: {e} - keeping it for a later pass."
+                        );
+                    }
+                }
             }
         }
         Ok(())
@@ -1551,6 +1589,82 @@ mod tests {
         let unit = CurrencyUnit::Sat;
         let seed = bip39::Mnemonic::generate(12).unwrap().to_seed("");
         super::Pocket::new(unit, pdb, mdb, seed, Arc::new(provider))
+    }
+
+    /// A stored swap commitment with its matching input proofs, keyset and
+    /// the mint's would-be signatures over the committed outputs - the setup
+    /// a resume (retry or expiry) attempt is tested against.
+    struct SwapCommitmentFixture {
+        k_infos: HashMap<ecash::Id, KeySetInfo>,
+        mintkeyset: ecash::MintKeySet,
+        input_ys: Vec<cashu::PublicKey>,
+        input_proofs_map: HashMap<cashu::PublicKey, cdk00::Proof>,
+        blind_sigs: Vec<cdk00::BlindSignature>,
+        record: bcr_wallet_persistence::SwapCommitmentRecord,
+    }
+
+    fn swap_commitment_fixture(amount: Amount, sig_byte: u8, expiry: u64) -> SwapCommitmentFixture {
+        let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = test_kinfos(info);
+
+        let input_amounts = [Amount::from(16u64), Amount::from(8u64)];
+        let input_proofs = core_tests::generate_random_ecash_proofs(&mintkeyset, &input_amounts);
+        let input_ys: Vec<cashu::PublicKey> = input_proofs
+            .iter()
+            .map(|p| p.y().expect("y works"))
+            .collect();
+        let input_proofs_map: HashMap<cashu::PublicKey, cdk00::Proof> = input_proofs
+            .iter()
+            .map(|p| (p.y().unwrap(), p.clone()))
+            .collect();
+
+        let premint = cdk00::PreMintSecrets::random(
+            kid.into(),
+            amount,
+            &SplitTarget::None,
+            &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
+                &mintkeyset,
+                None,
+            )),
+        )
+        .unwrap();
+        let outputs = premint.blinded_messages();
+        let blind_sigs: Vec<cdk00::BlindSignature> = outputs
+            .iter()
+            .map(|bm| {
+                bcr_common::core::signature::sign_ecash(&mintkeyset, bm)
+                    .expect("signing should work")
+            })
+            .collect();
+        let stored_premints = HashMap::from([(kid, premint)]);
+
+        let ephemeral_keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
+        let wallet_key =
+            cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
+        let commitment_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[sig_byte; 64])
+            .expect("valid sig bytes");
+
+        let record = bcr_wallet_persistence::SwapCommitmentRecord {
+            inputs: input_ys.clone(),
+            outputs,
+            expiry,
+            commitment: commitment_sig,
+            ephemeral_secret,
+            body_content: "dGVzdA==".to_string(),
+            wallet_key,
+            premints: stored_premints,
+        };
+
+        SwapCommitmentFixture {
+            k_infos,
+            mintkeyset,
+            input_ys,
+            input_proofs_map,
+            blind_sigs,
+            record,
+        }
     }
 
     #[tokio::test]
@@ -3391,77 +3505,28 @@ mod tests {
     #[tokio::test]
     async fn swap_retry_never_reached_mint_replays_commitment() {
         let amount = Amount::from(24u64);
-        let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let kid = info.id;
-        let k_infos = test_kinfos(info);
-
-        let input_amounts = [Amount::from(16u64), Amount::from(8u64)];
-        let input_proofs = core_tests::generate_random_ecash_proofs(&mintkeyset, &input_amounts);
-        let input_ys: Vec<cashu::PublicKey> = input_proofs
-            .iter()
-            .map(|p| p.y().expect("y works"))
-            .collect();
-        let input_proofs_map: HashMap<cashu::PublicKey, cdk00::Proof> = input_proofs
-            .iter()
-            .map(|p| (p.y().unwrap(), p.clone()))
-            .collect();
-
-        let premint = cdk00::PreMintSecrets::random(
-            kid.into(),
-            amount,
-            &SplitTarget::None,
-            &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
-                &mintkeyset,
-                None,
-            )),
-        )
-        .unwrap();
-        let outputs = premint.blinded_messages();
-        let blind_sigs: Vec<cdk00::BlindSignature> = outputs
-            .iter()
-            .map(|bm| {
-                bcr_common::core::signature::sign_ecash(&mintkeyset, bm)
-                    .expect("signing should work")
-            })
-            .collect();
-        let stored_premints = HashMap::from([(kid, premint)]);
-
-        let ephemeral_keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
-        let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
-        let wallet_key =
-            cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
-        let commitment_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xcd; 64])
-            .expect("valid sig bytes");
+        let fx = swap_commitment_fixture(amount, 0xcd, 1000);
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
         let mut alpha_connector = MockClowderMintConnector::new();
 
+        let input_proofs_map = fx.input_proofs_map.clone();
         pdb.expect_load_proofs()
             .times(1)
             .returning(move |_| Ok(input_proofs_map.clone()));
 
-        let record_inputs = input_ys.clone();
-        let record_outputs = outputs.clone();
-        let record_premints = stored_premints.clone();
-        pdb.expect_list_commitments().times(1).returning(move || {
-            Ok(vec![bcr_wallet_persistence::SwapCommitmentRecord {
-                inputs: record_inputs.clone(),
-                outputs: record_outputs.clone(),
-                expiry: 1000,
-                commitment: commitment_sig,
-                ephemeral_secret,
-                body_content: "dGVzdA==".to_string(),
-                wallet_key,
-                premints: record_premints.clone(),
-            }])
-        });
+        let record = fx.record.clone();
+        pdb.expect_list_commitments()
+            .times(1)
+            .returning(move || Ok(vec![record.clone()]));
 
-        let keyset_clone = mintkeyset.clone();
+        let keyset_clone = fx.mintkeyset.clone();
         alpha_connector
             .expect_get_mint_keyset()
             .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
 
+        let blind_sigs = fx.blind_sigs.clone();
         alpha_connector
             .expect_post_swap_committed()
             .times(1)
@@ -3472,6 +3537,7 @@ mod tests {
             Ok(y)
         });
 
+        let commitment_sig = fx.record.commitment;
         pdb.expect_delete_commitment()
             .times(1)
             .withf(move |sig| *sig == commitment_sig)
@@ -3480,8 +3546,8 @@ mod tests {
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
         let reclaimed = pocket
             .reclaim_proofs(
-                &input_ys,
-                &k_infos,
+                &fx.input_ys,
+                &fx.k_infos,
                 Arc::new(alpha_connector),
                 test_swap_config(),
             )
@@ -3494,78 +3560,30 @@ mod tests {
     #[tokio::test]
     async fn swap_retry_dropped_response_recovers_via_restore() {
         let amount = Amount::from(24u64);
-        let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let kid = info.id;
-        let k_infos = test_kinfos(info);
-
-        let input_amounts = [Amount::from(16u64), Amount::from(8u64)];
-        let input_proofs = core_tests::generate_random_ecash_proofs(&mintkeyset, &input_amounts);
-        let input_ys: Vec<cashu::PublicKey> = input_proofs
-            .iter()
-            .map(|p| p.y().expect("y works"))
-            .collect();
-        let input_proofs_map: HashMap<cashu::PublicKey, cdk00::Proof> = input_proofs
-            .iter()
-            .map(|p| (p.y().unwrap(), p.clone()))
-            .collect();
-
-        let premint = cdk00::PreMintSecrets::random(
-            kid.into(),
-            amount,
-            &SplitTarget::None,
-            &bcr_wallet_core::util::to_fee_and_amounts(&bcr_wallet_core::util::to_keyset(
-                &mintkeyset,
-                None,
-            )),
-        )
-        .unwrap();
-        let outputs = premint.blinded_messages();
-        let blind_sigs: Vec<cdk00::BlindSignature> = outputs
-            .iter()
-            .map(|bm| {
-                bcr_common::core::signature::sign_ecash(&mintkeyset, bm)
-                    .expect("signing should work")
-            })
-            .collect();
-        let restored: Vec<(cdk00::BlindedMessage, cdk00::BlindSignature)> = outputs
+        let fx = swap_commitment_fixture(amount, 0xef, 1000);
+        let restored: Vec<(cdk00::BlindedMessage, cdk00::BlindSignature)> = fx
+            .record
+            .outputs
             .iter()
             .cloned()
-            .zip(blind_sigs.iter().cloned())
+            .zip(fx.blind_sigs.iter().cloned())
             .collect();
-        let stored_premints = HashMap::from([(kid, premint)]);
-
-        let ephemeral_keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
-        let ephemeral_secret = secp256k1::SecretKey::from_keypair(&ephemeral_keypair);
-        let wallet_key =
-            cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
-        let commitment_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xef; 64])
-            .expect("valid sig bytes");
 
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
         let mut alpha_connector = MockClowderMintConnector::new();
 
+        let input_proofs_map = fx.input_proofs_map.clone();
         pdb.expect_load_proofs()
             .times(1)
             .returning(move |_| Ok(input_proofs_map.clone()));
 
-        let record_inputs = input_ys.clone();
-        let record_outputs = outputs.clone();
-        let record_premints = stored_premints.clone();
-        pdb.expect_list_commitments().times(1).returning(move || {
-            Ok(vec![bcr_wallet_persistence::SwapCommitmentRecord {
-                inputs: record_inputs.clone(),
-                outputs: record_outputs.clone(),
-                expiry: 1000,
-                commitment: commitment_sig,
-                ephemeral_secret,
-                body_content: "dGVzdA==".to_string(),
-                wallet_key,
-                premints: record_premints.clone(),
-            }])
-        });
+        let record = fx.record.clone();
+        pdb.expect_list_commitments()
+            .times(1)
+            .returning(move || Ok(vec![record.clone()]));
 
-        let keyset_clone = mintkeyset.clone();
+        let keyset_clone = fx.mintkeyset.clone();
         alpha_connector
             .expect_get_mint_keyset()
             .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
@@ -3585,6 +3603,7 @@ mod tests {
             Ok(y)
         });
 
+        let commitment_sig = fx.record.commitment;
         pdb.expect_delete_commitment()
             .times(1)
             .withf(move |sig| *sig == commitment_sig)
@@ -3593,8 +3612,8 @@ mod tests {
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
         let reclaimed = pocket
             .reclaim_proofs(
-                &input_ys,
-                &k_infos,
+                &fx.input_ys,
+                &fx.k_infos,
                 Arc::new(alpha_connector),
                 test_swap_config(),
             )
@@ -3602,5 +3621,122 @@ mod tests {
             .expect("reclaim should resume via restore");
 
         assert_eq!(reclaimed, amount);
+    }
+
+    #[tokio::test]
+    async fn expired_commitment_already_signed_is_recovered_not_deleted() {
+        let amount = Amount::from(24u64);
+        let fx = swap_commitment_fixture(amount, 0x22, 500);
+
+        let mdb = MockMintMeltRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        let mut alpha_connector = MockClowderMintConnector::new();
+
+        let input_proofs_map = fx.input_proofs_map.clone();
+        pdb.expect_load_proofs()
+            .times(1)
+            .returning(move |_| Ok(input_proofs_map.clone()));
+
+        let record = fx.record.clone();
+        pdb.expect_list_commitments()
+            .times(1)
+            .returning(move || Ok(vec![record.clone()]));
+
+        let keyset_clone = fx.mintkeyset.clone();
+        alpha_connector
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
+
+        let blind_sigs = fx.blind_sigs.clone();
+        alpha_connector
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(move |_, _, _| Ok(blind_sigs.clone()));
+
+        pdb.expect_store_new().returning(|p| {
+            let y = p.y().expect("Hash to curve should not fail");
+            Ok(y)
+        });
+
+        let commitment_sig = fx.record.commitment;
+        pdb.expect_delete_commitment()
+            .times(1)
+            .withf(move |sig| *sig == commitment_sig)
+            .returning(|_| Ok(()));
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        pocket
+            .check_pending_commitments(
+                1000,
+                &fx.k_infos,
+                Arc::new(alpha_connector),
+                test_swap_config(),
+            )
+            .await
+            .expect("check should recover the expired commitment rather than just delete it");
+    }
+
+    #[tokio::test]
+    async fn expired_commitment_offline_is_kept() {
+        let amount = Amount::from(24u64);
+        let fx = swap_commitment_fixture(amount, 0x33, 500);
+
+        let mdb = MockMintMeltRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        let mut alpha_connector = MockClowderMintConnector::new();
+        let mut beta_connector = MockClowderMintConnector::new();
+
+        let input_proofs_map = fx.input_proofs_map.clone();
+        pdb.expect_load_proofs()
+            .returning(move |_| Ok(input_proofs_map.clone()));
+
+        let record = fx.record.clone();
+        pdb.expect_list_commitments()
+            .times(1)
+            .returning(move || Ok(vec![record.clone()]));
+        let record = fx.record.clone();
+        pdb.expect_load_commitment()
+            .times(1)
+            .returning(move |_| Ok(record.clone()));
+
+        alpha_connector
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(|_, _, _| Err(Error::MintClientResourceNotFound("gone".to_string())));
+        alpha_connector
+            .expect_post_restore()
+            .times(1)
+            .returning(|_| Ok(vec![]));
+
+        beta_connector
+            .expect_post_protest_swap()
+            .times(1)
+            .returning(|_| {
+                Ok(wire_swap::SwapProtestResponse {
+                    status: wire_common::ProtestStatus::Offline,
+                    signatures: None,
+                })
+            });
+
+        pdb.expect_delete_commitment().times(0);
+
+        let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
+            &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+        );
+        let pocket = pocket_with_beta(
+            Arc::new(pdb),
+            Arc::new(mdb),
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
+            alpha_id,
+        );
+        pocket
+            .check_pending_commitments(
+                1000,
+                &fx.k_infos,
+                Arc::new(alpha_connector),
+                test_swap_config(),
+            )
+            .await
+            .expect("an offline mint must not fail the check, only keep the record pending");
     }
 }
