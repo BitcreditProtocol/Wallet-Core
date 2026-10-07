@@ -1717,8 +1717,8 @@ mod tests {
     /// digest_proofs feeds the same inputs and keyset info to prepare_swap on every
     /// retry; a nondeterministic split would make a retry's outputs diverge from
     /// the first attempt's, breaking commitment resume.
-    #[test]
-    fn prepare_swap_call_site_is_deterministic() {
+    #[tokio::test]
+    async fn prepare_swap_call_site_is_deterministic() {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let k_infos = test_kinfos(info);
         let keysets_info: HashMap<cashu::Id, KeySetInfo> = k_infos
