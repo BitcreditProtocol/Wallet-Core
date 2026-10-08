@@ -89,11 +89,31 @@ async fn post_swap_commitment_inner(
     })
 }
 
+const MELT_QUOTE_EXPIRY_MARGIN_SECS: u64 = 60;
+
+fn validate_melt_quote_response(
+    response_body: &wire_melt::MeltQuoteOnchainResponseBody,
+    amount: bitcoin::Amount,
+    network_fee: bitcoin::Amount,
+    melt_fee: bitcoin::Amount,
+    now: u64,
+) -> Result<()> {
+    let matches = response_body.amount == amount
+        && response_body.network_fee == network_fee
+        && response_body.melt_fee == melt_fee
+        && response_body.expiry > now + MELT_QUOTE_EXPIRY_MARGIN_SECS;
+    if !matches {
+        return Err(Error::MeltQuoteMismatch);
+    }
+    Ok(())
+}
+
 async fn post_melt_quote_onchain_inner(
     client: &MintClient,
     inputs: Vec<cashu::Proof>,
     amount: bitcoin::Amount,
     network_fee: bitcoin::Amount,
+    melt_fee: bitcoin::Amount,
     address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
     alpha_pk: secp256k1::PublicKey,
     attestation: wire_attestation::IssuanceAttestation,
@@ -127,6 +147,8 @@ async fn post_melt_quote_onchain_inner(
     if !echoed {
         return Err(Error::MeltQuoteMismatch);
     }
+    let now = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
+    validate_melt_quote_response(&response_body, amount, network_fee, melt_fee, now)?;
     Ok(MeltQuoteResult {
         quote_id: response_body.quote,
         expiry: response_body.expiry,
@@ -210,6 +232,7 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
         inputs: Vec<cashu::Proof>,
         amount: bitcoin::Amount,
         network_fee: bitcoin::Amount,
+        melt_fee: bitcoin::Amount,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
@@ -477,6 +500,7 @@ impl ClowderMintConnector for HttpClientExt {
         inputs: Vec<cashu::Proof>,
         amount: bitcoin::Amount,
         network_fee: bitcoin::Amount,
+        melt_fee: bitcoin::Amount,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
@@ -486,6 +510,7 @@ impl ClowderMintConnector for HttpClientExt {
             inputs,
             amount,
             network_fee,
+            melt_fee,
             address,
             alpha_pk,
             attestation,
@@ -893,6 +918,7 @@ impl ClowderMintConnector for SentinelClient {
         inputs: Vec<cashu::Proof>,
         amount: bitcoin::Amount,
         network_fee: bitcoin::Amount,
+        melt_fee: bitcoin::Amount,
         address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
@@ -902,6 +928,7 @@ impl ClowderMintConnector for SentinelClient {
             inputs,
             amount,
             network_fee,
+            melt_fee,
             address,
             alpha_pk,
             attestation,
@@ -1072,5 +1099,128 @@ impl ClowderMintConnector for SentinelClient {
             self.main.mint_url()
         );
         Ok(self.main.post_attest_issuance(&request).await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn valid_response_body() -> wire_melt::MeltQuoteOnchainResponseBody {
+        let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let wallet_key = cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral));
+        wire_melt::MeltQuoteOnchainResponseBody {
+            quote: uuid::Uuid::new_v4(),
+            inputs: wire_attestation::AttestedFingerprints {
+                inputs: vec![],
+                attestation: crate::pocket::test_utils::tests::mock_attestation(),
+            },
+            address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
+                .expect("valid address"),
+            amount: bitcoin::Amount::from_sat(100),
+            network_fee: bitcoin::Amount::from_sat(10),
+            melt_fee: bitcoin::Amount::from_sat(1),
+            expiry: 1_000_000,
+            wallet_key,
+        }
+    }
+
+    #[test]
+    fn validate_melt_quote_response_accepts_matching_quote() {
+        let body = valid_response_body();
+        assert!(
+            validate_melt_quote_response(
+                &body,
+                bitcoin::Amount::from_sat(100),
+                bitcoin::Amount::from_sat(10),
+                bitcoin::Amount::from_sat(1),
+                999_000,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_melt_quote_response_rejects_amount_mismatch() {
+        let body = valid_response_body();
+        let result = validate_melt_quote_response(
+            &body,
+            bitcoin::Amount::from_sat(101),
+            bitcoin::Amount::from_sat(10),
+            bitcoin::Amount::from_sat(1),
+            999_000,
+        );
+        assert!(matches!(result, Err(Error::MeltQuoteMismatch)));
+    }
+
+    #[test]
+    fn validate_melt_quote_response_rejects_network_fee_mismatch() {
+        let body = valid_response_body();
+        let result = validate_melt_quote_response(
+            &body,
+            bitcoin::Amount::from_sat(100),
+            bitcoin::Amount::from_sat(11),
+            bitcoin::Amount::from_sat(1),
+            999_000,
+        );
+        assert!(matches!(result, Err(Error::MeltQuoteMismatch)));
+    }
+
+    #[test]
+    fn validate_melt_quote_response_rejects_melt_fee_mismatch() {
+        let body = valid_response_body();
+        for expected in [0, 2] {
+            let result = validate_melt_quote_response(
+                &body,
+                bitcoin::Amount::from_sat(100),
+                bitcoin::Amount::from_sat(10),
+                bitcoin::Amount::from_sat(expected),
+                999_000,
+            );
+            assert!(matches!(result, Err(Error::MeltQuoteMismatch)));
+        }
+    }
+
+    #[test]
+    fn validate_melt_quote_response_rejects_expiry_inside_margin() {
+        let body = valid_response_body();
+        let now = body.expiry - MELT_QUOTE_EXPIRY_MARGIN_SECS + 1;
+        let result = validate_melt_quote_response(
+            &body,
+            bitcoin::Amount::from_sat(100),
+            bitcoin::Amount::from_sat(10),
+            bitcoin::Amount::from_sat(1),
+            now,
+        );
+        assert!(matches!(result, Err(Error::MeltQuoteMismatch)));
+    }
+
+    #[test]
+    fn validate_melt_quote_response_rejects_expiry_at_exact_margin() {
+        let body = valid_response_body();
+        let now = body.expiry - MELT_QUOTE_EXPIRY_MARGIN_SECS;
+        let result = validate_melt_quote_response(
+            &body,
+            bitcoin::Amount::from_sat(100),
+            bitcoin::Amount::from_sat(10),
+            bitcoin::Amount::from_sat(1),
+            now,
+        );
+        assert!(matches!(result, Err(Error::MeltQuoteMismatch)));
+    }
+
+    #[test]
+    fn validate_melt_quote_response_accepts_expiry_just_outside_margin() {
+        let body = valid_response_body();
+        let now = body.expiry - MELT_QUOTE_EXPIRY_MARGIN_SECS - 1;
+        let result = validate_melt_quote_response(
+            &body,
+            bitcoin::Amount::from_sat(100),
+            bitcoin::Amount::from_sat(10),
+            bitcoin::Amount::from_sat(1),
+            now,
+        );
+        assert!(result.is_ok());
     }
 }

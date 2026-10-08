@@ -66,6 +66,8 @@ pub enum Error {
     EmptyToken(String),
     #[error("invalid token: {0}")]
     InvalidToken(String),
+    #[error("token too large: {0} bytes, max {1} bytes")]
+    TokenTooLarge(usize, usize),
     #[error("invalid bitcoin address: {0}")]
     InvalidBitcoinAddress(String),
     #[error("invalid bitcoin network: {0}")]
@@ -158,6 +160,10 @@ pub enum Error {
     PaymentRequestInWrongState(Uuid),
     #[error("Bitcoin Client returned an Api Error: {0}")]
     BitcoinClient(String),
+    #[error("restore response has an output that was not requested or is out of order")]
+    RestoreUnexpectedOutput,
+    #[error("restore check_state response does not match the restored batch")]
+    RestoreUnexpectedCheckState,
     #[error("Mint Client returned an internal Error: {0}")]
     MintClientInternal(String),
     #[error("{0}")]

@@ -2582,6 +2582,11 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::Cdk01(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Cdk13(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Cdk11(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::RestoreUnexpectedOutput => WalletError::internal(value.to_string()),
+            BcrWalletError::RestoreUnexpectedCheckState => WalletError::internal(value.to_string()),
+            BcrWalletError::TokenTooLarge(_, _) => {
+                WalletError::bad_request(value.to_string(), WalletErrorCode::InvalidToken)
+            }
             BcrWalletError::Cdk10(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Cdk14(_) => WalletError::internal(value.to_string()),
             BcrWalletError::CdkAmount(_) => {

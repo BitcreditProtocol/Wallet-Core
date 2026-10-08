@@ -236,12 +236,12 @@ impl AppState {
             purse.get_contact_repo(network),
         )
         .await?;
-        wallet.read().await.restore_local_proofs().await?;
+        let summary = wallet.read().await.restore_local_proofs().await?;
 
         let id = purse.add_wallet(wallet.clone()).await?;
         // start nostr event listener after initialization
         Wallet::start_nostr_event_listener(wallet).await;
-        tracing::debug!("Wallet restored successfully");
+        tracing::debug!("Wallet restored successfully: {summary:?}");
         Ok(id)
     }
 
@@ -423,9 +423,9 @@ impl AppState {
 
     pub async fn wallet_receive_token(&self, wallet_id: String, token: String) -> Result<Uuid> {
         let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
-        tracing::debug!("wallet_receive({wallet_id}, {token}, {tstamp})");
+        tracing::debug!("wallet_receive({wallet_id}, {tstamp})");
 
-        let token = Token::from_str(&token).map_err(|e| Error::InvalidToken(e.to_string()))?;
+        let token = is_valid_token(&token)?;
         let wallet = self.get_wallet(&wallet_id).await?;
         let tx_id = wallet.read().await.receive_token(token, tstamp).await?;
         Ok(tx_id)
@@ -1291,8 +1291,14 @@ pub fn get_wallet_id(mnemonic: &bip39::Mnemonic, network: bitcoin::Network) -> S
     build_wallet_id(&seed, network)
 }
 
+pub const MAX_TOKEN_SIZE_BYTES: usize = 128 * 1024;
+
 pub fn is_valid_token(token: &str) -> Result<Token> {
+    if token.len() > MAX_TOKEN_SIZE_BYTES {
+        return Err(Error::TokenTooLarge(token.len(), MAX_TOKEN_SIZE_BYTES));
+    }
     let token = Token::from_str(token).map_err(|e| Error::InvalidToken(e.to_string()))?;
+    token.value()?;
     Ok(token)
 }
 
