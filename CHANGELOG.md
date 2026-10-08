@@ -21,8 +21,9 @@
     * Add endpoint `wallet_prepare_pay_to_node_id` with `WalletPreparePaymentByNodeIdRequest` as input
     * Add endpoint `wallet_pay_to_node_id` with `WalletPaymentByNodeIdRequest` as input
     * `wallet_prepare_pay_payment_request` rejects a request in a unit other than the wallet's
-* `wallet_receive_token` and `is_valid_token` reject tokens over 128 KiB or with duplicate proofs, token material is no longer logged
-* Validate onchain melt quotes and restore responses (DLEQ, requested outputs, check states) returned by the mint
+* `wallet_receive_token` and `is_valid_token` reject tokens over 128 KiB or with duplicate proofs, `wallet_receive_token` no longer logs the token
+* Validate onchain melt quotes and restore responses (requested outputs, check states) returned by the mint
+* `restore_wallet` skips restored proofs that fail verification (DLEQ, keyset, amount) instead of storing them, and advances the keyset counter past every index the mint signed
 
 # 0.9.13
 

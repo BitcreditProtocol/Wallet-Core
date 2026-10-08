@@ -7,7 +7,7 @@ pub mod util;
 use crate::{
     ClowderMintConnector,
     error::{Error, Result},
-    pocket::debit::DebitPocketApi,
+    pocket::{RestoreSummary, debit::DebitPocketApi},
     types::PaymentSummary,
     wallet::{
         api::WalletApi,
@@ -571,12 +571,11 @@ impl Wallet {
         })
     }
 
-    pub async fn restore_local_proofs(&self) -> Result<()> {
+    pub async fn restore_local_proofs(&self) -> Result<RestoreSummary> {
         let keysets_info = self.get_wallet_mint_keyset_infos().await?;
         self.debit
             .restore_local_proofs(&keysets_info, self.client.clone())
-            .await?;
-        Ok(())
+            .await
     }
 
     pub async fn load_tx(&self, tx_id: Uuid) -> Result<Transaction> {

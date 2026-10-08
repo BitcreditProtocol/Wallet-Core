@@ -501,8 +501,8 @@ impl super::PocketApi for Pocket {
         &self,
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
-    ) -> Result<usize> {
-        let mut total_recovered = 0;
+    ) -> Result<RestoreSummary> {
+        let mut total_recovered = RestoreSummary::default();
         for kid in keysets_info.keys() {
             total_recovered +=
                 restore::restore_keysetid(&self.seed, *kid, &client, self.pdb.as_ref()).await?;

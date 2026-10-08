@@ -162,12 +162,8 @@ pub enum Error {
     BitcoinClient(String),
     #[error("restore response has an output that was not requested or is out of order")]
     RestoreUnexpectedOutput,
-    #[error("restore response signed amount {0} with no matching key in keyset {1}")]
-    RestoreUnknownKeysetAmount(cashu::Amount, ecash::Id),
     #[error("restore check_state response does not match the restored batch")]
     RestoreUnexpectedCheckState,
-    #[error("cashu::nut12: {0}")]
-    Cdk12(#[from] cashu::nut12::Error),
     #[error("Mint Client returned an internal Error: {0}")]
     MintClientInternal(String),
     #[error("{0}")]

@@ -236,12 +236,12 @@ impl AppState {
             purse.get_contact_repo(network),
         )
         .await?;
-        wallet.read().await.restore_local_proofs().await?;
+        let summary = wallet.read().await.restore_local_proofs().await?;
 
         let id = purse.add_wallet(wallet.clone()).await?;
         // start nostr event listener after initialization
         Wallet::start_nostr_event_listener(wallet).await;
-        tracing::debug!("Wallet restored successfully");
+        tracing::debug!("Wallet restored successfully: {summary:?}");
         Ok(id)
     }
 

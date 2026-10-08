@@ -136,7 +136,7 @@ pub mod tests {
                 &self,
                 keysets_info: &HashMap<ecash::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
-            ) -> Result<usize>;
+            ) -> Result<crate::pocket::RestoreSummary>;
             async fn delete_proofs(&self) -> Result<HashMap<ecash::Id, Vec<cashu::Proof>>>;
             async fn return_proofs_to_send_for_offline_payment(
                 &self,
