@@ -393,6 +393,7 @@ dependencies = [
  "mockito",
  "nostr",
  "rand 0.10.3",
+ "redb",
  "reqwest 0.13.5",
  "rustls",
  "serde",

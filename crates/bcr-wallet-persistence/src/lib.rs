@@ -1,5 +1,5 @@
 pub mod error;
-#[cfg(feature = "redb")]
+#[cfg(any(test, feature = "redb"))]
 pub mod redb;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
@@ -92,6 +92,51 @@ pub trait PocketRepository: SendSync {
         clowder_id: secp256k1::PublicKey,
         ys: Vec<cdk01::PublicKey>,
     ) -> Result<()>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationJournalHeader {
+    pub substitute_url: url::Url,
+    pub substitute_clowder_id: secp256k1::PublicKey,
+    pub alpha_id: secp256k1::PublicKey,
+    pub evidence_digest: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MigrationJournalState {
+    Pending,
+    Sent,
+    Exchanged(Vec<cdk00::Proof>),
+    Swapped,
+    Held,
+    Reclaimed(cashu::Amount),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationJournalEntry {
+    pub proof: cdk00::Proof,
+    pub exchange_key: cashu::SecretKey,
+    pub state: MigrationJournalState,
+}
+
+#[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
+#[async_trait]
+pub trait MigrationJournalRepository: SendSync {
+    async fn put(
+        &self,
+        header: MigrationJournalHeader,
+        entries: Vec<(cdk01::PublicKey, cashu::SecretKey)>,
+    ) -> Result<()>;
+    async fn update(&self, y: cdk01::PublicKey, state: MigrationJournalState) -> Result<()>;
+    async fn load(
+        &self,
+    ) -> Result<
+        Option<(
+            MigrationJournalHeader,
+            HashMap<cdk01::PublicKey, MigrationJournalEntry>,
+        )>,
+    >;
+    async fn clear(&self) -> Result<()>;
 }
 
 ///////////////////////////////////////////// PurseRepository

@@ -21,6 +21,11 @@
     * Add endpoint `wallet_prepare_pay_to_node_id` with `WalletPreparePaymentByNodeIdRequest` as input
     * Add endpoint `wallet_pay_to_node_id` with `WalletPaymentByNodeIdRequest` as input
     * `wallet_prepare_pay_payment_request` rejects a request in a unit other than the wallet's
+* Make `wallet_migrate_rabid` resumable: journal alpha proofs before the offline exchange, resend a lost exchange identically and switch to the substitute only once every proof is swapped, else stay on alpha with `MigrationIncomplete`
+    * Requires a substitute that replays an identical offline exchange (Wildcat #1068)
+* One wallet failing `wallet_migrate_rabid` no longer stops the others, and concurrent calls never migrate the same wallet twice
+* Hold coins of an unfinished payment outside the balance during migration; `wallet_reclaim_tx` reclaims them at the substitute after the switch, except onchain melts
+* DB change (non-breaking): new per-wallet `migration_journal` table
 
 # 0.9.13
 

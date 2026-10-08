@@ -1416,9 +1416,10 @@ async fn build_wallet(
         w_cfg.clowder_id,
     )?);
 
+    let debitdb = Arc::new(debitdb);
     let debit_pocket = Box::new(pocket::debit::Pocket::new(
         w_cfg.debit.clone(),
-        Arc::new(debitdb),
+        debitdb.clone(),
         Arc::new(mintmeltdb),
         seed,
         beta_provider,
@@ -1437,6 +1438,7 @@ async fn build_wallet(
         contactdb,
         Box::new(pending_incoming_payment_request_db),
         debit_pocket,
+        debitdb,
         w_cfg.name,
         w_cfg.wallet_id,
         w_cfg.pub_key,
