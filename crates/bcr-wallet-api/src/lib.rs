@@ -1037,6 +1037,17 @@ impl AppState {
         Ok(recovered)
     }
 
+    // Refund intermint exchanges whose locktime has passed
+    pub async fn wallet_refund_expired_exchanges(&self, wallet_id: String) -> Result<usize> {
+        tracing::debug!("wallet_refund_expired_exchanges({wallet_id})");
+        let wallet = self.get_wallet(&wallet_id).await?;
+        let wlt = wallet.read().await;
+        let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
+        let refunded = wlt.refund_expired_exchanges(tstamp).await?;
+
+        Ok(refunded)
+    }
+
     // Clean up Spent proofs
     pub async fn wallet_clean_up_spent_proofs(&self, wallet_id: String) -> Result<usize> {
         tracing::debug!("wallet_clean_up_spent_proofs({wallet_id})");
@@ -1193,6 +1204,22 @@ impl AppState {
                     job_failed = true;
                     tracing::error!(
                         "Error running wallet_recover_pending_stale_proofs job for wallet {wallet_id}: {e}"
+                    );
+                }
+            }
+            match self
+                .wallet_refund_expired_exchanges(wallet_id.to_owned())
+                .await
+            {
+                Ok(refunded) => {
+                    tracing::info!(
+                        "Refunded expired exchanges for wallet {wallet_id}, refunded: {refunded}"
+                    );
+                }
+                Err(e) => {
+                    job_failed = true;
+                    tracing::error!(
+                        "Error running wallet_refund_expired_exchanges job for wallet {wallet_id}: {e}"
                     );
                 }
             }

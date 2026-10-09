@@ -3,8 +3,6 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     ClowderMintConnector,
     error::{Error, Result},
-    pocket::unblind_proofs,
-    wallet::types::SwapConfig,
 };
 use bcr_common::{
     cashu::{self, HTLCWitness, Proof, amount::SplitTarget},
@@ -76,17 +74,23 @@ pub fn htlc_hash_lock(proof: &Proof) -> Option<Sha256> {
     }
 }
 
-pub async fn htlc_lock(
+/// What locking proofs into an HTLC at their mint needs, prepared before anything is swapped.
+pub struct HtlcLock {
+    /// Unix timestamp in seconds after which the wallet key alone unlocks the outputs
+    pub lock_time: u64,
+    pub keysets: HashMap<ecash::Id, KeySet>,
+    pub premints: HashMap<ecash::Id, cashu::PreMintSecrets>,
+}
+
+pub async fn prepare_htlc_lock(
     tstamp: u64,
     client: &dyn ClowderMintConnector,
-    proofs: Vec<cashu::Proof>,
+    proofs: &[cashu::Proof],
     hash_lock: Sha256,
     key_locks: Vec<secp256k1::PublicKey>,
     wallet_pubkey: secp256k1::PublicKey,
-    swap_config: SwapConfig,
-    beta: &dyn crate::pocket::BetaProvider,
-) -> Result<Vec<cashu::Proof>> {
-    tracing::debug!("HTLC-locking proofs");
+) -> Result<HtlcLock> {
+    tracing::debug!("preparing HTLC lock");
     let key_locks: Vec<cashu::PublicKey> = key_locks.into_iter().map(|k| k.into()).collect();
 
     // total hops * time per hop + 2 hops buffer
@@ -101,7 +105,7 @@ pub async fn htlc_lock(
         .map(|k| (k.id.into(), k))
         .collect();
 
-    let swap_plan = prepare_swap(&proofs, &infos)?;
+    let swap_plan = prepare_swap(proofs, &infos)?;
 
     let kids: HashSet<ecash::Id> = proofs.iter().map(|p| p.keyset_id.into()).collect();
     let mut keysets: HashMap<ecash::Id, KeySet> = HashMap::new();
@@ -121,7 +125,6 @@ pub async fn htlc_lock(
     )?;
     let htlc = cashu::SpendingConditions::new_htlc_hash(&hash_lock.to_string(), Some(p2pk))?;
 
-    // prepare the premints
     let mut premints: HashMap<ecash::Id, cashu::PreMintSecrets> = HashMap::new();
     for (kid, amount) in swap_plan {
         let premint = cashu::PreMintSecrets::with_conditions(
@@ -134,40 +137,11 @@ pub async fn htlc_lock(
         premints.insert(kid.into(), premint);
     }
 
-    let blinds: Vec<cashu::BlindedMessage> = premints
-        .values()
-        .flat_map(|premint| premint.blinded_messages())
-        .collect();
-    let attestation = beta.attest(&proofs).await?;
-    let signatures = crate::pocket::committed_swap(
-        client,
-        None,
-        proofs,
-        blinds,
-        &swap_config,
-        std::collections::HashMap::new(),
-        attestation,
-    )
-    .await?;
-
-    let mut result_proofs = Vec::new();
-    let mut sigs_by_kid: HashMap<ecash::Id, Vec<cashu::BlindSignature>> = HashMap::new();
-    for signature in signatures {
-        sigs_by_kid
-            .entry(signature.keyset_id.into())
-            .or_default()
-            .push(signature);
-    }
-
-    for (kid, sigs) in sigs_by_kid.into_iter() {
-        let premint = premints.remove(&kid).expect("premint should be here");
-        let keyset = keysets.get(&kid).expect("keyset should be here");
-        let proofs = unblind_proofs(keyset, sigs, premint);
-
-        result_proofs.extend(proofs);
-    }
-
-    Ok(result_proofs)
+    Ok(HtlcLock {
+        lock_time,
+        keysets,
+        premints,
+    })
 }
 
 pub fn tx_can_be_refreshed(tx: &Transaction) -> bool {

@@ -11,7 +11,7 @@ use bcr_common::{
     },
     core::swap::wallet::prepare_swap,
     ecash::{self, KeySet, KeySetInfo},
-    wire::{attestation as wire_attestation, keys as wire_keys},
+    wire::{attestation as wire_attestation, keys as wire_keys, swap as wire_swap},
 };
 use bcr_wallet_core::{
     SendSync,
@@ -323,10 +323,10 @@ pub(crate) async fn fetch_attestation(
     beta_client.post_attest_issuance(request).await
 }
 
-///////////////////////////////////////////// committed_swap
-/// Commit → optionally store → swap → optionally delete.
-/// Returns the blind signatures from the swap response.
-pub(crate) async fn committed_swap(
+///////////////////////////////////////////// commit_swap
+/// Commit → optionally store.
+/// Returns the inputs to execute the swap with and the commitment signature.
+pub(crate) async fn commit_swap(
     client: &dyn ClowderMintConnector,
     db: Option<&dyn PocketRepository>,
     inputs: Vec<cdk00::Proof>,
@@ -334,13 +334,13 @@ pub(crate) async fn committed_swap(
     swap_config: &SwapConfig,
     premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
     attestation: wire_attestation::IssuanceAttestation,
-) -> Result<Vec<cdk00::BlindSignature>> {
+) -> Result<(Vec<cdk00::Proof>, bitcoin::secp256k1::schnorr::Signature)> {
     // Remove dleqs from same-mint swaps to not give up a blinding factor
     let inputs = crate::wallet::util::remove_dleq_from_proofs(inputs);
     let commit_result = client
         .post_swap_commitment(
             inputs.clone(),
-            outputs.clone(),
+            outputs,
             swap_config.expiry,
             swap_config.alpha_pk,
             attestation,
@@ -361,6 +361,31 @@ pub(crate) async fn committed_swap(
         })
         .await?;
     }
+    Ok((inputs, commitment_sig))
+}
+
+///////////////////////////////////////////// committed_swap
+/// Commit → optionally store → swap → optionally delete.
+/// Returns the blind signatures from the swap response.
+pub(crate) async fn committed_swap(
+    client: &dyn ClowderMintConnector,
+    db: Option<&dyn PocketRepository>,
+    inputs: Vec<cdk00::Proof>,
+    outputs: Vec<cdk00::BlindedMessage>,
+    swap_config: &SwapConfig,
+    premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
+    attestation: wire_attestation::IssuanceAttestation,
+) -> Result<Vec<cdk00::BlindSignature>> {
+    let (inputs, commitment_sig) = commit_swap(
+        client,
+        db,
+        inputs,
+        outputs.clone(),
+        swap_config,
+        premints,
+        attestation,
+    )
+    .await?;
 
     let signatures = client
         .post_swap_committed(inputs, outputs, commitment_sig)
@@ -373,6 +398,70 @@ pub(crate) async fn committed_swap(
     }
 
     Ok(signatures)
+}
+
+///////////////////////////////////////////// post_swap_protest
+/// Protest a committed swap of `proofs` at one of `beta`'s clowder betas.
+pub(crate) async fn post_swap_protest(
+    record: &bcr_wallet_persistence::SwapCommitmentRecord,
+    proofs: Vec<cdk00::Proof>,
+    beta: &dyn BetaProvider,
+) -> Result<wire_swap::SwapProtestResponse> {
+    let ephemeral_keypair = bitcoin::secp256k1::Keypair::from_secret_key(
+        bitcoin::secp256k1::SECP256K1,
+        &record.ephemeral_secret,
+    );
+    let wallet_signature = sign_content_b64(&record.body_content, &ephemeral_keypair)?;
+    let request = wire_swap::SwapProtestRequest {
+        alpha_id: beta.alpha_id(),
+        proofs,
+        content: record.body_content.clone(),
+        commitment: record.commitment,
+        wallet_signature,
+        blind_signatures: None,
+    };
+    beta.random_client().post_protest_swap(request).await
+}
+
+///////////////////////////////////////////// unblind_by_keyset
+/// Unblinds `signatures`, given in the order of the blinded messages of `premints`. Every
+/// premint must get back exactly as many valid signatures as it has blinded messages: a
+/// partial answer would otherwise unblind only part of the swap while the caller treats it
+/// as done, leaving the rest neither refundable nor protestable.
+pub(crate) fn unblind_by_keyset(
+    premints: &HashMap<ecash::Id, cdk00::PreMintSecrets>,
+    signatures: Vec<cdk00::BlindSignature>,
+    keysets: &HashMap<ecash::Id, KeySet>,
+) -> Result<Vec<cdk00::Proof>> {
+    let mut sigs_by_kid: HashMap<ecash::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
+    for signature in signatures {
+        sigs_by_kid
+            .entry(signature.keyset_id.into())
+            .or_default()
+            .push(signature);
+    }
+    let mut proofs = Vec::new();
+    for (kid, sigs) in sigs_by_kid {
+        let (Some(premint), Some(keyset)) = (premints.get(&kid), keysets.get(&kid)) else {
+            return Err(Error::Swap(format!("swap signed unknown keyset {kid}")));
+        };
+        if sigs.len() != premint.len() {
+            return Err(Error::Swap(format!(
+                "swap returned {} signatures for {} blinded messages of keyset {kid}",
+                sigs.len(),
+                premint.len()
+            )));
+        }
+        proofs.extend(unblind_proofs(keyset, sigs, premint.clone()));
+    }
+    let expected: usize = premints.values().map(|p| p.len()).sum();
+    if proofs.len() != expected {
+        return Err(Error::Swap(format!(
+            "swap unblinded {} proofs for {expected} blinded messages",
+            proofs.len()
+        )));
+    }
+    Ok(proofs)
 }
 
 ///////////////////////////////////////////// swap
@@ -757,6 +846,32 @@ mod tests {
         );
         let proofs = super::unblind_proofs(&keyset, signatures, premint);
         assert_eq!(proofs.len(), 1);
+    }
+
+    #[test]
+    fn unblind_by_keyset_rejects_signatures_misallocated_across_keysets() {
+        let mut premints = HashMap::new();
+        let mut keysets = HashMap::new();
+        let mut mintkeysets = Vec::new();
+        for amount in [3u64, 1] {
+            let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+            let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+            let premint = cdk00::PreMintSecrets::random(
+                keyset.id.into(),
+                Amount::from(amount),
+                &SplitTarget::None,
+                &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
+            )
+            .unwrap();
+            premints.insert(keyset.id, premint);
+            keysets.insert(keyset.id, keyset);
+            mintkeysets.push(mintkeyset);
+        }
+        let all_from_first = core_tests::generate_ecash_signatures(
+            &mintkeysets[0],
+            &[Amount::from(1), Amount::from(2), Amount::from(1)],
+        );
+        assert!(super::unblind_by_keyset(&premints, all_from_first, &keysets).is_err());
     }
 
     #[test]

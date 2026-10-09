@@ -1,6 +1,7 @@
 use crate::{
     ClowderMintConnector,
     error::{Error, Result},
+    external::mint::ClientFactory,
     pocket::*,
     wallet::types::SwapConfig,
 };
@@ -12,16 +13,19 @@ use bcr_common::{
     },
     core::swap::wallet::{PaymentPlan, prepare_payment},
     ecash::{self, KeySet, KeySetInfo},
-    wire::{common as wire_common, melt as wire_melt, mint as wire_mint, swap as wire_swap},
+    wire::{common as wire_common, melt as wire_melt, mint as wire_mint},
 };
 use bcr_wallet_core::types::{
     ForeignMintProof, ForeignMintProofReason, MeltSummary, MintSummary, Seed, SendSummary,
     TransactionFees,
 };
-use bcr_wallet_persistence::{MeltCommitmentRecord, MintMeltRepository, PocketRepository};
-use bitcoin::secp256k1;
+use bcr_wallet_persistence::{
+    ExchangeRecord, MeltCommitmentRecord, MintMeltRepository, PocketRepository,
+    SwapCommitmentRecord,
+};
+use bitcoin::{hashes::sha256::Hash as Sha256, secp256k1};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 use uuid::Uuid;
@@ -98,6 +102,23 @@ pub trait DebitPocketApi: super::PocketApi {
     ) -> Result<ProtestResult>;
     async fn protest_melt(&self, quote_id: Uuid) -> Result<MeltProtestResult>;
     async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>>;
+    /// Stores the exchange record, then HTLC-locks its alpha inputs, keeping the lock swap's
+    /// commitment until the record holds the locked proofs.
+    async fn lock_exchange(
+        &self,
+        record: ExchangeRecord,
+        keysets: HashMap<ecash::Id, KeySet>,
+        alpha_client: Arc<dyn ClowderMintConnector>,
+        swap_config: SwapConfig,
+        alpha_beta: Arc<dyn BetaProvider>,
+    ) -> Result<Vec<Proof>>;
+    async fn delete_exchange_record(&self, hash_lock: Sha256) -> Result<()>;
+    /// Refunds every exchange past its locktime as foreign mint proofs of its alpha.
+    async fn refund_expired_exchanges(
+        &self,
+        tstamp: u64,
+        client_factory: &ClientFactory,
+    ) -> Result<usize>;
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +159,35 @@ pub struct Pocket {
     in_flight: InFlight,
 }
 
+/// The stored commitment of the lock swap spending `record`'s alpha inputs, if any
+fn lock_swap_commitment(
+    record: &ExchangeRecord,
+    commitments: &[SwapCommitmentRecord],
+) -> Option<SwapCommitmentRecord> {
+    let blinds: HashSet<cdk01::PublicKey> = record
+        .blinded_messages()
+        .into_iter()
+        .map(|blind| blind.blinded_secret)
+        .collect();
+    commitments
+        .iter()
+        .find(|c| {
+            c.outputs.len() == blinds.len()
+                && c.outputs.iter().all(|o| blinds.contains(&o.blinded_secret))
+        })
+        .cloned()
+}
+
+/// Signs `proofs` for the HTLC refund path with `record`'s refund key. No preimage: a valid
+/// one makes the mint check the receiver path instead (NUT-14).
+fn refund_proofs(record: &ExchangeRecord, mut proofs: Vec<Proof>) -> Result<Vec<Proof>> {
+    let refund_key = cashu::SecretKey::from(record.refund_secret);
+    for proof in proofs.iter_mut() {
+        crate::wallet::util::sign_htlc_proof(proof, "", &refund_key)?;
+    }
+    Ok(proofs)
+}
+
 impl Pocket {
     pub fn new(
         unit: CurrencyUnit,
@@ -156,6 +206,113 @@ impl Pocket {
             current_melt: Mutex::new(None),
             in_flight: InFlight::default(),
         }
+    }
+
+    /// Stores the proofs refunding `record` as foreign mint proofs of its alpha, then deletes
+    /// it. Returns false, keeping it, while its unanswered lock swap's outcome is unknown.
+    async fn refund_exchange(
+        &self,
+        record: ExchangeRecord,
+        commitments: &[SwapCommitmentRecord],
+        tstamp: u64,
+        client_factory: &ClientFactory,
+    ) -> Result<bool> {
+        let commitment = lock_swap_commitment(&record, commitments);
+        let proofs = match (record.locked_proofs.clone(), &commitment) {
+            (Some(locked), _) => refund_proofs(&record, locked)?,
+            (None, None) => record.alpha_inputs.clone(),
+            (None, Some(commitment)) if commitment.expiry >= tstamp => return Ok(false),
+            (None, Some(commitment)) => {
+                match Self::recover_lock_swap(&record, commitment, client_factory).await? {
+                    Some(proofs) => proofs,
+                    None => return Ok(false),
+                }
+            }
+        };
+        for proof in proofs {
+            self.pdb
+                .store_foreign_mint_proof(ForeignMintProof {
+                    clowder_id: record.alpha_clowder_id,
+                    proof,
+                    reason: ForeignMintProofReason::ExchangeRefund {
+                        alpha_url: record.alpha_url.clone(),
+                    },
+                })
+                .await?;
+        }
+        if let Some(commitment) = commitment {
+            self.pdb.delete_commitment(commitment.commitment).await?;
+        }
+        self.pdb.delete_exchange_record(record.hash_lock).await?;
+        Ok(true)
+    }
+
+    /// The proofs refunding `record` after its unanswered lock swap expired: its alpha inputs
+    /// if the swap never executed, else the locked outputs restored from the alpha or won by
+    /// protest. None while the protest is unresolved.
+    async fn recover_lock_swap(
+        record: &ExchangeRecord,
+        commitment: &SwapCommitmentRecord,
+        client_factory: &ClientFactory,
+    ) -> Result<Option<Vec<Proof>>> {
+        let alpha_client = client_factory(record.alpha_url.clone());
+        let blinds = record.blinded_messages();
+        let restored = alpha_client
+            .post_restore(cashu::RestoreRequest {
+                outputs: blinds.clone(),
+            })
+            .await?;
+        let mut restored: HashMap<cdk01::PublicKey, cdk00::BlindSignature> = restored
+            .into_iter()
+            .map(|(blind, signature)| (blind.blinded_secret, signature))
+            .collect();
+        let signatures = match blinds
+            .iter()
+            .map(|blind| restored.remove(&blind.blinded_secret))
+            .collect::<Option<Vec<_>>>()
+        {
+            Some(signatures) => signatures,
+            None => {
+                let states = alpha_client
+                    .post_check_state(cashu::CheckStateRequest {
+                        ys: commitment.inputs.clone(),
+                    })
+                    .await?;
+                if states.len() == commitment.inputs.len()
+                    && states.iter().all(|s| s.state == cashu::State::Unspent)
+                {
+                    return Ok(Some(record.alpha_inputs.clone()));
+                }
+                let betas = alpha_client
+                    .get_clowder_betas()
+                    .await?
+                    .into_iter()
+                    .map(|beta| client_factory(beta.url))
+                    .collect();
+                let alpha_beta = super::RandomBetaProvider::new(betas, record.alpha_clowder_id)?;
+                let inputs =
+                    crate::wallet::util::remove_dleq_from_proofs(record.alpha_inputs.clone());
+                let response = super::post_swap_protest(commitment, inputs, &alpha_beta).await?;
+                match (response.status, response.signatures) {
+                    (wire_common::ProtestStatus::Resolved, Some(signatures)) => signatures,
+                    (status, _) => {
+                        tracing::warn!(
+                            "Protest of lock swap {} for exchange {} returned {status:?}, retrying next run",
+                            commitment.commitment,
+                            record.hash_lock
+                        );
+                        return Ok(None);
+                    }
+                }
+            }
+        };
+
+        let mut keysets: HashMap<ecash::Id, KeySet> = HashMap::new();
+        for kid in record.premints.keys() {
+            keysets.insert(*kid, alpha_client.get_mint_keyset(*kid).await?);
+        }
+        let locked = super::unblind_by_keyset(&record.premints, signatures, &keysets)?;
+        Ok(Some(refund_proofs(record, locked)?))
     }
 
     fn validate_keysets<'a>(
@@ -1111,8 +1268,23 @@ impl DebitPocketApi for Pocket {
             "check pending commitments for {} entries",
             commitments.len()
         );
+        if commitments.iter().all(|record| record.expiry >= tstamp) {
+            return Ok(());
+        }
+        let exchanges = self.pdb.list_exchange_records().await?;
+        let mut unanswered_lock_swaps = HashSet::new();
+        for exchange in exchanges.iter().filter(|e| e.locked_proofs.is_none()) {
+            if let Some(commitment) = lock_swap_commitment(exchange, &commitments) {
+                unanswered_lock_swaps.insert(commitment.commitment);
+            }
+        }
         for record in commitments {
-            if record.expiry < tstamp {
+            if unanswered_lock_swaps.contains(&record.commitment) {
+                tracing::debug!(
+                    "Keeping expired lock swap commitment {} until its exchange is recovered",
+                    record.commitment
+                );
+            } else if record.expiry < tstamp {
                 tracing::warn!(
                     "Swap commitment {} expired at {} (now: {tstamp}) - deleting record.",
                     record.commitment,
@@ -1189,20 +1361,12 @@ impl DebitPocketApi for Pocket {
     ) -> Result<ProtestResult> {
         let record = self.pdb.load_commitment(commitment_sig).await?;
         let loaded_proofs = self.pdb.load_proofs(&record.inputs).await?;
-        let ephemeral_keypair =
-            secp256k1::Keypair::from_secret_key(secp256k1::SECP256K1, &record.ephemeral_secret);
-        let wallet_signature = super::sign_content_b64(&record.body_content, &ephemeral_keypair)?;
-
-        let request = wire_swap::SwapProtestRequest {
-            alpha_id: self.beta.alpha_id(),
-            proofs: loaded_proofs.into_values().collect(),
-            content: record.body_content,
-            commitment: record.commitment,
-            wallet_signature,
-            blind_signatures: None,
-        };
-
-        let response = self.beta.random_client().post_protest_swap(request).await?;
+        let response = super::post_swap_protest(
+            &record,
+            loaded_proofs.into_values().collect(),
+            self.beta.as_ref(),
+        )
+        .await?;
 
         match response.status {
             wire_common::ProtestStatus::Resolved => {
@@ -1331,6 +1495,76 @@ impl DebitPocketApi for Pocket {
             .map(|r| (r.quote_id, r.expiry))
             .collect())
     }
+
+    async fn lock_exchange(
+        &self,
+        mut record: ExchangeRecord,
+        keysets: HashMap<ecash::Id, KeySet>,
+        alpha_client: Arc<dyn ClowderMintConnector>,
+        swap_config: SwapConfig,
+        alpha_beta: Arc<dyn BetaProvider>,
+    ) -> Result<Vec<Proof>> {
+        self.pdb.store_exchange_record(record.clone()).await?;
+
+        let blinds = record.blinded_messages();
+        let attestation = alpha_beta.attest(&record.alpha_inputs).await?;
+        let (inputs, commitment) = super::commit_swap(
+            alpha_client.as_ref(),
+            Some(self.pdb.as_ref()),
+            record.alpha_inputs.clone(),
+            blinds.clone(),
+            &swap_config,
+            record.premints.clone(),
+            attestation,
+        )
+        .await?;
+        let signatures = alpha_client
+            .post_swap_committed(inputs, blinds, commitment)
+            .await?;
+        let locked = super::unblind_by_keyset(&record.premints, signatures, &keysets)?;
+
+        record.locked_proofs = Some(locked.clone());
+        self.pdb.store_exchange_record(record).await?;
+        if let Err(e) = self.pdb.delete_commitment(commitment).await {
+            tracing::warn!("Could not delete commitment after lock swap: {e}");
+        }
+        Ok(locked)
+    }
+
+    async fn delete_exchange_record(&self, hash_lock: Sha256) -> Result<()> {
+        Ok(self.pdb.delete_exchange_record(hash_lock).await?)
+    }
+
+    async fn refund_expired_exchanges(
+        &self,
+        tstamp: u64,
+        client_factory: &ClientFactory,
+    ) -> Result<usize> {
+        let records = self.pdb.list_exchange_records().await?;
+        if records.iter().all(|record| record.locktime >= tstamp) {
+            return Ok(0);
+        }
+        let commitments = self.pdb.list_commitments().await?;
+        let mut refunded = 0;
+        for record in records
+            .into_iter()
+            .filter(|record| record.locktime < tstamp)
+        {
+            let hash_lock = record.hash_lock;
+            match self
+                .refund_exchange(record, &commitments, tstamp, client_factory)
+                .await
+            {
+                Ok(true) => {
+                    tracing::info!("Refunded exchange {hash_lock}");
+                    refunded += 1;
+                }
+                Ok(false) => {}
+                Err(e) => tracing::error!("Could not refund exchange {hash_lock}: {e}"),
+            }
+        }
+        Ok(refunded)
+    }
 }
 
 #[cfg(test)]
@@ -1351,6 +1585,7 @@ mod tests {
         MockMintMeltRepository, MockPocketRepository,
         test_utils::tests::valid_payment_address_testnet,
     };
+    use bitcoin::hashes::Hash as _;
     use mockall::predicate::*;
 
     use crate::pocket::test_utils::tests::{
@@ -1767,6 +2002,185 @@ mod tests {
             .await
             .expect("recover pending stale proofs works");
         assert_eq!(recovered, Amount::from(8u64));
+    }
+
+    fn sample_exchange_record(locktime: u64) -> ExchangeRecord {
+        let (_, keyset) = core_tests::generate_random_ecash_keyset();
+        ExchangeRecord {
+            hash_lock: Sha256::hash(&cashu::SecretKey::generate().to_secret_bytes()),
+            refund_secret: *cashu::SecretKey::generate(),
+            alpha_inputs: vec![],
+            premints: HashMap::new(),
+            alpha_url: url::Url::parse("https://alpha.example.com").unwrap(),
+            alpha_clowder_id: *cashu::SecretKey::generate().public_key(),
+            locktime,
+            locked_proofs: Some(core_tests::generate_random_ecash_proofs(
+                &keyset,
+                &[Amount::from(16u64)],
+            )),
+        }
+    }
+
+    fn no_clients() -> Box<ClientFactory> {
+        Box::new(|url| panic!("refund contacted {url}"))
+    }
+
+    #[tokio::test]
+    async fn refund_expired_exchanges_refunds_locked_proofs_after_locktime() {
+        let record = sample_exchange_record(1_000);
+        let hash_lock = record.hash_lock;
+        let clowder_id = record.alpha_clowder_id;
+        let reason = ForeignMintProofReason::ExchangeRefund {
+            alpha_url: record.alpha_url.clone(),
+        };
+
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_list_exchange_records()
+            .times(2)
+            .returning(move || Ok(vec![record.clone()]));
+        pdb.expect_list_commitments()
+            .times(1)
+            .returning(|| Ok(vec![]));
+        pdb.expect_store_foreign_mint_proof()
+            .times(1)
+            .withf(move |fmp| {
+                fmp.clowder_id == clowder_id
+                    && fmp.reason == reason
+                    && matches!(&fmp.proof.witness, Some(cashu::Witness::HTLCWitness(w)) if w.preimage.is_empty())
+            })
+            .returning(|fmp| Ok(fmp.proof.y().unwrap()));
+        pdb.expect_delete_exchange_record()
+            .times(1)
+            .with(eq(hash_lock))
+            .returning(|_| Ok(()));
+        let pocket = pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()));
+
+        // NUT-14 opens the refund path only once locktime < now
+        let refunded = pocket
+            .refund_expired_exchanges(1_000, no_clients().as_ref())
+            .await
+            .unwrap();
+        assert_eq!(refunded, 0);
+        let refunded = pocket
+            .refund_expired_exchanges(1_001, no_clients().as_ref())
+            .await
+            .unwrap();
+        assert_eq!(refunded, 1);
+    }
+
+    #[tokio::test]
+    async fn refund_expired_exchanges_keeps_record_when_proof_store_fails() {
+        let record_fail = sample_exchange_record(1_000);
+        let record_ok = sample_exchange_record(1_000);
+        let hash_lock_ok = record_ok.hash_lock;
+        let fail_clowder_id = record_fail.alpha_clowder_id;
+
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_list_exchange_records()
+            .times(1)
+            .returning(move || Ok(vec![record_fail.clone(), record_ok.clone()]));
+        pdb.expect_list_commitments()
+            .times(1)
+            .returning(|| Ok(vec![]));
+        pdb.expect_store_foreign_mint_proof()
+            .times(2)
+            .returning(move |fmp| {
+                if fmp.clowder_id == fail_clowder_id {
+                    Err(bcr_wallet_persistence::error::Error::BorshSerialization(
+                        "simulated store failure".to_string(),
+                    ))
+                } else {
+                    Ok(fmp.proof.y().unwrap())
+                }
+            });
+        pdb.expect_delete_exchange_record()
+            .times(1)
+            .with(eq(hash_lock_ok))
+            .returning(|_| Ok(()));
+        let pocket = pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()));
+
+        let refunded = pocket
+            .refund_expired_exchanges(1_001, no_clients().as_ref())
+            .await
+            .unwrap();
+        assert_eq!(refunded, 1);
+    }
+
+    #[tokio::test]
+    async fn lock_exchange_keeps_commitment_when_locked_proofs_fail_to_store() {
+        let (info, mint_keyset) = core_tests::generate_random_ecash_keyset();
+        let keyset = bcr_wallet_core::util::to_keyset(&mint_keyset, None);
+        let premint = cdk00::PreMintSecrets::random(
+            info.id.into(),
+            Amount::from(10u64),
+            &SplitTarget::None,
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
+        )
+        .unwrap();
+        let mut record = sample_exchange_record(u64::MAX);
+        record.locked_proofs = None;
+        record.alpha_inputs = core_tests::generate_random_ecash_proofs(
+            &mint_keyset,
+            &[Amount::from(8u64), Amount::from(2u64)],
+        );
+        record.premints = HashMap::from([(info.id, premint)]);
+
+        let mut pdb = MockPocketRepository::new();
+        let mut stores = 0;
+        pdb.expect_store_exchange_record()
+            .times(2)
+            .returning(move |record| {
+                stores += 1;
+                if stores == 1 {
+                    assert!(record.locked_proofs.is_none());
+                    Ok(())
+                } else {
+                    assert!(record.locked_proofs.is_some());
+                    Err(bcr_wallet_persistence::error::Error::BorshSerialization(
+                        "simulated store failure".to_string(),
+                    ))
+                }
+            });
+        pdb.expect_store_commitment().times(1).returning(|_| Ok(()));
+        pdb.expect_delete_commitment().times(0);
+        let pocket = pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()));
+
+        let mut alpha = MockClowderMintConnector::new();
+        alpha
+            .expect_post_swap_commitment()
+            .times(1)
+            .returning(|inputs, outputs, _, _, _| {
+                Ok(crate::external::mint::SwapCommitmentResult {
+                    inputs_ys: inputs.iter().map(|p| p.y().unwrap()).collect(),
+                    outputs,
+                    ..mock_commitment_result()
+                })
+            });
+        alpha
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(move |_, outputs, _| {
+                let amounts: Vec<Amount> = outputs.iter().map(|b| b.amount).collect();
+                Ok(core_tests::generate_ecash_signatures(
+                    &mint_keyset,
+                    &amounts,
+                ))
+            });
+        let mut alpha_beta = crate::pocket::MockBetaProvider::new();
+        alpha_beta
+            .expect_attest()
+            .returning(|_| Ok(crate::pocket::test_utils::tests::mock_attestation()));
+
+        let res = pocket
+            .lock_exchange(
+                record,
+                HashMap::from([(info.id, keyset)]),
+                Arc::new(alpha),
+                test_swap_config(),
+                Arc::new(alpha_beta),
+            )
+            .await;
+        assert!(res.is_err());
     }
 
     #[tokio::test]

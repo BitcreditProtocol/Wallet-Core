@@ -1,5 +1,8 @@
 # 0.9.14
 
+* Online intermint exchanges store an encrypted exchange record (refund key, alpha inputs, premints, locktime) before the lock swap and keep its commitment until the locked proofs are stored (breaking DB change: adds the pocket DB `exchange_records` table and a `ForeignMintProofReason::ExchangeRefund { alpha_url }` variant)
+* `run_jobs` refunds every exchange past its locktime as foreign mint proofs of its alpha, settling an unanswered lock swap by restore or protest first
+* `reclaim_foreign_mint_proofs` reaches an exchange refund's alpha by its stored URL and drops proofs the mint reports spent
 * Added filtered logging
 * Start listening to and processing Nostr messages AFTER all initialization completed (especially restore)
 * Upgrade bcr-common and use new ecash types

@@ -552,10 +552,15 @@ pub struct ForeignMintProof {
     pub reason: ForeignMintProofReason,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ForeignMintProofReason {
     MintOffline,
     WalletOffline,
+    /// The alpha mint that refunded this proof, kept so it can be reclaimed even when that
+    /// alpha is not one of the wallet mint's own clowder betas.
+    ExchangeRefund {
+        alpha_url: url::Url,
+    },
 }
 
 #[derive(Debug, Clone)]
