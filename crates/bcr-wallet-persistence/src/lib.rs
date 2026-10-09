@@ -62,6 +62,16 @@ pub struct ExchangeRecord {
     pub locked_proofs: Option<Vec<cdk00::Proof>>,
 }
 
+impl ExchangeRecord {
+    /// The blinded messages of the HTLC-locked outputs the lock swap requests
+    pub fn blinded_messages(&self) -> Vec<cdk00::BlindedMessage> {
+        self.premints
+            .values()
+            .flat_map(|premint| premint.blinded_messages())
+            .collect()
+    }
+}
+
 ///////////////////////////////////////////// PocketRepository
 #[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
 #[async_trait]

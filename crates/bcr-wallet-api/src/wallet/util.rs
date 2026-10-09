@@ -66,23 +66,6 @@ pub fn sign_htlc_proof(
     Ok(())
 }
 
-/// Signs a proof's HTLC refund path with `refund_secret`. Carries no preimage: a valid one
-/// would make the mint check the receiver path instead (NUT-14), which the refund key never
-/// satisfies, so the refund would always be rejected.
-pub fn sign_htlc_refund_proof(proof: &mut Proof, refund_secret: &cashu::SecretKey) -> Result<()> {
-    let msg: Vec<u8> = proof.secret.to_bytes();
-    let signature: Signature = refund_secret
-        .sign(&msg)
-        .map_err(|err| Error::SchnorrSignature(format!("signing error: {err}")))?;
-
-    proof.witness = Some(cashu::Witness::HTLCWitness(HTLCWitness {
-        preimage: String::new(),
-        signatures: Some(vec![signature.to_string()]),
-    }));
-
-    Ok(())
-}
-
 /// The hash lock a proof's HTLC spending condition names, if it has one.
 pub fn htlc_hash_lock(proof: &Proof) -> Option<Sha256> {
     match (&proof.secret).try_into().ok()? {

@@ -1037,15 +1037,15 @@ impl AppState {
         Ok(recovered)
     }
 
-    // Recover HTLC exchange commitments whose locktime has passed
-    pub async fn wallet_recover_exchange_commitments(&self, wallet_id: String) -> Result<usize> {
-        tracing::debug!("wallet_recover_exchange_commitments({wallet_id})");
+    // Refund intermint exchanges whose locktime has passed
+    pub async fn wallet_refund_expired_exchanges(&self, wallet_id: String) -> Result<usize> {
+        tracing::debug!("wallet_refund_expired_exchanges({wallet_id})");
         let wallet = self.get_wallet(&wallet_id).await?;
         let wlt = wallet.read().await;
         let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
-        let recovered = wlt.recover_exchange_commitments(tstamp).await?;
+        let refunded = wlt.refund_expired_exchanges(tstamp).await?;
 
-        Ok(recovered)
+        Ok(refunded)
     }
 
     // Clean up Spent proofs
@@ -1208,18 +1208,18 @@ impl AppState {
                 }
             }
             match self
-                .wallet_recover_exchange_commitments(wallet_id.to_owned())
+                .wallet_refund_expired_exchanges(wallet_id.to_owned())
                 .await
             {
-                Ok(recovered) => {
+                Ok(refunded) => {
                     tracing::info!(
-                        "Recovered exchange commitments for wallet {wallet_id}, recovered: {recovered}"
+                        "Refunded expired exchanges for wallet {wallet_id}, refunded: {refunded}"
                     );
                 }
                 Err(e) => {
                     job_failed = true;
                     tracing::error!(
-                        "Error running wallet_recover_exchange_commitments job for wallet {wallet_id}: {e}"
+                        "Error running wallet_refund_expired_exchanges job for wallet {wallet_id}: {e}"
                     );
                 }
             }

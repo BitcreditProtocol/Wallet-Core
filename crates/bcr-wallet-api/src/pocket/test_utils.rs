@@ -231,12 +231,11 @@ pub mod tests {
                 alpha_beta: Arc<dyn crate::pocket::BetaProvider>,
             ) -> Result<Vec<cashu::Proof>>;
             async fn delete_exchange_record(&self, hash_lock: bitcoin::hashes::sha256::Hash) -> Result<()>;
-            async fn recover_exchange_commitments(&self, tstamp: u64) -> Result<usize>;
-            async fn recover_unanswered_lock_swaps(
+            async fn refund_expired_exchanges(
                 &self,
                 tstamp: u64,
                 client_factory: &crate::external::mint::ClientFactory,
-            ) -> Result<()>;
+            ) -> Result<usize>;
         }
     }
 }
