@@ -3356,11 +3356,15 @@ mod tests {
     #[tokio::test]
     async fn test_check_pending_commitments_delegates_to_debit() {
         let mut ctx = wallet_ctx();
+        ctx.client
+            .expect_get_mint_keysets()
+            .times(1)
+            .returning(|| Ok(vec![]));
 
         ctx.debit
             .expect_check_pending_commitments()
             .times(1)
-            .returning(|_| Ok(()));
+            .returning(|_, _, _, _| Ok(()));
 
         let wlt = wallet(ctx).await;
 
@@ -6702,14 +6706,23 @@ mod tests {
     #[tokio::test]
     async fn exchange_lock_unanswered_commitment_survives_expiry_until_locked() {
         let s = unanswered_lock_swap().await;
-        let debit = &s.wlt.read().await.debit;
-        debit.check_pending_commitments(u64::MAX).await.unwrap();
+        let wlt = s.wlt.read().await;
+        let infos = HashMap::new();
+        let check = || {
+            wlt.debit.check_pending_commitments(
+                u64::MAX,
+                &infos,
+                wlt.client.clone(),
+                wlt.swap_config(),
+            )
+        };
+        check().await.unwrap();
         assert_eq!(s.fx.pdb.list_commitments().await.unwrap().len(), 1);
 
         let mut record = s.record.clone();
         record.locked_proofs = Some(s.fx.alpha_proofs.clone());
         s.fx.pdb.store_exchange_record(record).await.unwrap();
-        debit.check_pending_commitments(u64::MAX).await.unwrap();
+        check().await.unwrap();
         assert!(s.fx.pdb.list_commitments().await.unwrap().is_empty());
     }
 

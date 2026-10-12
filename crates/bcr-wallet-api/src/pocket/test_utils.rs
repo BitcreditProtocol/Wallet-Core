@@ -60,6 +60,7 @@ pub mod tests {
         connector: &mut crate::external::mint::MockClowderMintConnector,
         db: &mut bcr_wallet_persistence::MockPocketRepository,
     ) {
+        db.expect_list_commitments().returning(|| Ok(vec![]));
         connector
             .expect_post_swap_commitment()
             .times(1)
@@ -204,7 +205,13 @@ pub mod tests {
                 &self,
                 client: Arc<dyn ClowderMintConnector>,
             ) -> Result<BTreeMap<Uuid, crate::pocket::debit::CheckPendingMintResult>>;
-            async fn check_pending_commitments(&self, tstamp: u64) -> Result<()>;
+            async fn check_pending_commitments(
+                &self,
+                tstamp: u64,
+                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+                client: Arc<dyn ClowderMintConnector>,
+                swap_config: SwapConfig,
+            ) -> Result<()>;
             async fn protest_mint(
                 &self,
                 qid: Uuid,

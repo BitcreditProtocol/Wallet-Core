@@ -154,6 +154,7 @@ pub(super) fn from_stored_foreign_mint_proof_v1(
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub(super) enum StoredCommitment {
     V1(EncryptedCommitmentPayloadV1),
+    V2(EncryptedCommitmentPayloadV1),
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
@@ -193,20 +194,32 @@ pub(super) struct StoredCommitmentPayloadV1 {
     premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
 }
 
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredCommitmentPayloadV2 {
+    base: StoredCommitmentPayloadV1,
+    input_proofs: Vec<StoredProofPayloadV1>,
+}
+
+impl std::convert::From<SwapCommitmentRecord> for StoredCommitmentPayloadV1 {
+    fn from(record: SwapCommitmentRecord) -> Self {
+        StoredCommitmentPayloadV1 {
+            inputs: record.inputs,
+            outputs: record.outputs,
+            expiry: record.expiry,
+            commitment: record.commitment,
+            ephemeral_secret: record.ephemeral_secret.secret_bytes().to_vec(),
+            body_content: record.body_content,
+            wallet_key: record.wallet_key,
+            premints: record.premints,
+        }
+    }
+}
+
 pub(super) fn to_stored_commitment_v1(
     record: SwapCommitmentRecord,
     keys: bitcoin::secp256k1::Keypair,
 ) -> Result<StoredCommitment> {
-    let payload = StoredCommitmentPayloadV1 {
-        inputs: record.inputs,
-        outputs: record.outputs,
-        expiry: record.expiry,
-        commitment: record.commitment,
-        ephemeral_secret: record.ephemeral_secret.secret_bytes().to_vec(),
-        body_content: record.body_content,
-        wallet_key: record.wallet_key,
-        premints: record.premints,
-    };
+    let payload = StoredCommitmentPayloadV1::from(record);
     let encoded = borsh::to_vec(&payload).map_err(|e| Error::BorshSerialization(e.to_string()))?;
     let encrypted = crypto::encrypt_ecies(&encoded, &keys.public_key())?;
     Ok(StoredCommitment::V1(EncryptedCommitmentPayloadV1 {
@@ -214,14 +227,43 @@ pub(super) fn to_stored_commitment_v1(
     }))
 }
 
-pub(super) fn from_stored_commitment_v1(
+pub(super) fn to_stored_commitment_v2(
+    mut record: SwapCommitmentRecord,
+    keys: bitcoin::secp256k1::Keypair,
+) -> Result<StoredCommitment> {
+    let input_proofs = std::mem::take(&mut record.input_proofs)
+        .into_iter()
+        .map(StoredProofPayloadV1::from)
+        .collect();
+    let payload = StoredCommitmentPayloadV2 {
+        base: record.into(),
+        input_proofs,
+    };
+    let encoded = borsh::to_vec(&payload).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+    let encrypted = crypto::encrypt_ecies(&encoded, &keys.public_key())?;
+    Ok(StoredCommitment::V2(EncryptedCommitmentPayloadV1 {
+        ciphertext: encrypted,
+    }))
+}
+
+pub(super) fn from_stored_commitment(
     commitment: StoredCommitment,
     keys: bitcoin::secp256k1::Keypair,
 ) -> Result<SwapCommitmentRecord> {
-    let StoredCommitment::V1(encrypted_payload) = commitment;
+    let (StoredCommitment::V1(encrypted_payload) | StoredCommitment::V2(encrypted_payload)) =
+        &commitment;
     let decrypted = crypto::decrypt_ecies(&encrypted_payload.ciphertext, &keys.secret_key())?;
-    let c: StoredCommitmentPayloadV1 =
-        borsh::from_slice(&decrypted).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+    let decode_err = |e: std::io::Error| Error::BorshSerialization(e.to_string());
+    let (c, input_proofs) = match commitment {
+        StoredCommitment::V1(_) => (
+            borsh::from_slice(&decrypted).map_err(decode_err)?,
+            Vec::new(),
+        ),
+        StoredCommitment::V2(_) => {
+            let c: StoredCommitmentPayloadV2 = borsh::from_slice(&decrypted).map_err(decode_err)?;
+            (c.base, c.input_proofs)
+        }
+    };
 
     let secret = secp256k1::SecretKey::from_slice(&c.ephemeral_secret)
         .map_err(|e| Error::Custom(format!("invalid ephemeral secret: {e}")))?;
@@ -234,6 +276,7 @@ pub(super) fn from_stored_commitment_v1(
         body_content: c.body_content,
         wallet_key: c.wallet_key,
         premints: c.premints,
+        input_proofs: input_proofs.into_iter().map(cdk00::Proof::from).collect(),
     })
 }
 
@@ -779,7 +822,7 @@ impl PocketDB {
         keys: bitcoin::secp256k1::Keypair,
     ) -> Result<()> {
         let commitment = record.commitment;
-        let entry = to_stored_commitment_v1(record, keys)?;
+        let entry = to_stored_commitment_v2(record, keys)?;
         let write_txn = db.begin_write()?;
 
         {
@@ -810,7 +853,7 @@ impl PocketDB {
                         let deserialized: StoredCommitment =
                             borsh::from_slice(e.value().as_slice())
                                 .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                        let record = from_stored_commitment_v1(deserialized, keys)?;
+                        let record = from_stored_commitment(deserialized, keys)?;
                         Ok(record)
                     }
                     None => Err(Error::Custom(format!(
@@ -840,7 +883,7 @@ impl PocketDB {
                 for (_, v) in table.range::<&[u8]>(..)?.flatten() {
                     let deserialized: StoredCommitment = borsh::from_slice(v.value().as_slice())
                         .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                    let record = from_stored_commitment_v1(deserialized, keys)?;
+                    let record = from_stored_commitment(deserialized, keys)?;
                     res.push(record);
                 }
                 Ok(res)
@@ -1651,6 +1694,7 @@ mod tests {
             body_content: "test_content".to_string(),
             wallet_key,
             premints: HashMap::new(),
+            input_proofs: vec![],
         })
         .await
         .expect("store_commitment works");
