@@ -159,6 +159,9 @@ async fn post_melt_quote_onchain_inner(
     })
 }
 
+/// Builds the connector for a mint URL
+pub type ClientFactory = dyn Fn(url::Url) -> std::sync::Arc<dyn ClowderMintConnector> + Send + Sync;
+
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
