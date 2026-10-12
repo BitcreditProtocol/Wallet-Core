@@ -144,6 +144,7 @@ pub enum MigrationJournalState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationJournalEntry {
+    pub header: MigrationJournalHeader,
     pub proof: cdk00::Proof,
     pub exchange_key: cashu::SecretKey,
     pub state: MigrationJournalState,
@@ -158,15 +159,8 @@ pub trait MigrationJournalRepository: SendSync {
         entries: Vec<(cdk01::PublicKey, cashu::SecretKey)>,
     ) -> Result<()>;
     async fn update(&self, ys: Vec<cdk01::PublicKey>, state: MigrationJournalState) -> Result<()>;
-    async fn load(
-        &self,
-    ) -> Result<
-        Option<(
-            MigrationJournalHeader,
-            HashMap<cdk01::PublicKey, MigrationJournalEntry>,
-        )>,
-    >;
-    async fn clear(&self) -> Result<()>;
+    async fn load(&self) -> Result<HashMap<cdk01::PublicKey, MigrationJournalEntry>>;
+    async fn prune_swapped(&self) -> Result<()>;
 }
 
 ///////////////////////////////////////////// PurseRepository

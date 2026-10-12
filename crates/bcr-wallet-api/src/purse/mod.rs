@@ -146,7 +146,7 @@ where
         let mut wlt = wlt.write().await;
         tracing::info!("Checking if alpha is rabid..");
         if !wlt.is_wallet_mint_rabid().await? {
-            if wlt.has_migration_journal().await? {
+            if wlt.has_swapped_migration_entries().await? {
                 tracing::info!("Finishing a migrated wallet whose config or journal was not saved");
                 self.repo.store(wlt.config()?).await?;
                 wlt.finish_migration().await?;
@@ -528,7 +528,7 @@ mod tests {
             })
         });
         let j = journaled.clone();
-        wlt.expect_has_migration_journal()
+        wlt.expect_has_swapped_migration_entries()
             .returning(move || Ok(j.load(Ordering::SeqCst)));
         wlt.expect_finish_migration().returning(move || {
             journaled.store(false, Ordering::SeqCst);
@@ -576,7 +576,13 @@ mod tests {
             vec!["wlt-2".to_owned(), "wlt-1".to_owned()]
         );
         let wlt = purse.get_wallet("wlt-1").await.unwrap();
-        assert!(!wlt.read().await.has_migration_journal().await.unwrap());
+        assert!(
+            !wlt.read()
+                .await
+                .has_swapped_migration_entries()
+                .await
+                .unwrap()
+        );
     }
 
     const NODE_ID_1: &str =

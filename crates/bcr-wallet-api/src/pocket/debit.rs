@@ -734,7 +734,7 @@ impl super::PocketApi for Pocket {
         Ok(total_recovered)
     }
 
-    async fn delete_unmigratable_proofs(
+    async fn retain_migratable_proofs(
         &self,
         substitute: &HashSet<ecash::Id>,
     ) -> Result<Vec<cdk01::PublicKey>> {
@@ -1701,7 +1701,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_unmigratable_proofs_keeps_substitute_proofs() {
+    async fn retain_migratable_proofs_keeps_substitute_proofs() {
         let (_, alpha_keyset) = core_tests::generate_random_ecash_keyset();
         let (substitute_info, substitute_keyset) = core_tests::generate_random_ecash_keyset();
         let alpha = core_tests::generate_random_ecash_proofs(&alpha_keyset, &[Amount::from(8u64)])
@@ -1726,7 +1726,7 @@ mod tests {
 
         let pocket = pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()));
         let migratable = pocket
-            .delete_unmigratable_proofs(&HashSet::from([substitute_info.id]))
+            .retain_migratable_proofs(&HashSet::from([substitute_info.id]))
             .await
             .unwrap();
         assert_eq!(migratable, vec![alpha_y]);

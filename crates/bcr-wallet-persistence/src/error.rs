@@ -47,8 +47,6 @@ pub enum Error {
     ProofNotFound(cashu::PublicKey),
     #[error("proof already in migration journal: {0}")]
     ProofAlreadyJournaled(cashu::PublicKey),
-    #[error("migration journal holds entries for another outage")]
-    MigrationJournalHeaderMismatch,
     #[error("migration journal entry not found: {0}")]
     MigrationJournalEntryNotFound(cashu::PublicKey),
     #[error("mint op not found: {0}")]

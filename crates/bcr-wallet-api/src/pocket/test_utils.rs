@@ -138,7 +138,7 @@ pub mod tests {
                 keysets_info: &HashMap<ecash::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
             ) -> Result<crate::pocket::RestoreSummary>;
-            async fn delete_unmigratable_proofs(&self, substitute: &std::collections::HashSet<ecash::Id>) -> Result<Vec<cashu::PublicKey>>;
+            async fn retain_migratable_proofs(&self, substitute: &std::collections::HashSet<ecash::Id>) -> Result<Vec<cashu::PublicKey>>;
             async fn return_proofs_to_send_for_offline_payment(
                 &self,
                 rid: Uuid,

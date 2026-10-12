@@ -62,7 +62,7 @@ pub trait PocketApi: SendSync {
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
     ) -> Result<RestoreSummary>;
-    async fn delete_unmigratable_proofs(
+    async fn retain_migratable_proofs(
         &self,
         substitute: &HashSet<ecash::Id>,
     ) -> Result<Vec<cashu::PublicKey>>;

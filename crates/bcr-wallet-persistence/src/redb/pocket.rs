@@ -493,13 +493,6 @@ pub(super) struct StoredCounterPayloadV1 {
     pub counter: u32,
 }
 
-const MIGRATION_JOURNAL_HEADER_KEY: &[u8] = &[];
-
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
-pub(super) enum StoredJournalHeader {
-    V1(EncryptedJournalPayloadV1),
-}
-
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub(super) enum StoredJournalEntry {
     V1(EncryptedJournalPayloadV1),
@@ -532,6 +525,7 @@ pub(super) struct StoredJournalHeaderPayloadV1 {
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub(super) struct StoredJournalEntryPayloadV1 {
+    header: StoredJournalHeaderPayloadV1,
     proof: StoredProofPayloadV1,
     exchange_key: [u8; 32],
     state: JournalStateV1,
@@ -574,50 +568,26 @@ impl From<JournalStateV1> for MigrationJournalState {
     }
 }
 
-fn encrypt_journal_payload(
-    payload: &impl BorshSerialize,
-    keys: bitcoin::secp256k1::Keypair,
-) -> Result<EncryptedJournalPayloadV1> {
-    let encoded = borsh::to_vec(payload).map_err(|e| Error::BorshSerialization(e.to_string()))?;
-    let ciphertext = crypto::encrypt_ecies(&encoded, &keys.public_key())?;
-    Ok(EncryptedJournalPayloadV1 { ciphertext })
+impl From<MigrationJournalHeader> for StoredJournalHeaderPayloadV1 {
+    fn from(value: MigrationJournalHeader) -> Self {
+        Self {
+            substitute_url: value.substitute_url,
+            substitute_clowder_id: value.substitute_clowder_id,
+            alpha_id: value.alpha_id,
+            evidence_digest: value.evidence_digest,
+        }
+    }
 }
 
-fn decrypt_journal_payload<T: BorshDeserialize>(
-    payload: EncryptedJournalPayloadV1,
-    keys: bitcoin::secp256k1::Keypair,
-) -> Result<T> {
-    let decrypted = crypto::decrypt_ecies(&payload.ciphertext, &keys.secret_key())?;
-    borsh::from_slice(&decrypted).map_err(|e| Error::BorshSerialization(e.to_string()))
-}
-
-fn encode_journal_header(
-    header: MigrationJournalHeader,
-    keys: bitcoin::secp256k1::Keypair,
-) -> Result<Vec<u8>> {
-    let payload = StoredJournalHeaderPayloadV1 {
-        substitute_url: header.substitute_url,
-        substitute_clowder_id: header.substitute_clowder_id,
-        alpha_id: header.alpha_id,
-        evidence_digest: header.evidence_digest,
-    };
-    let stored = StoredJournalHeader::V1(encrypt_journal_payload(&payload, keys)?);
-    borsh::to_vec(&stored).map_err(|e| Error::BorshSerialization(e.to_string()))
-}
-
-fn decode_journal_header(
-    value: &[u8],
-    keys: bitcoin::secp256k1::Keypair,
-) -> Result<MigrationJournalHeader> {
-    let StoredJournalHeader::V1(encrypted) =
-        borsh::from_slice(value).map_err(|e| Error::BorshSerialization(e.to_string()))?;
-    let payload: StoredJournalHeaderPayloadV1 = decrypt_journal_payload(encrypted, keys)?;
-    Ok(MigrationJournalHeader {
-        substitute_url: payload.substitute_url,
-        substitute_clowder_id: payload.substitute_clowder_id,
-        alpha_id: payload.alpha_id,
-        evidence_digest: payload.evidence_digest,
-    })
+impl From<StoredJournalHeaderPayloadV1> for MigrationJournalHeader {
+    fn from(value: StoredJournalHeaderPayloadV1) -> Self {
+        Self {
+            substitute_url: value.substitute_url,
+            substitute_clowder_id: value.substitute_clowder_id,
+            alpha_id: value.alpha_id,
+            evidence_digest: value.evidence_digest,
+        }
+    }
 }
 
 fn encode_journal_entry(
@@ -625,11 +595,14 @@ fn encode_journal_entry(
     keys: bitcoin::secp256k1::Keypair,
 ) -> Result<Vec<u8>> {
     let payload = StoredJournalEntryPayloadV1 {
+        header: entry.header.into(),
         proof: entry.proof.into(),
         exchange_key: entry.exchange_key.to_secret_bytes(),
         state: entry.state.into(),
     };
-    let stored = StoredJournalEntry::V1(encrypt_journal_payload(&payload, keys)?);
+    let encoded = borsh::to_vec(&payload).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+    let ciphertext = crypto::encrypt_ecies(&encoded, &keys.public_key())?;
+    let stored = StoredJournalEntry::V1(EncryptedJournalPayloadV1 { ciphertext });
     borsh::to_vec(&stored).map_err(|e| Error::BorshSerialization(e.to_string()))
 }
 
@@ -639,8 +612,11 @@ fn decode_journal_entry(
 ) -> Result<MigrationJournalEntry> {
     let StoredJournalEntry::V1(encrypted) =
         borsh::from_slice(value).map_err(|e| Error::BorshSerialization(e.to_string()))?;
-    let payload: StoredJournalEntryPayloadV1 = decrypt_journal_payload(encrypted, keys)?;
+    let decrypted = crypto::decrypt_ecies(&encrypted.ciphertext, &keys.secret_key())?;
+    let payload: StoredJournalEntryPayloadV1 =
+        borsh::from_slice(&decrypted).map_err(|e| Error::BorshSerialization(e.to_string()))?;
     Ok(MigrationJournalEntry {
+        header: payload.header.into(),
         proof: payload.proof.into(),
         exchange_key: cashu::SecretKey::from_slice(&payload.exchange_key)?,
         state: payload.state.into(),
@@ -1575,22 +1551,6 @@ impl PocketDB {
         {
             let mut proofs = write_txn.open_table(proof_table)?;
             let mut journal = write_txn.open_table(journal_table)?;
-            let stored_header = journal
-                .get(MIGRATION_JOURNAL_HEADER_KEY)?
-                .map(|v| v.value());
-            match stored_header {
-                Some(stored) => {
-                    if decode_journal_header(&stored, keys)? != header {
-                        return Err(Error::MigrationJournalHeaderMismatch);
-                    }
-                }
-                None => {
-                    journal.insert(
-                        MIGRATION_JOURNAL_HEADER_KEY,
-                        encode_journal_header(header, keys)?,
-                    )?;
-                }
-            }
             for (y, exchange_key) in entries {
                 let key = y.to_bytes();
                 if journal.get(key.as_slice())?.is_some() {
@@ -1608,6 +1568,7 @@ impl PocketDB {
                     _ => return Err(Error::InvalidProofState(y)),
                 };
                 let entry = MigrationJournalEntry {
+                    header: header.clone(),
                     proof,
                     exchange_key,
                     state,
@@ -1647,35 +1608,23 @@ impl PocketDB {
         db: Arc<Database>,
         journal_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         keys: bitcoin::secp256k1::Keypair,
-    ) -> Result<
-        Option<(
-            MigrationJournalHeader,
-            HashMap<cdk01::PublicKey, MigrationJournalEntry>,
-        )>,
-    > {
+    ) -> Result<HashMap<cdk01::PublicKey, MigrationJournalEntry>> {
         let read_txn = db.begin_read()?;
         let journal = match read_txn.open_table(journal_table) {
             Ok(table) => table,
-            Err(TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(TableError::TableDoesNotExist(_)) => return Ok(HashMap::new()),
             Err(e) => return Err(e.into()),
         };
-        let Some(stored_header) = journal.get(MIGRATION_JOURNAL_HEADER_KEY)? else {
-            return Ok(None);
-        };
-        let header = decode_journal_header(&stored_header.value(), keys)?;
         let mut entries = HashMap::new();
         for item in journal.range::<&[u8]>(..)? {
             let (k, v) = item?;
-            if k.value() == MIGRATION_JOURNAL_HEADER_KEY {
-                continue;
-            }
             let y = cdk01::PublicKey::from_slice(k.value())?;
             entries.insert(y, decode_journal_entry(&v.value(), keys)?);
         }
-        Ok(Some((header, entries)))
+        Ok(entries)
     }
 
-    fn clear_journal_sync(
+    fn prune_swapped_journal_sync(
         db: Arc<Database>,
         journal_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         keys: bitcoin::secp256k1::Keypair,
@@ -1684,22 +1633,14 @@ impl PocketDB {
         {
             let mut journal = write_txn.open_table(journal_table)?;
             let mut swapped = Vec::new();
-            let mut remaining = 0;
             for item in journal.range::<&[u8]>(..)? {
                 let (k, v) = item?;
-                if k.value() == MIGRATION_JOURNAL_HEADER_KEY {
-                    continue;
-                }
-                match decode_journal_entry(&v.value(), keys)?.state {
-                    MigrationJournalState::Swapped => swapped.push(k.value().to_vec()),
-                    _ => remaining += 1,
+                if decode_journal_entry(&v.value(), keys)?.state == MigrationJournalState::Swapped {
+                    swapped.push(k.value().to_vec());
                 }
             }
             for key in swapped {
                 journal.remove(key.as_slice())?;
-            }
-            if remaining == 0 {
-                journal.remove(MIGRATION_JOURNAL_HEADER_KEY)?;
             }
         }
         write_txn.commit()?;
@@ -1731,25 +1672,18 @@ impl MigrationJournalRepository for PocketDB {
         spawn_blocking(move || Self::update_journal_sync(db_clone, table, keys, ys, state)).await?
     }
 
-    async fn load(
-        &self,
-    ) -> Result<
-        Option<(
-            MigrationJournalHeader,
-            HashMap<cdk01::PublicKey, MigrationJournalEntry>,
-        )>,
-    > {
+    async fn load(&self) -> Result<HashMap<cdk01::PublicKey, MigrationJournalEntry>> {
         let db_clone = self.db.clone();
         let table = self.migration_journal_table;
         let keys = self.keys;
         spawn_blocking(move || Self::load_journal_sync(db_clone, table, keys)).await?
     }
 
-    async fn clear(&self) -> Result<()> {
+    async fn prune_swapped(&self) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.migration_journal_table;
         let keys = self.keys;
-        spawn_blocking(move || Self::clear_journal_sync(db_clone, table, keys)).await?
+        spawn_blocking(move || Self::prune_swapped_journal_sync(db_clone, table, keys)).await?
     }
 }
 
@@ -2269,23 +2203,12 @@ mod tests {
             .await
             .expect_err("spent proof refused");
         assert!(matches!(err, Error::InvalidProofState(y) if y == y3));
-        assert_eq!(repo.load().await.expect("load"), None);
+        assert!(repo.load().await.expect("load").is_empty());
 
         repo.put(header.clone(), vec![(y1, key.clone()), (y2, key.clone())])
             .await
             .expect("put works");
         assert_eq!(repo.list_all().await.expect("list"), vec![y3]);
-        let err = repo
-            .put(
-                MigrationJournalHeader {
-                    evidence_digest: [0x22; 32],
-                    ..header.clone()
-                },
-                vec![],
-            )
-            .await
-            .expect_err("other outage refused");
-        assert!(matches!(err, Error::MigrationJournalHeaderMismatch));
 
         repo.update(
             vec![y1],
@@ -2293,8 +2216,8 @@ mod tests {
         )
         .await
         .expect("update works");
-        let (loaded_header, entries) = repo.load().await.expect("load").expect("journal");
-        assert_eq!(loaded_header, header);
+        let entries = repo.load().await.expect("load");
+        assert_eq!(entries[&y1].header, header);
         assert_eq!(entries[&y1].proof, unspent);
         assert_eq!(entries[&y1].exchange_key, key);
         assert_eq!(
@@ -2307,14 +2230,48 @@ mod tests {
         repo.update(vec![y1], MigrationJournalState::Swapped)
             .await
             .expect("update works");
-        repo.clear().await.expect("clear");
-        let (_, entries) = repo.load().await.expect("load").expect("held is kept");
+        repo.prune_swapped().await.expect("prune");
+        let entries = repo.load().await.expect("load");
         assert_eq!(entries.keys().collect::<Vec<_>>(), vec![&y2]);
 
         repo.update(vec![y2], MigrationJournalState::Swapped)
             .await
             .expect("update works");
-        repo.clear().await.expect("clear");
-        assert_eq!(repo.load().await.expect("load"), None);
+        repo.prune_swapped().await.expect("prune");
+        assert!(repo.load().await.expect("load").is_empty());
+    }
+
+    #[tokio::test]
+    async fn migration_journal_keeps_entries_of_each_outage() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let (_, keyset) = core_tests::generate_random_ecash_keyset();
+        let [held, unspent] =
+            core_tests::generate_random_ecash_proofs(&keyset, &[1u64, 2].map(Amount::from))
+                .try_into()
+                .expect("two proofs");
+        let y1 = repo.store_pendingspent(held).await.expect("store");
+        let y2 = repo.store_new(unspent).await.expect("store");
+        let first = MigrationJournalHeader {
+            substitute_url: url::Url::parse("https://sub.example/").expect("valid url"),
+            substitute_clowder_id: crate::test_utils::tests::test_pub_key(),
+            alpha_id: crate::test_utils::tests::test_other_pub_key(),
+            evidence_digest: [0x11; 32],
+        };
+        let second = MigrationJournalHeader {
+            alpha_id: first.substitute_clowder_id,
+            evidence_digest: [0x22; 32],
+            ..first.clone()
+        };
+
+        repo.put(first.clone(), vec![(y1, cashu::SecretKey::generate())])
+            .await
+            .expect("first outage");
+        repo.put(second.clone(), vec![(y2, cashu::SecretKey::generate())])
+            .await
+            .expect("second outage while the first holds a payment");
+
+        let entries = repo.load().await.expect("load");
+        assert_eq!(entries[&y1].header, first);
+        assert_eq!(entries[&y2].header, second);
     }
 }

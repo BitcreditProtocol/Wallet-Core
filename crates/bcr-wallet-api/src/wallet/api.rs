@@ -86,7 +86,7 @@ pub trait WalletApi: SendSync {
     async fn check_pending_melt_commitments(&self) -> Result<()>;
     async fn migrate_pockets_substitute(&mut self, substitute_url: url::Url) -> Result<url::Url>;
     async fn finish_migration(&self) -> Result<()>;
-    async fn has_migration_journal(&self) -> Result<bool>;
+    async fn has_swapped_migration_entries(&self) -> Result<bool>;
     async fn receive_proofs(
         &self,
         proofs: Vec<cdk00::Proof>,
@@ -822,13 +822,14 @@ impl WalletApi for super::Wallet {
     }
 
     async fn migrate_pockets_substitute(&mut self, substitute_url: url::Url) -> Result<url::Url> {
-        let header = match self.journal.load().await? {
-            Some((header, _)) if header.alpha_id == self.clowder_id => header,
-            Some(_) => {
-                return Err(
-                    bcr_wallet_persistence::error::Error::MigrationJournalHeaderMismatch.into(),
-                );
-            }
+        let outage = self
+            .journal
+            .load()
+            .await?
+            .into_values()
+            .find(|e| e.header.alpha_id == self.clowder_id);
+        let header = match outage {
+            Some(entry) => entry.header,
             None => {
                 let substitute = (self.client_factory)(substitute_url.clone());
                 let substitute_clowder_id = substitute.get_clowder_id().await?;
@@ -856,7 +857,7 @@ impl WalletApi for super::Wallet {
         let substitute_kids: HashSet<ecash::Id> = keysets_info.keys().copied().collect();
         let entries: Vec<_> = self
             .debit
-            .delete_unmigratable_proofs(&substitute_kids)
+            .retain_migratable_proofs(&substitute_kids)
             .await?
             .into_iter()
             .map(|y| (y, cashu::SecretKey::generate()))
@@ -870,8 +871,9 @@ impl WalletApi for super::Wallet {
             .journal
             .load()
             .await?
-            .map(|(_, entries)| entries.into_iter().collect())
-            .unwrap_or_default();
+            .into_iter()
+            .filter(|(_, e)| e.header == header)
+            .collect();
         journal.sort_by_key(|(y, _)| *y);
 
         let mut exchanged_ys = Vec::new();
@@ -968,26 +970,33 @@ impl WalletApi for super::Wallet {
     }
 
     async fn finish_migration(&self) -> Result<()> {
-        if let Some((header, entries)) = self.journal.load().await?
-            && &header.substitute_url != self.client.mint_url()
-        {
-            let unfinished = entries
-                .values()
-                .filter(|e| {
-                    matches!(
+        let unfinished = self
+            .journal
+            .load()
+            .await?
+            .values()
+            .filter(|e| {
+                &e.header.substitute_url != self.client.mint_url()
+                    && matches!(
                         e.state,
                         MigrationJournalState::Pending | MigrationJournalState::Exchanged(_)
                     )
-                })
-                .count();
+            })
+            .count();
+        if unfinished > 0 {
             return Err(Error::MigrationIncomplete(unfinished));
         }
-        self.journal.clear().await?;
+        self.journal.prune_swapped().await?;
         Ok(())
     }
 
-    async fn has_migration_journal(&self) -> Result<bool> {
-        Ok(self.journal.load().await?.is_some())
+    async fn has_swapped_migration_entries(&self) -> Result<bool> {
+        Ok(self
+            .journal
+            .load()
+            .await?
+            .values()
+            .any(|e| e.state == MigrationJournalState::Swapped))
     }
 
     async fn prepare_pay_by_token(
