@@ -46,6 +46,32 @@ pub struct MeltCommitmentRecord {
     pub body_content: String,
 }
 
+///////////////////////////////////////////// ExchangeRecord
+/// Everything needed to refund an intermint exchange: stored before the alpha's lock swap,
+/// then updated with the HTLC-locked proofs it returns.
+#[derive(Debug, Clone)]
+pub struct ExchangeRecord {
+    pub hash_lock: bitcoin::hashes::sha256::Hash,
+    pub refund_secret: secp256k1::SecretKey,
+    pub alpha_inputs: Vec<cdk00::Proof>,
+    pub premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
+    pub alpha_url: url::Url,
+    pub alpha_clowder_id: secp256k1::PublicKey,
+    /// Unix timestamp in seconds after which the refund key alone unlocks the locked proofs
+    pub locktime: u64,
+    pub locked_proofs: Option<Vec<cdk00::Proof>>,
+}
+
+impl ExchangeRecord {
+    /// The blinded messages of the HTLC-locked outputs the lock swap requests
+    pub fn blinded_messages(&self) -> Vec<cdk00::BlindedMessage> {
+        self.premints
+            .values()
+            .flat_map(|premint| premint.blinded_messages())
+            .collect()
+    }
+}
+
 ///////////////////////////////////////////// PocketRepository
 #[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
 #[async_trait]
@@ -92,6 +118,10 @@ pub trait PocketRepository: SendSync {
         clowder_id: secp256k1::PublicKey,
         ys: Vec<cdk01::PublicKey>,
     ) -> Result<()>;
+
+    async fn store_exchange_record(&self, record: ExchangeRecord) -> Result<()>;
+    async fn list_exchange_records(&self) -> Result<Vec<ExchangeRecord>>;
+    async fn delete_exchange_record(&self, hash_lock: bitcoin::hashes::sha256::Hash) -> Result<()>;
 }
 
 ///////////////////////////////////////////// PurseRepository

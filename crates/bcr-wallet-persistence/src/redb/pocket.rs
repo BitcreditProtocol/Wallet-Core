@@ -1,5 +1,5 @@
 use crate::{
-    PocketRepository, SwapCommitmentRecord,
+    ExchangeRecord, PocketRepository, SwapCommitmentRecord,
     error::{Error, Result},
 };
 use async_trait::async_trait;
@@ -21,7 +21,10 @@ use bcr_wallet_core::{
     crypto,
     types::{ForeignMintProof, ForeignMintProofReason},
 };
-use bitcoin::secp256k1;
+use bitcoin::{
+    hashes::{Hash as _, sha256},
+    secp256k1,
+};
 use borsh::{BorshDeserialize, BorshSerialize};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
 use std::{collections::HashMap, sync::Arc};
@@ -85,10 +88,17 @@ impl From<StoredForeignMintProofPayloadV1> for ForeignMintProof {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Clone, PartialEq, BorshSerialize, BorshDeserialize)]
 pub enum ForeignMintProofReasonV1 {
     MintOffline,
     WalletOffline,
+    ExchangeRefund {
+        #[borsh(
+            serialize_with = "serialize_as_str",
+            deserialize_with = "deserialize_from_str"
+        )]
+        alpha_url: url::Url,
+    },
 }
 
 impl From<ForeignMintProofReason> for ForeignMintProofReasonV1 {
@@ -96,6 +106,9 @@ impl From<ForeignMintProofReason> for ForeignMintProofReasonV1 {
         match value {
             ForeignMintProofReason::MintOffline => ForeignMintProofReasonV1::MintOffline,
             ForeignMintProofReason::WalletOffline => ForeignMintProofReasonV1::WalletOffline,
+            ForeignMintProofReason::ExchangeRefund { alpha_url } => {
+                ForeignMintProofReasonV1::ExchangeRefund { alpha_url }
+            }
         }
     }
 }
@@ -105,6 +118,9 @@ impl From<ForeignMintProofReasonV1> for ForeignMintProofReason {
         match value {
             ForeignMintProofReasonV1::MintOffline => ForeignMintProofReason::MintOffline,
             ForeignMintProofReasonV1::WalletOffline => ForeignMintProofReason::WalletOffline,
+            ForeignMintProofReasonV1::ExchangeRefund { alpha_url } => {
+                ForeignMintProofReason::ExchangeRefund { alpha_url }
+            }
         }
     }
 }
@@ -218,6 +234,89 @@ pub(super) fn from_stored_commitment_v1(
         body_content: c.body_content,
         wallet_key: c.wallet_key,
         premints: c.premints,
+    })
+}
+
+/// StoredExchangeRecord is a versioned, encrypted, borsh-serialized intermint exchange record
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) enum StoredExchangeRecord {
+    V1(EncryptedExchangeRecordPayloadV1),
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct EncryptedExchangeRecordPayloadV1 {
+    pub ciphertext: Vec<u8>,
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredExchangeRecordPayloadV1 {
+    hash_lock: [u8; 32],
+    refund_secret: Vec<u8>,
+    alpha_inputs: Vec<StoredProofPayloadV1>,
+    #[borsh(
+        serialize_with = "serialize_premints",
+        deserialize_with = "deserialize_premints"
+    )]
+    premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    alpha_url: url::Url,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    alpha_clowder_id: secp256k1::PublicKey,
+    locktime: u64,
+    locked_proofs: Option<Vec<StoredProofPayloadV1>>,
+}
+
+pub(super) fn to_stored_exchange_record_v1(
+    record: ExchangeRecord,
+    keys: bitcoin::secp256k1::Keypair,
+) -> Result<StoredExchangeRecord> {
+    let payload = StoredExchangeRecordPayloadV1 {
+        hash_lock: record.hash_lock.to_byte_array(),
+        refund_secret: record.refund_secret.secret_bytes().to_vec(),
+        alpha_inputs: record.alpha_inputs.into_iter().map(Into::into).collect(),
+        premints: record.premints,
+        alpha_url: record.alpha_url,
+        alpha_clowder_id: record.alpha_clowder_id,
+        locktime: record.locktime,
+        locked_proofs: record
+            .locked_proofs
+            .map(|proofs| proofs.into_iter().map(Into::into).collect()),
+    };
+    let encoded = borsh::to_vec(&payload).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+    let encrypted = crypto::encrypt_ecies(&encoded, &keys.public_key())?;
+    Ok(StoredExchangeRecord::V1(EncryptedExchangeRecordPayloadV1 {
+        ciphertext: encrypted,
+    }))
+}
+
+pub(super) fn from_stored_exchange_record_v1(
+    record: StoredExchangeRecord,
+    keys: bitcoin::secp256k1::Keypair,
+) -> Result<ExchangeRecord> {
+    let StoredExchangeRecord::V1(encrypted_payload) = record;
+    let decrypted = crypto::decrypt_ecies(&encrypted_payload.ciphertext, &keys.secret_key())?;
+    let r: StoredExchangeRecordPayloadV1 =
+        borsh::from_slice(&decrypted).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+
+    let refund_secret = secp256k1::SecretKey::from_slice(&r.refund_secret)
+        .map_err(|e| Error::Custom(format!("invalid refund secret: {e}")))?;
+    Ok(ExchangeRecord {
+        hash_lock: sha256::Hash::from_byte_array(r.hash_lock),
+        refund_secret,
+        alpha_inputs: r.alpha_inputs.into_iter().map(Into::into).collect(),
+        premints: r.premints,
+        alpha_url: r.alpha_url,
+        alpha_clowder_id: r.alpha_clowder_id,
+        locktime: r.locktime,
+        locked_proofs: r
+            .locked_proofs
+            .map(|proofs| proofs.into_iter().map(Into::into).collect()),
     })
 }
 
@@ -357,6 +456,7 @@ pub struct PocketDB {
     counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     foreign_mint_proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    exchange_record_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     keys: bitcoin::secp256k1::Keypair,
 }
 
@@ -365,6 +465,7 @@ impl PocketDB {
     const FOREIGN_MINT_PROOF_BASE_DB_NAME: &'static str = "foreign_mint_proofs";
     const COUNTER_BASE_DB_NAME: &'static str = "counters";
     const COMMITMENT_BASE_DB_NAME: &'static str = "commitments";
+    const EXCHANGE_RECORD_BASE_DB_NAME: &'static str = "exchange_records";
 
     pub fn proof_table_name(wallet_id: &str, unit: &CurrencyUnit) -> String {
         format!("{wallet_id}_{unit}_{}", Self::PROOF_BASE_DB_NAME)
@@ -385,6 +486,10 @@ impl PocketDB {
         )
     }
 
+    pub fn exchange_record_table_name(wallet_id: &str, unit: &CurrencyUnit) -> String {
+        format!("{wallet_id}_{unit}_{}", Self::EXCHANGE_RECORD_BASE_DB_NAME)
+    }
+
     pub fn new(
         db: Arc<Database>,
         wallet_id: &str,
@@ -400,11 +505,14 @@ impl PocketDB {
             Box::leak(Self::commitment_table_name(wallet_id, unit).into_boxed_str());
         let foreign_mint_proof_name: &'static str =
             Box::leak(Self::foreign_mint_proof_table_name(wallet_id, unit).into_boxed_str());
+        let exchange_record_name: &'static str =
+            Box::leak(Self::exchange_record_table_name(wallet_id, unit).into_boxed_str());
 
         let proof_table = TableDefinition::new(proof_name);
         let counter_table = TableDefinition::new(counter_name);
         let commitment_table = TableDefinition::new(commitment_name);
         let foreign_mint_proof_table = TableDefinition::new(foreign_mint_proof_name);
+        let exchange_record_table = TableDefinition::new(exchange_record_name);
 
         Ok(Self {
             db,
@@ -412,6 +520,7 @@ impl PocketDB {
             counter_table,
             commitment_table,
             foreign_mint_proof_table,
+            exchange_record_table,
             keys,
         })
     }
@@ -823,12 +932,73 @@ impl PocketDB {
         Ok(())
     }
 
+    fn store_exchange_record_sync(
+        db: Arc<Database>,
+        exchange_record_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        keys: bitcoin::secp256k1::Keypair,
+        record: ExchangeRecord,
+    ) -> Result<()> {
+        let key = record.hash_lock.to_byte_array();
+        let entry = to_stored_exchange_record_v1(record, keys)?;
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(exchange_record_table)?;
+            let serialized =
+                borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            table.insert(key.as_slice(), serialized)?;
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    fn list_exchange_records_sync(
+        db: Arc<Database>,
+        exchange_record_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        keys: bitcoin::secp256k1::Keypair,
+    ) -> Result<Vec<ExchangeRecord>> {
+        let read_txn = db.begin_read()?;
+        match read_txn.open_table(exchange_record_table) {
+            Ok(table) => {
+                let mut res = Vec::new();
+                for item in table.range::<&[u8]>(..)? {
+                    let (_, v) = item?;
+                    let deserialized: StoredExchangeRecord =
+                        borsh::from_slice(v.value().as_slice())
+                            .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                    res.push(from_stored_exchange_record_v1(deserialized, keys)?);
+                }
+                Ok(res)
+            }
+            Err(TableError::TableDoesNotExist(_)) => Ok(vec![]),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn delete_exchange_record_sync(
+        db: Arc<Database>,
+        exchange_record_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        hash_lock: sha256::Hash,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+
+        {
+            let mut table = write_txn.open_table(exchange_record_table)?;
+            table.remove(hash_lock.to_byte_array().as_slice())?;
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
+
     fn delete_repo(
         db: Arc<Database>,
         proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         foreign_mint_proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        exchange_record_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
 
@@ -847,6 +1017,10 @@ impl PocketDB {
 
             if write_txn.open_table(foreign_mint_proof_table).is_ok() {
                 write_txn.delete_table(foreign_mint_proof_table)?;
+            }
+
+            if write_txn.open_table(exchange_record_table).is_ok() {
+                write_txn.delete_table(exchange_record_table)?;
             }
         }
 
@@ -1095,6 +1269,7 @@ impl PocketRepository for PocketDB {
         let commitment_table = self.commitment_table;
         let counter_table = self.counter_table;
         let foreign_mint_proof_table = self.foreign_mint_proof_table;
+        let exchange_record_table = self.exchange_record_table;
         spawn_blocking(move || {
             Self::delete_repo(
                 db_clone,
@@ -1102,6 +1277,7 @@ impl PocketRepository for PocketDB {
                 commitment_table,
                 counter_table,
                 foreign_mint_proof_table,
+                exchange_record_table,
             )
         })
         .await?
@@ -1144,6 +1320,28 @@ impl PocketRepository for PocketDB {
         .await??;
         Ok(())
     }
+
+    async fn store_exchange_record(&self, record: ExchangeRecord) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.exchange_record_table;
+        let keys = self.keys;
+        spawn_blocking(move || Self::store_exchange_record_sync(db_clone, table, keys, record))
+            .await?
+    }
+
+    async fn list_exchange_records(&self) -> Result<Vec<ExchangeRecord>> {
+        let db_clone = self.db.clone();
+        let table = self.exchange_record_table;
+        let keys = self.keys;
+        spawn_blocking(move || Self::list_exchange_records_sync(db_clone, table, keys)).await?
+    }
+
+    async fn delete_exchange_record(&self, hash_lock: sha256::Hash) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.exchange_record_table;
+        spawn_blocking(move || Self::delete_exchange_record_sync(db_clone, table, hash_lock))
+            .await?
+    }
 }
 
 #[cfg(test)]
@@ -1161,6 +1359,54 @@ mod tests {
         let amounts = [Amount::from(16u64)];
         let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
         proofs[0].clone()
+    }
+
+    #[tokio::test]
+    async fn exchange_record_is_encrypted_and_overwritten_by_hash_lock() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let (_, keyset) = core_tests::generate_random_ecash_keyset();
+        let alpha_clowder_id = secp256k1::PublicKey::from_secret_key(
+            secp256k1::SECP256K1,
+            &secp256k1::SecretKey::new(&mut secp256k1::rand::thread_rng()),
+        );
+        let hash_lock = sha256::Hash::hash(b"exchange record");
+        let mut record = ExchangeRecord {
+            hash_lock,
+            refund_secret: secp256k1::SecretKey::new(&mut secp256k1::rand::thread_rng()),
+            alpha_inputs: core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8u64)]),
+            premints: HashMap::new(),
+            alpha_url: url::Url::parse("https://alpha.test").unwrap(),
+            alpha_clowder_id,
+            locktime: 1_234,
+            locked_proofs: None,
+        };
+        repo.store_exchange_record(record.clone()).await.unwrap();
+        record.locked_proofs = Some(record.alpha_inputs.clone());
+        repo.store_exchange_record(record.clone()).await.unwrap();
+
+        let read_txn = repo.db.begin_read().unwrap();
+        let table = read_txn.open_table(repo.exchange_record_table).unwrap();
+        let raw = table
+            .get(hash_lock.to_byte_array().as_slice())
+            .unwrap()
+            .unwrap()
+            .value();
+        let secret = record.refund_secret.secret_bytes();
+        assert!(!raw.windows(secret.len()).any(|w| w == secret));
+
+        let loaded = repo.list_exchange_records().await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        let loaded = &loaded[0];
+        assert_eq!(loaded.hash_lock, hash_lock);
+        assert_eq!(loaded.refund_secret, record.refund_secret);
+        assert_eq!(loaded.alpha_inputs, record.alpha_inputs);
+        assert_eq!(loaded.locked_proofs, record.locked_proofs);
+        assert_eq!(loaded.alpha_url, record.alpha_url);
+        assert_eq!(loaded.alpha_clowder_id, record.alpha_clowder_id);
+        assert_eq!(loaded.locktime, record.locktime);
+
+        repo.delete_exchange_record(hash_lock).await.unwrap();
+        assert!(repo.list_exchange_records().await.unwrap().is_empty());
     }
 
     #[tokio::test]
