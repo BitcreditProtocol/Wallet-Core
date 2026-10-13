@@ -5,16 +5,15 @@ use crate::{
     error::{Error, Result},
 };
 use bcr_common::{
-    cashu::{self, HTLCWitness, Proof, amount::SplitTarget},
+    cashu::{self, Proof, amount::SplitTarget},
     cdk_common,
-    core::swap::wallet::prepare_swap,
+    core::{htlc::wallet_htlc, swap::wallet::prepare_swap},
     ecash,
     ecash::KeySet,
     wire::keys::ProofFingerprint,
 };
 use bcr_wallet_core::types::Transaction;
 use bitcoin::{hashes::sha256::Hash as Sha256, secp256k1};
-use secp256k1::schnorr::Signature;
 
 //////////////////////////////////// utils
 pub fn proofs_to_fingerprints(
@@ -44,26 +43,6 @@ pub fn remove_dleq_from_proofs(mut proofs: Vec<Proof>) -> Vec<Proof> {
         proof.dleq = None;
     }
     proofs
-}
-
-pub fn sign_htlc_proof(
-    proof: &mut Proof,
-    preimage: &str,
-    wallet_secret: &cashu::SecretKey,
-) -> Result<()> {
-    let msg: Vec<u8> = proof.secret.to_bytes();
-    let signature: Signature = wallet_secret
-        .sign(&msg)
-        .map_err(|err| Error::SchnorrSignature(format!("signing error: {err}")))?;
-
-    let signatures = vec![signature.to_string()];
-
-    proof.witness = Some(cashu::Witness::HTLCWitness(HTLCWitness {
-        preimage: preimage.to_string(),
-        signatures: Some(signatures),
-    }));
-
-    Ok(())
 }
 
 /// The hash lock a proof's HTLC spending condition names, if it has one.
@@ -114,16 +93,7 @@ pub async fn prepare_htlc_lock(
         keysets.insert(*kid, keyset);
     }
 
-    let n = key_locks.len() as u64;
-    let p2pk = cashu::Conditions::new(
-        Some(lock_time),
-        Some(key_locks),
-        Some(vec![wallet_pubkey.into()]),
-        Some(n),
-        None,
-        Some(1),
-    )?;
-    let htlc = cashu::SpendingConditions::new_htlc_hash(&hash_lock.to_string(), Some(p2pk))?;
+    let htlc = wallet_htlc(hash_lock, lock_time, key_locks, wallet_pubkey.into())?;
 
     // prepare the premints
     let mut premints: HashMap<ecash::Id, cashu::PreMintSecrets> = HashMap::new();
@@ -260,29 +230,6 @@ mod tests {
         assert_eq!(stripped.c, original.c);
         assert_eq!(stripped.witness, original.witness);
         assert!(stripped.dleq.is_none());
-    }
-
-    #[test]
-    fn test_sign_htlc_proof_signature_verifies_against_secret_bytes() {
-        let mut proofs = test_proofs(&[Amount::from(8)]);
-        let proof = proofs.first_mut().expect("proof exists");
-        let wallet_secret = cashu::SecretKey::generate();
-        let wallet_public_key = wallet_secret.public_key();
-        let message = proof.secret.to_bytes();
-        let preimage = "test-preimage";
-        sign_htlc_proof(proof, preimage, &wallet_secret).expect("works");
-        let witness = proof.witness.as_ref().expect("witness exists");
-        let signature = match witness {
-            cashu::Witness::HTLCWitness(htlc_witness) => htlc_witness.signatures.as_ref().unwrap()
-                [0]
-            .parse::<secp256k1::schnorr::Signature>()
-            .unwrap(),
-            other => panic!("expected HTLC witness, got {other:?}"),
-        };
-
-        wallet_public_key
-            .verify(&message, &signature)
-            .expect("works");
     }
 
     #[test]

@@ -21,7 +21,7 @@ use crate::{
 use bcr_common::{
     cashu::{self, Amount, CurrencyUnit, Proof, ProofsMethods},
     cdk_common::wallet::TransactionDirection,
-    core::NodeId,
+    core::{NodeId, htlc},
     ecash::{self, KeySetInfo},
     wallet::{BitcrTokenV5, Token},
     wire::clowder::{ConnectedMintResponse, ConnectedMintsResponse},
@@ -1071,7 +1071,7 @@ impl Wallet {
             let secret = by_hash_lock
                 .get(&hash_lock)
                 .ok_or_else(|| Error::Swap("issued proof carries an unknown hash lock".into()))?;
-            util::sign_htlc_proof(p, &secret.to_string(), &wallet_pk)?;
+            htlc::sign_htlc(p, &secret.to_string(), &wallet_pk)?;
         }
         Ok(beta_proofs)
     }
@@ -1192,7 +1192,7 @@ impl Wallet {
         }?;
 
         for p in beta_proofs.iter_mut() {
-            util::sign_htlc_proof(p, &preimage, &wallet_pk)?;
+            htlc::sign_htlc(p, &preimage, &wallet_pk)?;
         }
         tracing::debug!("Returning same mint proofs");
         Ok((beta_proofs, Some(hash_lock)))

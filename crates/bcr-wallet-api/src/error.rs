@@ -10,6 +10,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("BorshSignature: {0}")]
     BorshSignature(#[from] bcr_common::core::signature::BorshMsgSignatureError),
+    #[error("ECashSignature: {0}")]
+    ECashSignature(#[from] bcr_common::core::signature::ECashSignatureError),
     #[error("SchnorrSignature: {0}")]
     SchnorrSignature(String),
     #[error("Borsh: {0}")]

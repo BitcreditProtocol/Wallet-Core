@@ -11,7 +11,10 @@ use bcr_common::{
         self, Amount, CurrencyUnit, Proof, ProofsMethods, amount::SplitTarget, nut00 as cdk00,
         nut01 as cdk01,
     },
-    core::swap::wallet::{PaymentPlan, prepare_payment},
+    core::{
+        htlc,
+        swap::wallet::{PaymentPlan, prepare_payment},
+    },
     ecash::{self, KeySet, KeySetInfo},
     wire::{common as wire_common, melt as wire_melt, mint as wire_mint},
 };
@@ -189,7 +192,7 @@ fn lock_swap_commitment(
 fn refund_proofs(record: &ExchangeRecord, mut proofs: Vec<Proof>) -> Result<Vec<Proof>> {
     let refund_key = cashu::SecretKey::from(record.refund_secret);
     for proof in proofs.iter_mut() {
-        crate::wallet::util::sign_htlc_proof(proof, "", &refund_key)?;
+        htlc::sign_htlc(proof, "", &refund_key)?;
     }
     Ok(proofs)
 }
