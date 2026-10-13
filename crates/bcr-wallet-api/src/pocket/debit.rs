@@ -11,7 +11,10 @@ use bcr_common::{
         self, Amount, CurrencyUnit, Proof, ProofsMethods, amount::SplitTarget, nut00 as cdk00,
         nut01 as cdk01,
     },
-    core::swap::wallet::{PaymentPlan, prepare_payment},
+    core::{
+        htlc,
+        swap::wallet::{PaymentPlan, prepare_payment},
+    },
     ecash::{self, KeySet, KeySetInfo},
     wire::{common as wire_common, melt as wire_melt, mint as wire_mint},
 };
@@ -189,7 +192,7 @@ fn lock_swap_commitment(
 fn refund_proofs(record: &ExchangeRecord, mut proofs: Vec<Proof>) -> Result<Vec<Proof>> {
     let refund_key = cashu::SecretKey::from(record.refund_secret);
     for proof in proofs.iter_mut() {
-        crate::wallet::util::sign_htlc_proof(proof, "", &refund_key)?;
+        htlc::sign_htlc(proof, "", &refund_key)?;
     }
     Ok(proofs)
 }
@@ -300,7 +303,9 @@ impl Pocket {
                     crate::wallet::util::remove_dleq_from_proofs(record.alpha_inputs.clone());
                 let response = super::post_swap_protest(commitment, inputs, &alpha_beta).await?;
                 match (response.status, response.signatures) {
-                    (wire_common::ProtestStatus::Resolved, Some(signatures)) => signatures,
+                    (wire_common::ProtestStatus::Resolved, Some(signatures)) => {
+                        signatures.into_iter().map(Into::into).collect()
+                    }
                     (status, _) => {
                         tracing::warn!(
                             "Protest of lock swap {} for exchange {} returned {status:?}, retrying next run",
@@ -1207,13 +1212,14 @@ impl DebitPocketApi for Pocket {
         let record = self.mdb.load_melt_commitment(melt_ref.quote_id).await?;
         let body: wire_melt::MeltQuoteOnchainResponseBody =
             bcr_common::core::signature::deserialize_borsh_msg(&record.body_content)?;
-        let input_ys: Vec<cashu::PublicKey> = body.inputs.inputs.iter().map(|fp| fp.y).collect();
+        let input_ys: Vec<cashu::PublicKey> =
+            body.inputs.inputs.iter().map(|fp| fp.y.into()).collect();
         let sending_proofs = self.pdb.load_proofs(&input_ys).await?;
 
         let inputs: Vec<cdk00::Proof> = sending_proofs.values().cloned().collect();
         let request = wire_melt::MeltOnchainRequest {
             quote: melt_ref.quote_id,
-            inputs,
+            inputs: inputs.into_iter().map(Into::into).collect(),
         };
         let response = client.post_melt_onchain(request).await?;
 
@@ -1462,9 +1468,9 @@ impl DebitPocketApi for Pocket {
                     HashMap::new();
                 for signature in signatures {
                     sigs_by_kid
-                        .entry(signature.keyset_id.into())
+                        .entry(signature.keyset_id)
                         .or_default()
-                        .push(signature);
+                        .push(signature.into());
                 }
 
                 let mut keysets: HashMap<ecash::Id, KeySet> = HashMap::new();
@@ -1538,7 +1544,8 @@ impl DebitPocketApi for Pocket {
             wire_common::ProtestStatus::Resolved => {
                 let body: wire_melt::MeltQuoteOnchainResponseBody =
                     bcr_common::core::signature::deserialize_borsh_msg(&record.body_content)?;
-                let ys: Vec<cashu::PublicKey> = body.inputs.inputs.iter().map(|fp| fp.y).collect();
+                let ys: Vec<cashu::PublicKey> =
+                    body.inputs.inputs.iter().map(|fp| fp.y.into()).collect();
                 self.mdb.delete_melt_commitment(quote_id).await?;
                 tracing::info!("Melt protest resolved for {quote_id}");
                 Ok(MeltProtestResult {
@@ -2633,7 +2640,7 @@ mod tests {
             network_fee: bitcoin::Amount::from_sat(10),
             melt_fee: bitcoin::Amount::from_sat(1),
             expiry: 999999,
-            wallet_key,
+            wallet_key: *wallet_key,
         };
         use bitcoin::base64::{Engine, engine::general_purpose::STANDARD};
         let body_content = STANDARD.encode(borsh::to_vec(&body).unwrap());
@@ -2692,7 +2699,7 @@ mod tests {
             network_fee: bitcoin::Amount::from_sat(3),
             melt_fee: bitcoin::Amount::from_sat(1),
             expiry: 999999,
-            wallet_key,
+            wallet_key: *wallet_key,
         };
         use bitcoin::base64::{Engine, engine::general_purpose::STANDARD};
         STANDARD.encode(borsh::to_vec(&body).unwrap())
@@ -3196,7 +3203,7 @@ mod tests {
             .returning(move |_| {
                 Ok(wire_swap::SwapProtestResponse {
                     status: wire_common::ProtestStatus::Resolved,
-                    signatures: Some(blind_sigs.clone()),
+                    signatures: Some(blind_sigs.iter().cloned().map(Into::into).collect()),
                 })
             });
         setup_attestation_mock(&mut beta_connector);

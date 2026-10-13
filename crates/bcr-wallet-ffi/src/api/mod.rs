@@ -2571,6 +2571,7 @@ impl From<BcrWalletError> for WalletError {
         error!("Error: {value}");
         match value {
             BcrWalletError::BorshSignature(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::ECashSignature(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Borsh(_) => WalletError::internal(value.to_string()),
             BcrWalletError::CashuMintUrl(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::CashuMintUrl)

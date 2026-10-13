@@ -57,7 +57,10 @@ async fn post_swap_commitment_inner(
         .into_iter()
         .map(wire_keys::ProofFingerprint::try_from)
         .collect::<std::result::Result<_, cashu::nut00::Error>>()?;
-    let inputs_ys = fingerprints.iter().map(|fp| fp.y).collect::<Vec<_>>();
+    let inputs_ys = fingerprints
+        .iter()
+        .map(|fp| fp.y.into())
+        .collect::<Vec<_>>();
     let sent_digest = wire_attestation::fp_digest(&fingerprints);
     let expiry = (time::OffsetDateTime::now_utc() + expiry_seconds).unix_timestamp() as u64;
     debug!("HTTP call to commit_swap on {}", client.mint_url());
@@ -133,7 +136,7 @@ async fn post_melt_quote_onchain_inner(
             address.clone(),
             amount,
             network_fee,
-            wallet_key,
+            *wallet_key,
             alpha_pk,
             attestation.clone(),
         )
@@ -143,7 +146,7 @@ async fn post_melt_quote_onchain_inner(
     let echoed = wire_attestation::fp_digest(&response_body.inputs.inputs) == sent_digest
         && response_body.inputs.attestation == attestation
         && response_body.address == address
-        && response_body.wallet_key == wallet_key;
+        && response_body.wallet_key == *wallet_key;
     if !echoed {
         return Err(Error::MeltQuoteMismatch);
     }
@@ -443,8 +446,15 @@ impl ClowderMintConnector for HttpClientExt {
         commitment: secp256k1::schnorr::Signature,
     ) -> Result<Vec<cashu::BlindSignature>> {
         debug!("HTTP call to post_swap_committed on {}", self.mint_url());
-        let signatures = self.main.swap(inputs, outputs, commitment).await?;
-        Ok(signatures)
+        let signatures = self
+            .main
+            .swap(
+                inputs.into_iter().map(Into::into).collect(),
+                outputs.into_iter().map(Into::into).collect(),
+                commitment,
+            )
+            .await?;
+        Ok(signatures.into_iter().map(Into::into).collect())
     }
 
     async fn post_protest_swap(
@@ -860,8 +870,15 @@ impl ClowderMintConnector for SentinelClient {
         commitment: secp256k1::schnorr::Signature,
     ) -> Result<Vec<cashu::BlindSignature>> {
         debug!("HTTP call to post_swap_committed on {}", self.mint_url());
-        let signatures = self.main.swap(inputs, outputs, commitment).await?;
-        Ok(signatures)
+        let signatures = self
+            .main
+            .swap(
+                inputs.into_iter().map(Into::into).collect(),
+                outputs.into_iter().map(Into::into).collect(),
+                commitment,
+            )
+            .await?;
+        Ok(signatures.into_iter().map(Into::into).collect())
     }
 
     async fn post_protest_swap(
@@ -1125,7 +1142,7 @@ mod tests {
             network_fee: bitcoin::Amount::from_sat(10),
             melt_fee: bitcoin::Amount::from_sat(1),
             expiry: 1_000_000,
-            wallet_key,
+            wallet_key: *wallet_key,
         }
     }
 

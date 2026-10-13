@@ -3,6 +3,7 @@
 * Online intermint exchanges store an encrypted exchange record (refund key, alpha inputs, premints, locktime) before the lock swap and keep its commitment until the locked proofs are stored (DB change, no migration needed: adds the pocket DB `exchange_records` table and appends a `ForeignMintProofReason::ExchangeRefund { alpha_url }` variant, so existing entries decode unchanged)
 * `run_jobs` refunds every exchange past its locktime as foreign mint proofs of its alpha, settling an unanswered lock swap by restore or protest first
 * `reclaim_foreign_mint_proofs` reaches an exchange refund's alpha by its stored URL and drops proofs the mint reports spent
+    * If the batch fails it reclaims each proof alone, dropping a proof the mint rejects while it accepts another
 * Added filtered logging
 * Start listening to and processing Nostr messages AFTER all initialization completed (especially restore)
 * Upgrade bcr-common and use new ecash types
@@ -31,6 +32,7 @@
     * `wallet_check_pending_commitments` replays, restores or protests an expired commitment instead of deleting it (unless it has no input proofs and restores nothing), and one failing record no longer stops the others
     * A swap commitment stores its input proofs as `StoredCommitment::V2`, so a receive's commitment can be resumed or protested without the sender's proofs in the proof table (DB change, no migration needed)
     * An offline payment's substitute swap change is seed-derived instead of random, so a restore can find it
+* An offline exchange rejects issued proofs the wallet can't spend alone before their locktime: locked to another key, refundable by anyone but the substitute, or missing the offline exchange tag
 
 # 0.9.13
 
