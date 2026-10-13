@@ -192,6 +192,15 @@ pub enum Error {
     AttestationSignature(String),
 }
 
+impl Error {
+    pub fn is_mint_rejection(&self) -> bool {
+        matches!(
+            self,
+            Error::MintClientBadRequest(_) | Error::MintClientKeysetNotFound(_)
+        )
+    }
+}
+
 impl From<crate::external::Error> for Error {
     fn from(value: crate::external::Error) -> Self {
         match value {

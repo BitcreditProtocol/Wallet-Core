@@ -771,23 +771,7 @@ impl Wallet {
                     continue;
                 }
                 let amount = proofs.total_amount()?;
-                let clowder_node_id = NodeId::new(mint.clowder_id, self.network());
-                let token = Token::BitcrV5(
-                    BitcrTokenV5::new(
-                        clowder_node_id,
-                        self.debit_unit(),
-                        proofs.into_iter().map(|p| p.into()).collect(),
-                    )
-                    .with_mint_url(to_mint_url(&mint.url).to_string())
-                    .with_memo(format!("Reclaimed Foreign Mint Funds from {}", mint.url)),
-                );
-                match self
-                    .receive_token(
-                        token,
-                        time::OffsetDateTime::now_utc().unix_timestamp() as u64,
-                    )
-                    .await
-                {
+                match self.reclaim_foreign_proofs(mint, proofs.clone()).await {
                     Ok(tx_id) => {
                         tracing::info!(
                             "Reclaimed {amount} from foreign mint proofs from {}, tx_id: {tx_id}",
@@ -804,11 +788,71 @@ impl Wallet {
                             "Could not reclaim foreign mint proofs from mint {}: {e}",
                             mint.url
                         );
+                        reclaimed += self
+                            .reclaim_foreign_proofs_one_by_one(mint, unspent_ys, proofs)
+                            .await;
                     }
                 }
             }
         }
         Ok(reclaimed)
+    }
+
+    async fn reclaim_foreign_proofs(&self, mint: &ClowderBeta, proofs: Vec<Proof>) -> Result<Uuid> {
+        let token = Token::BitcrV5(
+            BitcrTokenV5::new(
+                NodeId::new(mint.clowder_id, self.network()),
+                self.debit_unit(),
+                proofs.into_iter().map(|p| p.into()).collect(),
+            )
+            .with_mint_url(to_mint_url(&mint.url).to_string())
+            .with_memo(format!("Reclaimed Foreign Mint Funds from {}", mint.url)),
+        );
+        self.receive_token(
+            token,
+            time::OffsetDateTime::now_utc().unix_timestamp() as u64,
+        )
+        .await
+    }
+
+    async fn reclaim_foreign_proofs_one_by_one(
+        &self,
+        mint: &ClowderBeta,
+        ys: Vec<cashu::PublicKey>,
+        proofs: Vec<Proof>,
+    ) -> Amount {
+        if proofs.len() < 2 {
+            return Amount::ZERO;
+        }
+        let mut reclaimed = Amount::ZERO;
+        let mut rejected = Vec::new();
+        for (y, proof) in ys.into_iter().zip(proofs) {
+            let amount = proof.amount;
+            match self.reclaim_foreign_proofs(mint, vec![proof]).await {
+                Ok(_) => {
+                    reclaimed += amount;
+                    self.debit
+                        .delete_foreign_mint_proofs(mint.clowder_id, vec![y])
+                        .await;
+                }
+                Err(e) if e.is_mint_rejection() => rejected.push(y),
+                Err(e) => tracing::error!(
+                    "Could not reclaim foreign mint proof {y} from mint {}: {e}",
+                    mint.url
+                ),
+            }
+        }
+        if reclaimed > Amount::ZERO && !rejected.is_empty() {
+            tracing::warn!(
+                "Dropping {} foreign mint proofs mint {} rejected",
+                rejected.len(),
+                mint.url
+            );
+            self.debit
+                .delete_foreign_mint_proofs(mint.clowder_id, rejected)
+                .await;
+        }
+        reclaimed
     }
 
     /// Check that the transaction can be reclaimed, then
@@ -6108,6 +6152,88 @@ mod tests {
             .await
             .expect("reclaim_foreign_mint_proofs works");
         assert_eq!(reclaimed, Amount::from(20));
+    }
+
+    async fn reclaim_rejecting(rejected: &'static [u64]) -> (Amount, Vec<Vec<cashu::PublicKey>>) {
+        let mut ctx = wallet_ctx();
+        let mint_url = url::Url::from_str("https://mint.example").unwrap();
+        let clowder_id = test_pub_key();
+        let (info, _keyset, proofs) = test_keyset_and_proofs(&[Amount::from(8), Amount::from(16)]);
+        let keyset_infos = HashMap::from([(info.id, info.clone())]);
+        let foreign_mint_proofs = proofs
+            .into_iter()
+            .map(|proof| ForeignMintProof {
+                clowder_id,
+                proof,
+                reason: ForeignMintProofReason::MintOffline,
+            })
+            .collect();
+
+        ctx.client
+            .expect_get_clowder_betas()
+            .returning(|| Ok(vec![]));
+        ctx.client.expect_mint_url().return_const(mint_url);
+        ctx.client
+            .expect_get_mint_keysets()
+            .returning(move || Ok(keyset_infos.values().cloned().collect()));
+        ctx.client.expect_post_check_state().returning(|req| {
+            Ok(req
+                .ys
+                .into_iter()
+                .map(|y| cashu::ProofState {
+                    y,
+                    state: cashu::State::Unspent,
+                    witness: None,
+                })
+                .collect())
+        });
+        ctx.debit
+            .expect_fetch_foreign_mint_proofs()
+            .return_once(move || Ok(foreign_mint_proofs));
+        ctx.debit.expect_unit().returning(|| CurrencyUnit::Sat);
+        ctx.debit.expect_receive_proofs().returning(
+            move |_client, _keysets, proofs, _swap_config| {
+                if proofs.len() > 1 || rejected.contains(&proofs[0].amount.to_u64()) {
+                    return Err(Error::MintClientBadRequest("proof rejected".into()));
+                }
+                Ok((proofs[0].amount, vec![proofs[0].y().unwrap()]))
+            },
+        );
+        let deleted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = deleted.clone();
+        ctx.debit
+            .expect_delete_foreign_mint_proofs()
+            .returning(move |_, ys| recorded.lock().unwrap().push(ys));
+        ctx.tx_repo
+            .expect_store_tx()
+            .returning(|_| Ok(Uuid::new_v4()));
+
+        let wlt = wallet(ctx).await;
+        let reclaimed = wlt
+            .read()
+            .await
+            .reclaim_foreign_mint_proofs()
+            .await
+            .expect("reclaim_foreign_mint_proofs works");
+        let deleted = deleted.lock().unwrap().clone();
+        (reclaimed, deleted)
+    }
+
+    #[tokio::test]
+    async fn reclaim_foreign_mint_proofs_drops_a_proof_the_mint_rejects() {
+        let (reclaimed, deleted) = reclaim_rejecting(&[16]).await;
+        assert_eq!(reclaimed, Amount::from(8));
+        assert_eq!(deleted.len(), 2, "the reclaimed and the rejected proof");
+    }
+
+    #[tokio::test]
+    async fn reclaim_foreign_mint_proofs_keeps_proofs_when_the_mint_rejects_all() {
+        let (reclaimed, deleted) = reclaim_rejecting(&[8, 16]).await;
+        assert_eq!(reclaimed, Amount::ZERO);
+        assert!(
+            deleted.is_empty(),
+            "a mint rejecting everything proves no proof broken"
+        );
     }
 
     #[tokio::test]
