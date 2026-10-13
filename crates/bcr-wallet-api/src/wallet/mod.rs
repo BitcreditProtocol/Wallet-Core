@@ -6194,7 +6194,11 @@ mod tests {
         ctx.debit.expect_receive_proofs().returning(
             move |_client, _keysets, proofs, _swap_config| {
                 if proofs.len() > 1 || rejected.contains(&proofs[0].amount.to_u64()) {
-                    return Err(Error::MintClientBadRequest("proof rejected".into()));
+                    return Err(Error::Mint(
+                        bcr_common::client::mint::Error::InvalidRequest(
+                            bcr_common::client::mint::BRError::Generic("proof rejected".into()),
+                        ),
+                    ));
                 }
                 Ok((proofs[0].amount, vec![proofs[0].y().unwrap()]))
             },

@@ -194,10 +194,20 @@ pub enum Error {
 
 impl Error {
     pub fn is_mint_rejection(&self) -> bool {
-        matches!(
-            self,
-            Error::MintClientBadRequest(_) | Error::MintClientKeysetNotFound(_)
-        )
+        match self {
+            Error::Mint(bcr_common::client::mint::Error::InvalidRequest(
+                bcr_common::client::mint::BRError::CommitmentMismatch,
+            )) => false,
+            Error::Mint(
+                bcr_common::client::mint::Error::InvalidRequest(_)
+                | bcr_common::client::mint::Error::ResourceNotFound(
+                    bcr_common::client::mint::RNFError::KeysetId(_),
+                ),
+            )
+            | Error::MintClientBadRequest(_)
+            | Error::MintClientKeysetNotFound(_) => true,
+            _ => false,
+        }
     }
 }
 
@@ -330,6 +340,54 @@ impl From<bcr_wallet_core::ValidationError> for Error {
             bcr_wallet_core::ValidationError::EmptyEmail => Error::EmptyEmail,
             bcr_wallet_core::ValidationError::InvalidEmail => Error::InvalidEmail,
             bcr_wallet_core::ValidationError::InvalidContact(_) => Error::InvalidContact,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bcr_common::client::mint::{BRError, Error as MintError, RNFError, SUError};
+
+    fn mint_errors() -> Vec<(MintError, bool)> {
+        let kid = bcr_common::core_tests::generate_random_ecash_keyset().0.id;
+        vec![
+            (
+                MintError::InvalidRequest(BRError::Generic("bad proof".into())),
+                true,
+            ),
+            (
+                MintError::ResourceNotFound(RNFError::KeysetId(kid.into())),
+                true,
+            ),
+            (
+                MintError::InvalidRequest(BRError::CommitmentMismatch),
+                false,
+            ),
+            (MintError::ResourceNotFound(RNFError::Unknown), false),
+            (MintError::ServiceUnavailable(SUError::Unknown), false),
+            (MintError::Internal("timeout".into()), false),
+        ]
+    }
+
+    #[test]
+    fn connector_errors_classify_mint_rejections() {
+        for (error, rejected) in mint_errors() {
+            let description = error.to_string();
+            assert_eq!(
+                Error::from(error).is_mint_rejection(),
+                rejected,
+                "{description}"
+            );
+        }
+    }
+
+    #[test]
+    fn flattened_mint_errors_classify_like_connector_errors() {
+        for (error, rejected) in mint_errors() {
+            let description = error.to_string();
+            let flattened = Error::from(crate::external::Error::MintApi(error));
+            assert_eq!(flattened.is_mint_rejection(), rejected, "{description}");
         }
     }
 }
