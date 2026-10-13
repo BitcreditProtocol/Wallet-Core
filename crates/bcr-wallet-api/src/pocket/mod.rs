@@ -17,7 +17,7 @@ use bcr_wallet_core::{
     SendSync,
     types::{Seed, SendSummary},
 };
-use bcr_wallet_persistence::PocketRepository;
+use bcr_wallet_persistence::{PocketRepository, SwapCommitmentRecord};
 use rand::seq::IndexedRandom;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -358,6 +358,7 @@ pub(crate) async fn commit_swap(
             body_content: commit_result.body_content,
             wallet_key: commit_result.wallet_key,
             premints,
+            input_proofs: inputs.clone(),
         })
         .await?;
     }
@@ -365,8 +366,14 @@ pub(crate) async fn commit_swap(
 }
 
 ///////////////////////////////////////////// committed_swap
-/// Commit → optionally store → swap → optionally delete.
-/// Returns the blind signatures from the swap response.
+pub(crate) type SwapSignatures = (
+    Vec<cdk00::BlindSignature>,
+    HashMap<ecash::Id, cdk00::PreMintSecrets>,
+);
+
+/// Resume stored → or commit → optionally store → swap.
+/// Returns the blind signatures from the swap response with the premints they unblind with,
+/// and the commitment the caller deletes once it stored the unblinded proofs.
 pub(crate) async fn committed_swap(
     client: &dyn ClowderMintConnector,
     db: Option<&dyn PocketRepository>,
@@ -375,14 +382,23 @@ pub(crate) async fn committed_swap(
     swap_config: &SwapConfig,
     premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
     attestation: wire_attestation::IssuanceAttestation,
-) -> Result<Vec<cdk00::BlindSignature>> {
+) -> Result<(SwapSignatures, bitcoin::secp256k1::schnorr::Signature)> {
+    if let Some(db) = db
+        && let Some(record) = stored_commitment(db, &inputs).await?
+    {
+        let commitment = record.commitment;
+        if let Some(resumed) = resume_commitment(client, record, inputs.clone()).await? {
+            return Ok((resumed, commitment));
+        }
+        db.delete_commitment(commitment).await?;
+    }
     let (inputs, commitment_sig) = commit_swap(
         client,
         db,
         inputs,
         outputs.clone(),
         swap_config,
-        premints,
+        premints.clone(),
         attestation,
     )
     .await?;
@@ -391,13 +407,116 @@ pub(crate) async fn committed_swap(
         .post_swap_committed(inputs, outputs, commitment_sig)
         .await?;
 
-    if let Some(db) = db
-        && let Err(e) = db.delete_commitment(commitment_sig).await
-    {
+    Ok(((signatures, premints), commitment_sig))
+}
+
+async fn delete_swap_commitment(
+    db: &dyn PocketRepository,
+    commitment: bitcoin::secp256k1::schnorr::Signature,
+) {
+    if let Err(e) = db.delete_commitment(commitment).await {
         tracing::warn!("Failed to delete commitment after swap: {e}");
     }
+}
 
-    Ok(signatures)
+async fn stored_commitment(
+    db: &dyn PocketRepository,
+    inputs: &[cdk00::Proof],
+) -> Result<Option<SwapCommitmentRecord>> {
+    let mut ys = HashSet::with_capacity(inputs.len());
+    for input in inputs {
+        ys.insert(input.y()?);
+    }
+    Ok(db.list_commitments().await?.into_iter().find(|record| {
+        record.inputs.len() == ys.len() && record.inputs.iter().all(|y| ys.contains(y))
+    }))
+}
+
+/// Replays the commitment with the given input proofs, else restores its unspent outputs.
+/// `None` means the mint signed none of them.
+pub(crate) async fn resume_commitment(
+    client: &dyn ClowderMintConnector,
+    record: SwapCommitmentRecord,
+    proofs: Vec<cdk00::Proof>,
+) -> Result<Option<SwapSignatures>> {
+    let mut by_y = HashMap::with_capacity(proofs.len());
+    for proof in proofs {
+        by_y.insert(proof.y()?, proof);
+    }
+    let inputs: Vec<_> = record
+        .inputs
+        .iter()
+        .filter_map(|y| by_y.remove(y))
+        .collect();
+    if inputs.len() == record.inputs.len() {
+        match client
+            .post_swap_committed(
+                crate::wallet::util::remove_dleq_from_proofs(inputs),
+                record.outputs.clone(),
+                record.commitment,
+            )
+            .await
+        {
+            Ok(signatures) => return Ok(Some((signatures, record.premints))),
+            Err(
+                e @ (Error::Mint(
+                    bcr_common::client::mint::Error::ServiceUnavailable(_)
+                    | bcr_common::client::mint::Error::Reqwest(_),
+                )
+                | Error::MintClientServiceUnavailable(_)
+                | Error::ReqwestClient(_)),
+            ) => return Err(e),
+            Err(e) => tracing::warn!("Replaying commitment {} failed: {e}", record.commitment),
+        }
+    }
+
+    let restored = client
+        .post_restore(cashu::RestoreRequest {
+            outputs: record.outputs.clone(),
+        })
+        .await?;
+    let mut by_output: HashMap<cdk01::PublicKey, (ecash::Id, cdk00::PreMint)> = record
+        .premints
+        .into_iter()
+        .flat_map(|(kid, premint)| {
+            premint
+                .secrets
+                .into_iter()
+                .map(move |pm| (pm.blinded_message.blinded_secret, (kid, pm)))
+        })
+        .collect();
+    let mut signed = Vec::with_capacity(restored.len());
+    for (output, signature) in restored {
+        let (kid, premint) = by_output
+            .remove(&output.blinded_secret)
+            .ok_or(Error::RestoreUnexpectedOutput)?;
+        let y = cashu::dhke::hash_to_curve(premint.secret.as_bytes())?;
+        signed.push((y, kid, premint, signature));
+    }
+    if signed.is_empty() {
+        return Ok(None);
+    }
+    let states = client
+        .post_check_state(cashu::CheckStateRequest {
+            ys: signed.iter().map(|(y, ..)| *y).collect(),
+        })
+        .await?;
+    let unspent: HashSet<cdk01::PublicKey> = states
+        .into_iter()
+        .filter(|state| state.state == cashu::State::Unspent)
+        .map(|state| state.y)
+        .collect();
+    let mut signatures = Vec::with_capacity(unspent.len());
+    let mut premints: HashMap<ecash::Id, cdk00::PreMintSecrets> = HashMap::new();
+    for (_, kid, premint, signature) in signed.into_iter().filter(|(y, ..)| unspent.contains(y)) {
+        premints
+            .entry(kid)
+            .or_insert_with(|| cdk00::PreMintSecrets::new(kid.into()))
+            .secrets
+            .push(premint);
+        signatures.push(signature);
+    }
+    Ok(Some((signatures, premints)))
 }
 
 ///////////////////////////////////////////// post_swap_protest
@@ -467,7 +586,7 @@ pub(crate) fn unblind_by_keyset(
 async fn swap(
     output_unit: CurrencyUnit,
     inputs: Vec<cdk00::Proof>,
-    mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets>,
+    premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets>,
     keysets: HashMap<ecash::Id, KeySet>,
     client: Arc<dyn ClowderMintConnector>,
     db: &dyn PocketRepository,
@@ -482,13 +601,13 @@ async fn swap(
         .collect();
 
     let attestation = beta.attest(&inputs).await?;
-    let signatures = committed_swap(
+    let ((signatures, premints), commitment) = committed_swap(
         client.as_ref(),
         Some(db),
         inputs,
         blinds,
         &swap_config,
-        premints.iter().map(|(k, v)| (*k, v.clone())).collect(),
+        premints.into_iter().collect(),
         attestation,
     )
     .await?;
@@ -500,25 +619,13 @@ async fn swap(
     tracing::debug!(
         "swap to {output_unit}: inputs: {input_len} {total_input}, outputs: {output_len} {total_output}",
     );
-    let mut sigs_by_kid: HashMap<ecash::Id, Vec<cdk00::BlindSignature>> = HashMap::new();
-    for signature in signatures {
-        sigs_by_kid
-            .entry(signature.keyset_id.into())
-            .or_default()
-            .push(signature);
-    }
     let mut total_cashed_in = Amount::ZERO;
-    for (kid, sigs) in sigs_by_kid.into_iter() {
-        let premint = premints.remove(&kid).expect("premint should be here");
-        let keyset = keysets.get(&kid).expect("keyset should be here");
-        let proofs = unblind_proofs(keyset, sigs, premint);
-
-        for proof in proofs {
-            let amount = proof.amount;
-            db.store_new(proof).await?;
-            total_cashed_in += amount;
-        }
+    for proof in unblind_by_keyset(&premints, signatures, &keysets)? {
+        let amount = proof.amount;
+        db.store_new(proof).await?;
+        total_cashed_in += amount;
     }
+    delete_swap_commitment(db, commitment).await;
     Ok(total_cashed_in)
 }
 
@@ -579,13 +686,13 @@ async fn swap_proofs_to_target(
         .collect();
 
     let attestation = beta.attest(&swap_proofs).await?;
-    let signatures = committed_swap(
+    let ((signatures, mut premints), commitment) = committed_swap(
         client.as_ref(),
         Some(db),
         swap_proofs,
         blinds,
         &swap_config,
-        premints.iter().map(|(k, v)| (*k, v.clone())).collect(),
+        premints.into_iter().collect(),
         attestation,
     )
     .await?;
@@ -626,6 +733,7 @@ async fn swap_proofs_to_target(
             )));
         }
     }
+    delete_swap_commitment(db, commitment).await;
 
     if selected_amount != target_amount {
         return Err(Error::Swap(format!(

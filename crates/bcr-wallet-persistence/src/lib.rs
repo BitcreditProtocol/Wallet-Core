@@ -34,6 +34,7 @@ pub struct SwapCommitmentRecord {
     pub body_content: String,
     pub wallet_key: cashu::PublicKey,
     pub premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
+    pub input_proofs: Vec<cdk00::Proof>,
 }
 
 ///////////////////////////////////////////// MeltCommitmentRecord

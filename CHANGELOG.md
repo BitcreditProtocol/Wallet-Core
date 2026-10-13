@@ -27,6 +27,10 @@
 * `wallet_receive_token` and `is_valid_token` reject tokens over 128 KiB or with duplicate proofs, `wallet_receive_token` no longer logs the token
 * Validate onchain melt quotes and restore responses (requested outputs, check states) returned by the mint
 * `restore_wallet` skips restored proofs that fail verification (DLEQ, keyset, amount) instead of storing them, and advances the keyset counter past every index the mint signed
+* A swap retry resumes its stored commitment instead of committing new outputs over the same inputs, and a swap keeps its commitment until its proofs are stored (#372)
+    * `wallet_check_pending_commitments` replays, restores or protests an expired commitment instead of deleting it (unless it has no input proofs and restores nothing), and one failing record no longer stops the others
+    * A swap commitment stores its input proofs as `StoredCommitment::V2`, so a receive's commitment can be resumed or protested without the sender's proofs in the proof table (DB change, no migration needed)
+    * An offline payment's substitute swap change is seed-derived instead of random, so a restore can find it
 
 # 0.9.13
 
