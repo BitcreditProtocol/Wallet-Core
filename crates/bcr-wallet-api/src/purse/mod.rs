@@ -356,6 +356,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use bcr_common::cashu::CurrencyUnit;
     use bcr_wallet_persistence::{
@@ -500,7 +501,6 @@ mod tests {
     }
 
     fn rabid_wallet(id: &'static str) -> MockWalletApi {
-        use std::sync::atomic::{AtomicBool, Ordering};
         let migrated = Arc::new(AtomicBool::new(false));
         let journaled = Arc::new(AtomicBool::new(false));
         let mut wlt = MockWalletApi::new();
@@ -540,11 +540,11 @@ mod tests {
     #[tokio::test]
     async fn migrate_rabid_wallets_retries_a_failed_config_store() {
         let mut db = MockPurseRepository::new();
-        let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let failed = Arc::new(AtomicBool::new(false));
         let stored = Arc::new(std::sync::Mutex::new(Vec::new()));
         let st = stored.clone();
         db.expect_store().returning(move |cfg| {
-            if cfg.wallet_id == "wlt-1" && !failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            if cfg.wallet_id == "wlt-1" && !failed.swap(true, Ordering::SeqCst) {
                 return Err(bcr_wallet_persistence::error::Error::Custom(
                     "disk full".into(),
                 ));

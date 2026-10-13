@@ -590,7 +590,7 @@ impl From<StoredJournalHeaderPayloadV1> for MigrationJournalHeader {
     }
 }
 
-fn encode_journal_entry(
+fn to_stored_journal_entry_v1(
     entry: MigrationJournalEntry,
     keys: bitcoin::secp256k1::Keypair,
 ) -> Result<Vec<u8>> {
@@ -606,7 +606,7 @@ fn encode_journal_entry(
     borsh::to_vec(&stored).map_err(|e| Error::BorshSerialization(e.to_string()))
 }
 
-fn decode_journal_entry(
+fn from_stored_journal_entry_v1(
     value: &[u8],
     keys: bitcoin::secp256k1::Keypair,
 ) -> Result<MigrationJournalEntry> {
@@ -1573,7 +1573,7 @@ impl PocketDB {
                     exchange_key,
                     state,
                 };
-                journal.insert(key.as_slice(), encode_journal_entry(entry, keys)?)?;
+                journal.insert(key.as_slice(), to_stored_journal_entry_v1(entry, keys)?)?;
             }
         }
         write_txn.commit()?;
@@ -1595,9 +1595,9 @@ impl PocketDB {
                 let Some(stored) = journal.get(key.as_slice())?.map(|v| v.value()) else {
                     return Err(Error::MigrationJournalEntryNotFound(y));
                 };
-                let mut entry = decode_journal_entry(&stored, keys)?;
+                let mut entry = from_stored_journal_entry_v1(&stored, keys)?;
                 entry.state = state.clone();
-                journal.insert(key.as_slice(), encode_journal_entry(entry, keys)?)?;
+                journal.insert(key.as_slice(), to_stored_journal_entry_v1(entry, keys)?)?;
             }
         }
         write_txn.commit()?;
@@ -1619,7 +1619,7 @@ impl PocketDB {
         for item in journal.range::<&[u8]>(..)? {
             let (k, v) = item?;
             let y = cdk01::PublicKey::from_slice(k.value())?;
-            entries.insert(y, decode_journal_entry(&v.value(), keys)?);
+            entries.insert(y, from_stored_journal_entry_v1(&v.value(), keys)?);
         }
         Ok(entries)
     }
@@ -1635,7 +1635,9 @@ impl PocketDB {
             let mut swapped = Vec::new();
             for item in journal.range::<&[u8]>(..)? {
                 let (k, v) = item?;
-                if decode_journal_entry(&v.value(), keys)?.state == MigrationJournalState::Swapped {
+                if from_stored_journal_entry_v1(&v.value(), keys)?.state
+                    == MigrationJournalState::Swapped
+                {
                     swapped.push(k.value().to_vec());
                 }
             }
