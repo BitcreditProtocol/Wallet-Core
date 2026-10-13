@@ -29,10 +29,10 @@ pub fn proofs_to_fingerprints(
 
         fingerprints.push(ProofFingerprint {
             amount: p.amount.into(),
-            keyset_id: p.keyset_id,
-            c: p.c,
+            keyset_id: p.keyset_id.into(),
+            c: *p.c,
             dleq: Some(dleq),
-            y: p.y()?,
+            y: *p.y()?,
         });
     }
 
@@ -218,10 +218,10 @@ mod tests {
         assert_eq!(secrets, expected_secrets);
         for (idx, fp) in fingerprints.iter().enumerate() {
             assert_eq!(fp.amount, expected_amounts[idx].to_u64());
-            assert_eq!(fp.keyset_id, expected_keyset_ids[idx]);
-            assert_eq!(fp.c, expected_cs[idx]);
+            assert_eq!(fp.keyset_id, expected_keyset_ids[idx].into());
+            assert_eq!(fp.c, *expected_cs[idx]);
             assert_eq!(fp.dleq, expected_dleqs[idx]);
-            assert_eq!(fp.y, expected_ys[idx]);
+            assert_eq!(fp.y, *expected_ys[idx]);
         }
     }
 

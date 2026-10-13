@@ -350,9 +350,9 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 [[package]]
 name = "bcr-common"
 version = "0.11.0"
-source = "git+https://github.com/BitcreditProtocol/bcr-common.git?rev=910da1ddf02c7ddb72fd9ff995adf5616227c5f1#910da1ddf02c7ddb72fd9ff995adf5616227c5f1"
+source = "git+https://github.com/BitcreditProtocol/bcr-common.git?rev=5a9b24fa336b4ba12d1e3601b6817f0fb0dd239c#5a9b24fa336b4ba12d1e3601b6817f0fb0dd239c"
 dependencies = [
- "bip39",
+ "bip39 3.0.0",
  "bitcoin",
  "borsh",
  "cashu",
@@ -385,7 +385,7 @@ dependencies = [
  "bcr-wallet-core",
  "bcr-wallet-persistence",
  "bcr-wallet-transport",
- "bip39",
+ "bip39 2.2.2",
  "bitcoin",
  "borsh",
  "futures",
@@ -414,7 +414,7 @@ dependencies = [
  "bcr-common",
  "bcr-wallet-api",
  "bcr-wallet-core",
- "bip39",
+ "bip39 2.2.2",
  "bitcoin",
  "clap",
  "config",
@@ -438,7 +438,7 @@ version = "0.9.14"
 dependencies = [
  "ammonia",
  "bcr-common",
- "bip39",
+ "bip39 2.2.2",
  "bitcoin",
  "borsh",
  "ecies",
@@ -515,6 +515,17 @@ dependencies = [
  "bitcoin_hashes 0.14.101",
  "rand 0.8.8",
  "rand_core 0.6.4",
+ "serde",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "bip39"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4559bb9225f8401dcea601cf8dc9ed81ea0dadd9cf7755fdefdd93ef7961e19e"
+dependencies = [
+ "bitcoin_hashes 0.14.101",
  "serde",
  "unicode-normalization",
 ]
@@ -2707,7 +2718,7 @@ checksum = "38ca5c25a6df8d4d78fdf39b42792438f6ce22b4809ccbfdb27582ed9ca45407"
 dependencies = [
  "base64 0.22.1",
  "bech32 0.12.0",
- "bip39",
+ "bip39 2.2.2",
  "bitcoin_hashes 1.2.0",
  "cbc",
  "chacha20 0.9.1",
@@ -4657,7 +4668,7 @@ dependencies = [
  "bcr-common",
  "bcr-wallet-api",
  "bcr-wallet-core",
- "bip39",
+ "bip39 2.2.2",
  "bitcoin",
  "env_logger",
  "flutter_rust_bridge",

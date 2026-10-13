@@ -6557,7 +6557,12 @@ mod tests {
                     &commitment.ephemeral_secret,
                 );
                 req.alpha_id == alpha_id
-                    && secrets(&req.proofs) == input_secrets
+                    && req
+                        .proofs
+                        .iter()
+                        .map(|p| p.secret.clone())
+                        .collect::<Vec<_>>()
+                        == input_secrets
                     && req.proofs.iter().all(|p| p.dleq.is_none())
                     && req.commitment == commitment.commitment
                     && req.content == commitment.body_content
@@ -6572,7 +6577,7 @@ mod tests {
             .returning(move |_| {
                 Ok(wire_swap::SwapProtestResponse {
                     signatures: matches!(status, wire_common::ProtestStatus::Resolved)
-                        .then(|| signatures.clone()),
+                        .then(|| signatures.iter().cloned().map(Into::into).collect()),
                     status: status.clone(),
                 })
             });

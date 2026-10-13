@@ -533,7 +533,7 @@ pub(crate) async fn post_swap_protest(
     let wallet_signature = sign_content_b64(&record.body_content, &ephemeral_keypair)?;
     let request = wire_swap::SwapProtestRequest {
         alpha_id: beta.alpha_id(),
-        proofs,
+        proofs: proofs.into_iter().map(Into::into).collect(),
         content: record.body_content.clone(),
         commitment: record.commitment,
         wallet_signature,
@@ -1038,7 +1038,12 @@ mod tests {
             .withf(move |req| {
                 req.alpha_id == alpha_id
                     && req.inputs.len() == 2
-                    && req.inputs.iter().map(|fp| fp.y).collect::<Vec<_>>() == expected_ys
+                    && req
+                        .inputs
+                        .iter()
+                        .map(|fp| cashu::PublicKey::from(fp.y))
+                        .collect::<Vec<_>>()
+                        == expected_ys
             })
             .returning(|_| Ok(crate::pocket::test_utils::tests::mock_attestation()));
 
