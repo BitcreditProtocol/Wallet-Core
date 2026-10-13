@@ -31,6 +31,7 @@
     * `wallet_check_pending_commitments` replays, restores or protests an expired commitment instead of deleting it (unless it has no input proofs and restores nothing), and one failing record no longer stops the others
     * A swap commitment stores its input proofs as `StoredCommitment::V2`, so a receive's commitment can be resumed or protested without the sender's proofs in the proof table (DB change, no migration needed)
     * An offline payment's substitute swap change is seed-derived instead of random, so a restore can find it
+* An offline exchange rejects issued proofs the wallet can't spend alone before their locktime: locked to another key, refundable by anyone but the substitute, or missing the offline exchange tag (#146)
 
 # 0.9.13
 

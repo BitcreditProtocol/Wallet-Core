@@ -21,7 +21,7 @@ use crate::{
 use bcr_common::{
     cashu::{self, Amount, CurrencyUnit, Proof, ProofsMethods},
     cdk_common::wallet::TransactionDirection,
-    core::{NodeId, htlc},
+    core::{NodeId, htlc, signature::verify_spending_conditions},
     ecash::{self, KeySetInfo},
     wallet::{BitcrTokenV5, Token},
     wire::clowder::{ConnectedMintResponse, ConnectedMintsResponse},
@@ -1065,13 +1065,24 @@ impl Wallet {
             .into_iter()
             .map(|s| (Sha256::hash(&s.to_bytes()), s))
             .collect();
+        let now = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         for p in beta_proofs.iter_mut() {
-            let hash_lock = util::htlc_hash_lock(p)
-                .ok_or_else(|| Error::Swap("issued proof is not HTLC locked".into()))?;
+            let (hash_lock, conditions) = htlc::htlc_lock(p)
+                .map_err(|_| Error::Swap("issued proof is not HTLC locked".into()))?;
+            htlc::validate_exchange_conditions(
+                &wallet_pk.public_key(),
+                &substitute_clowder_id.into(),
+                &conditions,
+                crate::config::LOCK_REDUCTION_SECONDS_PER_HOP,
+                now,
+            )
+            .map_err(|e| Error::Swap(format!("issued proof has an unusable lock: {e}")))?;
             let secret = by_hash_lock
                 .get(&hash_lock)
                 .ok_or_else(|| Error::Swap("issued proof carries an unknown hash lock".into()))?;
             htlc::sign_htlc(p, &secret.to_string(), &wallet_pk)?;
+            verify_spending_conditions(p)
+                .map_err(|e| Error::Swap(format!("issued proof can't be unlocked: {e}")))?;
         }
         Ok(beta_proofs)
     }
@@ -5285,8 +5296,31 @@ mod tests {
             });
         }
     }
-    #[tokio::test]
-    async fn test_offline_exchange_success_with_valid_proofs() {
+    fn exchange_locked(
+        mut proofs: Vec<Proof>,
+        hash_locks: &[Sha256],
+        wallet_pk: secp256k1::PublicKey,
+        issuer: secp256k1::PublicKey,
+    ) -> Vec<Proof> {
+        let locktime = time::OffsetDateTime::now_utc().unix_timestamp() as u64 + 3600;
+        for (proof, hash_lock) in proofs.iter_mut().zip(hash_locks) {
+            let htlc =
+                htlc::exchange_htlc(*hash_lock, locktime, wallet_pk.into(), issuer.into()).unwrap();
+            proof.secret = bcr_common::core::signature::offline_htlc_secret(htlc).unwrap();
+        }
+        proofs
+    }
+
+    async fn offline_exchange_issuing(
+        issue: impl FnOnce(
+            Vec<Proof>,
+            &[Sha256],
+            secp256k1::PublicKey,
+            secp256k1::PublicKey,
+        ) -> Vec<Proof>
+        + Send
+        + 'static,
+    ) -> Result<Vec<Proof>> {
         let ctx = wallet_ctx();
         let wlt = wallet(ctx).await;
 
@@ -5299,9 +5333,6 @@ mod tests {
         let mut beta_proofs =
             core_tests::generate_random_ecash_proofs(&beta_keyset, &[Amount::from(8)]);
         add_test_dleqs(&mut beta_proofs);
-        let hash_lock = Sha256::hash(&alpha_proofs[0].secret.to_bytes());
-        let htlc = cashu::SpendingConditions::new_htlc_hash(&hash_lock.to_string(), None).unwrap();
-        beta_proofs[0].secret = htlc.try_into().unwrap();
 
         let mut substitute = MockClowderMintConnector::new();
 
@@ -5317,14 +5348,20 @@ mod tests {
             )
             .return_once(
                 move |_fingerprints,
-                      _hash_locks,
-                      _wallet_pk,
+                      hash_locks,
+                      wallet_pk,
                       _wallet_signature,
-                      _substitute_clowder_id| { Ok(beta_proofs) },
+                      substitute_clowder_id| {
+                    Ok(issue(
+                        beta_proofs,
+                        &hash_locks,
+                        wallet_pk,
+                        substitute_clowder_id,
+                    ))
+                },
             );
 
-        let res = wlt
-            .read()
+        wlt.read()
             .await
             .offline_exchange(
                 &substitute,
@@ -5334,12 +5371,41 @@ mod tests {
                 [7u8; 32],
             )
             .await
-            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_offline_exchange_success_with_valid_proofs() {
+        let res = offline_exchange_issuing(exchange_locked).await.unwrap();
 
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].amount, Amount::from(8));
 
         assert!(res[0].witness.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_offline_exchange_rejects_proofs_another_key_can_refund() {
+        let res = offline_exchange_issuing(|proofs, hash_locks, wallet_pk, _issuer| {
+            exchange_locked(proofs, hash_locks, wallet_pk, test_other_pub_key())
+        })
+        .await;
+        assert!(matches!(res, Err(Error::Swap(_))));
+    }
+
+    #[tokio::test]
+    async fn test_offline_exchange_rejects_proofs_without_the_offline_tag() {
+        let res = offline_exchange_issuing(|mut proofs, hash_locks, wallet_pk, issuer| {
+            let locktime = time::OffsetDateTime::now_utc().unix_timestamp() as u64 + 3600;
+            for (proof, hash_lock) in proofs.iter_mut().zip(hash_locks) {
+                let htlc =
+                    htlc::exchange_htlc(*hash_lock, locktime, wallet_pk.into(), issuer.into())
+                        .unwrap();
+                proof.secret = htlc.try_into().unwrap();
+            }
+            proofs
+        })
+        .await;
+        assert!(matches!(res, Err(Error::Swap(_))));
     }
 
     #[tokio::test]
@@ -6079,12 +6145,6 @@ mod tests {
             test_keyset_and_proofs(&[Amount::from(8u64), Amount::from(16u64)]);
         let substitute_kid = substitute_info.id;
         add_test_dleqs(&mut substitute_proofs);
-        for (sp, lp) in substitute_proofs.iter_mut().zip(local_proofs.iter()) {
-            let hash_lock = Sha256::hash(&lp.secret.to_bytes());
-            let htlc =
-                cashu::SpendingConditions::new_htlc_hash(&hash_lock.to_string(), None).unwrap();
-            sp.secret = htlc.try_into().unwrap();
-        }
         let unlocked_payment_proofs =
             core_tests::generate_random_ecash_proofs(&substitute_mint_keyset, &[send_amount]);
         assert!(
@@ -6219,14 +6279,19 @@ mod tests {
             .return_once(
                 move |fingerprints,
                       hash_locks,
-                      _wallet_public_key,
+                      wallet_public_key,
                       _wallet_signature,
                       received_substitute_clowder_id| {
                     assert_eq!(fingerprints.len(), 2);
                     assert_eq!(hash_locks.len(), 2);
                     assert_eq!(received_substitute_clowder_id, substitute_clowder_id);
 
-                    Ok(exchanged_proofs_for_mock)
+                    Ok(exchange_locked(
+                        exchanged_proofs_for_mock,
+                        &hash_locks,
+                        wallet_public_key,
+                        received_substitute_clowder_id,
+                    ))
                 },
             );
         let substitute_info_for_mock = substitute_info.clone();
@@ -6425,7 +6490,7 @@ mod tests {
         let locked = record.locked_proofs.as_ref().expect("locked proofs stored");
         assert_eq!(locked.total_amount().unwrap(), Amount::from(10));
         for proof in locked {
-            assert_eq!(util::htlc_hash_lock(proof), Some(record.hash_lock));
+            assert_eq!(htlc::htlc_lock(proof).unwrap().0, record.hash_lock);
         }
         assert!(fx.pdb.list_commitments().await.unwrap().is_empty());
     }
@@ -6634,7 +6699,7 @@ mod tests {
         amounts.sort();
         assert_eq!(amounts, vec![Amount::from(2), Amount::from(8)]);
         for proof in proofs {
-            assert_eq!(util::htlc_hash_lock(proof), Some(s.record.hash_lock));
+            assert_eq!(htlc::htlc_lock(proof).unwrap().0, s.record.hash_lock);
             assert!(proof.witness.is_some());
         }
     }

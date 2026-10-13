@@ -45,14 +45,6 @@ pub fn remove_dleq_from_proofs(mut proofs: Vec<Proof>) -> Vec<Proof> {
     proofs
 }
 
-/// The hash lock a proof's HTLC spending condition names, if it has one.
-pub fn htlc_hash_lock(proof: &Proof) -> Option<Sha256> {
-    match (&proof.secret).try_into().ok()? {
-        cashu::SpendingConditions::HTLCConditions { data, .. } => Some(data),
-        cashu::SpendingConditions::P2PKConditions { .. } => None,
-    }
-}
-
 /// What locking proofs into an HTLC at their mint needs, prepared before anything is swapped.
 pub struct HtlcLock {
     /// Unix timestamp in seconds after which the wallet key alone unlocks the outputs
