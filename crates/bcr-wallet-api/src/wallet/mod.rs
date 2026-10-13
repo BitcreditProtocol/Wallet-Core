@@ -490,6 +490,7 @@ impl Wallet {
             &secrets,
             &entry.exchange_key,
             &header.substitute_clowder_id,
+            0,
         )?;
         self.journal
             .update(vec![y], MigrationJournalState::Exchanged(beta_proofs))
@@ -536,6 +537,7 @@ impl Wallet {
                         &[entry.proof.secret],
                         &entry.exchange_key,
                         &entry.header.substitute_clowder_id,
+                        0,
                     )?);
                 }
                 MigrationJournalState::Pending
@@ -1277,7 +1279,13 @@ impl Wallet {
             &wallet_pk,
         )
         .await?;
-        util::unlock_offline_exchanged(beta_proofs, &secrets, &wallet_pk, &substitute_clowder_id)
+        util::unlock_offline_exchanged(
+            beta_proofs,
+            &secrets,
+            &wallet_pk,
+            &substitute_clowder_id,
+            crate::config::LOCK_REDUCTION_SECONDS_PER_HOP,
+        )
     }
 
     /// Exchanges alpha proofs for proofs of the wallet's mint along `path`.
@@ -5504,12 +5512,22 @@ mod tests {
         }
     }
     fn exchange_locked(
-        mut proofs: Vec<Proof>,
+        proofs: Vec<Proof>,
         hash_locks: &[Sha256],
         wallet_pk: secp256k1::PublicKey,
         issuer: secp256k1::PublicKey,
     ) -> Vec<Proof> {
-        let locktime = time::OffsetDateTime::now_utc().unix_timestamp() as u64 + 3600;
+        exchange_locked_for(proofs, hash_locks, wallet_pk, issuer, 3600)
+    }
+
+    fn exchange_locked_for(
+        mut proofs: Vec<Proof>,
+        hash_locks: &[Sha256],
+        wallet_pk: secp256k1::PublicKey,
+        issuer: secp256k1::PublicKey,
+        lock_secs: u64,
+    ) -> Vec<Proof> {
+        let locktime = time::OffsetDateTime::now_utc().unix_timestamp() as u64 + lock_secs;
         for (proof, hash_lock) in proofs.iter_mut().zip(hash_locks) {
             let htlc =
                 htlc::exchange_htlc(*hash_lock, locktime, wallet_pk.into(), issuer.into()).unwrap();
@@ -7070,6 +7088,7 @@ mod tests {
         beta_info: ecash::KeySetInfo,
         sent: Arc<std::sync::Mutex<Vec<SentExchange>>>,
         received: Arc<std::sync::Mutex<Vec<cashu::Proof>>>,
+        lock_secs: u64,
     }
 
     impl MigrationCtx {
@@ -7109,6 +7128,7 @@ mod tests {
                 beta_info: beta_info.into(),
                 sent: Arc::new(std::sync::Mutex::new(Vec::new())),
                 received: Arc::new(std::sync::Mutex::new(Vec::new())),
+                lock_secs: 3600,
             }
         }
 
@@ -7145,6 +7165,7 @@ mod tests {
                 })
             });
             let (beta_proofs, sent) = (self.beta_proofs.clone(), self.sent.clone());
+            let lock_secs = self.lock_secs;
             substitute.expect_post_offline_exchange().returning(
                 move |fingerprints, hashes, wallet_pk, signature, issuer| {
                     let failed = fail.contains(&fingerprints[0].y.into());
@@ -7157,11 +7178,12 @@ mod tests {
                             "connection reset".to_string(),
                         ));
                     }
-                    Ok(exchange_locked(
+                    Ok(exchange_locked_for(
                         vec![beta_proofs[&hash].clone()],
                         &[hash],
                         wallet_pk,
                         issuer,
+                        lock_secs,
                     ))
                 },
             );
@@ -7491,6 +7513,27 @@ mod tests {
         assert_eq!(t.received(), Amount::from(24));
         wlt.read().await.finish_migration().await.unwrap();
         assert!(t.pdb.load().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn migrate_resumes_issued_proofs_inside_the_hop_margin() {
+        let mut t = MigrationCtx::new(&[8, 16], &[]).await;
+        t.lock_secs = 300;
+        let wlt = t.wallet(vec![], 1, false).await;
+        let err = t.migrate(&wlt).await.unwrap_err();
+        assert!(matches!(err, Error::MigrationIncomplete(2)));
+
+        let wlt = t.wallet(vec![], 0, false).await;
+        assert_eq!(t.migrate(&wlt).await.unwrap(), t.substitute_url);
+        assert_eq!(t.received(), Amount::from(24));
+    }
+
+    #[tokio::test]
+    async fn migrate_of_only_held_payments_is_found_again() {
+        let t = MigrationCtx::new(&[], &[4]).await;
+        let wlt = t.wallet(vec![], 0, false).await;
+        assert_eq!(t.migrate(&wlt).await.unwrap(), t.substitute_url);
+        assert!(wlt.read().await.has_migration_entries().await.unwrap());
     }
 
     #[tokio::test]

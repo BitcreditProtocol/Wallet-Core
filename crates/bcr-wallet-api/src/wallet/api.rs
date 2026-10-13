@@ -86,7 +86,7 @@ pub trait WalletApi: SendSync {
     async fn check_pending_melt_commitments(&self) -> Result<()>;
     async fn migrate_pockets_substitute(&mut self, substitute_url: url::Url) -> Result<url::Url>;
     async fn finish_migration(&self) -> Result<()>;
-    async fn has_swapped_migration_entries(&self) -> Result<bool>;
+    async fn has_migration_entries(&self) -> Result<bool>;
     async fn receive_proofs(
         &self,
         proofs: Vec<cdk00::Proof>,
@@ -888,6 +888,7 @@ impl WalletApi for super::Wallet {
                         &[entry.proof.secret],
                         &entry.exchange_key,
                         &header.substitute_clowder_id,
+                        0,
                     )?);
                     exchanged_ys.push(y);
                     continue;
@@ -990,13 +991,13 @@ impl WalletApi for super::Wallet {
         Ok(())
     }
 
-    async fn has_swapped_migration_entries(&self) -> Result<bool> {
+    async fn has_migration_entries(&self) -> Result<bool> {
         Ok(self
             .journal
             .load()
             .await?
             .values()
-            .any(|e| e.state == MigrationJournalState::Swapped))
+            .any(|e| &e.header.substitute_url == self.client.mint_url()))
     }
 
     async fn prepare_pay_by_token(

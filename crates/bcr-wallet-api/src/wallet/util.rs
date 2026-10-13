@@ -104,6 +104,7 @@ pub fn unlock_offline_exchanged(
     secrets: &[cashu::secret::Secret],
     wallet_sk: &cashu::SecretKey,
     issuer: &secp256k1::PublicKey,
+    margin: u64,
 ) -> Result<Vec<Proof>> {
     let by_hash_lock: HashMap<Sha256, &cashu::secret::Secret> = secrets
         .iter()
@@ -117,7 +118,7 @@ pub fn unlock_offline_exchanged(
             &wallet_sk.public_key(),
             &(*issuer).into(),
             &conditions,
-            crate::config::LOCK_REDUCTION_SECONDS_PER_HOP,
+            margin,
             now,
         )
         .map_err(|e| Error::Swap(format!("issued proof has an unusable lock: {e}")))?;
