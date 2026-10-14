@@ -1,3 +1,7 @@
+# 0.9.15
+
+* TBD
+
 # 0.9.14
 
 * Online intermint exchanges store an encrypted exchange record (refund key, alpha inputs, premints, locktime) before the lock swap and keep its commitment until the locked proofs are stored (DB change, no migration needed: adds the pocket DB `exchange_records` table and appends a `ForeignMintProofReason::ExchangeRefund { alpha_url }` variant, so existing entries decode unchanged)
