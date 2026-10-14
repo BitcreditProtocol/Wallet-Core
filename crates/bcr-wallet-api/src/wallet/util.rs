@@ -7,13 +7,23 @@ use crate::{
 use bcr_common::{
     cashu::{self, Proof, amount::SplitTarget},
     cdk_common,
-    core::{htlc::wallet_htlc, swap::wallet::prepare_swap},
+    core::{
+        htlc::{self, wallet_htlc},
+        signature::verify_spending_conditions,
+        swap::wallet::prepare_swap,
+    },
     ecash,
     ecash::KeySet,
-    wire::keys::ProofFingerprint,
+    wire::{
+        exchange::{self, OfflineExchangeRequest},
+        keys::ProofFingerprint,
+    },
 };
 use bcr_wallet_core::types::Transaction;
-use bitcoin::{hashes::sha256::Hash as Sha256, secp256k1};
+use bitcoin::{
+    hashes::{Hash, sha256::Hash as Sha256},
+    secp256k1,
+};
 
 //////////////////////////////////// utils
 pub fn proofs_to_fingerprints(
@@ -36,6 +46,90 @@ pub fn proofs_to_fingerprints(
     }
 
     Ok((fingerprints, secrets))
+}
+
+pub fn build_offline_exchange_request(
+    alpha_id: &secp256k1::PublicKey,
+    evidence_digest: &[u8; 32],
+    proofs: Vec<Proof>,
+    wallet_sk: &cashu::SecretKey,
+) -> Result<OfflineExchangeRequest> {
+    let (fingerprints, secrets) = proofs_to_fingerprints(proofs)?;
+    let hashes: Vec<Sha256> = secrets
+        .iter()
+        .map(|secret| Sha256::hash(&secret.to_bytes()))
+        .collect();
+    let wallet_pk = wallet_sk.public_key();
+    let exchange_digest = exchange::exchange_digest(
+        alpha_id,
+        evidence_digest,
+        &fingerprints,
+        &hashes,
+        &wallet_pk,
+    );
+    let keypair = secp256k1::Keypair::from_secret_key(secp256k1::global::SECP256K1, wallet_sk);
+    let wallet_signature = secp256k1::global::SECP256K1
+        .sign_schnorr_no_aux_rand(&exchange::exchange_message(&exchange_digest), &keypair);
+    Ok(OfflineExchangeRequest {
+        fingerprints,
+        hashes,
+        wallet_pk,
+        wallet_signature,
+    })
+}
+
+pub async fn post_offline_exchange(
+    substitute_client: &dyn ClowderMintConnector,
+    substitute_clowder_id: secp256k1::PublicKey,
+    alpha_id: &secp256k1::PublicKey,
+    evidence_digest: &[u8; 32],
+    proofs: Vec<Proof>,
+    wallet_sk: &cashu::SecretKey,
+) -> Result<Vec<Proof>> {
+    let request = build_offline_exchange_request(alpha_id, evidence_digest, proofs, wallet_sk)?;
+    let beta_proofs = substitute_client
+        .post_offline_exchange(
+            request.fingerprints,
+            request.hashes,
+            *request.wallet_pk,
+            request.wallet_signature,
+            substitute_clowder_id,
+        )
+        .await?;
+    Ok(beta_proofs)
+}
+
+pub fn unlock_offline_exchanged(
+    mut beta_proofs: Vec<Proof>,
+    secrets: &[cashu::secret::Secret],
+    wallet_sk: &cashu::SecretKey,
+    issuer: &secp256k1::PublicKey,
+    margin: u64,
+) -> Result<Vec<Proof>> {
+    let by_hash_lock: HashMap<Sha256, &cashu::secret::Secret> = secrets
+        .iter()
+        .map(|s| (Sha256::hash(&s.to_bytes()), s))
+        .collect();
+    let now = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
+    for p in beta_proofs.iter_mut() {
+        let (hash_lock, conditions) = htlc::htlc_lock(p)
+            .map_err(|_| Error::Swap("issued proof is not HTLC locked".into()))?;
+        htlc::validate_exchange_conditions(
+            &wallet_sk.public_key(),
+            &(*issuer).into(),
+            &conditions,
+            margin,
+            now,
+        )
+        .map_err(|e| Error::Swap(format!("issued proof has an unusable lock: {e}")))?;
+        let secret = by_hash_lock
+            .get(&hash_lock)
+            .ok_or_else(|| Error::Swap("issued proof carries an unknown hash lock".into()))?;
+        htlc::sign_htlc(p, &secret.to_string(), wallet_sk)?;
+        verify_spending_conditions(p)
+            .map_err(|e| Error::Swap(format!("issued proof can't be unlocked: {e}")))?;
+    }
+    Ok(beta_proofs)
 }
 
 pub fn remove_dleq_from_proofs(mut proofs: Vec<Proof>) -> Vec<Proof> {
@@ -146,6 +240,7 @@ mod tests {
         types::{PaymentType, TransactionFees, TransactionStatus},
         util::to_mint_url,
     };
+    use bitcoin::hex::FromHex;
     use std::str::FromStr;
     use uuid::Uuid;
 
@@ -164,6 +259,23 @@ mod tests {
         let mut proofs = core_tests::generate_random_ecash_proofs(&keyset, amounts);
         add_test_dleqs(&mut proofs);
         proofs
+    }
+
+    #[test]
+    fn offline_exchange_request_matches_the_mint_retry_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/offline_exchange_retry.json"
+        ))
+        .expect("fixture parses");
+        let field = |key: &str| fixture[key].clone();
+        let request = build_offline_exchange_request(
+            &serde_json::from_value(field("alpha_id")).unwrap(),
+            &<[u8; 32]>::from_hex(field("evidence_digest").as_str().unwrap()).unwrap(),
+            vec![serde_json::from_value(field("proof")).unwrap()],
+            &serde_json::from_value(field("wallet_sk")).unwrap(),
+        )
+        .expect("builds");
+        assert_eq!(serde_json::to_value(&request).unwrap(), field("request"));
     }
 
     #[test]

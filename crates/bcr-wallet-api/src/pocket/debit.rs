@@ -734,24 +734,23 @@ impl super::PocketApi for Pocket {
         Ok(total_recovered)
     }
 
-    async fn delete_proofs(&self) -> Result<HashMap<ecash::Id, Vec<cdk00::Proof>>> {
-        let proofs = self.pdb.list_all().await?;
-
-        let mut proofs_by_keyset = HashMap::<ecash::Id, Vec<cdk00::Proof>>::new();
-
-        for y in proofs.iter() {
-            if let Some((proof, state)) = self.pdb.delete_proof(*y).await? {
-                // delete all, but return only unspent proofs
-                if matches!(state, cdk07::State::Unspent) {
-                    proofs_by_keyset
-                        .entry(proof.keyset_id.into())
-                        .or_default()
-                        .push(proof);
-                }
+    async fn retain_migratable_proofs(
+        &self,
+        substitute: &HashSet<ecash::Id>,
+    ) -> Result<Vec<cdk01::PublicKey>> {
+        let mut migratable = Vec::new();
+        for y in self.pdb.list_all().await? {
+            let (proof, state) = self.pdb.load_proof(y).await?;
+            if substitute.contains(&proof.keyset_id.into()) {
+                continue;
+            }
+            if matches!(state, cdk07::State::Unspent | cdk07::State::PendingSpent) {
+                migratable.push(y);
+            } else {
+                self.pdb.delete_proof(y).await?;
             }
         }
-
-        Ok(proofs_by_keyset)
+        Ok(migratable)
     }
 
     async fn return_proofs_to_send_for_offline_payment(
@@ -1699,6 +1698,38 @@ mod tests {
         let unit = CurrencyUnit::Sat;
         let seed = bip39::Mnemonic::generate(12).unwrap().to_seed("");
         super::Pocket::new(unit, pdb, mdb, seed, Arc::new(provider))
+    }
+
+    #[tokio::test]
+    async fn retain_migratable_proofs_keeps_substitute_proofs() {
+        let (_, alpha_keyset) = core_tests::generate_random_ecash_keyset();
+        let (substitute_info, substitute_keyset) = core_tests::generate_random_ecash_keyset();
+        let alpha = core_tests::generate_random_ecash_proofs(&alpha_keyset, &[Amount::from(8u64)])
+            .remove(0);
+        let substitute =
+            core_tests::generate_random_ecash_proofs(&substitute_keyset, &[Amount::from(8u64)])
+                .remove(0);
+        let alpha_y = alpha.y().unwrap();
+        let substitute_y = substitute.y().unwrap();
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_list_all()
+            .returning(move || Ok(vec![alpha_y, substitute_y]));
+        pdb.expect_load_proof().returning(move |y| {
+            let proof = if y == alpha_y {
+                alpha.clone()
+            } else {
+                substitute.clone()
+            };
+            Ok((proof, cdk07::State::Unspent))
+        });
+        pdb.expect_delete_proof().never();
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()));
+        let migratable = pocket
+            .retain_migratable_proofs(&HashSet::from([substitute_info.id]))
+            .await
+            .unwrap();
+        assert_eq!(migratable, vec![alpha_y]);
     }
 
     #[tokio::test]

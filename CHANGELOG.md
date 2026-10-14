@@ -33,6 +33,8 @@
     * A swap commitment stores its input proofs as `StoredCommitment::V2`, so a receive's commitment can be resumed or protested without the sender's proofs in the proof table (DB change, no migration needed)
     * An offline payment's substitute swap change is seed-derived instead of random, so a restore can find it
 * An offline exchange rejects issued proofs the wallet can't spend alone before their locktime: locked to another key, refundable by anyone but the substitute, or missing the offline exchange tag
+* `wallet_migrate_rabid` can resume a partly finished migration, else fails with `MigrationIncomplete` (DB change, no migration needed: adds the pocket DB `migration_journal` table)
+* `wallet_reclaim_tx` reclaims a payment left pending during a migration at the substitute
 
 # 0.9.13
 

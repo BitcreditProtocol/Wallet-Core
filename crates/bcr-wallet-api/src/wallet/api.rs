@@ -6,7 +6,10 @@ use crate::{
         debit::{MeltProtestResult, ProtestResult},
     },
     types::{MintSummary, PaymentSummary, WalletConfig},
-    wallet::types::{PayReference, SwapConfig, WalletInfo, WalletPaymentType, WalletProtestResult},
+    wallet::{
+        types::{PayReference, SwapConfig, WalletInfo, WalletPaymentType, WalletProtestResult},
+        util,
+    },
 };
 use async_trait::async_trait;
 use bcr_common::{
@@ -27,6 +30,7 @@ use bcr_wallet_core::{
     },
     util::to_mint_url,
 };
+use bcr_wallet_persistence::{MigrationJournalHeader, MigrationJournalState};
 use bcr_wallet_transport::NostrEventChannel;
 use bitcoin::base58;
 use futures::StreamExt;
@@ -80,10 +84,9 @@ pub trait WalletApi: SendSync {
     ) -> Result<WalletProtestResult>;
     async fn protest_melt(&self, quote_id: Uuid) -> Result<WalletProtestResult>;
     async fn check_pending_melt_commitments(&self) -> Result<()>;
-    async fn migrate_pockets_substitute(
-        &mut self,
-        substitute: Arc<dyn ClowderMintConnector>,
-    ) -> Result<url::Url>;
+    async fn migrate_pockets_substitute(&mut self, substitute_url: url::Url) -> Result<url::Url>;
+    async fn finish_migration(&self) -> Result<()>;
+    async fn has_migration_entries(&self) -> Result<bool>;
     async fn receive_proofs(
         &self,
         proofs: Vec<cdk00::Proof>,
@@ -818,86 +821,183 @@ impl WalletApi for super::Wallet {
         NodeId::new(self.clowder_id, self.network)
     }
 
-    async fn migrate_pockets_substitute(
-        &mut self,
-        substitute: Arc<dyn ClowderMintConnector>,
-    ) -> Result<url::Url> {
-        let substitute_clowder_id = substitute.get_clowder_id().await?;
-        let evidence_digest = substitute
-            .get_alpha_offline(self.clowder_id)
+    async fn migrate_pockets_substitute(&mut self, substitute_url: url::Url) -> Result<url::Url> {
+        let outage = self
+            .journal
+            .load()
             .await?
-            .evidence_digest
-            .ok_or_else(|| Error::Swap("alpha not offline at substitute".into()))?;
-        let debit_proofs = self.debit.delete_proofs().await?;
+            .into_values()
+            .find(|e| e.header.alpha_id == self.clowder_id);
+        let header = match outage {
+            Some(entry) => entry.header,
+            None => {
+                let substitute = (self.client_factory)(substitute_url.clone());
+                let substitute_clowder_id = substitute.get_clowder_id().await?;
+                let evidence_digest = substitute
+                    .get_alpha_offline(self.clowder_id)
+                    .await?
+                    .evidence_digest
+                    .ok_or_else(|| Error::Swap("alpha not offline at substitute".into()))?;
+                MigrationJournalHeader {
+                    substitute_url,
+                    substitute_clowder_id,
+                    alpha_id: self.clowder_id,
+                    evidence_digest,
+                }
+            }
+        };
+        let substitute = (self.client_factory)(header.substitute_url.clone());
+        let keysets_info: HashMap<ecash::Id, ecash::KeySetInfo> = substitute
+            .get_mint_keysets()
+            .await?
+            .into_iter()
+            .map(|k| (k.id, k))
+            .collect();
 
-        // Exchange debit
-        let mut exchanged_proofs = Vec::new();
+        let substitute_kids: HashSet<ecash::Id> = keysets_info.keys().copied().collect();
+        let entries: Vec<_> = self
+            .debit
+            .retain_migratable_proofs(&substitute_kids)
+            .await?
+            .into_iter()
+            .map(|y| (y, cashu::SecretKey::generate()))
+            .collect();
+        if !entries.is_empty() {
+            self.journal.put(header.clone(), entries).await?;
+        }
 
         tracing::info!("Exchanging proofs offline");
-        for (keyset_id, proofs) in debit_proofs.into_iter() {
-            tracing::info!(
-                "Exchanging {} proofs for keyset: {}",
-                proofs.len(),
-                keyset_id
-            );
-            for proof in proofs {
-                let proof_y = proof.y();
-                let proof_amount = proof.amount;
-                match self
-                    .offline_exchange(
-                        substitute.as_ref(),
-                        vec![proof],
-                        substitute_clowder_id,
-                        self.clowder_id,
-                        evidence_digest,
-                    )
-                    .await
-                {
-                    Ok(exchanged) => {
-                        exchanged_proofs.extend(exchanged);
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Could not exchange proof {proof_y:?} with amount {proof_amount} for keyset {keyset_id} during pocket migration: {e}",
-                        );
-                    }
+        let mut journal: Vec<_> = self
+            .journal
+            .load()
+            .await?
+            .into_iter()
+            .filter(|(_, e)| e.header == header)
+            .collect();
+        journal.sort_by_key(|(y, _)| *y);
+
+        let mut exchanged_ys = Vec::new();
+        let mut exchanged_proofs = Vec::new();
+        let mut unexchanged = 0;
+        for (y, entry) in journal {
+            match entry.state {
+                MigrationJournalState::Pending => {}
+                MigrationJournalState::Exchanged(beta_proofs) => {
+                    exchanged_proofs.extend(util::unlock_offline_exchanged(
+                        beta_proofs,
+                        &[entry.proof.secret],
+                        &entry.exchange_key,
+                        &header.substitute_clowder_id,
+                        0,
+                    )?);
+                    exchanged_ys.push(y);
+                    continue;
+                }
+                MigrationJournalState::Swapped
+                | MigrationJournalState::Held
+                | MigrationJournalState::Reclaimed(_) => continue,
+            }
+            match self
+                .exchange_journaled(substitute.as_ref(), &header, y, entry)
+                .await
+            {
+                Ok(unlocked) => {
+                    exchanged_proofs.extend(unlocked);
+                    exchanged_ys.push(y);
+                }
+                Err(e) => {
+                    tracing::error!("Could not exchange proof {y:?} during pocket migration: {e}");
+                    unexchanged += 1;
                 }
             }
         }
+        if unexchanged > 0 {
+            return Err(Error::MigrationIncomplete(unexchanged));
+        }
 
-        self.client = substitute;
-        self.clowder_id = self.client.get_clowder_id().await?;
+        let clowder_id = substitute.get_clowder_id().await?;
         let mut beta_clients = BTreeMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
-
-        for beta in self.client.as_ref().get_clowder_betas().await? {
+        for beta in substitute.get_clowder_betas().await? {
             let beta_client = (self.client_factory)(beta.url.clone());
             beta_clients.insert(beta.url, beta_client);
         }
-        self.beta_clients = beta_clients;
-
         let beta_provider = Arc::new(RandomBetaProvider::new(
-            self.beta_clients.values().cloned().collect(),
-            self.clowder_id,
+            beta_clients.values().cloned().collect(),
+            clowder_id,
         )?);
 
-        self.debit.set_beta_provider(beta_provider);
+        if !exchanged_proofs.is_empty() {
+            tracing::info!("Swapping exchanged proofs");
+            self.debit.set_beta_provider(beta_provider.clone());
+            let swap_config = SwapConfig {
+                expiry: self.swap_expiry,
+                alpha_pk: clowder_id,
+            };
+            let swapped = async {
+                self.swap_exchanged(
+                    substitute.clone(),
+                    &keysets_info,
+                    exchanged_proofs,
+                    swap_config,
+                )
+                .await
+                .map_err(|_| Error::MigrationIncomplete(exchanged_ys.len()))?;
+                self.journal
+                    .update(exchanged_ys, MigrationJournalState::Swapped)
+                    .await?;
+                Ok::<(), Error>(())
+            }
+            .await;
+            if let Err(e) = swapped {
+                self.debit
+                    .set_beta_provider(Arc::new(RandomBetaProvider::new(
+                        self.beta_clients.values().cloned().collect(),
+                        self.clowder_id,
+                    )?));
+                return Err(e);
+            }
+        }
 
-        // Swap intermint exchanged proofs
-        tracing::info!("Swapping exchanged proofs");
-        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
-        self.debit
-            .receive_proofs(
-                self.client.clone(),
-                &keysets_info,
-                exchanged_proofs,
-                self.swap_config(),
-            )
-            .await?;
-        let balance = self.debit.balance(&keysets_info).await?;
+        self.debit.set_beta_provider(beta_provider);
+        self.client = substitute;
+        self.clowder_id = clowder_id;
+        self.beta_clients = beta_clients;
+        self.mint_keyset_infos = keysets_info;
+        let balance = self.debit.balance(&self.mint_keyset_infos).await?;
 
         tracing::info!("Migration successful balance: {:?}", balance);
 
         Ok(self.client.mint_url().to_owned())
+    }
+
+    async fn finish_migration(&self) -> Result<()> {
+        let unfinished = self
+            .journal
+            .load()
+            .await?
+            .values()
+            .filter(|e| {
+                &e.header.substitute_url != self.client.mint_url()
+                    && matches!(
+                        e.state,
+                        MigrationJournalState::Pending | MigrationJournalState::Exchanged(_)
+                    )
+            })
+            .count();
+        if unfinished > 0 {
+            return Err(Error::MigrationIncomplete(unfinished));
+        }
+        self.journal.prune_swapped().await?;
+        Ok(())
+    }
+
+    async fn has_migration_entries(&self) -> Result<bool> {
+        Ok(self
+            .journal
+            .load()
+            .await?
+            .values()
+            .any(|e| &e.header.substitute_url == self.client.mint_url()))
     }
 
     async fn prepare_pay_by_token(
