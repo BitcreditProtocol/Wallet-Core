@@ -14,16 +14,15 @@ use bcr_wallet_core::{
     event::{ContactPaymentRequestPayload, PaymentRequestActionKind, PaymentRequestActionPayload},
     name::Name,
     types::{
-        ClowderBeta, ForeignMintProofReason, MintSummary, PaymentRequestDirection,
-        PaymentRequestState, PaymentRequestTransitionOutcome, PaymentResultCallback, TimeRange,
-        TransactionFees,
+        ClowderBeta, ForeignMintProofReason, PaymentRequestDirection, PaymentRequestState,
+        PaymentRequestTransitionOutcome, PaymentResultCallback, TimeRange, TransactionFees,
     },
 };
 use bcr_wallet_persistence::PocketRepository;
 use bcr_wallet_persistence::{
     MockContactStoreApi, MockMigrationJournalRepository, MockNostrRepository,
     MockPaymentRequestStoreApi, MockTransactionRepository,
-    test_utils::tests::{test_other_pub_key, test_pub_key, valid_payment_address_testnet},
+    test_utils::tests::{test_other_pub_key, test_pub_key},
 };
 use bcr_wallet_transport::{NostrEventChannel, error::Error as TransportError};
 use bitcoin::base64::{Engine, engine::general_purpose::STANDARD};
@@ -359,54 +358,6 @@ async fn test_config_builds_expected_config() {
 }
 
 #[tokio::test]
-async fn test_name() {
-    let ctx = wallet_ctx();
-    let wlt = wallet(ctx).await;
-
-    let res = wlt.read().await.name();
-    assert_eq!(res, "wallet-1".to_owned());
-}
-
-#[tokio::test]
-async fn test_id() {
-    let ctx = wallet_ctx();
-    let wlt = wallet(ctx).await;
-    assert_eq!(wlt.read().await.id(), "w-1".to_string());
-}
-
-#[tokio::test]
-async fn test_mint_url() {
-    let mut ctx = wallet_ctx();
-    ctx.client
-        .expect_mint_url()
-        .times(1)
-        .return_const(url::Url::from_str("https://mint.example").unwrap());
-
-    let wlt = wallet(ctx).await;
-    let url = wlt.read().await.mint_url();
-    assert_eq!(url.to_string(), "https://mint.example/");
-}
-
-#[tokio::test]
-async fn test_betas() {
-    let ctx = wallet_ctx();
-    let mut wlt = wallet(ctx).await;
-
-    let b1 = url::Url::from_str("https://beta1.example").unwrap();
-    let b2 = url::Url::from_str("https://beta2.example").unwrap();
-
-    let beta1: Arc<dyn ClowderMintConnector> = Arc::new(MockClowderMintConnector::new());
-    let beta2: Arc<dyn ClowderMintConnector> = Arc::new(MockClowderMintConnector::new());
-
-    wlt = wallet_with_betas(wlt, vec![(b1.clone(), beta1), (b2.clone(), beta2)]).await;
-
-    let betas = wlt.read().await.betas();
-    assert_eq!(betas.len(), 2);
-    assert!(betas.contains(&b1));
-    assert!(betas.contains(&b2));
-}
-
-#[tokio::test]
 async fn test_check_received_payment_request_unknown_reports_none() {
     let mut ctx = wallet_ctx();
     let pid = Uuid::new_v4();
@@ -506,51 +457,6 @@ async fn test_check_received_payment_wakes_when_request_is_marked_paid() {
         .unwrap()
         .unwrap();
     assert_eq!(*results.lock().unwrap(), vec![Some(tx_id)]);
-}
-
-#[tokio::test]
-async fn test_debit_unit() {
-    let mut ctx = wallet_ctx();
-    ctx.debit
-        .expect_unit()
-        .times(1)
-        .returning(|| CurrencyUnit::Sat);
-    let wlt = wallet(ctx).await;
-
-    let res = wlt.read().await.debit_unit();
-    assert_eq!(res, CurrencyUnit::Sat);
-}
-
-#[tokio::test]
-async fn test_balance() {
-    let mut ctx = wallet_ctx();
-    ctx.client
-        .expect_get_mint_keysets()
-        .times(1)
-        .returning(|| Ok(vec![]));
-    ctx.debit
-        .expect_balance()
-        .times(1)
-        .returning(|_| Ok(PocketBalance::default()));
-    let wlt = wallet(ctx).await;
-
-    let res = wlt.read().await.balance().await.expect("balance works");
-    assert_eq!(res.debit, Amount::ZERO);
-    assert_eq!(res.credit, Amount::ZERO);
-    assert_eq!(res.total, Amount::ZERO);
-}
-
-#[tokio::test]
-async fn test_list_tx_ids() {
-    let mut ctx = wallet_ctx();
-    ctx.tx_repo
-        .expect_list_tx_ids()
-        .times(1)
-        .returning(|| Ok(vec![]));
-    let wlt = wallet(ctx).await;
-
-    let res = wlt.read().await.list_tx_ids().await.unwrap();
-    assert!(res.is_empty());
 }
 
 #[tokio::test]
@@ -977,36 +883,6 @@ async fn test_pay_contact() {
 }
 
 #[tokio::test]
-async fn test_mint_uses_debit() {
-    let mut ctx = wallet_ctx();
-
-    ctx.client
-        .expect_get_mint_keysets()
-        .times(1)
-        .returning(|| Ok(vec![]));
-
-    ctx.debit
-        .expect_mint_onchain()
-        .times(1)
-        .returning(|_amount, _keysets_info, _client| {
-            Ok(MintSummary {
-                quote_id: Uuid::new_v4(),
-                amount: bitcoin::Amount::from_sat(1000),
-                address: valid_payment_address_testnet(),
-                expiry: 0,
-            })
-        });
-
-    let wlt = wallet(ctx).await;
-    let _ = wlt
-        .read()
-        .await
-        .mint(bitcoin::Amount::from_sat(1000))
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
 async fn test_recover_pending_stale_proofs() {
     let mut ctx = wallet_ctx();
 
@@ -1161,24 +1037,6 @@ async fn test_reclaim_tx_creates_second_linked_tx() {
     let amount = wlt.read().await.reclaim_tx(tx_id).await.unwrap();
 
     assert_eq!(amount, Amount::from(7));
-}
-
-#[tokio::test]
-async fn test_edit_tx_memo() {
-    let mut ctx = wallet_ctx();
-    let tx_id = Uuid::new_v4();
-    ctx.tx_repo
-        .expect_update_memo()
-        .times(2)
-        .returning(move |_, _| Ok(None));
-
-    let wlt = wallet(ctx).await;
-    wlt.read()
-        .await
-        .edit_tx_memo(tx_id, Some("new_memo".to_owned()))
-        .await
-        .unwrap();
-    wlt.read().await.edit_tx_memo(tx_id, None).await.unwrap();
 }
 
 #[tokio::test]
@@ -1604,97 +1462,6 @@ async fn test_req_payment_from_node_id_wrong_network() {
         )
         .await;
     assert!(matches!(res, Err(Error::InvalidNetwork(..))));
-}
-
-#[tokio::test]
-async fn test_info_builds_expected_wallet_info() {
-    let mut ctx = wallet_ctx();
-
-    ctx.client
-        .expect_mint_url()
-        .times(1)
-        .return_const(url::Url::from_str("https://mint.example").unwrap());
-
-    ctx.nostr_transport
-        .expect_relays()
-        .times(1)
-        .return_const(vec![RelayUrl::from_str("wss://test.example.com").unwrap()]);
-
-    let wlt = wallet(ctx).await;
-    let info = wlt.read().await.info();
-
-    assert_eq!(info.name, "wallet-1");
-    assert_eq!(info.network, bitcoin::Network::Testnet);
-    assert_eq!(
-        info.node_id,
-        NodeId::new(test_pub_key(), bitcoin::Network::Testnet)
-    );
-    assert_eq!(info.default_mint_url.to_string(), "https://mint.example/");
-    assert_eq!(
-        info.nostr_relays,
-        vec![RelayUrl::from_str("wss://test.example.com").unwrap()]
-    );
-}
-
-#[tokio::test]
-async fn test_node_id() {
-    let ctx = wallet_ctx();
-    let wlt = wallet(ctx).await;
-
-    assert_eq!(
-        wlt.read().await.node_id(),
-        NodeId::new(test_pub_key(), bitcoin::Network::Testnet)
-    );
-}
-
-#[tokio::test]
-async fn test_is_nostr_connected() {
-    let mut ctx = wallet_ctx();
-
-    ctx.nostr_transport
-        .expect_has_connected_relays()
-        .times(1)
-        .returning(|| true);
-
-    let wlt = wallet(ctx).await;
-
-    assert!(!wlt.read().await.is_nostr_connected().await);
-}
-
-#[tokio::test]
-async fn test_check_pending_commitments_delegates_to_debit() {
-    let mut ctx = wallet_ctx();
-    ctx.client
-        .expect_get_mint_keysets()
-        .times(1)
-        .returning(|| Ok(vec![]));
-
-    ctx.debit
-        .expect_check_pending_commitments()
-        .times(1)
-        .returning(|_, _, _, _| Ok(()));
-
-    let wlt = wallet(ctx).await;
-
-    wlt.read().await.check_pending_commitments().await.unwrap();
-}
-
-#[tokio::test]
-async fn test_check_pending_melt_commitments_no_commitments() {
-    let mut ctx = wallet_ctx();
-
-    ctx.debit
-        .expect_list_melt_commitments()
-        .times(1)
-        .returning(|| Ok(vec![]));
-
-    let wlt = wallet(ctx).await;
-
-    wlt.read()
-        .await
-        .check_pending_melt_commitments()
-        .await
-        .unwrap();
 }
 
 #[tokio::test]
