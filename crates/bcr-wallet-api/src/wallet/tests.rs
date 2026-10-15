@@ -5582,7 +5582,10 @@ async fn swap_exchanged_lost_response_already_restored_counts_as_swapped() {
     assert_eq!(amount, Amount::from(8));
 }
 
-fn contact_payment(amount: u64, mint: &url::Url) -> bcr_wallet_transport::NostrWalletEvent {
+pub(crate) fn contact_payment(
+    amount: u64,
+    mint: &url::Url,
+) -> bcr_wallet_transport::NostrWalletEvent {
     let (_info, _keyset, proofs) = test_keyset_and_proofs(&[Amount::from(amount)]);
     bcr_wallet_transport::NostrWalletEvent::ContactPayment {
         sender: node_id(NODE_ID_1).npub(),
@@ -5599,33 +5602,142 @@ fn contact_payment(amount: u64, mint: &url::Url) -> bcr_wallet_transport::NostrW
     }
 }
 
-fn receiving_pocket(received: tokio::sync::mpsc::UnboundedSender<Amount>) -> MockDebitPocket {
+fn receiving_pocket(
+    received: tokio::sync::mpsc::UnboundedSender<Amount>,
+    balance: Arc<std::sync::atomic::AtomicU64>,
+) -> MockDebitPocket {
     let mut pocket = MockDebitPocket::new();
     pocket.expect_unit().return_const(CurrencyUnit::Sat);
+    let held = balance.clone();
     pocket
         .expect_receive_proofs()
         .returning(move |_, _, proofs, _| {
             let amount = proofs.total_amount().unwrap();
+            held.fetch_add(u64::from(amount), std::sync::atomic::Ordering::SeqCst);
             received.send(amount).unwrap();
             Ok((amount, vec![]))
         });
+    pocket.expect_balance().returning(move |_| {
+        Ok(crate::pocket::PocketBalance {
+            debit: Amount::from(balance.load(std::sync::atomic::Ordering::SeqCst)),
+            credit: Amount::ZERO,
+        })
+    });
+    pocket.expect_prepare_send().returning(|amount, _| {
+        Ok(SendSummary {
+            amount,
+            unit: CurrencyUnit::Sat,
+            ..SendSummary::new()
+        })
+    });
+    pocket.expect_delete().returning(|| Ok(()));
     pocket
 }
 
-struct SwapFixture {
-    purse: Arc<crate::purse::Purse<Wallet>>,
-    old: Arc<RwLock<Wallet>>,
-    channel: NostrEventChannel,
-    rabid_url: url::Url,
-    substitute_url: url::Url,
+/// Holds a migration inside its exchange until the test lets it go on
+pub(crate) struct ExchangeGate {
+    entered: tokio::sync::oneshot::Receiver<()>,
+    release: tokio::sync::oneshot::Sender<()>,
+    substitute_down: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ExchangeGate {
+    pub(crate) async fn entered(&mut self) {
+        tokio::time::timeout(Duration::from_secs(5), &mut self.entered)
+            .await
+            .expect("the migration enters its exchange")
+            .expect("the journal is alive");
+    }
+
+    pub(crate) fn has_entered(&mut self) -> bool {
+        self.entered.try_recv().is_ok()
+    }
+
+    pub(crate) fn release(self) {
+        let _ = self.release.send(());
+    }
+
+    /// Lets the exchange go on against a substitute that has gone down
+    pub(crate) fn fail(self) {
+        self.substitute_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.release();
+    }
+}
+
+type Gate = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+
+struct GatedJournal {
+    journal: bcr_wallet_persistence::redb::pocket::PocketDB,
+    gate: std::sync::Mutex<Option<Gate>>,
+}
+
+#[async_trait::async_trait]
+impl MigrationJournalRepository for GatedJournal {
+    async fn put(
+        &self,
+        header: MigrationJournalHeader,
+        entries: Vec<(cashu::PublicKey, cashu::SecretKey)>,
+    ) -> bcr_wallet_persistence::error::Result<()> {
+        self.journal.put(header, entries).await
+    }
+
+    async fn update(
+        &self,
+        ys: Vec<cashu::PublicKey>,
+        state: MigrationJournalState,
+    ) -> bcr_wallet_persistence::error::Result<()> {
+        self.journal.update(ys, state).await
+    }
+
+    async fn load(
+        &self,
+    ) -> bcr_wallet_persistence::error::Result<HashMap<cashu::PublicKey, MigrationJournalEntry>>
+    {
+        let gate = self.gate.lock().unwrap().take();
+        if let Some((entered, release)) = gate {
+            let _ = entered.send(());
+            let _ = release.await;
+        }
+        self.journal.load().await
+    }
+
+    async fn prune_swapped(&self) -> bcr_wallet_persistence::error::Result<()> {
+        self.journal.prune_swapped().await
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RepoWrite {
+    Store(String),
+    Rename(String),
+    Delete,
+}
+
+/// A rabid wallet `w-1` holding 100 sat, its nostr listener running, in a purse whose
+/// migration rebuilds it on a substitute
+pub(crate) struct SwapFixture {
+    pub(crate) purse: Arc<crate::purse::Purse<Wallet>>,
+    pub(crate) old: Arc<RwLock<Wallet>>,
+    pub(crate) channel: NostrEventChannel,
+    pub(crate) rabid_url: url::Url,
+    pub(crate) substitute_url: url::Url,
     consumer_starts: Arc<std::sync::atomic::AtomicUsize>,
     stored: Arc<std::sync::Mutex<Vec<WalletConfig>>>,
-    old_received: tokio::sync::mpsc::UnboundedReceiver<Amount>,
-    new_received: tokio::sync::mpsc::UnboundedReceiver<Amount>,
+    repo_writes: Arc<std::sync::Mutex<Vec<RepoWrite>>>,
+    txs: Arc<std::sync::Mutex<Vec<Transaction>>>,
+    journal: Arc<GatedJournal>,
+    substitute_down: Arc<std::sync::atomic::AtomicBool>,
+    token_keyset: bcr_common::ecash::MintKeySet,
+    pub(crate) old_received: tokio::sync::mpsc::UnboundedReceiver<Amount>,
+    pub(crate) new_received: tokio::sync::mpsc::UnboundedReceiver<Amount>,
 }
 
 impl SwapFixture {
-    async fn new(substitute_betas: Vec<url::Url>) -> Self {
+    pub(crate) async fn new(substitute_betas: Vec<url::Url>) -> Self {
         let rabid_url = url::Url::from_str("https://rabid.example").unwrap();
         let substitute_url = url::Url::from_str("https://substitute.example").unwrap();
         let mut ctx = wallet_ctx();
@@ -5646,24 +5758,47 @@ impl SwapFixture {
             .expect_has_connected_relays()
             .return_const(true);
         ctx.nostr_transport.expect_relays().return_const(vec![]);
-        ctx.tx_repo.expect_store_tx().returning(|tx| Ok(tx.id));
+        ctx.nostr_transport.expect_shutdown().return_const(());
+        let txs = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stored_txs = txs.clone();
+        ctx.tx_repo.expect_store_tx().returning(move |tx| {
+            let id = tx.id;
+            stored_txs.lock().unwrap().push(tx);
+            Ok(id)
+        });
+        ctx.tx_repo.expect_delete_repo().returning(|| Ok(()));
+        ctx.nostr_repo.expect_delete_repo().returning(|| Ok(()));
+        ctx.contact_repo.expect_delete_repo().returning(|| Ok(()));
+        ctx.payment_request_repo
+            .expect_delete_repo()
+            .returning(|| Ok(()));
+        let balance = Arc::new(std::sync::atomic::AtomicU64::new(100));
         let (old_tx, old_received) = tokio::sync::mpsc::unbounded_channel();
         let (new_tx, new_received) = tokio::sync::mpsc::unbounded_channel();
-        ctx.debit = receiving_pocket(old_tx);
+        ctx.debit = receiving_pocket(old_tx, balance.clone());
         ctx.debit
             .expect_retain_migratable_proofs()
             .returning(|_| Ok(vec![]));
         ctx.debit
             .expect_with_beta_provider()
-            .return_once(move |_| Box::new(receiving_pocket(new_tx)));
+            .return_once(move |_| Box::new(receiving_pocket(new_tx, balance)));
 
+        let (token_info, token_keyset) = core_tests::generate_random_ecash_keyset();
+        let token_info = ecash::KeySetInfo::from(token_info);
+        let substitute_down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let down = substitute_down.clone();
         let mut substitute = MockClowderMintConnector::new();
         substitute
             .expect_mint_url()
             .return_const(substitute_url.clone());
-        substitute
-            .expect_get_clowder_id()
-            .returning(|| Ok(test_other_pub_key()));
+        substitute.expect_get_clowder_id().returning(move || {
+            if down.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(bcr_common::client::mint::Error::Internal(
+                    "substitute is down".to_string(),
+                ));
+            }
+            Ok(test_other_pub_key())
+        });
         substitute.expect_get_alpha_offline().returning(|_| {
             Ok(wire_clowder::OfflineResponse {
                 offline: true,
@@ -5672,7 +5807,7 @@ impl SwapFixture {
         });
         substitute
             .expect_get_mint_keysets()
-            .returning(|| Ok(vec![]));
+            .returning(move || Ok(vec![token_info.clone()]));
         substitute.expect_get_clowder_betas().returning(move || {
             Ok(substitute_betas
                 .iter()
@@ -5706,31 +5841,49 @@ impl SwapFixture {
             )],
         )
         .await;
+        let journal = Arc::new(GatedJournal {
+            journal: bcr_wallet_persistence::test_utils::tests::in_memory_pocket_db(
+                "w-1",
+                CurrencyUnit::Sat,
+            ),
+            gate: std::sync::Mutex::new(None),
+        });
         {
             let mut w = old.write().await;
-            w.journal = Arc::new(
-                bcr_wallet_persistence::test_utils::tests::in_memory_pocket_db(
-                    "w-1",
-                    CurrencyUnit::Sat,
-                ),
-            );
+            w.journal = journal.clone();
             w.client_factory = Arc::new(move |_| substitute.clone());
         }
 
         let stored = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let repo_writes = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut repo = bcr_wallet_persistence::MockPurseRepository::new();
-        let st = stored.clone();
+        let (st, writes) = (stored.clone(), repo_writes.clone());
         repo.expect_store().returning(move |cfg| {
+            writes.lock().unwrap().push(RepoWrite::Store(cfg.name.clone()));
             st.lock().unwrap().push(cfg);
+            Ok(())
+        });
+        let writes = repo_writes.clone();
+        repo.expect_rename().returning(move |_, name| {
+            writes.lock().unwrap().push(RepoWrite::Rename(name));
+            Ok(())
+        });
+        let writes = repo_writes.clone();
+        repo.expect_delete().returning(move |_| {
+            writes.lock().unwrap().push(RepoWrite::Delete);
             Ok(())
         });
         let purse = Arc::new(crate::purse::Purse {
             repo: Box::new(repo),
-            contact_repos: HashMap::new(),
+            contact_repos: HashMap::from([(
+                bitcoin::Network::Testnet,
+                Arc::new(MockContactStoreApi::new()) as Arc<dyn ContactStoreApi>,
+            )]),
             wallets: Arc::new(RwLock::new(HashMap::from([(
                 "w-1".to_owned(),
                 old.clone(),
             )]))),
+            swap_guards: Default::default(),
         });
         old.read().await.start_nostr_listener(None).await;
         Self {
@@ -5741,22 +5894,70 @@ impl SwapFixture {
             substitute_url,
             consumer_starts,
             stored,
+            repo_writes,
+            txs,
+            journal,
+            substitute_down,
+            token_keyset,
             old_received,
             new_received,
         }
     }
 
-    fn consumer_starts(&self) -> usize {
+    pub(crate) fn consumer_starts(&self) -> usize {
         self.consumer_starts
             .load(std::sync::atomic::Ordering::SeqCst)
     }
+
+    /// Holds the next migration inside its exchange
+    pub(crate) fn gate_exchange(&self) -> ExchangeGate {
+        let (entered_tx, entered) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        *self.journal.gate.lock().unwrap() = Some((entered_tx, release_rx));
+        ExchangeGate {
+            entered,
+            release,
+            substitute_down: self.substitute_down.clone(),
+        }
+    }
+
+    /// A token of the substitute mint
+    pub(crate) fn substitute_token(&self, amount: u64) -> Token {
+        let proofs =
+            core_tests::generate_random_ecash_proofs(&self.token_keyset, &[Amount::from(amount)]);
+        Token::new_bitcr(
+            to_mint_url(&self.substitute_url),
+            proofs,
+            None,
+            CurrencyUnit::Sat,
+        )
+    }
+
+    pub(crate) fn stored(&self) -> Vec<WalletConfig> {
+        self.stored.lock().unwrap().clone()
+    }
+
+    pub(crate) fn repo_writes(&self) -> Vec<RepoWrite> {
+        self.repo_writes.lock().unwrap().clone()
+    }
+
+    pub(crate) fn txs(&self) -> Vec<Transaction> {
+        self.txs.lock().unwrap().clone()
+    }
 }
 
-async fn next_received(received: &mut tokio::sync::mpsc::UnboundedReceiver<Amount>) -> Amount {
+pub(crate) async fn next_received(
+    received: &mut tokio::sync::mpsc::UnboundedReceiver<Amount>,
+) -> Amount {
     tokio::time::timeout(Duration::from_secs(5), received.recv())
         .await
         .expect("the payment is received")
         .expect("the pocket is alive")
+}
+
+/// Gives every task that can make progress the time to make it
+pub(crate) async fn settle() {
+    tokio::time::sleep(Duration::from_millis(100)).await;
 }
 
 #[tokio::test]

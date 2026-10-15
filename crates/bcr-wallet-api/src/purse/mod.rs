@@ -386,7 +386,18 @@ mod tests {
     use mockall::predicate::eq;
 
     use super::*;
-    use crate::wallet::{api::MockWalletApi, types::WalletInfo};
+    use crate::wallet::{
+        Wallet,
+        api::MockWalletApi,
+        tests::{
+            ExchangeGate, RepoWrite, SwapFixture, contact_payment, next_received, settle,
+        },
+        types::WalletInfo,
+    };
+    use bcr_common::cashu::Amount;
+    use bcr_wallet_core::{types::PaymentType, util::to_mint_url};
+    use nostr::event::EventId;
+    use std::time::Duration;
 
     fn purse(db: Box<dyn PurseRepository>) -> super::Purse<MockWalletApi> {
         let mut contact_dbs = HashMap::new();
@@ -418,6 +429,7 @@ mod tests {
             repo: db,
             contact_repos,
             wallets: Arc::new(RwLock::new(HashMap::default())),
+            swap_guards: Default::default(),
         }
     }
 
@@ -543,7 +555,7 @@ mod tests {
             }
             Ok(Arc::new(RwLock::new(migrated_wallet())))
         });
-        wlt.expect_take_nostr_listener().times(1).returning(|| None);
+        wlt.expect_take_nostr_listener().returning(|| None);
         wlt.expect_start_nostr_listener().never();
         wlt.expect_finish_migration().never();
         wlt
@@ -658,6 +670,218 @@ mod tests {
             &purse.get_wallet("wlt-1").await.unwrap(),
             &old
         ));
+    }
+
+    fn substitute_betas() -> Vec<url::Url> {
+        vec![url::Url::from_str("https://sub-beta.example").unwrap()]
+    }
+
+    async fn total(wlt: &RwLock<Wallet>) -> Amount {
+        wlt.read().await.balance().await.unwrap().total
+    }
+
+    async fn spawn_migration(f: &SwapFixture) -> (ExchangeGate, MigrationTask) {
+        let mut gate = f.gate_exchange();
+        let purse = f.purse.clone();
+        let migration = tokio::spawn(async move { purse.migrate_rabid_wallets().await });
+        gate.entered().await;
+        (gate, migration)
+    }
+
+    type MigrationTask = tokio::task::JoinHandle<Result<HashMap<String, url::Url>>>;
+
+    #[tokio::test]
+    async fn migrate_rabid_wallet_keeps_total_proof_value_during_concurrent_receive() {
+        let mut f = SwapFixture::new(substitute_betas()).await;
+        let (gate, migration) = spawn_migration(&f).await;
+
+        f.channel.publish(contact_payment(20, &f.substitute_url));
+        let token = f.substitute_token(8);
+        let purse = f.purse.clone();
+        let receive = tokio::spawn(async move {
+            let wlt = purse.hold_wallet("w-1").await.unwrap();
+            wlt.read().await.receive_token(token, 123).await
+        });
+        settle().await;
+        assert!(f.old_received.try_recv().is_err());
+        assert!(f.new_received.try_recv().is_err());
+        assert!(!receive.is_finished());
+        assert!(f.txs().is_empty());
+
+        gate.release();
+        let migrated = migration.await.unwrap().unwrap();
+        assert_eq!(migrated["w-1"], f.substitute_url);
+        let new = f.purse.get_wallet("w-1").await.unwrap();
+        assert!(!Arc::ptr_eq(&new, &f.old));
+        receive.await.unwrap().unwrap();
+        f.channel.publish(contact_payment(10, &f.substitute_url));
+
+        let mut received = Vec::new();
+        for _ in 0..3 {
+            received.push(u64::from(next_received(&mut f.new_received).await));
+        }
+        received.sort();
+        assert_eq!(received, vec![8, 10, 20]);
+        settle().await;
+        assert!(f.new_received.try_recv().is_err());
+        assert!(f.old_received.try_recv().is_err());
+        assert_eq!(total(&new).await, Amount::from(100 + 20 + 10 + 8));
+        let txs = f.txs();
+        assert!(
+            txs.iter()
+                .all(|tx| tx.mint_url == to_mint_url(&f.substitute_url))
+        );
+        let mut contact_events: Vec<_> = txs
+            .iter()
+            .filter(|tx| tx.payment_type == PaymentType::Contact)
+            .map(|tx| tx.nostr_event_id)
+            .collect();
+        contact_events.sort();
+        assert_eq!(
+            contact_events,
+            vec![
+                Some(EventId::from_byte_array([10; 32])),
+                Some(EventId::from_byte_array([20; 32]))
+            ]
+        );
+        assert_eq!(f.consumer_starts(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_migration_resumes_the_old_listener_with_the_payment_that_waited() {
+        let mut f = SwapFixture::new(substitute_betas()).await;
+        let (gate, migration) = spawn_migration(&f).await;
+        f.channel.publish(contact_payment(20, &f.rabid_url));
+        settle().await;
+        assert!(f.old_received.try_recv().is_err());
+
+        gate.fail();
+        migration
+            .await
+            .unwrap()
+            .expect_err("the substitute fails the exchange");
+        assert!(Arc::ptr_eq(
+            &f.purse.get_wallet("w-1").await.unwrap(),
+            &f.old
+        ));
+        assert_eq!(next_received(&mut f.old_received).await, Amount::from(20));
+        settle().await;
+        assert!(f.old_received.try_recv().is_err());
+        assert!(f.new_received.try_recv().is_err());
+        assert_eq!(total(&f.old).await, Amount::from(120));
+        assert!(f.stored().is_empty());
+        assert_eq!(f.consumer_starts(), 1);
+    }
+
+    #[tokio::test]
+    async fn aborted_migration_resumes_the_old_listener_with_the_payment_that_waited() {
+        let mut f = SwapFixture::new(substitute_betas()).await;
+        let (_gate, migration) = spawn_migration(&f).await;
+        f.channel.publish(contact_payment(20, &f.rabid_url));
+        settle().await;
+        assert!(f.old_received.try_recv().is_err());
+
+        migration.abort();
+        assert!(migration.await.unwrap_err().is_cancelled());
+        assert_eq!(next_received(&mut f.old_received).await, Amount::from(20));
+        assert!(Arc::ptr_eq(
+            &f.purse.get_wallet("w-1").await.unwrap(),
+            &f.old
+        ));
+        assert_eq!(total(&f.old).await, Amount::from(120));
+        assert_eq!(f.consumer_starts(), 1);
+        tokio::time::timeout(Duration::from_secs(5), f.purse.hold_wallet("w-1"))
+            .await
+            .expect("the aborted migration released the wallet")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn migrate_rabid_wallets_twice_concurrently_runs_the_exchange_once() {
+        let f = SwapFixture::new(substitute_betas()).await;
+        let (gate, first) = spawn_migration(&f).await;
+        let purse = f.purse.clone();
+        let second = tokio::spawn(async move { purse.migrate_rabid_wallets().await });
+        settle().await;
+        assert!(!second.is_finished());
+
+        gate.release();
+        assert_eq!(first.await.unwrap().unwrap()["w-1"], f.substitute_url);
+        assert!(second.await.unwrap().unwrap().is_empty());
+        assert_eq!(f.stored().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn migration_queues_behind_an_in_flight_read_without_deadlock() {
+        let f = SwapFixture::new(substitute_betas()).await;
+        let mut gate = f.gate_exchange();
+        let held = f.purse.hold_wallet("w-1").await.unwrap();
+        let purse = f.purse.clone();
+        let migration = tokio::spawn(async move { purse.migrate_rabid_wallets().await });
+        settle().await;
+        assert!(!gate.has_entered());
+
+        let balance = tokio::time::timeout(Duration::from_secs(5), async {
+            held.read().await.balance().await
+        })
+        .await
+        .expect("the call in flight finishes while the migration waits")
+        .unwrap();
+        assert_eq!(balance.total, Amount::from(100));
+        drop(held);
+
+        gate.entered().await;
+        gate.release();
+        let migrated = tokio::time::timeout(Duration::from_secs(5), migration)
+            .await
+            .expect("the migration runs once the call in flight is done")
+            .unwrap()
+            .unwrap();
+        assert_eq!(migrated["w-1"], f.substitute_url);
+    }
+
+    #[tokio::test]
+    async fn rename_during_migration_keeps_the_new_name() {
+        let f = SwapFixture::new(substitute_betas()).await;
+        let (gate, migration) = spawn_migration(&f).await;
+        let purse = f.purse.clone();
+        let rename =
+            tokio::spawn(async move { purse.rename_wallet("w-1", "renamed".to_owned()).await });
+        settle().await;
+        assert!(!rename.is_finished());
+
+        gate.release();
+        migration.await.unwrap().unwrap();
+        rename.await.unwrap().unwrap();
+        let current = f.purse.get_wallet("w-1").await.unwrap();
+        assert!(!Arc::ptr_eq(&current, &f.old));
+        assert_eq!(current.read().await.name(), "renamed");
+        assert_eq!(
+            f.repo_writes(),
+            vec![
+                RepoWrite::Store("wallet-1".to_owned()),
+                RepoWrite::Rename("renamed".to_owned())
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_during_migration_does_not_resurrect_the_wallet() {
+        let f = SwapFixture::new(substitute_betas()).await;
+        let (gate, migration) = spawn_migration(&f).await;
+        let purse = f.purse.clone();
+        let delete = tokio::spawn(async move { purse.delete_wallet("w-1").await });
+        settle().await;
+        assert!(!delete.is_finished());
+
+        gate.release();
+        migration.await.unwrap().unwrap();
+        delete.await.unwrap().unwrap();
+        assert!(f.purse.get_wallet("w-1").await.is_none());
+        assert_eq!(
+            f.repo_writes(),
+            vec![RepoWrite::Store("wallet-1".to_owned()), RepoWrite::Delete]
+        );
     }
 
     const NODE_ID_1: &str =

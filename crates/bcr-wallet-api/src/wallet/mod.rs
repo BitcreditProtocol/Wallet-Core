@@ -1947,4 +1947,4 @@ fn reclaimed_amount(entries: &[(cashu::PublicKey, MigrationJournalEntry)]) -> Op
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
