@@ -4973,6 +4973,7 @@ struct MigrationCtx {
     sent: Arc<std::sync::Mutex<Vec<SentExchange>>>,
     received: Arc<std::sync::Mutex<Vec<cashu::Proof>>>,
     lock_secs: u64,
+    lazy_keyset: bool,
 }
 
 impl MigrationCtx {
@@ -5012,6 +5013,7 @@ impl MigrationCtx {
             sent: Arc::new(std::sync::Mutex::new(Vec::new())),
             received: Arc::new(std::sync::Mutex::new(Vec::new())),
             lock_secs: 3600,
+            lazy_keyset: false,
         }
     }
 
@@ -5045,8 +5047,11 @@ impl MigrationCtx {
         });
         let (beta_proofs, sent) = (self.beta_proofs.clone(), self.sent.clone());
         let lock_secs = self.lock_secs;
+        let keyset_created = Arc::new(std::sync::atomic::AtomicBool::new(!self.lazy_keyset));
+        let created = keyset_created.clone();
         substitute.expect_post_offline_exchange().returning(
             move |fingerprints, hashes, wallet_pk, signature, issuer| {
+                created.store(true, std::sync::atomic::Ordering::SeqCst);
                 let failed = fail.contains(&fingerprints[0].y.into());
                 let hash = hashes[0];
                 sent.lock()
@@ -5073,9 +5078,15 @@ impl MigrationCtx {
             }])
         });
         let beta_info = self.beta_info.clone();
-        substitute
-            .expect_get_mint_keysets()
-            .returning(move || Ok(vec![beta_info.clone()]));
+        substitute.expect_get_mint_keysets().returning(move || {
+            Ok(
+                if keyset_created.load(std::sync::atomic::Ordering::SeqCst) {
+                    vec![beta_info.clone()]
+                } else {
+                    vec![]
+                },
+            )
+        });
         let state = if landed {
             cashu::State::Spent
         } else {
@@ -5369,6 +5380,15 @@ async fn exchange_record_deleted_after_exchanged_proofs_are_stored() {
 #[tokio::test]
 async fn exchange_record_kept_when_exchanged_proofs_fail_to_store() {
     assert!(receive_through_online_exchange(false).await.is_err());
+}
+
+#[tokio::test]
+async fn migrate_swaps_into_a_keyset_the_exchange_created() {
+    let mut t = MigrationCtx::new(&[1, 2], &[]).await;
+    t.lazy_keyset = true;
+    let wlt = t.wallet(vec![], 0, false).await;
+    assert_eq!(t.migrate(&wlt).await.unwrap(), t.substitute_url);
+    assert_eq!(t.received(), Amount::from(3));
 }
 
 #[tokio::test]
