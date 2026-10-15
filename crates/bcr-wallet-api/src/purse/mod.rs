@@ -125,7 +125,7 @@ where
         let mut res = HashMap::new();
         let mut failure = None;
         for (wallet_id, wlt) in wlts {
-            match self.migrate_rabid_wallet(&wlt).await {
+            match self.migrate_rabid_wallet(&wallet_id, &wlt).await {
                 Ok(Some(new_mint_url)) => {
                     res.insert(wallet_id, new_mint_url);
                 }
@@ -142,33 +142,54 @@ where
         }
     }
 
-    async fn migrate_rabid_wallet(&self, wlt: &RwLock<Wlt>) -> Result<Option<url::Url>> {
-        let mut wlt = wlt.write().await;
-        tracing::info!("Checking if alpha is rabid..");
-        if !wlt.is_wallet_mint_rabid().await? {
-            if wlt.has_migration_entries().await? {
-                tracing::info!("Finishing a migrated wallet whose config or journal was not saved");
-                self.repo.store(wlt.config()?).await?;
-                wlt.finish_migration().await?;
-            } else {
-                tracing::info!("Alpha is not rabid - nothing to migrate.");
+    async fn migrate_rabid_wallet(
+        &self,
+        wallet_id: &str,
+        wlt: &RwLock<Wlt>,
+    ) -> Result<Option<url::Url>> {
+        let rebuilt = {
+            let wlt = wlt.read().await;
+            tracing::info!("Checking if alpha is rabid..");
+            if !wlt.is_wallet_mint_rabid().await? {
+                if wlt.has_migration_entries().await? {
+                    tracing::info!(
+                        "Finishing a migrated wallet whose config or journal was not saved"
+                    );
+                    self.repo.store(wlt.config()?).await?;
+                    wlt.finish_migration().await?;
+                } else {
+                    tracing::info!("Alpha is not rabid - nothing to migrate.");
+                }
+                return Ok(None);
             }
-            return Ok(None);
-        }
-        tracing::warn!("Alpha is rabid - finding substitute");
-        let Some(substitute_url) = wlt.mint_substitute().await? else {
-            return Ok(None);
+            tracing::warn!("Alpha is rabid - finding substitute");
+            let Some(substitute_url) = wlt.mint_substitute().await? else {
+                return Ok(None);
+            };
+            let wallet_name = wlt.name();
+            tracing::info!(
+                "Wallet {} is found rabid, migrating to substitute beta {}",
+                wallet_name,
+                substitute_url
+            );
+            let cfg = wlt.exchange_to_substitute(substitute_url).await?;
+            let rebuilt = wlt.rebuild(cfg.clone()).await?;
+            self.repo.store(cfg).await?;
+            rebuilt
         };
-        let wallet_name = wlt.name();
-        tracing::info!(
-            "Wallet {} is found rabid, migrating to substitute beta {}",
-            wallet_name,
-            substitute_url
-        );
-        let new_mint_url = wlt.migrate_pockets_substitute(substitute_url).await?;
-        self.repo.store(wlt.config()?).await?;
-        wlt.finish_migration().await?;
-        Ok(Some(new_mint_url))
+        let listener = wlt.read().await.take_nostr_listener();
+        let handed_over = match listener {
+            Some(listener) => Some(listener.stop().await),
+            None => None,
+        };
+        self.wallets
+            .write()
+            .await
+            .insert(wallet_id.to_owned(), rebuilt.clone());
+        let rebuilt = rebuilt.read().await;
+        rebuilt.start_nostr_listener(handed_over).await;
+        rebuilt.finish_migration().await?;
+        Ok(Some(rebuilt.mint_url()))
     }
 
     pub async fn wallets_nostr_connected(&self) -> HashMap<String, bool> {
@@ -472,23 +493,9 @@ mod tests {
         let mut db = MockPurseRepository::new();
         db.expect_store().times(2).returning(|_| Ok(()));
         let purse = purse(Box::new(db));
-        let mut wlt = MockWalletApi::new();
+        let mut wlt = rabid_wallet("wlt-1", 0);
         wlt.expect_id().times(1).returning(|| "wlt-1".to_owned());
-        wlt.expect_name()
-            .times(1)
-            .returning(|| "wallet-1".to_owned());
-        wlt.expect_config().times(2).returning(|| Ok(wlt_cfg()));
-        wlt.expect_is_wallet_mint_rabid()
-            .times(1)
-            .returning(|| Ok(true));
-        wlt.expect_mint_substitute().times(1).returning(|| {
-            Ok(Some(
-                url::Url::from_str("https://substitute.example.com").unwrap(),
-            ))
-        });
-        wlt.expect_migrate_pockets_substitute()
-            .returning(|_| Ok(url::Url::from_str("https://substitute.example.com").unwrap()));
-        wlt.expect_finish_migration().times(1).returning(|| Ok(()));
+        wlt.expect_config().times(1).returning(|| Ok(wlt_cfg()));
 
         let wallet = Arc::new(RwLock::new(wlt));
         let _wlt_id = purse.add_wallet(wallet).await.expect("can create wallet");
@@ -500,41 +507,117 @@ mod tests {
         assert!(!migrated.is_empty());
     }
 
-    fn rabid_wallet(id: &'static str) -> MockWalletApi {
-        let migrated = Arc::new(AtomicBool::new(false));
-        let journaled = Arc::new(AtomicBool::new(false));
+    fn substitute_url() -> url::Url {
+        url::Url::from_str("https://substitute.example.com").unwrap()
+    }
+
+    fn migrated_wallet() -> MockWalletApi {
+        let mut wlt = MockWalletApi::new();
+        wlt.expect_mint_url().returning(substitute_url);
+        wlt.expect_is_wallet_mint_rabid().returning(|| Ok(false));
+        wlt.expect_has_migration_entries().returning(|| Ok(false));
+        wlt.expect_start_nostr_listener().return_const(());
+        wlt.expect_finish_migration().returning(|| Ok(()));
+        wlt
+    }
+
+    fn rabid_wallet(id: &'static str, failed_rebuilds: usize) -> MockWalletApi {
         let mut wlt = MockWalletApi::new();
         wlt.expect_name().returning(move || id.to_owned());
-        let m = migrated.clone();
-        wlt.expect_is_wallet_mint_rabid()
-            .returning(move || Ok(!m.load(Ordering::SeqCst)));
-        wlt.expect_mint_substitute().returning(|| {
-            Ok(Some(
-                url::Url::from_str("https://substitute.example.com").unwrap(),
-            ))
-        });
-        let j = journaled.clone();
-        wlt.expect_migrate_pockets_substitute()
-            .times(1)
-            .returning(move |url| {
-                migrated.store(true, Ordering::SeqCst);
-                j.store(true, Ordering::SeqCst);
-                Ok(url)
-            });
-        wlt.expect_config().returning(move || {
+        wlt.expect_is_wallet_mint_rabid().returning(|| Ok(true));
+        wlt.expect_mint_substitute()
+            .returning(|| Ok(Some(substitute_url())));
+        wlt.expect_exchange_to_substitute().returning(move |mint| {
             Ok(WalletConfig {
                 wallet_id: id.to_owned(),
+                mint,
                 ..wlt_cfg()
             })
         });
-        let j = journaled.clone();
-        wlt.expect_has_migration_entries()
-            .returning(move || Ok(j.load(Ordering::SeqCst)));
-        wlt.expect_finish_migration().returning(move || {
-            journaled.store(false, Ordering::SeqCst);
+        let mut failures = failed_rebuilds;
+        wlt.expect_rebuild().returning(move |cfg| {
+            assert_eq!(cfg.mint, substitute_url());
+            if failures > 0 {
+                failures -= 1;
+                return Err(Error::NoBetas);
+            }
+            Ok(Arc::new(RwLock::new(migrated_wallet())))
+        });
+        wlt.expect_take_nostr_listener().times(1).returning(|| None);
+        wlt.expect_start_nostr_listener().never();
+        wlt.expect_finish_migration().never();
+        wlt
+    }
+
+    fn recording_repo() -> (
+        MockPurseRepository,
+        Arc<std::sync::Mutex<Vec<WalletConfig>>>,
+    ) {
+        let mut db = MockPurseRepository::new();
+        let stored = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let st = stored.clone();
+        db.expect_store().returning(move |cfg| {
+            st.lock().unwrap().push(cfg);
             Ok(())
         });
+        (db, stored)
+    }
+
+    async fn insert_wallet(
+        purse: &Purse<MockWalletApi>,
+        wlt: MockWalletApi,
+    ) -> Arc<RwLock<MockWalletApi>> {
+        let id = wlt.name();
+        let wlt = Arc::new(RwLock::new(wlt));
+        purse.wallets.write().await.insert(id, wlt.clone());
         wlt
+    }
+
+    #[tokio::test]
+    async fn migration_rebuild_produces_a_distinct_wallet_instance() {
+        let (db, stored) = recording_repo();
+        let purse = purse(Box::new(db));
+        let old = insert_wallet(&purse, rabid_wallet("wlt-1", 0)).await;
+
+        let reader = old.read().await;
+        let migrated = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            purse.migrate_rabid_wallets(),
+        )
+        .await
+        .expect("the migration never waits for exclusive access to the old instance")
+        .unwrap();
+        drop(reader);
+
+        assert_eq!(migrated["wlt-1"], substitute_url());
+        let current = purse.get_wallet("wlt-1").await.unwrap();
+        assert!(!Arc::ptr_eq(&current, &old));
+        assert_eq!(current.read().await.mint_url(), substitute_url());
+        let stored = stored.lock().unwrap().clone();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].mint, substitute_url());
+    }
+
+    #[tokio::test]
+    async fn migration_resumes_after_crash_between_exchange_and_rebuild() {
+        let (db, stored) = recording_repo();
+        let purse = purse(Box::new(db));
+        let old = insert_wallet(&purse, rabid_wallet("wlt-1", 1)).await;
+
+        purse
+            .migrate_rabid_wallets()
+            .await
+            .expect_err("the failed rebuild is reported");
+        assert!(stored.lock().unwrap().is_empty());
+        assert!(Arc::ptr_eq(&purse.get_wallet("wlt-1").await.unwrap(), &old));
+
+        purse
+            .migrate_rabid_wallets()
+            .await
+            .expect("the retry rebuilds the wallet");
+        assert_eq!(stored.lock().unwrap().len(), 1);
+        let current = purse.get_wallet("wlt-1").await.unwrap();
+        assert!(!Arc::ptr_eq(&current, &old));
     }
 
     #[tokio::test]
@@ -553,19 +636,15 @@ mod tests {
             Ok(())
         });
         let purse = purse(Box::new(db));
-        for id in ["wlt-1", "wlt-2"] {
-            purse
-                .wallets
-                .write()
-                .await
-                .insert(id.to_owned(), Arc::new(RwLock::new(rabid_wallet(id))));
-        }
+        let old = insert_wallet(&purse, rabid_wallet("wlt-1", 0)).await;
+        insert_wallet(&purse, rabid_wallet("wlt-2", 0)).await;
 
         purse
             .migrate_rabid_wallets()
             .await
             .expect_err("the failed config store is reported");
         assert_eq!(*stored.lock().unwrap(), vec!["wlt-2".to_owned()]);
+        assert!(Arc::ptr_eq(&purse.get_wallet("wlt-1").await.unwrap(), &old));
 
         purse
             .migrate_rabid_wallets()
@@ -575,8 +654,10 @@ mod tests {
             *stored.lock().unwrap(),
             vec!["wlt-2".to_owned(), "wlt-1".to_owned()]
         );
-        let wlt = purse.get_wallet("wlt-1").await.unwrap();
-        assert!(!wlt.read().await.has_migration_entries().await.unwrap());
+        assert!(!Arc::ptr_eq(
+            &purse.get_wallet("wlt-1").await.unwrap(),
+            &old
+        ));
     }
 
     const NODE_ID_1: &str =

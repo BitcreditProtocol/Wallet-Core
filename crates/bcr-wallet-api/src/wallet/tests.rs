@@ -34,12 +34,10 @@ use uuid::Uuid;
 use super::*;
 use crate::{
     external::mint::{HttpClientExt, MockClowderMintConnector},
-    pocket::{
-        PocketBalance,
-        test_utils::tests::{
-            MockDebitPocket, mock_commitment_result, setup_attestation_mock, test_kinfos,
-        },
+    pocket::test_utils::tests::{
+        MockDebitPocket, mock_commitment_result, setup_attestation_mock, test_kinfos,
     },
+    types::WalletConfig,
     wallet::{
         api::WalletApi,
         test_utils::tests::{MockConsumer, MockTransport},
@@ -159,9 +157,9 @@ async fn wallet_with_debit(
         bitcoin::Network::Testnet,
         arc_client,
         HashMap::new(),
-        Box::new(ctx.tx_repo),
+        Arc::new(ctx.tx_repo),
         Arc::new(ctx.contact_repo),
-        Box::new(ctx.payment_request_repo),
+        Arc::new(ctx.payment_request_repo),
         debit,
         Arc::new(ctx.journal),
         "wallet-1".to_owned(),
@@ -169,7 +167,7 @@ async fn wallet_with_debit(
         test_pub_key(),
         test_pub_key(),
         beta_clients,
-        Box::new(|url| Arc::new(HttpClientExt::new(url))),
+        Arc::new(|url| Arc::new(HttpClientExt::new(url))),
         time::Duration::seconds(60),
         Arc::new(ctx.nostr_transport),
         ctx.nostr_event_channel,
@@ -2347,7 +2345,7 @@ async fn test_start_nostr_event_listener_contact_payment() {
         });
 
     let wlt = wallet(ctx).await;
-    Wallet::start_nostr_event_listener(wlt).await;
+    wlt.read().await.start_nostr_listener(None).await;
 
     let payload = ContactPaymentPayload {
         payment_request_id: Some(req_id),
@@ -2420,7 +2418,7 @@ async fn listener_pays_request(
         });
 
     let wlt = wallet(ctx).await;
-    Wallet::start_nostr_event_listener(wlt).await;
+    wlt.read().await.start_nostr_listener(None).await;
 
     nostr_event_channel.publish(bcr_wallet_transport::NostrWalletEvent::ContactPayment {
         sender: sender.npub(),
@@ -2584,7 +2582,7 @@ async fn test_start_nostr_event_listener_contact_payment_request() {
         });
 
     let wlt = wallet(ctx).await;
-    Wallet::start_nostr_event_listener(wlt).await;
+    wlt.read().await.start_nostr_listener(None).await;
 
     let payload = ContactPaymentRequestPayload {
         id: req_id,
@@ -2618,7 +2616,7 @@ async fn test_start_nostr_event_listener_rejects_forged_sender_on_contact_paymen
     let nostr_event_channel = ctx.nostr_event_channel.clone();
     let stored = record_stored_payment_requests(&mut ctx);
     let wlt = wallet(ctx).await;
-    Wallet::start_nostr_event_listener(wlt).await;
+    wlt.read().await.start_nostr_listener(None).await;
 
     let payload = ContactPaymentPayload {
         payment_request_id: Some(req_id),
@@ -2646,7 +2644,7 @@ async fn test_start_nostr_event_listener_rejects_forged_sender_on_contact_paymen
     let nostr_event_channel = ctx.nostr_event_channel.clone();
     let stored = record_stored_payment_requests(&mut ctx);
     let wlt = wallet(ctx).await;
-    Wallet::start_nostr_event_listener(wlt).await;
+    wlt.read().await.start_nostr_listener(None).await;
 
     let payload = ContactPaymentRequestPayload {
         id: req_id,
@@ -2700,7 +2698,7 @@ async fn test_payment_request_action_cancel_is_applied_for_matching_counterparty
         });
 
     let wlt = wallet(ctx).await;
-    Wallet::start_nostr_event_listener(wlt).await;
+    wlt.read().await.start_nostr_listener(None).await;
 
     let payload = PaymentRequestActionPayload {
         payment_request_id: req_id,
@@ -2939,7 +2937,7 @@ async fn test_payment_request_action_rejects_forged_actor() {
     let nostr_event_channel = ctx.nostr_event_channel.clone();
     let stored = record_stored_payment_requests(&mut ctx);
     let wlt = wallet(ctx).await;
-    Wallet::start_nostr_event_listener(wlt).await;
+    wlt.read().await.start_nostr_listener(None).await;
 
     let payload = PaymentRequestActionPayload {
         payment_request_id: req_id,
@@ -3308,7 +3306,7 @@ async fn test_online_exchange_success_with_valid_proofs() {
 
     let arc_alpha_beta = Arc::new(alpha_beta);
     wlt = wallet_with_betas(wlt, vec![(alpha_beta_url, arc_alpha_beta.clone())]).await;
-    wlt.write().await.client_factory = Box::new(move |url| {
+    wlt.write().await.client_factory = Arc::new(move |url| {
         assert_eq!(
             url,
             url::Url::from_str("https://alpha-beta.example").unwrap()
@@ -4518,7 +4516,7 @@ async fn test_offline_pay_by_token() {
     let mut wlt = wallet(ctx).await;
     wlt = wallet_with_betas(wlt, vec![(substitute_url.clone(), substitute_client)]).await;
     let expected_factory_url = substitute_beta_url.clone();
-    wlt.write().await.client_factory = Box::new(move |actual_url| {
+    wlt.write().await.client_factory = Arc::new(move |actual_url| {
         assert_eq!(actual_url, expected_factory_url);
         substitute_beta.clone()
     });
@@ -4643,7 +4641,7 @@ async fn exchange_lock_wallet(
     let mut alpha_beta = MockClowderMintConnector::new();
     setup_attestation_mock(&mut alpha_beta);
     let alpha_beta: Arc<dyn ClowderMintConnector> = Arc::new(alpha_beta);
-    wlt.write().await.client_factory = Box::new(move |_| alpha_beta.clone());
+    wlt.write().await.client_factory = Arc::new(move |_| alpha_beta.clone());
     wlt
 }
 
@@ -4852,7 +4850,7 @@ async fn connect_recovery(
     let alpha: Arc<dyn ClowderMintConnector> = Arc::new(alpha);
     let beta: Arc<dyn ClowderMintConnector> = Arc::new(beta);
     let alpha_url = s.fx.alpha_url.clone();
-    s.wlt.write().await.client_factory = Box::new(move |url| {
+    s.wlt.write().await.client_factory = Arc::new(move |url| {
         if url == alpha_url {
             alpha.clone()
         } else {
@@ -5119,69 +5117,92 @@ impl MigrationCtx {
         ctx.client
             .expect_mint_url()
             .return_const(url::Url::from_str("https://alpha.example").unwrap());
+        ctx.debit = migration_pocket(
+            self.received.clone(),
+            Arc::new(std::sync::Mutex::new(swap_failures)),
+            Arc::new(std::sync::Mutex::new(Vec::new())),
+            landed,
+        );
         let pocket_ys = self.pdb.list_all().await.unwrap();
         ctx.debit
             .expect_retain_migratable_proofs()
             .return_once(move |_| Ok(pocket_ys));
-        ctx.debit.expect_set_beta_provider().returning(|_| ());
-        ctx.debit.expect_unit().return_const(CurrencyUnit::Sat);
         ctx.nostr_transport.expect_relays().return_const(vec![]);
-        let failures = Arc::new(std::sync::Mutex::new(swap_failures));
-        let lost = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let (l, received) = (lost.clone(), self.received.clone());
-        ctx.debit
-            .expect_receive_proofs()
-            .returning(move |_, _, proofs, _| {
-                let mut failures = failures.lock().unwrap();
-                if *failures > 0 {
-                    *failures -= 1;
-                    if landed {
-                        l.lock().unwrap().extend(proofs);
-                    }
-                    return Err(Error::Swap("connection reset".into()));
-                }
-                let amount = proofs.total_amount().unwrap();
-                received.lock().unwrap().extend(proofs);
-                Ok((amount, vec![]))
-            });
-        let received = self.received.clone();
-        ctx.debit
-            .expect_restore_local_proofs()
-            .returning(move |_, _| {
-                let restored = std::mem::take(&mut *lost.lock().unwrap());
-                let n = restored.len();
-                received.lock().unwrap().extend(restored);
-                Ok(crate::pocket::RestoreSummary {
-                    restored: n,
-                    rejected: 0,
-                })
-            });
-        ctx.debit
-            .expect_balance()
-            .returning(|_| Ok(PocketBalance::default()));
         let wlt = wallet(ctx).await;
         let substitute: Arc<dyn ClowderMintConnector> = Arc::new(self.substitute(fail, landed));
         {
             let mut w = wlt.write().await;
             w.journal = self.pdb.clone();
-            w.client_factory = Box::new(move |_| substitute.clone());
+            w.client_factory = Arc::new(move |_| substitute.clone());
         }
         wlt
     }
 
-    async fn migrate(&self, wlt: &RwLock<Wallet>) -> Result<url::Url> {
-        wlt.write()
-            .await
-            .migrate_pockets_substitute(self.substitute_url.clone())
-            .await
+    async fn migrate(&self, wlt: &RwLock<Wallet>) -> Result<Arc<RwLock<Wallet>>> {
+        let wlt = wlt.read().await;
+        let cfg = wlt
+            .exchange_to_substitute(self.substitute_url.clone())
+            .await?;
+        wlt.rebuild(cfg).await
     }
+
+    async fn migrated(&self, wlt: &RwLock<Wallet>) -> Arc<RwLock<Wallet>> {
+        let rebuilt = self.migrate(wlt).await.unwrap();
+        assert_eq!(rebuilt.read().await.mint_url(), self.substitute_url);
+        rebuilt
+    }
+}
+
+fn migration_pocket(
+    received: Arc<std::sync::Mutex<Vec<cashu::Proof>>>,
+    failures: Arc<std::sync::Mutex<usize>>,
+    lost: Arc<std::sync::Mutex<Vec<cashu::Proof>>>,
+    landed: bool,
+) -> MockDebitPocket {
+    let mut pocket = MockDebitPocket::new();
+    pocket.expect_unit().return_const(CurrencyUnit::Sat);
+    let (f, l, r) = (failures.clone(), lost.clone(), received.clone());
+    pocket
+        .expect_receive_proofs()
+        .returning(move |_, _, proofs, _| {
+            let mut failures = f.lock().unwrap();
+            if *failures > 0 {
+                *failures -= 1;
+                if landed {
+                    l.lock().unwrap().extend(proofs);
+                }
+                return Err(Error::Swap("connection reset".into()));
+            }
+            let amount = proofs.total_amount().unwrap();
+            r.lock().unwrap().extend(proofs);
+            Ok((amount, vec![]))
+        });
+    let (l, r) = (lost.clone(), received.clone());
+    pocket.expect_restore_local_proofs().returning(move |_, _| {
+        let restored = std::mem::take(&mut *l.lock().unwrap());
+        let n = restored.len();
+        r.lock().unwrap().extend(restored);
+        Ok(crate::pocket::RestoreSummary {
+            restored: n,
+            rejected: 0,
+        })
+    });
+    pocket.expect_with_beta_provider().returning(move |_| {
+        Box::new(migration_pocket(
+            received.clone(),
+            failures.clone(),
+            lost.clone(),
+            landed,
+        ))
+    });
+    pocket
 }
 
 #[tokio::test]
 async fn migrate_resumes_a_partial_exchange_with_the_identical_request() {
     let t = MigrationCtx::new(&[1, 2], &[4]).await;
     let wlt = t.wallet(vec![t.y(0)], 0, false).await;
-    let err = t.migrate(&wlt).await.unwrap_err();
+    let err = t.migrate(&wlt).await.err().unwrap();
     assert!(matches!(err, Error::MigrationIncomplete(1)));
     assert_eq!(
         wlt.read().await.client.mint_url().as_str(),
@@ -5193,7 +5214,7 @@ async fn migrate_resumes_a_partial_exchange_with_the_identical_request() {
     let lost = first.into_iter().find(|s| s.0[0].y == *t.y(0)).unwrap();
 
     let wlt = t.wallet(vec![], 0, false).await;
-    assert_eq!(t.migrate(&wlt).await.unwrap(), t.substitute_url);
+    let wlt = t.migrated(&wlt).await;
     assert_eq!(t.take_sent(), vec![lost]);
     assert_eq!(t.received(), Amount::from(3));
     assert!(
@@ -5328,7 +5349,7 @@ async fn receive_through_online_exchange(store_succeeds: bool) -> Result<Uuid> {
 
     let wlt = wallet(ctx).await;
     let factory_alpha_url = alpha_url.clone();
-    wlt.write().await.client_factory = Box::new(move |url| {
+    wlt.write().await.client_factory = Arc::new(move |url| {
         if url == factory_alpha_url {
             alpha_client.clone()
         } else {
@@ -5387,7 +5408,7 @@ async fn migrate_swaps_into_a_keyset_the_exchange_created() {
     let mut t = MigrationCtx::new(&[1, 2], &[]).await;
     t.lazy_keyset = true;
     let wlt = t.wallet(vec![], 0, false).await;
-    assert_eq!(t.migrate(&wlt).await.unwrap(), t.substitute_url);
+    t.migrated(&wlt).await;
     assert_eq!(t.received(), Amount::from(3));
 }
 
@@ -5395,16 +5416,39 @@ async fn migrate_swaps_into_a_keyset_the_exchange_created() {
 async fn migrate_resumes_a_failed_swap_without_a_second_exchange() {
     let t = MigrationCtx::new(&[8, 16], &[]).await;
     let wlt = t.wallet(vec![], 1, false).await;
-    let err = t.migrate(&wlt).await.unwrap_err();
+    let err = t.migrate(&wlt).await.err().unwrap();
     assert!(matches!(err, Error::MigrationIncomplete(2)));
     assert_eq!(wlt.read().await.clowder_id, test_pub_key());
     assert_eq!(t.take_sent().len(), 2);
     assert_eq!(t.received(), Amount::ZERO);
 
     let wlt = t.wallet(vec![], 0, false).await;
-    assert_eq!(t.migrate(&wlt).await.unwrap(), t.substitute_url);
+    let wlt = t.migrated(&wlt).await;
     assert!(t.take_sent().is_empty());
     assert_eq!(wlt.read().await.clowder_id, test_other_pub_key());
+    assert_eq!(t.received(), Amount::from(24));
+    wlt.read().await.finish_migration().await.unwrap();
+    assert!(t.pdb.load().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn migrate_after_a_crash_before_rebuild_exchanges_and_swaps_nothing_again() {
+    let t = MigrationCtx::new(&[8, 16], &[]).await;
+    let wlt = t.wallet(vec![], 0, false).await;
+    let cfg = wlt
+        .read()
+        .await
+        .exchange_to_substitute(t.substitute_url.clone())
+        .await
+        .unwrap();
+    assert_eq!(cfg.mint, t.substitute_url);
+    assert_eq!(cfg.clowder_id, test_other_pub_key());
+    assert_eq!(t.take_sent().len(), 2);
+    assert_eq!(t.received(), Amount::from(24));
+
+    let wlt = t.wallet(vec![], 0, false).await;
+    let wlt = t.migrated(&wlt).await;
+    assert!(t.take_sent().is_empty());
     assert_eq!(t.received(), Amount::from(24));
     wlt.read().await.finish_migration().await.unwrap();
     assert!(t.pdb.load().await.unwrap().is_empty());
@@ -5415,11 +5459,11 @@ async fn migrate_resumes_issued_proofs_inside_the_hop_margin() {
     let mut t = MigrationCtx::new(&[8, 16], &[]).await;
     t.lock_secs = 300;
     let wlt = t.wallet(vec![], 1, false).await;
-    let err = t.migrate(&wlt).await.unwrap_err();
+    let err = t.migrate(&wlt).await.err().unwrap();
     assert!(matches!(err, Error::MigrationIncomplete(2)));
 
     let wlt = t.wallet(vec![], 0, false).await;
-    assert_eq!(t.migrate(&wlt).await.unwrap(), t.substitute_url);
+    t.migrated(&wlt).await;
     assert_eq!(t.received(), Amount::from(24));
 }
 
@@ -5427,7 +5471,7 @@ async fn migrate_resumes_issued_proofs_inside_the_hop_margin() {
 async fn migrate_of_only_held_payments_is_found_again() {
     let t = MigrationCtx::new(&[], &[4]).await;
     let wlt = t.wallet(vec![], 0, false).await;
-    assert_eq!(t.migrate(&wlt).await.unwrap(), t.substitute_url);
+    let wlt = t.migrated(&wlt).await;
     assert!(wlt.read().await.has_migration_entries().await.unwrap());
 }
 
@@ -5435,7 +5479,7 @@ async fn migrate_of_only_held_payments_is_found_again() {
 async fn migrate_lost_swap_response_is_not_swapped_again() {
     let t = MigrationCtx::new(&[8], &[]).await;
     let wlt = t.wallet(vec![], 1, true).await;
-    assert_eq!(t.migrate(&wlt).await.unwrap(), t.substitute_url);
+    t.migrated(&wlt).await;
     assert_eq!(t.received(), Amount::from(8));
     assert_eq!(t.states().await[&t.y(0)], MigrationJournalState::Swapped);
 }
@@ -5444,7 +5488,7 @@ async fn migrate_lost_swap_response_is_not_swapped_again() {
 async fn reclaim_tx_reclaims_a_held_payment_at_the_substitute() {
     let t = MigrationCtx::new(&[8], &[4]).await;
     let wlt = t.wallet(vec![], 0, false).await;
-    t.migrate(&wlt).await.unwrap();
+    let wlt = t.migrated(&wlt).await;
     wlt.read().await.finish_migration().await.unwrap();
     assert_eq!(t.take_sent().len(), 1);
 
@@ -5462,7 +5506,7 @@ async fn reclaim_tx_reclaims_a_held_payment_at_the_substitute() {
         .expect_link_txs()
         .times(1)
         .returning(|_, _, _| Ok(()));
-    wlt.write().await.tx_repo = Box::new(tx_repo);
+    wlt.write().await.tx_repo = Arc::new(tx_repo);
 
     assert_eq!(
         wlt.read().await.reclaim_tx(tx_id).await.unwrap(),
@@ -5479,13 +5523,13 @@ async fn reclaim_tx_reclaims_a_held_payment_at_the_substitute() {
 async fn migrate_again_while_a_payment_of_the_last_outage_is_held() {
     let t = MigrationCtx::new(&[8], &[4]).await;
     let wlt = t.wallet(vec![], 0, false).await;
-    t.migrate(&wlt).await.unwrap();
+    let wlt = t.migrated(&wlt).await;
     wlt.read().await.finish_migration().await.unwrap();
     t.take_sent();
 
     let wlt = t.wallet(vec![], 0, false).await;
     wlt.write().await.clowder_id = test_other_pub_key();
-    assert_eq!(t.migrate(&wlt).await.unwrap(), t.substitute_url);
+    let wlt = t.migrated(&wlt).await;
     wlt.read().await.finish_migration().await.unwrap();
     assert!(t.take_sent().is_empty());
     assert_eq!(
@@ -5526,7 +5570,13 @@ async fn swap_exchanged_lost_response_already_restored_counts_as_swapped() {
 
     let w = wlt.read().await;
     let amount = w
-        .swap_exchanged(Arc::new(substitute), &keysets_info, proofs, w.swap_config())
+        .swap_exchanged(
+            w.debit.as_ref(),
+            Arc::new(substitute),
+            &keysets_info,
+            proofs,
+            w.swap_config(),
+        )
         .await
         .unwrap();
     assert_eq!(amount, Amount::from(8));
@@ -5581,7 +5631,9 @@ impl SwapFixture {
         let mut ctx = wallet_ctx();
         let channel = ctx.nostr_event_channel.clone();
         ctx.client.expect_mint_url().return_const(rabid_url.clone());
-        ctx.client.expect_get_mint_keysets().returning(|| Ok(vec![]));
+        ctx.client
+            .expect_get_mint_keysets()
+            .returning(|| Ok(vec![]));
         let consumer_starts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let starts = consumer_starts.clone();
         ctx.nostr_consumer.expect_start().returning(move || {
@@ -5618,7 +5670,9 @@ impl SwapFixture {
                 evidence_digest: Some([7u8; 32]),
             })
         });
-        substitute.expect_get_mint_keysets().returning(|| Ok(vec![]));
+        substitute
+            .expect_get_mint_keysets()
+            .returning(|| Ok(vec![]));
         substitute.expect_get_clowder_betas().returning(move || {
             Ok(substitute_betas
                 .iter()
@@ -5707,7 +5761,10 @@ async fn next_received(received: &mut tokio::sync::mpsc::UnboundedReceiver<Amoun
 
 #[tokio::test]
 async fn old_listener_ignores_nostr_events_published_after_swap() {
-    let mut f = SwapFixture::new(vec![url::Url::from_str("https://sub-beta.example").unwrap()]).await;
+    let mut f = SwapFixture::new(vec![
+        url::Url::from_str("https://sub-beta.example").unwrap(),
+    ])
+    .await;
 
     let insert_blocked = f.purse.wallets.read().await;
     let purse = f.purse.clone();

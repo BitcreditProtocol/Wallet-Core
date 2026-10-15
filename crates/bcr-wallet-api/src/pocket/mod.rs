@@ -35,7 +35,6 @@ pub mod test_utils;
 #[async_trait]
 pub trait PocketApi: SendSync {
     fn unit(&self) -> CurrencyUnit;
-    fn set_beta_provider(&mut self, beta_provider: Arc<dyn BetaProvider>);
     async fn balance(&self, keysets_info: &HashMap<ecash::Id, KeySetInfo>)
     -> Result<PocketBalance>;
     async fn receive_proofs(

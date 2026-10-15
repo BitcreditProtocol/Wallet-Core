@@ -1,6 +1,5 @@
 use crate::config::{AppStateConfig, CreateWalletConfig};
 use crate::external::mint::{ClowderMintConnector, HttpClientExt};
-use crate::wallet::Wallet;
 use crate::wallet::api::WalletApi;
 pub use crate::wallet::types::{
     WalletBalance, WalletDetailedBalanceEntry, WalletInfo, WalletProtestResult,
@@ -158,7 +157,7 @@ impl AppState {
 
             purse.add_wallet(wallet.clone()).await?;
             // start nostr event listener after initialization
-            Wallet::start_nostr_event_listener(wallet).await;
+            wallet.read().await.start_nostr_listener(None).await;
         }
         Ok(())
     }
@@ -213,7 +212,7 @@ impl AppState {
 
         let id = purse.add_wallet(wallet.clone()).await?;
         // start nostr event listener after initialization
-        Wallet::start_nostr_event_listener(wallet).await;
+        wallet.read().await.start_nostr_listener(None).await;
 
         Ok(id)
     }
@@ -240,7 +239,7 @@ impl AppState {
 
         let id = purse.add_wallet(wallet.clone()).await?;
         // start nostr event listener after initialization
-        Wallet::start_nostr_event_listener(wallet).await;
+        wallet.read().await.start_nostr_listener(None).await;
         tracing::debug!("Wallet restored successfully: {summary:?}");
         Ok(id)
     }
@@ -1467,9 +1466,9 @@ async fn build_wallet(
         w_cfg.network,
         client,
         w_cfg.mint_keyset_infos,
-        Box::new(tx_repo),
+        Arc::new(tx_repo),
         contactdb,
-        Box::new(pending_incoming_payment_request_db),
+        Arc::new(pending_incoming_payment_request_db),
         debit_pocket,
         debitdb,
         w_cfg.name,
@@ -1477,7 +1476,7 @@ async fn build_wallet(
         w_cfg.pub_key,
         w_cfg.clowder_id,
         beta_clients,
-        Box::new(|url| Arc::new(external::mint::HttpClientExt::new(url))),
+        Arc::new(|url| Arc::new(external::mint::HttpClientExt::new(url))),
         swap_expiry,
         Arc::new(nostr_transport),
         nostr_event_channel,

@@ -129,6 +129,8 @@ pub trait DebitPocketApi: super::PocketApi {
         tstamp: u64,
         client_factory: &ClientFactory,
     ) -> Result<usize>;
+    /// A pocket on the same stores, seed and in-flight proofs whose swaps `beta` attests
+    fn with_beta_provider(&self, beta: Arc<dyn BetaProvider>) -> Box<dyn DebitPocketApi>;
 }
 
 #[derive(Debug, Clone)]
@@ -620,10 +622,6 @@ impl super::PocketApi for Pocket {
         self.unit.clone()
     }
 
-    fn set_beta_provider(&mut self, beta_provider: Arc<dyn BetaProvider>) {
-        self.beta = beta_provider;
-    }
-
     async fn balance(
         &self,
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
@@ -963,6 +961,19 @@ impl super::PocketApi for Pocket {
 
 #[async_trait]
 impl DebitPocketApi for Pocket {
+    fn with_beta_provider(&self, beta: Arc<dyn BetaProvider>) -> Box<dyn DebitPocketApi> {
+        Box::new(Self {
+            in_flight: self.in_flight.clone(),
+            ..Self::new(
+                self.unit.clone(),
+                self.pdb.clone(),
+                self.mdb.clone(),
+                self.seed,
+                beta,
+            )
+        })
+    }
+
     async fn reclaim_proofs(
         &self,
         ys: &[cdk01::PublicKey],

@@ -2,6 +2,7 @@
 
 * An interrupted offline intermint receive completes when the token is received again: the offline exchange key is derived from the wallet seed and the token's proofs, so a retry sends the same request
 * `wallet_migrate_rabid` swaps the exchanged proofs into a keyset the substitute created during the exchange instead of failing with `MigrationIncomplete`
+* `wallet_migrate_rabid` (`purse_migrate_rabid`) no longer locks the rabid wallet for writing: it exchanges under a read lock, then swaps in a wallet rebuilt on the substitute, whose Nostr listener takes over the old one's queued events
 
 
 # 0.9.14
