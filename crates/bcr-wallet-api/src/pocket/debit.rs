@@ -788,7 +788,11 @@ impl super::PocketApi for Pocket {
         swap_config: SwapConfig,
     ) -> Result<Vec<cashu::Proof>> {
         let total_amount = proofs.total_amount()?;
-        let change_amount = total_amount - send_amount;
+        let change_amount = total_amount.checked_sub(send_amount).ok_or_else(|| {
+            Error::Swap(format!(
+                "substitute proofs total {total_amount} is less than send amount {send_amount}"
+            ))
+        })?;
 
         let keysets_info: HashMap<cashu::Id, KeySetInfo> = keysets_info
             .iter()
@@ -1116,7 +1120,14 @@ impl DebitPocketApi for Pocket {
             .map_err(|e| Error::MintingError(format!("invalid address: {e}")))?;
 
         // inputs need to cover amount + network_fee + melt_fee
-        let full_amount = amount + network_fee + melt_fee;
+        let full_amount = amount
+            .checked_add(network_fee)
+            .and_then(|a| a.checked_add(melt_fee))
+            .ok_or_else(|| {
+                Error::MintingError(format!(
+                    "melt amount {amount} plus fees {network_fee} and {melt_fee} overflows"
+                ))
+            })?;
         let (send_summary, send_ref) = self
             .compute_send_costs(Amount::from(full_amount), keysets_info)
             .await?;
@@ -3919,6 +3930,70 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(Error::MintingError(_))));
+    }
+
+    #[tokio::test]
+    async fn prepare_onchain_melt_overflowing_fees_returns_error_not_panic() {
+        let (info, _keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let pocket = pocket(
+            Arc::new(MockPocketRepository::new()),
+            Arc::new(MockMintMeltRepository::new()),
+        );
+
+        let result = pocket
+            .prepare_onchain_melt(
+                valid_payment_address_testnet().assume_checked().to_string(),
+                u64::MAX,
+                1,
+                1,
+                &k_infos,
+                Arc::new(MockClowderMintConnector::new()),
+                test_swap_config(),
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::MintingError(_))));
+    }
+
+    #[tokio::test]
+    async fn swap_to_unlocked_substitute_proofs_total_below_send_returns_error_not_panic() {
+        let (info, mint_keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let keysets_info = test_kinfos(info);
+        let keysets = HashMap::from([(kid, bcr_wallet_core::util::to_keyset(&mint_keyset, None))]);
+        let input_proofs =
+            core_tests::generate_random_ecash_proofs(&mint_keyset, &[Amount::from(8u64)]);
+
+        let substitute_keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let substitute_clowder_id = secp256k1::PublicKey::from_keypair(&substitute_keypair);
+        let swap_config = test_swap_config();
+        let mut beta_connector = MockClowderMintConnector::new();
+        setup_attestation_mock(&mut beta_connector);
+        let beta_provider = RandomBetaProvider::new(
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
+            swap_config.alpha_pk,
+        )
+        .expect("can create beta provider");
+
+        let pocket = pocket(
+            Arc::new(MockPocketRepository::new()),
+            Arc::new(MockMintMeltRepository::new()),
+        );
+        let result = pocket
+            .swap_to_unlocked_substitute_proofs(
+                input_proofs,
+                &keysets_info,
+                keysets,
+                Arc::new(MockClowderMintConnector::new()),
+                substitute_clowder_id,
+                beta_provider,
+                Amount::from(16u64),
+                swap_config,
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::Swap(_))));
     }
 
     #[tokio::test]
