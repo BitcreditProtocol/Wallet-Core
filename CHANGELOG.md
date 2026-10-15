@@ -1,6 +1,6 @@
 # 0.9.15
 
-* TBD
+* An interrupted offline intermint receive completes when the token is received again: the offline exchange key is derived from the wallet seed and the token's proofs, so a retry sends the same request
 
 # 0.9.14
 

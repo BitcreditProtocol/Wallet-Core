@@ -122,6 +122,7 @@ pub trait DebitPocketApi: super::PocketApi {
         alpha_beta: Arc<dyn BetaProvider>,
     ) -> Result<Vec<Proof>>;
     async fn delete_exchange_record(&self, hash_lock: Sha256) -> Result<()>;
+    fn exchange_key(&self, proofs: &[Proof]) -> Result<cashu::SecretKey>;
     /// Refunds every exchange past its locktime as foreign mint proofs of its alpha.
     async fn refund_expired_exchanges(
         &self,
@@ -1623,6 +1624,10 @@ impl DebitPocketApi for Pocket {
 
     async fn delete_exchange_record(&self, hash_lock: Sha256) -> Result<()> {
         Ok(self.pdb.delete_exchange_record(hash_lock).await?)
+    }
+
+    fn exchange_key(&self, proofs: &[Proof]) -> Result<cashu::SecretKey> {
+        super::exchange_key(&self.seed, proofs)
     }
 
     async fn refund_expired_exchanges(

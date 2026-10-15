@@ -22,7 +22,7 @@ use bcr_wallet_persistence::PocketRepository;
 use bcr_wallet_persistence::{
     MockContactStoreApi, MockMigrationJournalRepository, MockNostrRepository,
     MockPaymentRequestStoreApi, MockTransactionRepository,
-    test_utils::tests::{test_other_pub_key, test_pub_key},
+    test_utils::tests::{test_other_pub_key, test_pub_key, zero_seed},
 };
 use bcr_wallet_transport::{NostrEventChannel, error::Error as TransportError};
 use bitcoin::base64::{Engine, engine::general_purpose::STANDARD};
@@ -3381,7 +3381,10 @@ async fn offline_exchange_issuing(
     + Send
     + 'static,
 ) -> Result<Vec<Proof>> {
-    let ctx = wallet_ctx();
+    let mut ctx = wallet_ctx();
+    ctx.debit
+        .expect_exchange_key()
+        .returning(|proofs| crate::pocket::exchange_key(&zero_seed(), proofs));
     let wlt = wallet(ctx).await;
 
     let (_alpha_info, alpha_keyset) = core_tests::generate_random_ecash_keyset();
@@ -3431,6 +3434,54 @@ async fn offline_exchange_issuing(
             [7u8; 32],
         )
         .await
+}
+
+#[tokio::test]
+async fn test_offline_exchange_retry_sends_the_same_request() {
+    let mut ctx = wallet_ctx();
+    ctx.debit
+        .expect_exchange_key()
+        .returning(|proofs| crate::pocket::exchange_key(&zero_seed(), proofs));
+    let wlt = wallet(ctx).await;
+
+    let (_alpha_info, alpha_keyset) = core_tests::generate_random_ecash_keyset();
+    let mut alpha_proofs =
+        core_tests::generate_random_ecash_proofs(&alpha_keyset, &[Amount::from(8)]);
+    add_test_dleqs(&mut alpha_proofs);
+
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = requests.clone();
+    let mut substitute = MockClowderMintConnector::new();
+    substitute
+        .expect_post_offline_exchange()
+        .times(2)
+        .returning(
+            move |_fingerprints,
+                  _hash_locks,
+                  wallet_pk,
+                  wallet_signature,
+                  _substitute_clowder_id| {
+                seen.lock().unwrap().push((wallet_pk, wallet_signature));
+                Ok(vec![])
+            },
+        );
+
+    for _ in 0..2 {
+        let _ = wlt
+            .read()
+            .await
+            .offline_exchange(
+                &substitute,
+                alpha_proofs.clone(),
+                test_pub_key(),
+                test_pub_key(),
+                [7u8; 32],
+            )
+            .await;
+    }
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests[0], requests[1]);
 }
 
 #[tokio::test]
@@ -4308,6 +4359,9 @@ async fn test_offline_pay_by_token() {
         .return_const(wallet_mint_url.clone());
 
     ctx.debit.expect_unit().returning(|| CurrencyUnit::Sat);
+    ctx.debit
+        .expect_exchange_key()
+        .returning(|proofs| crate::pocket::exchange_key(&zero_seed(), proofs));
 
     let local_proofs_for_mock = local_proofs_by_y.clone();
 

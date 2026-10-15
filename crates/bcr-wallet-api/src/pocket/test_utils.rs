@@ -238,6 +238,7 @@ pub mod tests {
                 alpha_beta: Arc<dyn crate::pocket::BetaProvider>,
             ) -> Result<Vec<cashu::Proof>>;
             async fn delete_exchange_record(&self, hash_lock: bitcoin::hashes::sha256::Hash) -> Result<()>;
+            fn exchange_key(&self, proofs: &[cashu::Proof]) -> Result<cashu::SecretKey>;
             async fn refund_expired_exchanges(
                 &self,
                 tstamp: u64,
