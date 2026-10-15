@@ -251,6 +251,24 @@ impl Drop for Reservation {
     }
 }
 
+///////////////////////////////////////////// exchange_key
+pub(crate) fn exchange_key(seed: &Seed, proofs: &[cdk00::Proof]) -> Result<cdk01::SecretKey> {
+    use bitcoin::hashes::{Hash, HashEngine, Hmac, HmacEngine, sha256::Hash as Sha256};
+    let mut hashes: Vec<Sha256> = proofs
+        .iter()
+        .map(|p| Sha256::hash(&p.secret.to_bytes()))
+        .collect();
+    hashes.sort();
+    let mut engine = HmacEngine::<Sha256>::new(seed);
+    engine.input(b"offline-exchange");
+    for hash in hashes {
+        engine.input(hash.as_byte_array());
+    }
+    Ok(cdk01::SecretKey::from_slice(
+        Hmac::from_engine(engine).as_byte_array(),
+    )?)
+}
+
 ///////////////////////////////////////////// premint_from_counter
 async fn premint_from_counter(
     db: &dyn PocketRepository,
@@ -882,6 +900,19 @@ mod tests {
     use bcr_common::{cashu::Proof, core::signature, core_tests};
     use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
     use mockall::predicate::*;
+
+    #[test]
+    fn exchange_key_is_the_same_for_the_same_proofs_only() {
+        let (_, keyset) = core_tests::generate_random_ecash_keyset();
+        let proofs =
+            core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8), Amount::from(16)]);
+        let key = exchange_key(&zero_seed(), &proofs).unwrap();
+
+        let reversed: Vec<_> = proofs.iter().rev().cloned().collect();
+        assert_eq!(exchange_key(&zero_seed(), &reversed).unwrap(), key);
+        assert_ne!(exchange_key(&zero_seed(), &proofs[..1]).unwrap(), key);
+        assert_ne!(exchange_key(&[1u8; 64], &proofs).unwrap(), key);
+    }
 
     #[tokio::test]
     async fn premint_from_counter_derives_at_reserved_start() {

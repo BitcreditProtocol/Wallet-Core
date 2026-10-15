@@ -1266,8 +1266,8 @@ impl Wallet {
         alpha_id: secp256k1::PublicKey,
         evidence_digest: [u8; 32],
     ) -> Result<Vec<Proof>> {
-        // Ephemeral P2PK secret
-        let wallet_pk = cashu::SecretKey::generate();
+        // P2PK secret
+        let wallet_pk = self.debit.exchange_key(&proofs)?;
 
         let secrets: Vec<_> = proofs.iter().map(|p| p.secret.clone()).collect();
         let beta_proofs = util::post_offline_exchange(
