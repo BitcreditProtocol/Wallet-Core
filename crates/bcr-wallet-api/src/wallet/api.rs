@@ -847,14 +847,10 @@ impl WalletApi for super::Wallet {
             }
         };
         let substitute = (self.client_factory)(header.substitute_url.clone());
-        let keysets_info: HashMap<ecash::Id, ecash::KeySetInfo> = substitute
-            .get_mint_keysets()
+        let substitute_kids: HashSet<ecash::Id> = util::keyset_infos(substitute.as_ref())
             .await?
-            .into_iter()
-            .map(|k| (k.id, k))
+            .into_keys()
             .collect();
-
-        let substitute_kids: HashSet<ecash::Id> = keysets_info.keys().copied().collect();
         let entries: Vec<_> = self
             .debit
             .retain_migratable_proofs(&substitute_kids)
@@ -915,6 +911,7 @@ impl WalletApi for super::Wallet {
             return Err(Error::MigrationIncomplete(unexchanged));
         }
 
+        let keysets_info = util::keyset_infos(substitute.as_ref()).await?;
         let clowder_id = substitute.get_clowder_id().await?;
         let mut beta_clients = BTreeMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
         for beta in substitute.get_clowder_betas().await? {
@@ -1143,12 +1140,7 @@ impl WalletApi for super::Wallet {
                 .await?;
 
             // Fetch keyset infos
-            let keysets_info: HashMap<ecash::Id, ecash::KeySetInfo> = substitute_client
-                .get_mint_keysets()
-                .await?
-                .into_iter()
-                .map(|k| (k.id, k))
-                .collect();
+            let keysets_info = util::keyset_infos(substitute_client.as_ref()).await?;
 
             let kids: HashSet<ecash::Id> = substitute_proofs
                 .iter()

@@ -78,6 +78,17 @@ pub fn build_offline_exchange_request(
     })
 }
 
+pub async fn keyset_infos(
+    client: &dyn ClowderMintConnector,
+) -> Result<HashMap<ecash::Id, ecash::KeySetInfo>> {
+    Ok(client
+        .get_mint_keysets()
+        .await?
+        .into_iter()
+        .map(|k| (k.id, k))
+        .collect())
+}
+
 pub async fn post_offline_exchange(
     substitute_client: &dyn ClowderMintConnector,
     substitute_clowder_id: secp256k1::PublicKey,

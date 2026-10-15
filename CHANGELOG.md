@@ -1,6 +1,6 @@
 # 0.9.15
 
-* TBD
+* `wallet_migrate_rabid` swaps the exchanged proofs into a keyset the substitute created during the exchange instead of failing with `MigrationIncomplete`
 
 # 0.9.14
 
