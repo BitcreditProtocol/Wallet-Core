@@ -435,9 +435,10 @@ impl Pocket {
 
         // prepare the premints
         let mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets> = BTreeMap::new();
+        let mut reservations: Vec<CounterReservation> = Vec::new();
         for (kid, amount) in swap_plan {
             let kid: ecash::Id = kid.into();
-            let premint = premint_from_counter(
+            let (premint, reservation) = premint_from_counter(
                 self.pdb.as_ref(),
                 &self.seed,
                 kid,
@@ -447,6 +448,7 @@ impl Pocket {
             )
             .await?;
             premints.insert(kid, premint);
+            reservations.push(reservation);
         }
 
         // swap
@@ -454,6 +456,7 @@ impl Pocket {
             self.unit.clone(),
             swap_proofs,
             premints,
+            &reservations,
             keysets,
             client,
             self.pdb.as_ref(),
@@ -801,6 +804,7 @@ impl super::PocketApi for Pocket {
 
         // prepare the premints
         let mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets> = BTreeMap::new();
+        let mut reservations: Vec<CounterReservation> = Vec::new();
         let mut remaining_payment = send_amount;
         // collect payments by kid, so we can reconstruct it after the swap
         let mut payment_targets_by_kid: HashMap<ecash::Id, Amount> = HashMap::new();
@@ -819,7 +823,7 @@ impl super::PocketApi for Pocket {
             };
 
             let kid: ecash::Id = kid.into();
-            let premint = premint_from_counter(
+            let (premint, reservation) = premint_from_counter(
                 self.pdb.as_ref(),
                 &self.seed,
                 kid,
@@ -829,6 +833,7 @@ impl super::PocketApi for Pocket {
             )
             .await?;
             premints.insert(kid, premint);
+            reservations.push(reservation);
         }
 
         if remaining_payment != Amount::ZERO {
@@ -851,6 +856,10 @@ impl super::PocketApi for Pocket {
             &swap_config,
             premints.into_iter().collect(),
             attestation,
+            Some(super::Reserved {
+                db: self.pdb.as_ref(),
+                ranges: &reservations,
+            }),
         )
         .await?;
 
@@ -1243,7 +1252,7 @@ impl DebitPocketApi for Pocket {
         };
         let kid = active_info.id;
         let keyset = client.get_mint_keyset(kid).await?;
-        let premint = premint_from_counter(
+        let (premint, _) = premint_from_counter(
             self.pdb.as_ref(),
             &self.seed,
             kid,
@@ -1607,6 +1616,7 @@ impl DebitPocketApi for Pocket {
             &swap_config,
             record.premints.clone(),
             attestation,
+            None,
         )
         .await?;
         let signatures = alpha_client
