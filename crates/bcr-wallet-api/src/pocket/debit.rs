@@ -2735,13 +2735,17 @@ mod tests {
         assert_eq!(res.0, tx_id);
     }
 
-    fn mock_melt_commitment_body(quote_id: Uuid, amount: u64) -> String {
+    fn mock_melt_commitment_body(
+        quote_id: Uuid,
+        amount: u64,
+        inputs: Vec<bcr_common::wire::keys::ProofFingerprint>,
+    ) -> String {
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let wallet_key = cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral));
         let body = wire_melt::MeltQuoteOnchainResponseBody {
             quote: quote_id,
             inputs: bcr_common::wire::attestation::AttestedFingerprints {
-                inputs: vec![],
+                inputs,
                 attestation: crate::pocket::test_utils::tests::mock_attestation(),
             },
             address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
@@ -2754,6 +2758,188 @@ mod tests {
         };
         use bitcoin::base64::{Engine, engine::general_purpose::STANDARD};
         STANDARD.encode(borsh::to_vec(&body).unwrap())
+    }
+
+    fn unresponsive_mint() -> crate::external::mint::HttpClientExt {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = url::Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming() {
+                held.push(stream);
+            }
+        });
+        crate::external::mint::HttpClientExt::new(
+            url,
+            crate::external::mint::MintTimeouts {
+                connect: std::time::Duration::from_secs(1),
+                request: std::time::Duration::from_millis(200),
+            },
+        )
+    }
+
+    async fn melt_timed_out(
+        pdb: Arc<bcr_wallet_persistence::redb::pocket::PocketDB>,
+        k_infos: &HashMap<ecash::Id, KeySetInfo>,
+        proofs: Vec<cdk00::Proof>,
+    ) -> super::Pocket {
+        for proof in proofs {
+            pdb.store_new(proof).await.unwrap();
+        }
+        let quote_id = Uuid::new_v4();
+        let stored = Arc::new(Mutex::new(None));
+        let mut mdb = MockMintMeltRepository::new();
+        let record = stored.clone();
+        mdb.expect_store_melt_commitment()
+            .times(1)
+            .returning(move |r| {
+                *record.lock().unwrap() = Some(r);
+                Ok(())
+            });
+        mdb.expect_load_melt_commitment()
+            .times(1)
+            .returning(move |_| Ok(stored.lock().unwrap().clone().unwrap()));
+        let mut connector = MockClowderMintConnector::new();
+        connector
+            .expect_post_melt_quote_onchain()
+            .times(1)
+            .returning(move |inputs, amount, _, _, _, _, _| {
+                let fingerprints = inputs
+                    .into_iter()
+                    .map(|p| bcr_common::wire::keys::ProofFingerprint::try_from(p).unwrap())
+                    .collect();
+                Ok(MeltQuoteResult {
+                    quote_id,
+                    expiry: 999999,
+                    amount,
+                    commitment: cashu::SecretKey::generate().sign(&[0; 32]).unwrap(),
+                    ephemeral_secret: secp256k1::SecretKey::from_keypair(
+                        &secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+                    ),
+                    body_content: mock_melt_commitment_body(
+                        quote_id,
+                        amount.to_sat(),
+                        fingerprints,
+                    ),
+                })
+            });
+
+        let pocket = pocket(pdb, Arc::new(mdb));
+        let summary = pocket
+            .prepare_onchain_melt(
+                valid_payment_address_testnet().assume_checked().to_string(),
+                24,
+                3,
+                1,
+                k_infos,
+                Arc::new(connector),
+                test_swap_config(),
+            )
+            .await
+            .expect("prepare melt works");
+        let Err(err) = pocket
+            .pay_onchain_melt(summary.request_id, Arc::new(unresponsive_mint()))
+            .await
+        else {
+            panic!("the melt request must time out");
+        };
+        assert!(matches!(err, Error::ReqwestClient(ref e) if e.is_timeout()));
+        pocket
+    }
+
+    #[tokio::test]
+    async fn melt_timeout_reconciles_via_check_state() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(4), Amount::from(8), Amount::from(16)],
+        );
+        let inputs: HashSet<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+        let pdb = in_memory_pdb();
+        let pocket = melt_timed_out(pdb.clone(), &k_infos, proofs).await;
+
+        let pending: HashSet<_> = pdb.list_pending().await.unwrap().into_keys().collect();
+        assert_eq!(pending, inputs);
+        assert!(pdb.list_unspent().await.unwrap().is_empty());
+
+        let spent_at_mint = inputs.clone();
+        let mut connector = MockClowderMintConnector::new();
+        connector
+            .expect_post_check_state()
+            .times(1)
+            .returning(move |req| Ok(proof_states(req, &spent_at_mint)));
+        let recovered = pocket
+            .recover_pending_stale_proofs(&[], &k_infos, Arc::new(connector), test_swap_config())
+            .await
+            .expect("recover works");
+
+        assert_eq!(recovered, Amount::ZERO);
+        assert!(pdb.list_pending().await.unwrap().is_empty());
+        assert!(pdb.list_unspent().await.unwrap().is_empty());
+        let spent: HashSet<_> = pdb.list_spent().await.unwrap().into_keys().collect();
+        assert_eq!(spent, inputs);
+    }
+
+    #[tokio::test]
+    async fn melt_timeout_unspent_returns_to_unspent() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(4), Amount::from(8), Amount::from(16)],
+        );
+        let inputs: HashSet<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+        let pdb = in_memory_pdb();
+        let pocket = melt_timed_out(pdb.clone(), &k_infos, proofs).await;
+
+        let pending: HashSet<_> = pdb.list_pending().await.unwrap().into_keys().collect();
+        assert_eq!(pending, inputs);
+
+        let mut connector = MockClowderMintConnector::new();
+        connector
+            .expect_post_check_state()
+            .times(1)
+            .returning(|req| Ok(proof_states(req, &HashSet::new())));
+        let mint_keyset = bcr_wallet_core::util::to_keyset(&keyset, None);
+        connector
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(mint_keyset.clone()));
+        connector.expect_post_swap_commitment().times(1).returning(
+            move |inputs, outputs, _, _, _| {
+                let mut result = mock_commitment_result();
+                result.inputs_ys = inputs.iter().map(|p| p.y().unwrap()).collect();
+                result.outputs = outputs;
+                Ok(result)
+            },
+        );
+        connector
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(move |_, outputs, _| {
+                Ok(outputs
+                    .iter()
+                    .map(|bm| bcr_common::core::signature::sign_ecash(&keyset, bm).unwrap())
+                    .collect())
+            });
+        let recovered = pocket
+            .recover_pending_stale_proofs(&[], &k_infos, Arc::new(connector), test_swap_config())
+            .await
+            .expect("recover works");
+
+        assert_eq!(recovered, Amount::from(28u64));
+        assert!(pdb.list_pending().await.unwrap().is_empty());
+        let unspent = pdb.list_unspent().await.unwrap();
+        assert_eq!(
+            unspent
+                .into_values()
+                .collect::<Vec<_>>()
+                .total_amount()
+                .unwrap(),
+            recovered
+        );
+        let spent: HashSet<_> = pdb.list_spent().await.unwrap().into_keys().collect();
+        assert_eq!(spent, inputs);
     }
 
     #[tokio::test]
@@ -2769,7 +2955,7 @@ mod tests {
 
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let commitment_sig = cashu::SecretKey::generate().sign(&[0u8; 32]).unwrap();
-        let body_content = mock_melt_commitment_body(quote_id, 100);
+        let body_content = mock_melt_commitment_body(quote_id, 100, vec![]);
         mdb.expect_load_melt_commitment()
             .times(1)
             .returning(move |_| {
@@ -2827,7 +3013,7 @@ mod tests {
 
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let commitment_sig = cashu::SecretKey::generate().sign(&[0u8; 32]).unwrap();
-        let body_content = mock_melt_commitment_body(quote_id, 100);
+        let body_content = mock_melt_commitment_body(quote_id, 100, vec![]);
         mdb.expect_load_melt_commitment()
             .times(1)
             .returning(move |_| {
@@ -3875,7 +4061,11 @@ mod tests {
                     ephemeral_secret: secp256k1::SecretKey::from_keypair(
                         &secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
                     ),
-                    body_content: mock_melt_commitment_body(quote_id, offered_amount.to_sat()),
+                    body_content: mock_melt_commitment_body(
+                        quote_id,
+                        offered_amount.to_sat(),
+                        vec![],
+                    ),
                 })
             });
 
