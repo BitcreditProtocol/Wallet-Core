@@ -5531,3 +5531,235 @@ async fn swap_exchanged_lost_response_already_restored_counts_as_swapped() {
         .unwrap();
     assert_eq!(amount, Amount::from(8));
 }
+
+fn contact_payment(amount: u64, mint: &url::Url) -> bcr_wallet_transport::NostrWalletEvent {
+    let (_info, _keyset, proofs) = test_keyset_and_proofs(&[Amount::from(amount)]);
+    bcr_wallet_transport::NostrWalletEvent::ContactPayment {
+        sender: node_id(NODE_ID_1).npub(),
+        payload: ContactPaymentPayload {
+            payment_request_id: None,
+            sender: node_id(NODE_ID_1),
+            proofs,
+            unit: CurrencyUnit::Sat,
+            memo: None,
+            created_at: 123,
+            mint: to_mint_url(mint),
+        },
+        event_id: EventId::from_byte_array([amount as u8; 32]),
+    }
+}
+
+fn receiving_pocket(received: tokio::sync::mpsc::UnboundedSender<Amount>) -> MockDebitPocket {
+    let mut pocket = MockDebitPocket::new();
+    pocket.expect_unit().return_const(CurrencyUnit::Sat);
+    pocket
+        .expect_receive_proofs()
+        .returning(move |_, _, proofs, _| {
+            let amount = proofs.total_amount().unwrap();
+            received.send(amount).unwrap();
+            Ok((amount, vec![]))
+        });
+    pocket
+}
+
+struct SwapFixture {
+    purse: Arc<crate::purse::Purse<Wallet>>,
+    old: Arc<RwLock<Wallet>>,
+    channel: NostrEventChannel,
+    rabid_url: url::Url,
+    substitute_url: url::Url,
+    consumer_starts: Arc<std::sync::atomic::AtomicUsize>,
+    stored: Arc<std::sync::Mutex<Vec<WalletConfig>>>,
+    old_received: tokio::sync::mpsc::UnboundedReceiver<Amount>,
+    new_received: tokio::sync::mpsc::UnboundedReceiver<Amount>,
+}
+
+impl SwapFixture {
+    async fn new(substitute_betas: Vec<url::Url>) -> Self {
+        let rabid_url = url::Url::from_str("https://rabid.example").unwrap();
+        let substitute_url = url::Url::from_str("https://substitute.example").unwrap();
+        let mut ctx = wallet_ctx();
+        let channel = ctx.nostr_event_channel.clone();
+        ctx.client.expect_mint_url().return_const(rabid_url.clone());
+        ctx.client.expect_get_mint_keysets().returning(|| Ok(vec![]));
+        let consumer_starts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let starts = consumer_starts.clone();
+        ctx.nostr_consumer.expect_start().returning(move || {
+            starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut consumer = tokio::task::JoinSet::new();
+            consumer.spawn(std::future::pending());
+            Ok(consumer)
+        });
+        ctx.nostr_transport
+            .expect_has_connected_relays()
+            .return_const(true);
+        ctx.nostr_transport.expect_relays().return_const(vec![]);
+        ctx.tx_repo.expect_store_tx().returning(|tx| Ok(tx.id));
+        let (old_tx, old_received) = tokio::sync::mpsc::unbounded_channel();
+        let (new_tx, new_received) = tokio::sync::mpsc::unbounded_channel();
+        ctx.debit = receiving_pocket(old_tx);
+        ctx.debit
+            .expect_retain_migratable_proofs()
+            .returning(|_| Ok(vec![]));
+        ctx.debit
+            .expect_with_beta_provider()
+            .return_once(move |_| Box::new(receiving_pocket(new_tx)));
+
+        let mut substitute = MockClowderMintConnector::new();
+        substitute
+            .expect_mint_url()
+            .return_const(substitute_url.clone());
+        substitute
+            .expect_get_clowder_id()
+            .returning(|| Ok(test_other_pub_key()));
+        substitute.expect_get_alpha_offline().returning(|_| {
+            Ok(wire_clowder::OfflineResponse {
+                offline: true,
+                evidence_digest: Some([7u8; 32]),
+            })
+        });
+        substitute.expect_get_mint_keysets().returning(|| Ok(vec![]));
+        substitute.expect_get_clowder_betas().returning(move || {
+            Ok(substitute_betas
+                .iter()
+                .map(|url| ClowderBeta {
+                    url: url.clone(),
+                    clowder_id: test_pub_key(),
+                })
+                .collect())
+        });
+        let substitute: Arc<dyn ClowderMintConnector> = Arc::new(substitute);
+        let mut beta = MockClowderMintConnector::new();
+        beta.expect_get_alpha_status().returning(|_| {
+            Ok(wire_clowder::AlphaStateResponse {
+                state: wire_clowder::SimpleAlphaState::Rabid("rabid".to_string()),
+            })
+        });
+        let sub_url = substitute_url.clone();
+        beta.expect_get_alpha_substitute().returning(move |_| {
+            Ok(wire_clowder::ConnectedMintResponse {
+                mint: sub_url.clone(),
+                clowder: url::Url::from_str("https://clowder.example").unwrap(),
+                node_id: test_other_pub_key(),
+            })
+        });
+
+        let old = wallet_with_betas(
+            wallet(ctx).await,
+            vec![(
+                url::Url::from_str("https://beta.example").unwrap(),
+                Arc::new(beta),
+            )],
+        )
+        .await;
+        {
+            let mut w = old.write().await;
+            w.journal = Arc::new(
+                bcr_wallet_persistence::test_utils::tests::in_memory_pocket_db(
+                    "w-1",
+                    CurrencyUnit::Sat,
+                ),
+            );
+            w.client_factory = Arc::new(move |_| substitute.clone());
+        }
+
+        let stored = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut repo = bcr_wallet_persistence::MockPurseRepository::new();
+        let st = stored.clone();
+        repo.expect_store().returning(move |cfg| {
+            st.lock().unwrap().push(cfg);
+            Ok(())
+        });
+        let purse = Arc::new(crate::purse::Purse {
+            repo: Box::new(repo),
+            contact_repos: HashMap::new(),
+            wallets: Arc::new(RwLock::new(HashMap::from([(
+                "w-1".to_owned(),
+                old.clone(),
+            )]))),
+        });
+        old.read().await.start_nostr_listener(None).await;
+        Self {
+            purse,
+            old,
+            channel,
+            rabid_url,
+            substitute_url,
+            consumer_starts,
+            stored,
+            old_received,
+            new_received,
+        }
+    }
+
+    fn consumer_starts(&self) -> usize {
+        self.consumer_starts
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+async fn next_received(received: &mut tokio::sync::mpsc::UnboundedReceiver<Amount>) -> Amount {
+    tokio::time::timeout(Duration::from_secs(5), received.recv())
+        .await
+        .expect("the payment is received")
+        .expect("the pocket is alive")
+}
+
+#[tokio::test]
+async fn old_listener_ignores_nostr_events_published_after_swap() {
+    let mut f = SwapFixture::new(vec![url::Url::from_str("https://sub-beta.example").unwrap()]).await;
+
+    let insert_blocked = f.purse.wallets.read().await;
+    let purse = f.purse.clone();
+    let migration = tokio::spawn(async move { purse.migrate_rabid_wallets().await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while f.purse.wallets.try_read().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the migration stops the old listener and waits to insert the rebuilt wallet");
+    f.channel.publish(contact_payment(64, &f.substitute_url));
+    drop(insert_blocked);
+
+    let migrated = migration.await.unwrap().unwrap();
+    assert_eq!(migrated["w-1"], f.substitute_url);
+    f.channel.publish(contact_payment(32, &f.substitute_url));
+
+    assert_eq!(next_received(&mut f.new_received).await, Amount::from(64));
+    assert_eq!(next_received(&mut f.new_received).await, Amount::from(32));
+    assert!(f.old_received.try_recv().is_err());
+    assert_eq!(f.consumer_starts(), 1);
+    let stored = f.stored.lock().unwrap().clone();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].mint, f.substitute_url);
+
+    let new = f.purse.get_wallet("w-1").await.unwrap();
+    assert!(!Arc::ptr_eq(&new, &f.old));
+    assert!(new.read().await.is_nostr_connected().await);
+    let old = Arc::downgrade(&f.old);
+    drop(f.old);
+    assert!(
+        old.upgrade().is_none(),
+        "the old listener task has returned and released the old instance"
+    );
+}
+
+#[tokio::test]
+async fn failed_rebuild_keeps_the_old_listener_receiving() {
+    let mut f = SwapFixture::new(vec![]).await;
+
+    f.purse
+        .migrate_rabid_wallets()
+        .await
+        .expect_err("a substitute without betas cannot be rebuilt on");
+    f.channel.publish(contact_payment(64, &f.rabid_url));
+
+    assert_eq!(next_received(&mut f.old_received).await, Amount::from(64));
+    assert!(f.new_received.try_recv().is_err());
+    assert_eq!(f.consumer_starts(), 1);
+    assert!(f.stored.lock().unwrap().is_empty());
+    let current = f.purse.get_wallet("w-1").await.unwrap();
+    assert!(Arc::ptr_eq(&current, &f.old));
+    assert!(f.old.read().await.take_nostr_listener().is_some());
+}
