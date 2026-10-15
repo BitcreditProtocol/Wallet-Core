@@ -299,6 +299,41 @@ impl Reserved<'_> {
     }
 }
 
+impl<'a> Reserved<'a> {
+    pub(crate) fn new(db: &'a dyn PocketRepository, ranges: &'a [CounterReservation]) -> Self {
+        Self { db, ranges }
+    }
+
+    /// Passes `result` through, giving the ranges back when it is an error.
+    pub(crate) async fn release_on_err<T>(&self, result: Result<T>) -> Result<T> {
+        if result.is_err() {
+            self.release().await;
+        }
+        result
+    }
+}
+
+/// Reserves and derives one keyset's premint, giving back the ranges already
+/// reserved for earlier keysets when it fails.
+pub(crate) async fn reserve_premint(
+    db: &dyn PocketRepository,
+    seed: &Seed,
+    kid: ecash::Id,
+    amount: Amount,
+    target: &SplitTarget,
+    keyset: &KeySet,
+    premints: &mut BTreeMap<ecash::Id, cdk00::PreMintSecrets>,
+    reservations: &mut Vec<CounterReservation>,
+) -> Result<()> {
+    let result = premint_from_counter(db, seed, kid, amount, target, keyset).await;
+    let (premint, reservation) = Reserved::new(db, reservations)
+        .release_on_err(result)
+        .await?;
+    premints.insert(kid, premint);
+    reservations.push(reservation);
+    Ok(())
+}
+
 async fn premint_from_counter(
     db: &dyn PocketRepository,
     seed: &Seed,
@@ -445,14 +480,18 @@ pub(crate) async fn committed_swap(
     attestation: wire_attestation::IssuanceAttestation,
     reserved: Option<Reserved<'_>>,
 ) -> Result<(SwapSignatures, bitcoin::secp256k1::schnorr::Signature)> {
-    if let Some(db) = db
-        && let Some(record) = stored_commitment(db, &inputs).await?
-    {
-        let commitment = record.commitment;
-        if let Some(resumed) = resume_commitment(client, record, inputs.clone()).await? {
+    if let Some(db) = db {
+        let resumed = resume_stored_commitment(client, db, &inputs).await;
+        let resumed = match &reserved {
+            Some(reserved) => reserved.release_on_err(resumed).await,
+            None => resumed,
+        };
+        if let Some((resumed, commitment)) = resumed? {
+            if let Some(reserved) = &reserved {
+                reserved.release().await;
+            }
             return Ok((resumed, commitment));
         }
-        db.delete_commitment(commitment).await?;
     }
     let (inputs, commitment_sig) = commit_swap(
         client,
@@ -471,6 +510,22 @@ pub(crate) async fn committed_swap(
         .await?;
 
     Ok(((signatures, premints), commitment_sig))
+}
+
+async fn resume_stored_commitment(
+    client: &dyn ClowderMintConnector,
+    db: &dyn PocketRepository,
+    inputs: &[cdk00::Proof],
+) -> Result<Option<(SwapSignatures, bitcoin::secp256k1::schnorr::Signature)>> {
+    let Some(record) = stored_commitment(db, inputs).await? else {
+        return Ok(None);
+    };
+    let commitment = record.commitment;
+    if let Some(resumed) = resume_commitment(client, record, inputs.to_vec()).await? {
+        return Ok(Some((resumed, commitment)));
+    }
+    db.delete_commitment(commitment).await?;
+    Ok(None)
 }
 
 async fn delete_swap_commitment(
@@ -664,7 +719,8 @@ async fn swap(
         .flat_map(|premint| premint.blinded_messages())
         .collect();
 
-    let attestation = beta.attest(&inputs).await?;
+    let reserved = Reserved::new(db, reservations);
+    let attestation = reserved.release_on_err(beta.attest(&inputs).await).await?;
     let ((signatures, premints), commitment) = committed_swap(
         client.as_ref(),
         Some(db),
@@ -673,10 +729,7 @@ async fn swap(
         &swap_config,
         premints.into_iter().collect(),
         attestation,
-        Some(Reserved {
-            db,
-            ranges: reservations,
-        }),
+        Some(reserved),
     )
     .await?;
 
@@ -739,16 +792,25 @@ async fn swap_proofs_to_target(
         };
 
         let kid: ecash::Id = kid.into();
-        let (premint, reservation) =
-            premint_from_counter(db, seed, kid, amount, &target, &keysets[&kid]).await?;
-        premints.insert(kid, premint);
-        reservations.push(reservation);
+        reserve_premint(
+            db,
+            seed,
+            kid,
+            amount,
+            &target,
+            &keysets[&kid],
+            &mut premints,
+            &mut reservations,
+        )
+        .await?;
     }
 
+    let reserved = Reserved::new(db, &reservations);
     if remaining_payment != Amount::ZERO {
-        return Err(Error::Swap(format!(
+        let unfunded = Err(Error::Swap(format!(
             "swap plan cannot fund payment target {target_amount}, missing {remaining_payment}"
         )));
+        return reserved.release_on_err(unfunded).await;
     }
 
     let blinds: Vec<cdk00::BlindedMessage> = premints
@@ -756,7 +818,9 @@ async fn swap_proofs_to_target(
         .flat_map(|premint| premint.blinded_messages())
         .collect();
 
-    let attestation = beta.attest(&swap_proofs).await?;
+    let attestation = reserved
+        .release_on_err(beta.attest(&swap_proofs).await)
+        .await?;
     let ((signatures, mut premints), commitment) = committed_swap(
         client.as_ref(),
         Some(db),
@@ -765,10 +829,7 @@ async fn swap_proofs_to_target(
         &swap_config,
         premints.into_iter().collect(),
         attestation,
-        Some(Reserved {
-            db,
-            ranges: &reservations,
-        }),
+        Some(reserved),
     )
     .await?;
     let mut on_target: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
@@ -1056,6 +1117,181 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(Error::SwapCommitmentMismatch)));
+    }
+
+    #[tokio::test]
+    async fn committed_swap_releases_fresh_counter_when_resuming() {
+        let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let inputs = core_tests::generate_random_ecash_proofs(&mintkeyset, &[Amount::from(8)]);
+        let reservation = CounterReservation {
+            kid: info.id,
+            start: 7,
+            n: 2,
+        };
+        let commitment = crate::pocket::test_utils::tests::mock_commitment_result();
+        let record = SwapCommitmentRecord {
+            inputs: inputs.iter().map(|p| p.y().unwrap()).collect(),
+            outputs: vec![],
+            expiry: commitment.expiry,
+            commitment: commitment.commitment,
+            ephemeral_secret: commitment.ephemeral_secret,
+            body_content: commitment.body_content,
+            wallet_key: commitment.wallet_key,
+            premints: HashMap::new(),
+            input_proofs: inputs.clone(),
+        };
+        let mut client = MockClowderMintConnector::new();
+        client
+            .expect_post_swap_committed()
+            .times(1)
+            .returning(|_, _, _| Ok(vec![]));
+        client.expect_post_swap_commitment().never();
+        let mut db = MockPocketRepository::new();
+        db.expect_list_commitments()
+            .returning(move || Ok(vec![record.clone()]));
+        db.expect_release_counter()
+            .times(1)
+            .with(
+                eq(reservation.kid),
+                eq(reservation.start),
+                eq(reservation.n),
+            )
+            .returning(|_, _, _| Ok(()));
+
+        let ranges = [reservation];
+        super::committed_swap(
+            &client,
+            Some(&db),
+            inputs,
+            vec![],
+            &crate::pocket::test_utils::tests::test_swap_config(),
+            HashMap::new(),
+            crate::pocket::test_utils::tests::mock_attestation(),
+            Some(Reserved {
+                db: &db,
+                ranges: &ranges,
+            }),
+        )
+        .await
+        .unwrap();
+    }
+
+    type TwoKeysetSwap = (
+        Vec<ecash::Id>,
+        Vec<cdk00::Proof>,
+        HashMap<ecash::Id, KeySetInfo>,
+        HashMap<ecash::Id, KeySet>,
+    );
+
+    fn two_keyset_swap() -> TwoKeysetSwap {
+        let mut ids = Vec::new();
+        let mut proofs = Vec::new();
+        let mut infos = HashMap::new();
+        let mut keysets = HashMap::new();
+        for _ in 0..2 {
+            let (info, keyset) = core_tests::generate_random_ecash_keyset();
+            ids.push(info.id);
+            proofs.extend(core_tests::generate_random_ecash_proofs(
+                &keyset,
+                &[Amount::from(8)],
+            ));
+            keysets.insert(info.id, bcr_wallet_core::util::to_keyset(&keyset, None));
+            infos.extend(test_kinfos(info));
+        }
+        ids.sort();
+        (ids, proofs, infos, keysets)
+    }
+
+    async fn swap_two_keysets_to_target(
+        db: &MockPocketRepository,
+        target: u64,
+    ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
+        let (_, proofs, infos, keysets) = two_keyset_swap();
+        let client: Arc<dyn ClowderMintConnector> = Arc::new(MockClowderMintConnector::new());
+        super::swap_proofs_to_target(
+            proofs,
+            &infos,
+            keysets,
+            Amount::from(target),
+            &zero_seed(),
+            db,
+            &client,
+            test_swap_config(),
+            &test_beta_provider(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn swap_proofs_to_target_releases_earlier_keysets_when_reserve_fails() {
+        // the keysets and their order are random, so run until the failing one is not the first
+        for _ in 0..16 {
+            let (ids, proofs, infos, keysets) = two_keyset_swap();
+            let (first, second) = (ids[0], ids[1]);
+            let mut db = MockPocketRepository::new();
+            db.expect_reserve_counter().returning(move |kid, _| {
+                if kid == second {
+                    Err(bcr_wallet_persistence::error::Error::Custom("full".into()))
+                } else {
+                    Ok(4)
+                }
+            });
+            db.expect_release_counter()
+                .times(1)
+                .withf(move |kid, start, _| *kid == first && *start == 4)
+                .returning(|_, _, _| Ok(()));
+            let client: Arc<dyn ClowderMintConnector> = Arc::new(MockClowderMintConnector::new());
+            let result = super::swap_proofs_to_target(
+                proofs,
+                &infos,
+                keysets,
+                Amount::from(4),
+                &zero_seed(),
+                &db,
+                &client,
+                test_swap_config(),
+                &test_beta_provider(),
+            )
+            .await;
+            assert!(result.is_err());
+            db.checkpoint();
+        }
+    }
+
+    #[tokio::test]
+    async fn swap_proofs_to_target_releases_all_keysets_when_target_is_unfunded() {
+        let mut db = MockPocketRepository::new();
+        db.expect_reserve_counter().returning(|_, _| Ok(4));
+        db.expect_release_counter()
+            .times(2)
+            .withf(|_, start, _| *start == 4)
+            .returning(|_, _, _| Ok(()));
+        assert!(swap_two_keysets_to_target(&db, 100).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn swap_proofs_to_target_releases_counters_when_attestation_fails() {
+        let (_, proofs, infos, keysets) = two_keyset_swap();
+        let mut db = MockPocketRepository::new();
+        db.expect_reserve_counter().returning(|_, _| Ok(4));
+        db.expect_release_counter()
+            .times(2)
+            .withf(|_, start, _| *start == 4)
+            .returning(|_, _, _| Ok(()));
+        let client: Arc<dyn ClowderMintConnector> = Arc::new(MockClowderMintConnector::new());
+        let result = super::swap_proofs_to_target(
+            proofs,
+            &infos,
+            keysets,
+            Amount::from(4),
+            &zero_seed(),
+            &db,
+            &client,
+            test_swap_config(),
+            &crate::pocket::test_utils::tests::failing_beta_provider(),
+        )
+        .await;
+        assert!(result.is_err());
     }
 
     #[test]

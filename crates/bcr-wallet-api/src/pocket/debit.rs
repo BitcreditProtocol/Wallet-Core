@@ -438,17 +438,17 @@ impl Pocket {
         let mut reservations: Vec<CounterReservation> = Vec::new();
         for (kid, amount) in swap_plan {
             let kid: ecash::Id = kid.into();
-            let (premint, reservation) = premint_from_counter(
+            reserve_premint(
                 self.pdb.as_ref(),
                 &self.seed,
                 kid,
                 amount,
                 &SplitTarget::None,
                 &keysets[&kid],
+                &mut premints,
+                &mut reservations,
             )
             .await?;
-            premints.insert(kid, premint);
-            reservations.push(reservation);
         }
 
         // swap
@@ -823,23 +823,25 @@ impl super::PocketApi for Pocket {
             };
 
             let kid: ecash::Id = kid.into();
-            let (premint, reservation) = premint_from_counter(
+            reserve_premint(
                 self.pdb.as_ref(),
                 &self.seed,
                 kid,
                 amount,
                 &target,
                 &keysets[&kid],
+                &mut premints,
+                &mut reservations,
             )
             .await?;
-            premints.insert(kid, premint);
-            reservations.push(reservation);
         }
 
+        let reserved = super::Reserved::new(self.pdb.as_ref(), &reservations);
         if remaining_payment != Amount::ZERO {
-            return Err(Error::Swap(format!(
+            let unfunded = Err(Error::Swap(format!(
                 "swap plan cannot fund payment target {send_amount}, missing {remaining_payment}"
             )));
+            return reserved.release_on_err(unfunded).await;
         }
 
         let blinds: Vec<cdk00::BlindedMessage> = premints
@@ -847,7 +849,9 @@ impl super::PocketApi for Pocket {
             .flat_map(|premint| premint.blinded_messages())
             .collect();
 
-        let attestation = beta_provider.attest(&proofs).await?;
+        let attestation = reserved
+            .release_on_err(beta_provider.attest(&proofs).await)
+            .await?;
         let ((signatures, mut premints), _) = super::committed_swap(
             substitute_client.as_ref(),
             None,
@@ -856,10 +860,7 @@ impl super::PocketApi for Pocket {
             &swap_config,
             premints.into_iter().collect(),
             attestation,
-            Some(super::Reserved {
-                db: self.pdb.as_ref(),
-                ranges: &reservations,
-            }),
+            Some(reserved),
         )
         .await?;
 
@@ -2017,6 +2018,7 @@ mod tests {
         let stored = Arc::new(Mutex::new(Vec::<cdk00::Proof>::new()));
         let mut pdb = MockPocketRepository::new();
         pdb.expect_reserve_counter().returning(|_, _| Ok(0));
+        pdb.expect_release_counter().returning(|_, _, _| Ok(()));
         let records = commitments.clone();
         pdb.expect_store_commitment()
             .times(1)
@@ -3974,6 +3976,82 @@ mod tests {
             .unwrap();
 
         assert_eq!(cleaned, 2);
+    }
+
+    fn failing_beta_pocket(pdb: MockPocketRepository) -> super::Pocket {
+        let seed = bip39::Mnemonic::generate(12).unwrap().to_seed("");
+        super::Pocket::new(
+            CurrencyUnit::Sat,
+            Arc::new(pdb),
+            Arc::new(MockMintMeltRepository::new()),
+            seed,
+            Arc::new(crate::pocket::test_utils::tests::failing_beta_provider()),
+        )
+    }
+
+    #[tokio::test]
+    async fn digest_proofs_releases_counter_when_attestation_fails() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = test_kinfos(info);
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(8u64), Amount::from(16u64)],
+        );
+        let inputs: HashMap<_, _> = proofs.into_iter().map(|p| (p.y().unwrap(), p)).collect();
+
+        let mut connector = MockClowderMintConnector::new();
+        connector
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset, None)));
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_reserve_counter()
+            .times(1)
+            .with(eq(kid), eq(2))
+            .returning(|_, _| Ok(5));
+        pdb.expect_release_counter()
+            .times(1)
+            .with(eq(kid), eq(5), eq(2))
+            .returning(|_, _, _| Ok(()));
+
+        failing_beta_pocket(pdb)
+            .digest_proofs(Arc::new(connector), &k_infos, inputs, test_swap_config())
+            .await
+            .expect_err("attestation fails");
+    }
+
+    #[tokio::test]
+    async fn swap_to_unlocked_substitute_proofs_releases_counter_when_attestation_fails() {
+        let (info, mint_keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let keysets_info = test_kinfos(info);
+        let keysets = HashMap::from([(kid, bcr_wallet_core::util::to_keyset(&mint_keyset, None))]);
+        let input_proofs = core_tests::generate_random_ecash_proofs(
+            &mint_keyset,
+            &[Amount::from(8u64), Amount::from(16u64)],
+        );
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_reserve_counter().returning(|_, _| Ok(5));
+        pdb.expect_release_counter()
+            .times(1)
+            .withf(move |k, start, _| *k == kid && *start == 5)
+            .returning(|_, _, _| Ok(()));
+        let swap_config = test_swap_config();
+        let alpha_pk = swap_config.alpha_pk;
+
+        failing_beta_pocket(pdb)
+            .swap_to_unlocked_substitute_proofs(
+                input_proofs,
+                &keysets_info,
+                keysets,
+                Arc::new(MockClowderMintConnector::new()),
+                alpha_pk,
+                crate::pocket::test_utils::tests::failing_beta_provider(),
+                Amount::from(16u64),
+                swap_config,
+            )
+            .await
+            .expect_err("attestation fails");
     }
 
     #[tokio::test]

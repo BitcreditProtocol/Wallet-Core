@@ -93,6 +93,23 @@ pub mod tests {
             .returning(|req| Ok(valid_attestation_for(&req)));
     }
 
+    pub fn failing_beta_provider() -> crate::pocket::RandomBetaProvider {
+        let mut beta_mock = crate::external::mint::MockClowderMintConnector::new();
+        beta_mock.expect_post_attest_issuance().returning(|_| {
+            Err(crate::error::Error::MintClientServiceUnavailable(
+                "beta down".to_string(),
+            ))
+        });
+        let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
+            &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+        );
+        crate::pocket::RandomBetaProvider::new(
+            vec![Arc::new(beta_mock) as Arc<dyn crate::ClowderMintConnector>],
+            alpha_id,
+        )
+        .unwrap()
+    }
+
     pub fn test_beta_provider() -> crate::pocket::RandomBetaProvider {
         let mut beta_mock = crate::external::mint::MockClowderMintConnector::new();
         setup_attestation_mock(&mut beta_mock);
