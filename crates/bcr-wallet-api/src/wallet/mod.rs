@@ -432,9 +432,7 @@ impl Wallet {
             .iter()
             .map(|(id, info)| ((*id).into(), info.clone()))
             .collect();
-        let planned = prepare_swap(&proofs, &infos)?
-            .into_values()
-            .fold(Amount::ZERO, |acc, a| acc + a);
+        let planned = crate::pocket::sum_amounts(prepare_swap(&proofs, &infos)?.into_values())?;
         let e = match self
             .debit
             .receive_proofs(substitute.clone(), keysets_info, proofs, swap_config)
