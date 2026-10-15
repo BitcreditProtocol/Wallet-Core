@@ -1,4 +1,4 @@
-use crate::{ClowderMintConnector, error::Error, error::Result};
+use crate::{ClowderMintConnector, error::Result};
 use bcr_common::{
     cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09},
     core::signature::{ECashSignatureError, ECashSignatureResult, unblind_ecash_signature},
@@ -87,16 +87,15 @@ async fn restore_batch(
     }
     let keyset = client.get_mint_keyset(kid).await?;
     let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
-    let mut premints_cursor = premints.iter();
+    let mut premints_cursor = premints.secrets.iter();
     for (output, signature) in resp.into_iter() {
-        let premint = loop {
-            let Some(premint) = premints_cursor.next() else {
-                return Err(Error::RestoreUnexpectedOutput);
-            };
-            if premint.blinded_message == output {
-                break premint;
-            }
+        let mut remaining = premints_cursor.clone();
+        let Some(premint) = remaining.find(|premint| premint.blinded_message == output) else {
+            tracing::warn!("skipped unexpected restored output: kid: {kid}");
+            summary.rejected += 1;
+            continue;
         };
+        premints_cursor = remaining;
         match unblind_verified(&keyset, premint, signature) {
             Ok(proof) => {
                 proofs.insert(proof.y()?, proof);
@@ -110,23 +109,25 @@ async fn restore_batch(
     if proofs.is_empty() {
         return Ok(summary);
     }
-    let proofs_len = proofs.len();
     let request = cdk07::CheckStateRequest {
         ys: proofs.keys().cloned().collect(),
     };
     let states = client.post_check_state(request).await?;
-    if states.len() != proofs_len {
-        return Err(Error::RestoreUnexpectedCheckState);
+    let mut restored = Vec::with_capacity(proofs.len());
+    for state in states {
+        match proofs.remove(&state.y) {
+            Some(proof) => restored.push((state.state, proof)),
+            None => {
+                tracing::warn!("skipped unexpected check state: kid: {kid}, y: {}", state.y);
+                summary.rejected += 1;
+            }
+        }
     }
-    let restored = states
-        .into_iter()
-        .map(|state| {
-            proofs
-                .remove(&state.y)
-                .map(|proof| (state.state, proof))
-                .ok_or(Error::RestoreUnexpectedCheckState)
-        })
-        .collect::<Result<Vec<_>>>()?;
+    for y in proofs.keys() {
+        tracing::warn!("missing check state: kid: {kid}, y: {y}");
+    }
+    summary.rejected += proofs.len();
+    let restored_len = restored.len();
     for (state, proof) in restored {
         match state {
             cdk07::State::Unspent => {
@@ -138,7 +139,7 @@ async fn restore_batch(
             _ => {}
         }
     }
-    summary.restored = proofs_len;
+    summary.restored = restored_len;
     Ok(summary)
 }
 
@@ -616,44 +617,78 @@ mod tests {
         super::restore_batch(&zero_seed(), kid, &client, db, 0, BATCH_SIZE).await
     }
 
-    async fn restore_batch_error(
+    fn unrequested_output(keyset: &ecash::MintKeySet) -> Restored {
+        let other =
+            cdk00::PreMintSecrets::restore_batch(keyset.id.into(), &zero_seed(), 1000, 1001)
+                .expect("premints should be generated");
+        sign_all(keyset, other.blinded_messages())
+    }
+
+    async fn restore_batch_summary(
         respond: impl Fn(&ecash::MintKeySet, Vec<cdk00::BlindedMessage>) -> Restored + Send + 'static,
-    ) -> Error {
-        let (kid, client) = mock_restore(respond);
-        run_restore_batch(kid, client, &MockPocketRepository::new())
-            .await
-            .unwrap_err()
+        check_state: impl Fn(Vec<cdk01::PublicKey>) -> Vec<cdk07::ProofState> + Send + 'static,
+        stored: usize,
+    ) -> RestoreSummary {
+        let (kid, mut client) = mock_restore(respond);
+        mock_check_state(&mut client, check_state);
+        let mut db = MockPocketRepository::new();
+        db.expect_store_new()
+            .times(stored)
+            .returning(|p| Ok(p.y().expect("proof should have y")));
+        run_restore_batch(kid, client, &db).await.unwrap()
+    }
+
+    fn all_unspent(ys: Vec<cdk01::PublicKey>) -> Vec<cdk07::ProofState> {
+        ys.into_iter()
+            .map(|y| proof_state(y, cdk07::State::Unspent))
+            .collect()
+    }
+
+    fn summary(restored: usize, rejected: usize) -> RestoreSummary {
+        RestoreSummary { restored, rejected }
     }
 
     #[tokio::test]
-    async fn restore_batch_unrequested_output() {
-        let err = restore_batch_error(|keyset, _| {
-            let other =
-                cdk00::PreMintSecrets::restore_batch(keyset.id.into(), &zero_seed(), 1000, 1001)
-                    .expect("premints should be generated");
-            sign_all(keyset, other.blinded_messages())
-        })
+    async fn restore_batch_unrequested_output_skips_only_that_output() {
+        let result = restore_batch_summary(
+            |keyset, outputs| {
+                let mut restored = sign_all(keyset, outputs);
+                restored.splice(1..1, unrequested_output(keyset));
+                restored
+            },
+            all_unspent,
+            BATCH_SIZE as usize,
+        )
         .await;
-        assert!(matches!(err, Error::RestoreUnexpectedOutput));
+        assert_eq!(result, summary(BATCH_SIZE as usize, 1));
     }
 
     #[tokio::test]
-    async fn restore_batch_out_of_order_output() {
-        let err = restore_batch_error(|keyset, mut outputs| {
-            outputs.swap(0, 1);
-            sign_all(keyset, outputs)
-        })
+    async fn restore_batch_out_of_order_output_skips_only_that_output() {
+        let result = restore_batch_summary(
+            |keyset, mut outputs| {
+                outputs.swap(0, 1);
+                sign_all(keyset, outputs)
+            },
+            all_unspent,
+            BATCH_SIZE as usize - 1,
+        )
         .await;
-        assert!(matches!(err, Error::RestoreUnexpectedOutput));
+        assert_eq!(result, summary(BATCH_SIZE as usize - 1, 1));
     }
 
     #[tokio::test]
-    async fn restore_batch_duplicate_output() {
-        let err = restore_batch_error(|keyset, outputs| {
-            sign_all(keyset, vec![outputs[0].clone(), outputs[0].clone()])
-        })
+    async fn restore_batch_duplicate_output_skips_only_the_duplicate() {
+        let result = restore_batch_summary(
+            |keyset, mut outputs| {
+                outputs.insert(1, outputs[0].clone());
+                sign_all(keyset, outputs)
+            },
+            all_unspent,
+            BATCH_SIZE as usize,
+        )
         .await;
-        assert!(matches!(err, Error::RestoreUnexpectedOutput));
+        assert_eq!(result, summary(BATCH_SIZE as usize, 1));
     }
 
     async fn restore_batch_rejecting_first(
@@ -746,40 +781,52 @@ mod tests {
         );
     }
 
-    async fn restore_batch_check_state_error(
-        respond: impl Fn(Vec<cdk01::PublicKey>) -> Vec<cdk07::ProofState> + Send + 'static,
-    ) -> Error {
-        let (kid, mut client) = mock_restore(sign_all);
-        mock_check_state(&mut client, respond);
-        run_restore_batch(kid, client, &MockPocketRepository::new())
-            .await
-            .unwrap_err()
+    #[tokio::test]
+    async fn restore_batch_duplicate_check_state_y_skips_only_the_duplicate() {
+        let result = restore_batch_summary(
+            sign_all,
+            |ys| {
+                let mut states = all_unspent(ys);
+                states.push(states[0].clone());
+                states
+            },
+            BATCH_SIZE as usize,
+        )
+        .await;
+        assert_eq!(result, summary(BATCH_SIZE as usize, 1));
     }
 
     #[tokio::test]
-    async fn restore_batch_duplicate_check_state_y_stores_nothing() {
-        let err = restore_batch_check_state_error(|mut ys| {
-            ys[1] = ys[0];
-            let mut states: Vec<_> = ys
-                .into_iter()
-                .map(|y| proof_state(y, cdk07::State::Unspent))
-                .collect();
-            states[0].state = cdk07::State::Spent;
-            states
-        })
+    async fn restore_batch_missing_check_state_y_skips_only_that_proof() {
+        let result = restore_batch_summary(
+            sign_all,
+            |mut ys| {
+                ys.pop();
+                all_unspent(ys)
+            },
+            BATCH_SIZE as usize - 1,
+        )
         .await;
-        assert!(matches!(err, Error::RestoreUnexpectedCheckState));
+        assert_eq!(result, summary(BATCH_SIZE as usize - 1, 1));
     }
 
     #[tokio::test]
-    async fn restore_batch_missing_check_state_y_stores_nothing() {
-        let err = restore_batch_check_state_error(|mut ys| {
-            ys.pop();
-            ys.into_iter()
-                .map(|y| proof_state(y, cdk07::State::Unspent))
-                .collect()
-        })
+    async fn restore_batch_skips_bad_output_and_check_state_mismatch() {
+        let result = restore_batch_summary(
+            |keyset, outputs| {
+                let mut restored = sign_all(keyset, outputs);
+                restored.splice(1..1, unrequested_output(keyset));
+                restored
+            },
+            |mut ys| {
+                ys.pop();
+                let mut states = all_unspent(ys);
+                states.push(states[0].clone());
+                states
+            },
+            BATCH_SIZE as usize - 1,
+        )
         .await;
-        assert!(matches!(err, Error::RestoreUnexpectedCheckState));
+        assert_eq!(result, summary(BATCH_SIZE as usize - 1, 3));
     }
 }
