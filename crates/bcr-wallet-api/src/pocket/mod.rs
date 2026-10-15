@@ -754,9 +754,7 @@ async fn swap(
     .await?;
 
     let output_len = signatures.len();
-    let total_output = signatures
-        .iter()
-        .fold(Amount::ZERO, |acc, sig| acc + sig.amount);
+    let total_output = sum_amounts(signatures.iter().map(|sig| sig.amount))?;
     tracing::debug!(
         "swap to {output_unit}: inputs: {input_len} {total_input}, outputs: {output_len} {total_output}",
     );
@@ -1011,7 +1009,7 @@ async fn return_proofs_to_send_for_offline_payment(
     let reserved = reservation.reserve(db, ys.clone()).await?;
     let send_amount = match target {
         Some(target) => target,
-        None => reserved.iter().fold(Amount::ZERO, |acc, p| acc + p.amount),
+        None => sum_amounts(reserved.iter().map(|p| p.amount))?,
     };
     let sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
         ys.into_iter().zip(reserved).collect();
@@ -1860,5 +1858,29 @@ mod tests {
                 .unwrap(),
             Amount::from(23)
         );
+    }
+}
+
+pub(crate) fn sum_amounts(amounts: impl IntoIterator<Item = Amount>) -> Result<Amount> {
+    amounts.into_iter().try_fold(Amount::ZERO, |acc, a| {
+        acc.checked_add(a)
+            .ok_or_else(|| Error::MintingError(format!("amounts {acc} and {a} overflow")))
+    })
+}
+
+#[cfg(test)]
+mod checked_amount_tests {
+    use super::*;
+
+    #[test]
+    fn checked_amount_sum_of_overflowing_amounts_returns_error() {
+        let result = sum_amounts([Amount::from(u64::MAX), Amount::from(1u64)]);
+        assert!(matches!(result, Err(Error::MintingError(_))));
+    }
+
+    #[test]
+    fn checked_amount_sum_of_small_amounts_adds() {
+        let result = sum_amounts([Amount::from(2u64), Amount::from(3u64)]).unwrap();
+        assert_eq!(result, Amount::from(5u64));
     }
 }
