@@ -169,7 +169,7 @@ async fn wallet_with_debit(
         test_pub_key(),
         test_pub_key(),
         beta_clients,
-        Box::new(|url| Arc::new(HttpClientExt::new(url))),
+        Box::new(|url| Arc::new(HttpClientExt::new(url, Default::default()))),
         time::Duration::seconds(60),
         Arc::new(ctx.nostr_transport),
         ctx.nostr_event_channel,
