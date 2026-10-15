@@ -1,5 +1,6 @@
 # 0.9.15
 
+* A swap whose commitment the mint refuses gives back the seed counters it reserved instead of burning them, so many failed swaps in a row no longer leave a gap wider than restore's gap limit; the release rolls the counter back only when nothing reserved past it since (adds `PocketRepository::release_counter`, no DB change)
 * An interrupted offline intermint receive completes when the token is received again: the offline exchange key is derived from the wallet seed and the token's proofs, so a retry sends the same request
 * `wallet_migrate_rabid` swaps the exchanged proofs into a keyset the substitute created during the exchange instead of failing with `MigrationIncomplete`
 
