@@ -767,7 +767,7 @@ impl Wallet {
     }
 
     pub async fn balance(&self) -> Result<WalletBalance> {
-        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
+        let keysets_info = &self.mint_keyset_infos;
         let journal = self.journal.load().await?;
         let in_flight: Vec<_> = journal
             .values()
@@ -779,8 +779,8 @@ impl Wallet {
             })
             .map(|e| &e.proof)
             .collect();
-        let held = crate::pocket::balance_of(in_flight.into_iter(), &keysets_info)?;
-        let balance = self.debit.balance(&keysets_info).await?;
+        let held = crate::pocket::balance_of(in_flight.into_iter(), keysets_info)?;
+        let balance = self.debit.balance(keysets_info).await?;
         let debit = balance.debit + held.debit;
         let credit = balance.credit + held.credit;
         Ok(WalletBalance {
