@@ -2743,7 +2743,12 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::SwapCommitmentMismatch => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::SwapCommitmentMismatch)
             }
-            BcrWalletError::MintClientInternal(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::MintClientInternal(_) | BcrWalletError::MintClientUnreachable(_) => {
+                WalletError::internal(value.to_string())
+            }
+            BcrWalletError::MintClientOutputsReserved(err) => {
+                WalletError::bad_request(err.to_string(), WalletErrorCode::MintClientBadRequest)
+            }
             BcrWalletError::MintClientResourceNotFound(err) => {
                 WalletError::not_found(err.to_string(), WalletErrorCode::MintClientResourceNotFound)
             }

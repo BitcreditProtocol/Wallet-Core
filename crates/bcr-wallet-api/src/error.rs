@@ -184,6 +184,10 @@ pub enum Error {
     MintClientMeltOpSuspended(String),
     #[error("{0}")]
     MintClientCommitmentMismatch(String),
+    #[error("{0}")]
+    MintClientOutputsReserved(String),
+    #[error("Mint Client could not connect: {0}")]
+    MintClientUnreachable(String),
     #[error("invalid proof: {0}")]
     AttestationInvalidProof(String),
     #[error("fp_digest mismatch")]
@@ -196,7 +200,53 @@ pub enum Error {
     AttestationSignature(String),
 }
 
+fn mint_answered(error: &bcr_common::client::mint::Error) -> bool {
+    use bcr_common::client::mint::Error as MintError;
+    match error {
+        MintError::InvalidRequest(_)
+        | MintError::ResourceNotFound(_)
+        | MintError::ServiceUnavailable(_) => true,
+        MintError::Reqwest(error) => error.is_connect(),
+        MintError::Internal(_) | MintError::Cdk20(_) | MintError::BorshSign(_) => false,
+    }
+}
+
+fn is_outputs_reserved(error: &bcr_common::client::mint::Error) -> bool {
+    use bcr_common::client::mint::{BRError, Error as MintError};
+    use bcr_common::wire::clowder::ClowderRejection;
+    matches!(
+        error,
+        MintError::InvalidRequest(BRError::Clowder(value))
+            if matches!(serde_json::from_value::<ClowderRejection>(value.clone()), Ok(ClowderRejection::OutputsReserved))
+    )
+}
+
 impl Error {
+    /// The mint refused a commitment because another live commitment holds its outputs.
+    pub fn is_outputs_reserved(&self) -> bool {
+        match self {
+            Error::MintClientOutputsReserved(_) => true,
+            Error::Mint(error) => is_outputs_reserved(error),
+            _ => false,
+        }
+    }
+
+    /// The mint provably holds no commitment for the request: it answered with an error, or the request never left the wallet.
+    /// A timeout, a reset after the send or a response that fails verification is not provable, so it is `false`.
+    pub fn is_commitment_refused(&self) -> bool {
+        match self {
+            Error::Mint(error) => mint_answered(error),
+            Error::MintClientResourceNotFound(_)
+            | Error::MintClientServiceUnavailable(_)
+            | Error::MintClientBadRequest(_)
+            | Error::MintClientKeysetNotFound(_)
+            | Error::MintClientMeltOpSuspended(_)
+            | Error::MintClientCommitmentMismatch(_)
+            | Error::MintClientUnreachable(_) => true,
+            _ => false,
+        }
+    }
+
     pub fn is_mint_rejection(&self) -> bool {
         match self {
             Error::Mint(bcr_common::client::mint::Error::InvalidRequest(
@@ -239,6 +289,11 @@ impl From<crate::external::Error> for Error {
                         Error::MintClientResourceNotFound(value.to_string())
                     }
                 },
+                error @ bcr_common::client::mint::Error::InvalidRequest(_)
+                    if is_outputs_reserved(&error) =>
+                {
+                    Error::MintClientOutputsReserved(error.to_string())
+                }
                 bcr_common::client::mint::Error::InvalidRequest(brerror) => match brerror {
                     bcr_common::client::mint::BRError::Unknown => {
                         Error::MintClientBadRequest(brerror.to_string())
@@ -277,6 +332,9 @@ impl From<crate::external::Error> for Error {
                     }
                 },
                 bcr_common::client::mint::Error::Internal(err) => Error::MintClientInternal(err),
+                bcr_common::client::mint::Error::Reqwest(error) if error.is_connect() => {
+                    Error::MintClientUnreachable(error.to_string())
+                }
                 bcr_common::client::mint::Error::Reqwest(error) => {
                     Error::MintClientInternal(error.to_string())
                 }
@@ -392,6 +450,28 @@ mod tests {
             let description = error.to_string();
             let flattened = Error::from(crate::external::Error::MintApi(error));
             assert_eq!(flattened.is_mint_rejection(), rejected, "{description}");
+        }
+    }
+
+    #[test]
+    fn commitment_failures_classify_by_what_the_mint_holds() {
+        let reserved = bcr_common::wire::clowder::ClowderRejection::OutputsReserved;
+        let reserved =
+            MintError::InvalidRequest(BRError::Clowder(serde_json::to_value(reserved).unwrap()));
+        assert!(Error::Mint(reserved).is_outputs_reserved());
+        let cases = [
+            (Error::MintClientBadRequest("refused".into()), true),
+            (Error::MintClientUnreachable("refused".into()), true),
+            (
+                Error::Mint(MintError::InvalidRequest(BRError::Unknown)),
+                true,
+            ),
+            (Error::MintClientInternal("timed out".into()), false),
+            (Error::Mint(MintError::Internal("reset".into())), false),
+            (Error::SwapCommitmentMismatch, false),
+        ];
+        for (error, refused) in cases {
+            assert_eq!(error.is_commitment_refused(), refused, "{error}");
         }
     }
 }

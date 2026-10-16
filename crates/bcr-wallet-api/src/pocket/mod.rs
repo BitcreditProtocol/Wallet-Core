@@ -278,6 +278,9 @@ pub(crate) struct CounterReservation {
     pub n: u32,
 }
 
+/// Slack on top of a commitment's expiry for clock skew between the wallet and the mint.
+const COMMITMENT_EXPIRY_MARGIN: time::Duration = time::Duration::seconds(5);
+
 /// Counter ranges to give back when a swap fails before the mint committed to it.
 pub(crate) struct Reserved<'a> {
     pub db: &'a dyn PocketRepository,
@@ -295,6 +298,34 @@ impl Reserved<'_> {
                     r.kid
                 );
             }
+        }
+    }
+}
+
+impl Reserved<'_> {
+    /// Keeps the ranges out of circulation until a commitment the mint may still hold has expired.
+    async fn hold_until(&self, deadline: u64) {
+        for r in self.ranges {
+            if let Err(e) = self.db.hold_counter(r.kid, r.start, r.n, deadline).await {
+                tracing::warn!(
+                    "Could not hold counters {}+{} of {}: {e}",
+                    r.start,
+                    r.n,
+                    r.kid
+                );
+            }
+        }
+    }
+
+    /// Settles the ranges after a failed commitment request: given back when the mint provably holds
+    /// no commitment, else held until the commitment the mint may hold has expired.
+    async fn settle_failed_commitment(&self, error: &Error, expiry: time::Duration) {
+        if error.is_commitment_refused() && !error.is_outputs_reserved() {
+            self.release().await;
+        } else {
+            let deadline = (time::OffsetDateTime::now_utc() + expiry + COMMITMENT_EXPIRY_MARGIN)
+                .unix_timestamp() as u64;
+            self.hold_until(deadline).await;
         }
     }
 }
@@ -437,7 +468,9 @@ pub(crate) async fn commit_swap(
         Ok(result) => result,
         Err(e) => {
             if let Some(reserved) = reserved {
-                reserved.release().await;
+                reserved
+                    .settle_failed_commitment(&e, swap_config.expiry)
+                    .await;
             }
             return Err(e);
         }
@@ -1092,7 +1125,7 @@ mod tests {
         client
             .expect_post_swap_commitment()
             .times(1)
-            .returning(|_, _, _, _, _| Err(Error::SwapCommitmentMismatch));
+            .returning(|_, _, _, _, _| Err(Error::MintClientBadRequest("refused".into())));
         let mut db = MockPocketRepository::new();
         for r in reservations {
             db.expect_release_counter()
@@ -1116,7 +1149,106 @@ mod tests {
             }),
         )
         .await;
-        assert!(matches!(result, Err(Error::SwapCommitmentMismatch)));
+        assert!(matches!(result, Err(Error::MintClientBadRequest(_))));
+    }
+
+    async fn failed_commit_swap(
+        error: Error,
+        db: &MockPocketRepository,
+        reservations: &[CounterReservation],
+    ) -> Error {
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let inputs = core_tests::generate_random_ecash_proofs(&mintkeyset, &[Amount::from(8)]);
+        let mut client = MockClowderMintConnector::new();
+        let mut error = Some(error);
+        client
+            .expect_post_swap_commitment()
+            .times(1)
+            .returning(move |_, _, _, _, _| Err(error.take().unwrap()));
+        super::commit_swap(
+            &client,
+            Some(db),
+            inputs,
+            vec![],
+            &crate::pocket::test_utils::tests::test_swap_config(),
+            HashMap::new(),
+            crate::pocket::test_utils::tests::mock_attestation(),
+            Some(Reserved {
+                db,
+                ranges: reservations,
+            }),
+        )
+        .await
+        .expect_err("commitment fails")
+    }
+
+    fn held_range_db(reservation: CounterReservation, expiry_secs: u64) -> MockPocketRepository {
+        let mut db = MockPocketRepository::new();
+        db.expect_release_counter().never();
+        db.expect_store_commitment().never();
+        db.expect_hold_counter()
+            .times(1)
+            .withf(move |kid, start, n, deadline| {
+                let now = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
+                let earliest = now + expiry_secs + 5 - 2;
+                *kid == reservation.kid
+                    && *start == reservation.start
+                    && *n == reservation.n
+                    && (earliest..=earliest + 4).contains(deadline)
+            })
+            .returning(|_, _, _, _| Ok(()));
+        db
+    }
+
+    fn test_reservation() -> CounterReservation {
+        CounterReservation {
+            kid: core_tests::generate_random_ecash_keyset().0.id,
+            start: 7,
+            n: 2,
+        }
+    }
+
+    #[tokio::test]
+    async fn commit_swap_holds_counter_after_timed_out_commitment() {
+        let reservation = test_reservation();
+        let expiry = crate::pocket::test_utils::tests::test_swap_config()
+            .expiry
+            .whole_seconds() as u64;
+        let db = held_range_db(reservation, expiry);
+        let error = failed_commit_swap(
+            Error::MintClientInternal("operation timed out".into()),
+            &db,
+            &[reservation],
+        )
+        .await;
+        assert!(matches!(error, Error::MintClientInternal(_)));
+    }
+
+    #[tokio::test]
+    async fn commit_swap_holds_counter_when_commitment_fails_verification() {
+        let reservation = test_reservation();
+        let expiry = crate::pocket::test_utils::tests::test_swap_config()
+            .expiry
+            .whole_seconds() as u64;
+        let db = held_range_db(reservation, expiry);
+        let error = failed_commit_swap(Error::SwapCommitmentMismatch, &db, &[reservation]).await;
+        assert!(matches!(error, Error::SwapCommitmentMismatch));
+    }
+
+    #[tokio::test]
+    async fn commit_swap_rearms_held_range_on_outputs_reserved() {
+        let reservation = test_reservation();
+        let expiry = crate::pocket::test_utils::tests::test_swap_config()
+            .expiry
+            .whole_seconds() as u64;
+        let db = held_range_db(reservation, expiry);
+        let error = failed_commit_swap(
+            Error::MintClientOutputsReserved("commitment outputs reserved".into()),
+            &db,
+            &[reservation],
+        )
+        .await;
+        assert!(error.is_outputs_reserved());
     }
 
     #[tokio::test]

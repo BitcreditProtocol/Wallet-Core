@@ -2127,6 +2127,158 @@ mod tests {
         assert_eq!(stored[0].amount, cashed);
     }
 
+    type Signed = Arc<Mutex<Vec<(cdk00::BlindedMessage, cashu::BlindSignature)>>>;
+
+    fn signing_mint(
+        keyset: &ecash::MintKeySet,
+        timed_out_outputs: usize,
+    ) -> (
+        MockClowderMintConnector,
+        Arc<Mutex<Vec<cdk00::BlindedMessage>>>,
+        Signed,
+    ) {
+        let timed_out: Arc<Mutex<Vec<cdk00::BlindedMessage>>> = Arc::new(Mutex::new(Vec::new()));
+        let signed: Signed = Arc::new(Mutex::new(Vec::new()));
+        let mut connector = MockClowderMintConnector::new();
+        let mint_keyset = bcr_wallet_core::util::to_keyset(keyset, None);
+        connector
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(mint_keyset.clone()));
+        let live = timed_out.clone();
+        connector
+            .expect_post_swap_commitment()
+            .returning(move |inputs, outputs, _, _, _| {
+                let mut live = live.lock().unwrap();
+                if outputs.iter().any(|o| live.contains(o)) {
+                    return Err(Error::MintClientOutputsReserved(
+                        "commitment outputs reserved".to_string(),
+                    ));
+                }
+                if outputs.len() == timed_out_outputs {
+                    live.extend(outputs);
+                    return Err(Error::MintClientInternal("operation timed out".to_string()));
+                }
+                let mut result = mock_commitment_result();
+                result.inputs_ys = inputs.iter().map(|p| p.y().unwrap()).collect();
+                result.outputs = outputs;
+                Ok(result)
+            });
+        let signer = keyset.clone();
+        let issued = signed.clone();
+        connector
+            .expect_post_swap_committed()
+            .returning(move |_, outputs, _| {
+                let signatures: Vec<_> = outputs
+                    .iter()
+                    .map(|bm| bcr_common::core::signature::sign_ecash(&signer, bm).unwrap())
+                    .collect();
+                issued
+                    .lock()
+                    .unwrap()
+                    .extend(outputs.into_iter().zip(signatures.clone()));
+                Ok(signatures)
+            });
+        (connector, timed_out, signed)
+    }
+
+    #[tokio::test]
+    async fn restore_finds_proofs_after_many_timed_out_commitments() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = test_kinfos(info);
+        let (mut connector, timed_out, signed) = signing_mint(&keyset, 3);
+        let issued = signed.clone();
+        connector.expect_post_restore().returning(move |req| {
+            let issued = issued.lock().unwrap();
+            Ok(req
+                .outputs
+                .into_iter()
+                .filter_map(|bm| {
+                    let (_, signature) = issued
+                        .iter()
+                        .find(|(o, _)| o.blinded_secret == bm.blinded_secret)?;
+                    Some((bm, signature.clone()))
+                })
+                .collect())
+        });
+        connector
+            .expect_post_check_state()
+            .returning(|req| Ok(proof_states(req, &HashSet::new())));
+        let connector: Arc<dyn ClowderMintConnector> = Arc::new(connector);
+
+        let pdb = in_memory_pdb();
+        let seed = bip39::Mnemonic::generate(12).unwrap().to_seed("");
+        let pocket = super::Pocket::new(
+            CurrencyUnit::Sat,
+            pdb.clone(),
+            Arc::new(MockMintMeltRepository::new()),
+            seed,
+            Arc::new(test_beta_provider()),
+        );
+        // 3 outputs per attempt: far more than restore's gap limit of 300 counters
+        for _ in 0..150 {
+            let proofs = core_tests::generate_random_ecash_proofs(
+                &keyset,
+                &[Amount::from(1u64), Amount::from(2u64), Amount::from(4u64)],
+            );
+            pocket
+                .receive_proofs(connector.clone(), &k_infos, proofs, test_swap_config())
+                .await
+                .expect_err("commitment times out or the held outputs are at the cap");
+        }
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(1u64), Amount::from(2u64)],
+        );
+        let (cashed, _) = pocket
+            .receive_proofs(connector.clone(), &k_infos, proofs, test_swap_config())
+            .await
+            .unwrap();
+        assert_eq!(cashed, Amount::from(3u64));
+
+        {
+            let signed = signed.lock().unwrap();
+            let timed_out = timed_out.lock().unwrap();
+            assert_eq!(signed.len(), 2);
+            assert!(timed_out.len() > 100);
+            assert!(signed.iter().all(|(bm, _)| !timed_out.contains(bm)));
+        }
+
+        let fresh = in_memory_pdb();
+        let summary =
+            crate::pocket::restore::restore_keysetid(&seed, kid, &connector, fresh.as_ref())
+                .await
+                .unwrap();
+        assert_eq!(summary.restored, 2);
+    }
+
+    #[tokio::test]
+    async fn retry_after_timed_out_commitment_is_not_refused_outputs_reserved() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let (connector, timed_out, _) = signing_mint(&keyset, 3);
+        let connector: Arc<dyn ClowderMintConnector> = Arc::new(connector);
+        let pocket = pocket(in_memory_pdb(), Arc::new(MockMintMeltRepository::new()));
+        let amounts = [Amount::from(1u64), Amount::from(2u64), Amount::from(4u64)];
+
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
+        let first = pocket
+            .receive_proofs(connector.clone(), &k_infos, proofs, test_swap_config())
+            .await
+            .expect_err("commitment times out");
+        assert!(matches!(first, Error::MintClientInternal(_)));
+        assert_eq!(timed_out.lock().unwrap().len(), 3);
+
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
+        let retry = pocket
+            .receive_proofs(connector, &k_infos, proofs, test_swap_config())
+            .await;
+        assert!(
+            !matches!(&retry, Err(e) if e.is_outputs_reserved()),
+            "{retry:?}"
+        );
+    }
+
     fn expired_commitment(
         keyset: &ecash::MintKeySet,
         with_input_proofs: bool,
