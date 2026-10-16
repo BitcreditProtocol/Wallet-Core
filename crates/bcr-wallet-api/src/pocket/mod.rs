@@ -634,9 +634,7 @@ async fn swap(
     .await?;
 
     let output_len = signatures.len();
-    let total_output = signatures
-        .iter()
-        .fold(Amount::ZERO, |acc, sig| acc + sig.amount);
+    let total_output = sum_amounts(signatures.iter().map(|sig| sig.amount))?;
     tracing::debug!(
         "swap to {output_unit}: inputs: {input_len} {total_input}, outputs: {output_len} {total_output}",
     );
@@ -816,7 +814,7 @@ async fn send_proofs(
         SendPlan::Ready { proofs } => {
             let reserved = reservation.reserve(db, proofs.clone()).await?;
             for (y, proof) in proofs.into_iter().zip(reserved) {
-                current_amount += proof.amount;
+                current_amount = add_amounts(current_amount, proof.amount)?;
                 sending_proofs.insert(y, proof);
             }
         }
@@ -856,7 +854,7 @@ async fn send_proofs(
             let ys: Vec<cdk01::PublicKey> = swapped_to_target_proofs.keys().cloned().collect();
             reservation.reserve(db, ys).await?;
             for (y, proof) in swapped_to_target_proofs {
-                current_amount += proof.amount;
+                current_amount = add_amounts(current_amount, proof.amount)?;
                 sending_proofs.insert(y, proof);
             }
         }
@@ -885,7 +883,7 @@ async fn return_proofs_to_send_for_offline_payment(
     let reserved = reservation.reserve(db, ys.clone()).await?;
     let send_amount = match target {
         Some(target) => target,
-        None => reserved.iter().fold(Amount::ZERO, |acc, p| acc + p.amount),
+        None => sum_amounts(reserved.iter().map(|p| p.amount))?,
     };
     let sending_proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
         ys.into_iter().zip(reserved).collect();
@@ -1652,5 +1650,25 @@ mod tests {
                 .unwrap(),
             Amount::from(23)
         );
+    }
+}
+
+pub(crate) fn add_amounts(a: Amount, b: Amount) -> Result<Amount> {
+    a.checked_add(b)
+        .ok_or_else(|| Error::MintingError(format!("amounts {a} and {b} overflow")))
+}
+
+pub(crate) fn sum_amounts(amounts: impl IntoIterator<Item = Amount>) -> Result<Amount> {
+    amounts.into_iter().try_fold(Amount::ZERO, add_amounts)
+}
+
+#[cfg(test)]
+mod checked_amount_tests {
+    use super::*;
+
+    #[test]
+    fn checked_amount_sum_of_overflowing_amounts_returns_error() {
+        let result = sum_amounts([Amount::from(u64::MAX), Amount::from(1u64)]);
+        assert!(matches!(result, Err(Error::MintingError(_))));
     }
 }
