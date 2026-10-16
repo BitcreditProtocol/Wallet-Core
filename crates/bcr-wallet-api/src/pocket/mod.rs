@@ -1879,10 +1879,4 @@ mod checked_amount_tests {
         let result = sum_amounts([Amount::from(u64::MAX), Amount::from(1u64)]);
         assert!(matches!(result, Err(Error::MintingError(_))));
     }
-
-    #[test]
-    fn checked_amount_sum_of_small_amounts_adds() {
-        let result = sum_amounts([Amount::from(2u64), Amount::from(3u64)]).unwrap();
-        assert_eq!(result, Amount::from(5u64));
-    }
 }

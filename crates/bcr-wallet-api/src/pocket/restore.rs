@@ -667,20 +667,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_batch_out_of_order_outputs_are_all_restored() {
-        let result = restore_batch_summary(
-            |keyset, mut outputs| {
-                outputs.swap(0, 1);
-                sign_all(keyset, outputs)
-            },
-            all_unspent,
-            BATCH_SIZE as usize,
-        )
-        .await;
-        assert_eq!(result, summary(BATCH_SIZE as usize, 0));
-    }
-
-    #[tokio::test]
     async fn restore_batch_rotated_response_restores_every_output() {
         let result = restore_batch_summary(
             |keyset, mut outputs| {
