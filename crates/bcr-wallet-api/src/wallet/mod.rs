@@ -8,7 +8,7 @@ use crate::{
     ClowderMintConnector,
     error::{Error, Result},
     external::mint::ClientFactory,
-    pocket::{RestoreSummary, debit::DebitPocketApi},
+    pocket::{RestoreSummary, add_amounts, debit::DebitPocketApi},
     types::PaymentSummary,
     wallet::{
         api::WalletApi,
@@ -734,7 +734,7 @@ impl Wallet {
         Ok(WalletBalance {
             debit: balance.debit,
             credit: balance.credit,
-            total: balance.debit + balance.credit,
+            total: add_amounts(balance.debit, balance.credit)?,
         })
     }
 
@@ -943,7 +943,7 @@ impl Wallet {
                             "Reclaimed {amount} from foreign mint proofs from {}, tx_id: {tx_id}",
                             mint.url
                         );
-                        reclaimed += amount;
+                        reclaimed = add_amounts(reclaimed, amount)?;
                         // if everything went well, delete the foreign mint proofs
                         self.debit
                             .delete_foreign_mint_proofs(mint.clowder_id, unspent_ys)
@@ -954,9 +954,10 @@ impl Wallet {
                             "Could not reclaim foreign mint proofs from mint {}: {e}",
                             mint.url
                         );
-                        reclaimed += self
+                        let one_by_one = self
                             .reclaim_foreign_proofs_one_by_one(mint, unspent_ys, proofs)
                             .await;
+                        reclaimed = add_amounts(reclaimed, one_by_one)?;
                     }
                 }
             }
