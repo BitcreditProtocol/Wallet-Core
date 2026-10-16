@@ -1571,4 +1571,51 @@ mod tests {
         let balance = app.wallet_balance("w-1".to_owned()).await.unwrap();
         assert_eq!(balance.total, cashu::Amount::from(100));
     }
+
+    #[tokio::test]
+    async fn check_received_payment_wait_does_not_hold_off_migration() {
+        let f = SwapFixture::new(substitute_betas()).await;
+        let app = app_state(&f);
+        let checking = app.clone();
+        let check = tokio::spawn(async move {
+            checking
+                .wallet_check_received_payment(
+                    "w-1".to_owned(),
+                    3600,
+                    Uuid::new_v4().to_string(),
+                    CancellationToken::new(),
+                    Arc::new(|_| {}),
+                )
+                .await
+        });
+        settle().await;
+
+        let mut gate = f.gate_exchange();
+        let migrating = app.clone();
+        let migration = tokio::spawn(async move { migrating.purse_migrate_rabid().await });
+        gate.entered().await;
+        let receiving = app.clone();
+        let token = f.substitute_token(8).to_string();
+        let receive = tokio::spawn(async move {
+            receiving
+                .wallet_receive_token("w-1".to_owned(), token)
+                .await
+        });
+        settle().await;
+        gate.release();
+
+        let migrated = tokio::time::timeout(Duration::from_secs(5), migration)
+            .await
+            .expect("the migration does not wait for the payment check")
+            .unwrap()
+            .unwrap();
+        assert_eq!(migrated["w-1"], f.substitute_url);
+        tokio::time::timeout(Duration::from_secs(5), receive)
+            .await
+            .expect("the receive does not wait for the payment check")
+            .unwrap()
+            .unwrap();
+        assert!(!check.is_finished());
+        check.abort();
+    }
 }

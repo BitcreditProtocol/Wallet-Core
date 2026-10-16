@@ -5777,6 +5777,15 @@ impl SwapFixture {
         ctx.payment_request_repo
             .expect_delete_repo()
             .returning(|| Ok(()));
+        ctx.payment_request_repo
+            .expect_get_payment_request()
+            .returning(|id| {
+                Ok(Some(payment_request_with(
+                    id,
+                    PaymentRequestDirection::Incoming,
+                    PaymentRequestState::Pending,
+                )))
+            });
         let balance = Arc::new(std::sync::atomic::AtomicU64::new(100));
         let (old_tx, old_received) = tokio::sync::mpsc::unbounded_channel();
         let (new_tx, new_received) = tokio::sync::mpsc::unbounded_channel();
