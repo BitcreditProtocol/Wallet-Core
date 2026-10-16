@@ -12,7 +12,7 @@ use std::{
     ops::Deref,
     sync::Arc,
 };
-use tokio::sync::{OwnedRwLockReadGuard, RwLock};
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use uuid::Uuid;
 
 pub struct Purse<Wlt> {
@@ -39,18 +39,24 @@ impl<Wlt> Deref for HeldWallet<Wlt> {
 }
 
 /// The subscription of a wallet's stopped nostr listener, holding every event it has not handled
-/// yet. It is resumed on `wallet`, also when dropped, so no event is left unhandled.
+/// yet. It is resumed on `wallet`, also when dropped, so no event is left unhandled; the swap
+/// guard stays held until then, so a retried migration never meets a listener that is not back.
 struct PausedListener<Wlt: WalletApi + 'static> {
     wallet: Arc<RwLock<Wlt>>,
+    swapping: Arc<OwnedRwLockWriteGuard<()>>,
     subscription: Option<BoxFuture<'static, NostrReceiver>>,
 }
 
 impl<Wlt: WalletApi + 'static> PausedListener<Wlt> {
     /// Stops the nostr listener of `wallet` once it has handled the event it is on
-    async fn pause(wallet: &Arc<RwLock<Wlt>>) -> Option<Self> {
+    async fn pause(
+        wallet: &Arc<RwLock<Wlt>>,
+        swapping: &Arc<OwnedRwLockWriteGuard<()>>,
+    ) -> Option<Self> {
         let listener = wallet.read().await.take_nostr_listener()?;
         let mut paused = Self {
             wallet: wallet.clone(),
+            swapping: swapping.clone(),
             subscription: Some(Box::pin(listener.stop())),
         };
         let nostr_receiver = paused.subscription.as_mut()?.await;
@@ -76,6 +82,7 @@ impl<Wlt: WalletApi + 'static> Drop for PausedListener<Wlt> {
     fn drop(&mut self) {
         if let Some(subscription) = self.subscription.take() {
             let wallet = self.wallet.clone();
+            let swapping = self.swapping.clone();
             tokio::spawn(async move {
                 let nostr_receiver = subscription.await;
                 wallet
@@ -83,6 +90,7 @@ impl<Wlt: WalletApi + 'static> Drop for PausedListener<Wlt> {
                     .await
                     .start_nostr_listener(Some(nostr_receiver))
                     .await;
+                drop(swapping);
             });
         }
     }
@@ -237,8 +245,7 @@ where
         wallet_id: &str,
         wlt: &Arc<RwLock<Wlt>>,
     ) -> Result<Option<url::Url>> {
-        let swap_guard = self.swap_guard(wallet_id);
-        let _swapping = swap_guard.write().await;
+        let swapping = Arc::new(self.swap_guard(wallet_id).write_owned().await);
         let current = self.get_wallet(wallet_id).await;
         if !current.is_some_and(|current| Arc::ptr_eq(&current, wlt)) {
             tracing::info!("Wallet {wallet_id} was migrated or deleted meanwhile");
@@ -265,7 +272,7 @@ where
             };
             substitute_url
         };
-        let paused = PausedListener::pause(wlt).await;
+        let paused = PausedListener::pause(wlt, &swapping).await;
         let rebuilt = match self.rebuild_on_substitute(wlt, substitute_url).await {
             Ok(rebuilt) => rebuilt,
             Err(e) => {
@@ -925,12 +932,10 @@ mod tests {
     #[tokio::test]
     async fn migration_queues_behind_an_in_flight_read_without_deadlock() {
         let f = SwapFixture::new(substitute_betas()).await;
-        let mut gate = f.gate_exchange();
         let held = f.purse.hold_wallet("w-1").await.unwrap();
         let purse = f.purse.clone();
         let migration = tokio::spawn(async move { purse.migrate_rabid_wallets().await });
         settle().await;
-        assert!(!gate.has_entered());
 
         let balance = tokio::time::timeout(Duration::from_secs(5), async {
             held.read().await.balance().await
@@ -939,6 +944,9 @@ mod tests {
         .expect("the call in flight finishes while the migration waits")
         .unwrap();
         assert_eq!(balance.total, Amount::from(100));
+        let mut gate = f.gate_exchange();
+        settle().await;
+        assert!(!gate.has_entered());
         drop(held);
 
         gate.entered().await;

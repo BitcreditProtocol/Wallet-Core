@@ -778,6 +778,31 @@ fn collect_keyset_infos_from_proofs<'it, 'a>(
     Ok(infos)
 }
 
+/// Debit holds a proof whose keyset has no final expiry or one before today; credit the rest
+pub(crate) fn balance_of<'p>(
+    proofs: impl Iterator<Item = &'p cdk00::Proof> + Clone,
+    keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+) -> Result<PocketBalance> {
+    let infos = collect_keyset_infos_from_proofs(proofs.clone(), keysets_info)?;
+    let start_of_today = time::OffsetDateTime::now_utc()
+        .date()
+        .midnight()
+        .assume_utc()
+        .unix_timestamp() as u64;
+    let mut balance = PocketBalance::default();
+    for proof in proofs {
+        let is_credit = infos[&proof.keyset_id.into()]
+            .final_expiry
+            .is_some_and(|expiry| expiry >= start_of_today);
+        if is_credit {
+            balance.credit += proof.amount;
+        } else {
+            balance.debit += proof.amount;
+        }
+    }
+    Ok(balance)
+}
+
 ///////////////////////////////////////////// sign_content_b64
 /// Sign the preimage of a base64-encoded content string with a keypair.
 /// Used for protest request wallet_signatures.

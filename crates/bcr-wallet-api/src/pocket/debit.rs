@@ -627,37 +627,7 @@ impl super::PocketApi for Pocket {
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
     ) -> Result<PocketBalance> {
         let proofs: Vec<Proof> = self.pdb.list_unspent().await?.into_values().collect();
-        let mut debit = Amount::ZERO;
-        let mut credit = Amount::ZERO;
-
-        let infos = collect_keyset_infos_from_proofs(proofs.iter(), keysets_info)?;
-        let start_of_today = time::OffsetDateTime::now_utc()
-            .date()
-            .midnight()
-            .assume_utc()
-            .unix_timestamp() as u64;
-
-        for proof in proofs {
-            let info = infos
-                .get(&proof.keyset_id.into())
-                .ok_or(Error::UnknownKeysetId(proof.keyset_id.into()))?;
-
-            // no final expiry -> debit
-            // final expiry before today -> debit
-            // final expiry today, or after -> credit
-            let is_credit = match info.final_expiry {
-                Some(expiry) => expiry >= start_of_today,
-                None => false,
-            };
-
-            if is_credit {
-                credit += proof.amount;
-            } else {
-                debit += proof.amount;
-            }
-        }
-
-        Ok(PocketBalance { debit, credit })
+        super::balance_of(proofs.iter(), keysets_info)
     }
 
     async fn receive_proofs(

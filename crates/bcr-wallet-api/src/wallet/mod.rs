@@ -767,12 +767,33 @@ impl Wallet {
     }
 
     pub async fn balance(&self) -> Result<WalletBalance> {
-        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
+        let mut keysets_info = self.get_wallet_mint_keyset_infos().await?;
+        let journal = self.journal.load().await?;
+        if let Some(entry) = journal.values().next() {
+            let substitute = (self.client_factory)(entry.header.substitute_url.clone());
+            match util::keyset_infos(substitute.as_ref()).await {
+                Ok(infos) => keysets_info.extend(infos),
+                Err(e) => tracing::warn!("Couldn't fetch substitute keysets of a migration: {e}"),
+            }
+        }
+        let in_flight: Vec<_> = journal
+            .values()
+            .filter(|e| {
+                matches!(
+                    e.state,
+                    MigrationJournalState::Pending | MigrationJournalState::Exchanged(_)
+                )
+            })
+            .map(|e| &e.proof)
+            .collect();
+        let held = crate::pocket::balance_of(in_flight.into_iter(), &keysets_info)?;
         let balance = self.debit.balance(&keysets_info).await?;
+        let debit = balance.debit + held.debit;
+        let credit = balance.credit + held.credit;
         Ok(WalletBalance {
-            debit: balance.debit,
-            credit: balance.credit,
-            total: balance.debit + balance.credit,
+            debit,
+            credit,
+            total: debit + credit,
         })
     }
 
