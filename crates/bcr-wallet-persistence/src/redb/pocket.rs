@@ -558,6 +558,7 @@ impl CounterState {
             let earliest_deadline = unexpired.map(|h| h.deadline).min().unwrap_or(now);
             return Err(Error::HeldCountersAtCap { earliest_deadline });
         }
+        self.coalesce_expired(now);
         if let Some(i) = self.held.iter().position(|h| h.deadline <= now && h.n >= n) {
             let held = &mut self.held[i];
             let start = held.start;
@@ -578,7 +579,9 @@ impl CounterState {
         let mut merged: Vec<HeldRange> = Vec::with_capacity(self.held.len());
         for h in self.held.drain(..) {
             match merged.last_mut() {
-                Some(last) if last.deadline <= now && h.deadline <= now && last.end() == h.start => {
+                Some(last)
+                    if last.deadline <= now && h.deadline <= now && last.end() == h.start =>
+                {
                     last.n += h.n;
                     last.deadline = last.deadline.max(h.deadline);
                 }
@@ -591,7 +594,8 @@ impl CounterState {
     fn release(&mut self, start: u32, n: u32) {
         match start.checked_add(n) {
             Some(end)
-                if end == self.counter =>
+                if end == self.counter
+                    && !self.held.iter().any(|h| start < h.end() && h.start < end) =>
             {
                 self.counter = start
             }
@@ -2220,7 +2224,9 @@ mod tests {
 
         let other = core_tests::generate_random_ecash_keyset().0.id;
         let start = repo.reserve_counter(other, 3).await.unwrap();
-        repo.hold_counter(other, start, 3, FAR_FUTURE).await.unwrap();
+        repo.hold_counter(other, start, 3, FAR_FUTURE)
+            .await
+            .unwrap();
         repo.release_counter(other, start, 3).await.unwrap();
         assert_eq!(repo.reserve_counter(other, 3).await.unwrap(), 3);
     }
