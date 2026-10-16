@@ -230,7 +230,6 @@ impl Error {
             | Error::MintClientBadRequest(_)
             | Error::MintClientKeysetNotFound(_)
             | Error::MintClientMeltOpSuspended(_)
-            | Error::MintClientCommitmentMismatch(_)
             | Error::MintClientUnreachable(_) => true,
             _ => false,
         }
@@ -452,8 +451,16 @@ mod tests {
             (Error::MintClientBadRequest("refused".into()), true),
             (Error::MintClientUnreachable("refused".into()), true),
             (
-                Error::Mint(MintError::InvalidRequest(BRError::Unknown)),
+                Error::Mint(MintError::InvalidRequest(BRError::Generic("no".into()))),
                 true,
+            ),
+            (
+                Error::Mint(MintError::InvalidRequest(BRError::Unknown)),
+                false,
+            ),
+            (
+                Error::Mint(MintError::InvalidRequest(BRError::CommitmentMismatch)),
+                false,
             ),
             (Error::MintClientInternal("timed out".into()), false),
             (Error::Mint(MintError::Internal("reset".into())), false),

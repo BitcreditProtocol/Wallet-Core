@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use bcr_common::{
     cashu::{self, Proof},
     client::{
-        mint::{Client as MintClient, Error as MintError, Result as MintResult},
+        mint::{BRError, Client as MintClient, Error as MintError, Result as MintResult, SUError},
         treasury::web_ep as TreasuryEp,
     },
     core, ecash,
@@ -33,12 +33,17 @@ pub struct SwapCommitmentResult {
 
 /// Whether a failed commitment request provably left no commitment at the mint: it answered with an
 /// error, or the connection was refused before the request was sent. A timeout, a reset after the
-/// send or an undecodable response is not provable.
+/// send, an undecodable error body or a commitment that fails verification is not provable.
 pub(crate) fn commit_error_is_definite(error: &MintError) -> bool {
     match error {
-        MintError::InvalidRequest(_)
-        | MintError::ResourceNotFound(_)
-        | MintError::ServiceUnavailable(_) => true,
+        MintError::InvalidRequest(error) => {
+            !matches!(error, BRError::Unknown | BRError::CommitmentMismatch)
+        }
+        MintError::ServiceUnavailable(error) => !matches!(
+            error,
+            SUError::Unknown | SUError::Core(serde_json::Value::Null)
+        ),
+        MintError::ResourceNotFound(_) => true,
         MintError::Reqwest(error) => error.is_connect(),
         MintError::Internal(_) | MintError::Cdk20(_) | MintError::BorshSign(_) => false,
     }
@@ -1167,6 +1172,43 @@ mod tests {
         let error = reqwest_error(&format!("http://127.0.0.1:{port}")).await;
         assert!(!commit_error_is_definite(&error));
         assert!(!Error::from(error).is_commitment_refused());
+    }
+
+    #[test]
+    fn commit_error_commitment_mismatch_is_uncertain() {
+        use bcr_common::client::mint::BRError;
+        let error = MintError::InvalidRequest(BRError::CommitmentMismatch);
+        assert!(!commit_error_is_definite(&error));
+        assert!(!Error::from(error).is_commitment_refused());
+        assert!(!Error::MintClientCommitmentMismatch("mismatch".into()).is_commitment_refused());
+    }
+
+    #[test]
+    fn commit_error_undecoded_refusal_is_uncertain() {
+        use bcr_common::client::mint::{BRError, SUError};
+        assert!(!commit_error_is_definite(&MintError::InvalidRequest(
+            BRError::Unknown
+        )));
+        assert!(!commit_error_is_definite(&MintError::ServiceUnavailable(
+            SUError::Core(serde_json::Value::Null)
+        )));
+        assert!(!commit_error_is_definite(&MintError::ServiceUnavailable(
+            SUError::Unknown
+        )));
+    }
+
+    #[test]
+    fn commit_error_decoded_refusal_is_definite() {
+        use bcr_common::client::mint::{BRError, RNFError, SUError};
+        assert!(commit_error_is_definite(&MintError::InvalidRequest(
+            BRError::Generic("refused".into())
+        )));
+        assert!(commit_error_is_definite(&MintError::ServiceUnavailable(
+            SUError::Core(serde_json::json!({"reason": "busy"}))
+        )));
+        assert!(commit_error_is_definite(&MintError::ResourceNotFound(
+            RNFError::Unknown
+        )));
     }
 
     fn valid_response_body() -> wire_melt::MeltQuoteOnchainResponseBody {
