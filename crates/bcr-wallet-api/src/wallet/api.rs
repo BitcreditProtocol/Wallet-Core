@@ -1003,6 +1003,7 @@ impl WalletApi for super::Wallet {
             let mut rebuilt = wallet.write().await;
             rebuilt.nostr_consumer_running = self.nostr_consumer_running.clone();
             rebuilt.nostr_shutdown = self.nostr_shutdown.clone();
+            rebuilt.payment_request_paid = self.payment_request_paid.clone();
         }
         Ok(wallet)
     }

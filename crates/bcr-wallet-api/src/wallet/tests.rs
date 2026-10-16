@@ -6038,3 +6038,27 @@ async fn failed_rebuild_keeps_the_old_listener_receiving() {
     assert!(Arc::ptr_eq(&current, &f.old));
     assert!(f.old.read().await.take_nostr_listener().is_some());
 }
+
+#[tokio::test]
+async fn a_payment_request_paid_on_the_rebuilt_wallet_wakes_a_waiter_on_the_old_one() {
+    let f = SwapFixture::new(vec![
+        url::Url::from_str("https://sub-beta.example").unwrap(),
+    ])
+    .await;
+    let old = f.old.clone();
+    let waiter = tokio::spawn(async move {
+        let wallet = old.read().await;
+        wallet.payment_request_paid.notified().await;
+    });
+    settle().await;
+
+    f.purse.migrate_rabid_wallets().await.unwrap();
+    let current = f.purse.get_wallet("w-1").await.unwrap();
+    assert!(!Arc::ptr_eq(&current, &f.old));
+    current.read().await.payment_request_paid.notify_waiters();
+
+    tokio::time::timeout(Duration::from_secs(5), waiter)
+        .await
+        .expect("the old waiter is woken")
+        .unwrap();
+}
