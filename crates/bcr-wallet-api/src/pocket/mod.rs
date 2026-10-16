@@ -940,7 +940,7 @@ async fn send_proofs(
         SendPlan::Ready { proofs } => {
             let reserved = reservation.reserve(db, proofs.clone()).await?;
             for (y, proof) in proofs.into_iter().zip(reserved) {
-                current_amount += proof.amount;
+                current_amount = add_amounts(current_amount, proof.amount)?;
                 sending_proofs.insert(y, proof);
             }
         }
@@ -980,7 +980,7 @@ async fn send_proofs(
             let ys: Vec<cdk01::PublicKey> = swapped_to_target_proofs.keys().cloned().collect();
             reservation.reserve(db, ys).await?;
             for (y, proof) in swapped_to_target_proofs {
-                current_amount += proof.amount;
+                current_amount = add_amounts(current_amount, proof.amount)?;
                 sending_proofs.insert(y, proof);
             }
         }
@@ -1861,11 +1861,13 @@ mod tests {
     }
 }
 
+pub(crate) fn add_amounts(a: Amount, b: Amount) -> Result<Amount> {
+    a.checked_add(b)
+        .ok_or_else(|| Error::MintingError(format!("amounts {a} and {b} overflow")))
+}
+
 pub(crate) fn sum_amounts(amounts: impl IntoIterator<Item = Amount>) -> Result<Amount> {
-    amounts.into_iter().try_fold(Amount::ZERO, |acc, a| {
-        acc.checked_add(a)
-            .ok_or_else(|| Error::MintingError(format!("amounts {acc} and {a} overflow")))
-    })
+    amounts.into_iter().try_fold(Amount::ZERO, add_amounts)
 }
 
 #[cfg(test)]

@@ -22,6 +22,24 @@ pub mod tests {
         map
     }
 
+    pub fn generate_wide_ecash_keyset() -> (MintKeySetInfo, ecash::MintKeySet) {
+        let (mut info, _) = bcr_common::core_tests::generate_random_ecash_keyset();
+        let amounts: Vec<u64> = (0..64).map(|i| 1u64 << i).collect();
+        let set = cashu::MintKeySet::generate_from_seed(
+            secp256k1::SECP256K1,
+            &[7; 32],
+            &amounts,
+            CurrencyUnit::Sat,
+            info.derivation_path.clone(),
+            0,
+            None,
+            cashu::nut02::KeySetVersion::Version01,
+        );
+        info.id = set.id.into();
+        info.amounts = amounts;
+        (info, set.into())
+    }
+
     pub fn test_swap_config() -> SwapConfig {
         let keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         SwapConfig {
