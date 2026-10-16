@@ -5586,7 +5586,12 @@ pub(crate) fn contact_payment(
     amount: u64,
     mint: &url::Url,
 ) -> bcr_wallet_transport::NostrWalletEvent {
-    let (_info, _keyset, proofs) = test_keyset_and_proofs(&[Amount::from(amount)]);
+    let denominations: Vec<Amount> = (0..u64::BITS)
+        .map(|bit| amount & (1 << bit))
+        .filter(|denomination| *denomination != 0)
+        .map(Amount::from)
+        .collect();
+    let (_info, _keyset, proofs) = test_keyset_and_proofs(&denominations);
     bcr_wallet_transport::NostrWalletEvent::ContactPayment {
         sender: node_id(NODE_ID_1).npub(),
         payload: ContactPaymentPayload {
@@ -5624,10 +5629,10 @@ fn receiving_pocket(
         })
     });
     pocket.expect_prepare_send().returning(|amount, _| {
-        Ok(SendSummary {
+        Ok(bcr_wallet_core::types::SendSummary {
             amount,
             unit: CurrencyUnit::Sat,
-            ..SendSummary::new()
+            ..bcr_wallet_core::types::SendSummary::new()
         })
     });
     pocket.expect_delete().returning(|| Ok(()));
@@ -5859,7 +5864,10 @@ impl SwapFixture {
         let mut repo = bcr_wallet_persistence::MockPurseRepository::new();
         let (st, writes) = (stored.clone(), repo_writes.clone());
         repo.expect_store().returning(move |cfg| {
-            writes.lock().unwrap().push(RepoWrite::Store(cfg.name.clone()));
+            writes
+                .lock()
+                .unwrap()
+                .push(RepoWrite::Store(cfg.name.clone()));
             st.lock().unwrap().push(cfg);
             Ok(())
         });
@@ -5927,7 +5935,7 @@ impl SwapFixture {
             core_tests::generate_random_ecash_proofs(&self.token_keyset, &[Amount::from(amount)]);
         Token::new_bitcr(
             to_mint_url(&self.substitute_url),
-            proofs,
+            proofs.into_iter().map(|p| p.into()).collect(),
             None,
             CurrencyUnit::Sat,
         )

@@ -1,22 +1,91 @@
 use crate::{
     error::{Error, Result},
-    wallet::{api::WalletApi, util::update_optional_field},
+    wallet::{NostrReceiver, api::WalletApi, util::update_optional_field},
 };
 use bcr_common::core::NodeId;
 use bcr_wallet_core::{contact::Contact, email::Email, name::Name, types::WalletConfig};
 use bcr_wallet_persistence::{ContactStoreApi, PurseRepository, redb::purse::PurseDB};
+use futures::future::BoxFuture;
 use nostr::types::RelayUrl;
 use std::{
     collections::{BTreeSet, HashMap},
+    ops::Deref,
     sync::Arc,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedRwLockReadGuard, RwLock};
 use uuid::Uuid;
 
 pub struct Purse<Wlt> {
     pub repo: Box<dyn PurseRepository>,
     pub contact_repos: HashMap<bitcoin::Network, Arc<dyn ContactStoreApi>>,
     pub wallets: Arc<RwLock<HashMap<String, Arc<RwLock<Wlt>>>>>,
+    /// One per wallet id, outliving the instances a migration swaps: a migration holds its write
+    /// side, every call that moves proofs or writes wallet state its read side
+    pub swap_guards: std::sync::Mutex<HashMap<String, Arc<RwLock<()>>>>,
+}
+
+/// A wallet that no migration swaps out while this is held
+pub struct HeldWallet<Wlt> {
+    wallet: Arc<RwLock<Wlt>>,
+    _swap_guard: OwnedRwLockReadGuard<()>,
+}
+
+impl<Wlt> Deref for HeldWallet<Wlt> {
+    type Target = RwLock<Wlt>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.wallet
+    }
+}
+
+/// The subscription of a wallet's stopped nostr listener, holding every event it has not handled
+/// yet. It is resumed on `wallet`, also when dropped, so no event is left unhandled.
+struct PausedListener<Wlt: WalletApi + 'static> {
+    wallet: Arc<RwLock<Wlt>>,
+    subscription: Option<BoxFuture<'static, NostrReceiver>>,
+}
+
+impl<Wlt: WalletApi + 'static> PausedListener<Wlt> {
+    /// Stops the nostr listener of `wallet` once it has handled the event it is on
+    async fn pause(wallet: &Arc<RwLock<Wlt>>) -> Option<Self> {
+        let listener = wallet.read().await.take_nostr_listener()?;
+        let mut paused = Self {
+            wallet: wallet.clone(),
+            subscription: Some(Box::pin(listener.stop())),
+        };
+        let nostr_receiver = paused.subscription.as_mut()?.await;
+        paused.subscription = Some(Box::pin(std::future::ready(nostr_receiver)));
+        Some(paused)
+    }
+
+    async fn resume(mut self) {
+        let wallet = self.wallet.clone();
+        let wallet = wallet.read().await;
+        if let Some(subscription) = self.subscription.take() {
+            wallet.start_nostr_listener(Some(subscription.await)).await;
+        }
+    }
+
+    async fn resume_on(mut self, wallet: Arc<RwLock<Wlt>>) {
+        self.wallet = wallet;
+        self.resume().await;
+    }
+}
+
+impl<Wlt: WalletApi + 'static> Drop for PausedListener<Wlt> {
+    fn drop(&mut self) {
+        if let Some(subscription) = self.subscription.take() {
+            let wallet = self.wallet.clone();
+            tokio::spawn(async move {
+                let nostr_receiver = subscription.await;
+                wallet
+                    .read()
+                    .await
+                    .start_nostr_listener(Some(nostr_receiver))
+                    .await;
+            });
+        }
+    }
 }
 
 impl<Wlt> Purse<Wlt> {
@@ -28,6 +97,7 @@ impl<Wlt> Purse<Wlt> {
             repo: Box::new(repo),
             contact_repos,
             wallets: Arc::new(RwLock::new(HashMap::default())),
+            swap_guards: Default::default(),
         })
     }
 
@@ -53,6 +123,26 @@ impl<Wlt> Purse<Wlt> {
         self.wallets.read().await.get(id).cloned()
     }
 
+    /// The wallet, held for a call that moves proofs or writes wallet state, so the call never
+    /// runs on an instance a migration has swapped out
+    pub async fn hold_wallet(&self, id: &str) -> Option<HeldWallet<Wlt>> {
+        let swap_guard = self.swap_guard(id).read_owned().await;
+        let wallet = self.get_wallet(id).await?;
+        Some(HeldWallet {
+            wallet,
+            _swap_guard: swap_guard,
+        })
+    }
+
+    fn swap_guard(&self, id: &str) -> Arc<RwLock<()>> {
+        self.swap_guards
+            .lock()
+            .unwrap()
+            .entry(id.to_owned())
+            .or_default()
+            .clone()
+    }
+
     pub async fn ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self.wallets.read().await.keys().cloned().collect();
         ids.sort();
@@ -62,7 +152,7 @@ impl<Wlt> Purse<Wlt> {
 
 impl<Wlt> Purse<Wlt>
 where
-    Wlt: WalletApi,
+    Wlt: WalletApi + 'static,
 {
     pub async fn names_by_network(&self, network: bitcoin::Network) -> Vec<String> {
         let wallets: Vec<_> = {
@@ -88,7 +178,7 @@ where
     }
 
     pub async fn delete_wallet(&self, id: &str) -> Result<()> {
-        let Some(wlt) = self.get_wallet(id).await else {
+        let Some(wlt) = self.hold_wallet(id).await else {
             return Err(Error::WalletNotFound(id.to_owned()));
         };
         wlt.read().await.delete().await?;
@@ -98,7 +188,7 @@ where
     }
 
     pub async fn rename_wallet(&self, id: &str, new_name: String) -> Result<()> {
-        let Some(wlt) = self.get_wallet(id).await else {
+        let Some(wlt) = self.hold_wallet(id).await else {
             return Err(Error::WalletNotFound(id.to_owned()));
         };
         let info = wlt.read().await.info();
@@ -145,9 +235,16 @@ where
     async fn migrate_rabid_wallet(
         &self,
         wallet_id: &str,
-        wlt: &RwLock<Wlt>,
+        wlt: &Arc<RwLock<Wlt>>,
     ) -> Result<Option<url::Url>> {
-        let rebuilt = {
+        let swap_guard = self.swap_guard(wallet_id);
+        let _swapping = swap_guard.write().await;
+        let current = self.get_wallet(wallet_id).await;
+        if !current.is_some_and(|current| Arc::ptr_eq(&current, wlt)) {
+            tracing::info!("Wallet {wallet_id} was migrated or deleted meanwhile");
+            return Ok(None);
+        }
+        let substitute_url = {
             let wlt = wlt.read().await;
             tracing::info!("Checking if alpha is rabid..");
             if !wlt.is_wallet_mint_rabid().await? {
@@ -166,30 +263,46 @@ where
             let Some(substitute_url) = wlt.mint_substitute().await? else {
                 return Ok(None);
             };
-            let wallet_name = wlt.name();
-            tracing::info!(
-                "Wallet {} is found rabid, migrating to substitute beta {}",
-                wallet_name,
-                substitute_url
-            );
-            let cfg = wlt.exchange_to_substitute(substitute_url).await?;
-            let rebuilt = wlt.rebuild(cfg.clone()).await?;
-            self.repo.store(cfg).await?;
-            rebuilt
+            substitute_url
         };
-        let listener = wlt.read().await.take_nostr_listener();
-        let handed_over = match listener {
-            Some(listener) => Some(listener.stop().await),
-            None => None,
+        let paused = PausedListener::pause(wlt).await;
+        let rebuilt = match self.rebuild_on_substitute(wlt, substitute_url).await {
+            Ok(rebuilt) => rebuilt,
+            Err(e) => {
+                if let Some(paused) = paused {
+                    paused.resume().await;
+                }
+                return Err(e);
+            }
         };
         self.wallets
             .write()
             .await
             .insert(wallet_id.to_owned(), rebuilt.clone());
+        match paused {
+            Some(paused) => paused.resume_on(rebuilt.clone()).await,
+            None => rebuilt.read().await.start_nostr_listener(None).await,
+        }
         let rebuilt = rebuilt.read().await;
-        rebuilt.start_nostr_listener(handed_over).await;
         rebuilt.finish_migration().await?;
         Ok(Some(rebuilt.mint_url()))
+    }
+
+    async fn rebuild_on_substitute(
+        &self,
+        wlt: &RwLock<Wlt>,
+        substitute_url: url::Url,
+    ) -> Result<Arc<RwLock<Wlt>>> {
+        let wlt = wlt.read().await;
+        tracing::info!(
+            "Wallet {} is found rabid, migrating to substitute beta {}",
+            wlt.name(),
+            substitute_url
+        );
+        let cfg = wlt.exchange_to_substitute(substitute_url).await?;
+        let rebuilt = wlt.rebuild(cfg.clone()).await?;
+        self.repo.store(cfg).await?;
+        Ok(rebuilt)
     }
 
     pub async fn wallets_nostr_connected(&self) -> HashMap<String, bool> {
@@ -389,9 +502,7 @@ mod tests {
     use crate::wallet::{
         Wallet,
         api::MockWalletApi,
-        tests::{
-            ExchangeGate, RepoWrite, SwapFixture, contact_payment, next_received, settle,
-        },
+        tests::{ExchangeGate, RepoWrite, SwapFixture, contact_payment, next_received, settle},
         types::WalletInfo,
     };
     use bcr_common::cashu::Amount;

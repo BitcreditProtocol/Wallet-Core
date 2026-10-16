@@ -170,6 +170,13 @@ impl AppState {
             .ok_or(Error::WalletNotFound(wallet_id.to_owned()))
     }
 
+    async fn held_wallet(&self, wallet_id: &str) -> Result<purse::HeldWallet<wallet::Wallet>> {
+        self.get_purse()
+            .hold_wallet(wallet_id)
+            .await
+            .ok_or(Error::WalletNotFound(wallet_id.to_owned()))
+    }
+
     fn get_purse(&self) -> Arc<purse::Purse<wallet::Wallet>> {
         self.purse.clone()
     }
@@ -425,7 +432,7 @@ impl AppState {
         tracing::debug!("wallet_receive({wallet_id}, {tstamp})");
 
         let token = is_valid_token(&token)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let tx_id = wallet.read().await.receive_token(token, tstamp).await?;
         Ok(tx_id)
     }
@@ -452,7 +459,7 @@ impl AppState {
     ) -> Result<PaymentSummary> {
         tracing::debug!("wallet_prepare_pay_by_token({wallet_id}, {amount}, {description:?})");
         let amount = cashu::Amount::from(amount);
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let unit = wallet.read().await.debit_unit();
 
         let summary = wallet
@@ -473,7 +480,7 @@ impl AppState {
         tracing::debug!("wallet_pay_by_token({wallet_id}, {rid}, {tstamp})");
         let p_id = Uuid::from_str(&rid)?;
 
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let (tx_id, token) = wallet.read().await.pay(p_id, tstamp).await?;
 
         Ok(CreatedToken {
@@ -493,7 +500,7 @@ impl AppState {
             "wallet_prepare_pay_to_contact({wallet_id}, {contact_id}, {amount}, {description:?})"
         );
         let amount = cashu::Amount::from(amount);
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let unit = wallet.read().await.debit_unit();
         let contact_id = Uuid::from_str(&contact_id)?;
 
@@ -511,7 +518,7 @@ impl AppState {
         tracing::debug!("wallet_pay_to_contact({wallet_id}, {rid}, {tstamp})");
         let p_id = Uuid::from_str(&rid)?;
 
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let (tx_id, _) = wallet.read().await.pay(p_id, tstamp).await?;
 
         Ok(tx_id)
@@ -528,7 +535,7 @@ impl AppState {
             "wallet_prepare_pay_to_node_id({wallet_id}, {node_id}, {amount}, {description:?})"
         );
         let amount = cashu::Amount::from(amount);
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let unit = wallet.read().await.debit_unit();
         let node_id = NodeId::from_str(&node_id)?;
 
@@ -546,7 +553,7 @@ impl AppState {
         tracing::debug!("wallet_pay_to_node_id({wallet_id}, {rid}, {tstamp})");
         let p_id = Uuid::from_str(&rid)?;
 
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let (tx_id, _) = wallet.read().await.pay(p_id, tstamp).await?;
 
         Ok(tx_id)
@@ -562,7 +569,7 @@ impl AppState {
             "wallet_create_shareable_remote_payment_request({wallet_id}, {amount}, {description:?})"
         );
         let amount = cashu::Amount::from(amount);
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let unit = wallet.read().await.debit_unit();
         let (payment_request_id, payment_request) = wallet
             .read()
@@ -578,7 +585,7 @@ impl AppState {
         payment_req: String,
     ) -> Result<PaymentSummary> {
         tracing::debug!("wallet_prepare_pay_shared_payment_request({wallet_id}, {payment_req})");
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let summary = wallet
             .read()
             .await
@@ -595,7 +602,7 @@ impl AppState {
         tracing::debug!("wallet_pay_shared_payment_request({wallet_id}, {rid})");
         let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         let p_id = Uuid::from_str(&rid)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let (tx_id, _) = wallet.read().await.pay(p_id, tstamp).await?;
         Ok(tx_id)
     }
@@ -613,7 +620,7 @@ impl AppState {
         );
         let contact_id = Uuid::from_str(&contact_id)?;
         let amount = cashu::Amount::from(amount);
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let unit = wallet.read().await.debit_unit();
         let payment_req_id = wallet
             .read()
@@ -636,7 +643,7 @@ impl AppState {
         );
         let node_id = NodeId::from_str(&node_id)?;
         let amount = cashu::Amount::from(amount);
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let unit = wallet.read().await.debit_unit();
         let payment_req_id = wallet
             .read()
@@ -728,7 +735,7 @@ impl AppState {
     ) -> Result<PaymentSummary> {
         tracing::debug!("wallet_prepare_pay_payment_request({wallet_id}, {payment_req_id})");
         let payment_req_id = Uuid::from_str(&payment_req_id)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let tx_id = wallet
             .read()
             .await
@@ -741,7 +748,7 @@ impl AppState {
         tracing::debug!("wallet_pay_payment_request({wallet_id}, {rid})");
         let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         let p_id = Uuid::from_str(&rid)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let (tx_id, _) = wallet.read().await.pay(p_id, tstamp).await?;
         Ok(tx_id)
     }
@@ -753,7 +760,7 @@ impl AppState {
     ) -> Result<()> {
         tracing::debug!("wallet_reject_payment_request({wallet_id}, {payment_req_id})");
         let payment_req_id = Uuid::from_str(&payment_req_id)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         wallet
             .read()
             .await
@@ -769,7 +776,7 @@ impl AppState {
     ) -> Result<()> {
         tracing::debug!("wallet_cancel_payment_request({wallet_id}, {payment_req_id})");
         let payment_req_id = Uuid::from_str(&payment_req_id)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         wallet
             .read()
             .await
@@ -819,7 +826,7 @@ impl AppState {
         let parsed_address = bitcoin::Address::from_str(&address)
             .map_err(|_| Error::InvalidBitcoinAddress(address.clone()))?;
 
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         if !parsed_address.is_valid_for_network(wallet.read().await.network()) {
             return Err(Error::InvalidBitcoinAddress(address.clone()));
         }
@@ -842,7 +849,7 @@ impl AppState {
         let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         tracing::debug!("wallet_melt({wallet_id}, {rid}, {tstamp})");
 
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let p_id = Uuid::from_str(&rid)?;
 
         let (tx_id, _) = wallet.read().await.pay(p_id, tstamp).await?;
@@ -858,7 +865,7 @@ impl AppState {
         }
 
         let parsed_amount = bitcoin::Amount::from_sat(amount);
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let summary = wallet.read().await.mint(parsed_amount).await?;
 
         Ok(summary)
@@ -866,7 +873,7 @@ impl AppState {
 
     pub async fn wallet_check_pending_mints(&self, wallet_id: String) -> Result<Vec<Uuid>> {
         tracing::debug!("wallet_check_pending_mints({wallet_id})");
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let tx_ids = wallet.read().await.check_pending_mints().await?;
 
         Ok(tx_ids)
@@ -874,7 +881,7 @@ impl AppState {
 
     pub async fn wallet_check_pending_commitments(&self, wallet_id: String) -> Result<()> {
         tracing::debug!("wallet_check_pending_commitments({wallet_id})");
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         wallet.read().await.check_pending_commitments().await?;
         Ok(())
     }
@@ -889,7 +896,7 @@ impl AppState {
     )> {
         tracing::debug!("wallet_protest_mint({wallet_id}, {quote_id})");
         let qid = Uuid::from_str(&quote_id)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let WalletProtestResult { status, result } = wallet.read().await.protest_mint(qid).await?;
         Ok((status, result.map(|(amount, _)| amount)))
     }
@@ -905,7 +912,7 @@ impl AppState {
         tracing::debug!("wallet_protest_swap({wallet_id}, {commitment_sig})");
         let sig = bitcoin::secp256k1::schnorr::Signature::from_str(&commitment_sig)
             .map_err(|e| Error::SchnorrSignature(e.to_string()))?;
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let WalletProtestResult { status, result } = wallet.read().await.protest_swap(sig).await?;
         Ok((status, result.map(|(amount, _)| amount)))
     }
@@ -920,14 +927,14 @@ impl AppState {
     )> {
         tracing::debug!("wallet_protest_melt({wallet_id}, {quote_id})");
         let qid = Uuid::from_str(&quote_id)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let WalletProtestResult { status, result } = wallet.read().await.protest_melt(qid).await?;
         Ok((status, result.map(|(amount, _)| amount)))
     }
 
     pub async fn wallet_check_pending_melt_commitments(&self, wallet_id: String) -> Result<()> {
         tracing::debug!("wallet_check_pending_melt_commitments({wallet_id})");
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         wallet.read().await.check_pending_melt_commitments().await?;
         Ok(())
     }
@@ -936,7 +943,7 @@ impl AppState {
         let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         tracing::debug!("wallet_pay({wallet_id}, {rid}, {tstamp})");
 
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let p_id = Uuid::from_str(&rid)?;
 
         let (tx_id, _) = wallet.read().await.pay(p_id, tstamp).await?;
@@ -954,7 +961,7 @@ impl AppState {
         tracing::debug!("wallet_check_received_payment({wallet_id}, {p_id})");
 
         let p_id = Uuid::from_str(&p_id)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
 
         let max_wait = core::time::Duration::from_secs(max_wait_sec);
         wallet
@@ -1010,7 +1017,7 @@ impl AppState {
         tracing::debug!("wallet_edit_tx_memo({wallet_id}, {tx_id}, {new_memo:?})");
 
         let tx_id = Uuid::from_str(&tx_id)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         wallet.read().await.edit_tx_memo(tx_id, new_memo).await?;
         Ok(())
     }
@@ -1018,7 +1025,7 @@ impl AppState {
     pub async fn wallet_reclaim_tx(&self, wallet_id: String, tx_id: &str) -> Result<cashu::Amount> {
         tracing::debug!("wallet_reclaim_tx({wallet_id}, {tx_id})");
         let tx_id = Uuid::from_str(tx_id)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let amount = wallet.read().await.reclaim_tx(tx_id).await?;
         Ok(amount)
     }
@@ -1029,7 +1036,7 @@ impl AppState {
         wallet_id: String,
     ) -> Result<cashu::Amount> {
         tracing::debug!("wallet_recover_pending_stale_proofs({wallet_id})");
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let wlt = wallet.read().await;
         let recovered = wlt.recover_pending_stale_proofs().await?;
 
@@ -1039,7 +1046,7 @@ impl AppState {
     // Refund intermint exchanges whose locktime has passed
     pub async fn wallet_refund_expired_exchanges(&self, wallet_id: String) -> Result<usize> {
         tracing::debug!("wallet_refund_expired_exchanges({wallet_id})");
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let wlt = wallet.read().await;
         let tstamp = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
         let refunded = wlt.refund_expired_exchanges(tstamp).await?;
@@ -1050,7 +1057,7 @@ impl AppState {
     // Clean up Spent proofs
     pub async fn wallet_clean_up_spent_proofs(&self, wallet_id: String) -> Result<usize> {
         tracing::debug!("wallet_clean_up_spent_proofs({wallet_id})");
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let wlt = wallet.read().await;
         let cleaned_up = wlt.clean_up_spent_proofs().await?;
         Ok(cleaned_up)
@@ -1058,7 +1065,7 @@ impl AppState {
 
     pub async fn wallet_reclaim_foreign_mint_proofs(&self, wallet_id: String) -> Result<u64> {
         tracing::debug!("wallet_reclaim_foreign_mint_proofs({wallet_id})");
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let wlt = wallet.read().await;
         let reclaimed = wlt.reclaim_foreign_mint_proofs().await?;
         Ok(reclaimed.to_u64())
@@ -1067,7 +1074,7 @@ impl AppState {
     // Retry Nostr Messages
     pub async fn wallet_retry_nostr_messages(&self, wallet_id: String) -> Result<usize> {
         tracing::debug!("wallet_retry_nostr_messages({wallet_id})");
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let wlt = wallet.read().await;
         let retried = wlt.retry_nostr_messages().await?;
         Ok(retried)
@@ -1076,7 +1083,7 @@ impl AppState {
     // Refreshes the state of all pending transactions of the given wallet
     pub async fn wallet_refresh_txs(&self, wallet_id: String) -> Result<usize> {
         tracing::debug!("wallet_refresh_txs({wallet_id})");
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let updated = wallet.read().await.refresh_txs().await?;
         Ok(updated)
     }
@@ -1086,7 +1093,7 @@ impl AppState {
         tracing::debug!("wallet_refresh_tx({wallet_id}, {tx_id})");
 
         let tx_id = Uuid::from_str(tx_id)?;
-        let wallet = self.get_wallet(&wallet_id).await?;
+        let wallet = self.held_wallet(&wallet_id).await?;
         let updated = wallet.read().await.refresh_tx(tx_id).await?;
         Ok(updated)
     }
