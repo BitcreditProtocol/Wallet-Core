@@ -574,9 +574,27 @@ impl CounterState {
         Ok(start)
     }
 
+    fn coalesce_expired(&mut self, now: u64) {
+        let mut merged: Vec<HeldRange> = Vec::with_capacity(self.held.len());
+        for h in self.held.drain(..) {
+            match merged.last_mut() {
+                Some(last) if last.deadline <= now && h.deadline <= now && last.end() == h.start => {
+                    last.n += h.n;
+                    last.deadline = last.deadline.max(h.deadline);
+                }
+                _ => merged.push(h),
+            }
+        }
+        self.held = merged;
+    }
+
     fn release(&mut self, start: u32, n: u32) {
         match start.checked_add(n) {
-            Some(end) if end == self.counter => self.counter = start,
+            Some(end)
+                if end == self.counter =>
+            {
+                self.counter = start
+            }
             _ => self.hold(start, n, 0),
         }
     }
@@ -2178,6 +2196,33 @@ mod tests {
             }
         );
         assert_eq!(borsh::to_vec(&state.into_stored(kid)).unwrap(), v1);
+    }
+
+    #[tokio::test]
+    async fn test_held_counter_reissue_coalesces_expired_runs_and_release_keeps_holds() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let kid = core_tests::generate_random_ecash_keyset().0.id;
+        for n in [4, 2, 3, 5, 1] {
+            repo.reserve_counter(kid, n).await.unwrap();
+        }
+        repo.hold_counter(kid, 0, 4, 0).await.unwrap();
+        repo.release_counter(kid, 4, 2).await.unwrap();
+        repo.hold_counter(kid, 6, 3, FAR_FUTURE).await.unwrap();
+        repo.release_counter(kid, 9, 5).await.unwrap();
+
+        let mut drawn = Vec::new();
+        for n in [5, 3, 1, 2, 2] {
+            drawn.push(repo.reserve_counter(kid, n).await.unwrap());
+        }
+        assert_eq!(drawn, vec![0, 9, 5, 12, 15]);
+        repo.release_counter(kid, 6, 3).await.unwrap();
+        assert_eq!(repo.reserve_counter(kid, 3).await.unwrap(), 17);
+
+        let other = core_tests::generate_random_ecash_keyset().0.id;
+        let start = repo.reserve_counter(other, 3).await.unwrap();
+        repo.hold_counter(other, start, 3, FAR_FUTURE).await.unwrap();
+        repo.release_counter(other, start, 3).await.unwrap();
+        assert_eq!(repo.reserve_counter(other, 3).await.unwrap(), 3);
     }
 
     #[tokio::test]
