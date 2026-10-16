@@ -588,6 +588,14 @@ impl CounterState {
                 _ => merged.push(h),
             }
         }
+        while let Some(last) = merged.last() {
+            if last.deadline <= now && last.end() == self.counter {
+                self.counter = last.start;
+                merged.pop();
+            } else {
+                break;
+            }
+        }
         self.held = merged;
     }
 
