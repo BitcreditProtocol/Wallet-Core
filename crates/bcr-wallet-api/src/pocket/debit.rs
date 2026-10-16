@@ -553,6 +553,7 @@ impl Pocket {
     ) -> Result<(cashu::Amount, Vec<cashu::PublicKey>)> {
         let active_keyset = client.get_mint_keyset(premint.keyset_id.into()).await?;
 
+        let total_cashed_in = sum_amounts(signatures.iter().map(|sig| sig.amount))?;
         let proofs = cashu::dhke::construct_proofs(
             signatures,
             premint.rs(),
@@ -560,14 +561,11 @@ impl Pocket {
             &active_keyset.keys,
         )?;
 
-        let mut total_cashed_in = Amount::ZERO;
         let mut ys = Vec::with_capacity(proofs.len());
         for proof in proofs.into_iter() {
-            let amount = proof.amount;
             let y = proof.y()?;
             self.pdb.store_new(proof).await?;
             ys.push(y);
-            total_cashed_in += amount;
         }
 
         Ok((total_cashed_in, ys))
@@ -652,11 +650,8 @@ impl super::PocketApi for Pocket {
                 None => false,
             };
 
-            if is_credit {
-                credit += proof.amount;
-            } else {
-                debit += proof.amount;
-            }
+            let total = if is_credit { &mut credit } else { &mut debit };
+            *total = add_amounts(*total, proof.amount)?;
         }
 
         Ok(PocketBalance { debit, credit })
@@ -946,7 +941,7 @@ impl super::PocketApi for Pocket {
                 .entry(kid)
                 .or_insert((info.final_expiry, Amount::ZERO));
 
-            entry.1 += proof.amount;
+            entry.1 = add_amounts(entry.1, proof.amount)?;
         }
 
         Ok(balances)
@@ -3947,6 +3942,89 @@ mod tests {
         assert_eq!(result.amount, Amount::from(amount.to_sat()));
         assert_eq!(result.fee, Amount::ZERO);
         assert!(!result.ys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn check_pending_mint_overflowing_signature_amounts_returns_error_not_panic() {
+        let qid = Uuid::new_v4();
+        let amount = bitcoin::Amount::from_sat(3);
+        let (info, mintkeyset) = crate::pocket::test_utils::tests::generate_wide_ecash_keyset();
+        let kid = info.id;
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let premint = cdk00::PreMintSecrets::random(
+            kid.into(),
+            Amount::from(amount.to_sat()),
+            &SplitTarget::None,
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
+        )
+        .unwrap();
+        let blind_sigs: Vec<cdk00::BlindSignature> = premint
+            .blinded_messages()
+            .into_iter()
+            .map(|bm| {
+                let huge = cdk00::BlindedMessage {
+                    amount: Amount::from(1u64 << 63),
+                    ..bm
+                };
+                bcr_common::core::signature::sign_ecash(&mintkeyset, &huge).unwrap()
+            })
+            .collect();
+        assert_eq!(blind_sigs.len(), 2);
+
+        let mut mdb = MockMintMeltRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        let mut connector = MockClowderMintConnector::new();
+        let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64]).unwrap();
+        let dummy_secret = secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap();
+        mdb.expect_load_mint().times(1).returning(move |_| {
+            Ok(bcr_wallet_persistence::MintRecord {
+                summary: MintSummary {
+                    quote_id: qid,
+                    amount,
+                    address: valid_payment_address_testnet(),
+                    expiry: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
+                },
+                premint: premint.clone(),
+                content: "dGVzdA==".to_string(),
+                commitment: dummy_sig,
+                ephemeral_secret: dummy_secret,
+            })
+        });
+        connector
+            .expect_post_mint_onchain()
+            .times(1)
+            .returning(move |_| {
+                Ok(OnchainMintResponse {
+                    signatures: blind_sigs.clone(),
+                })
+            });
+        connector
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(keyset.clone()));
+        pdb.expect_store_new().times(0);
+        mdb.expect_delete_mint().times(0);
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let result = pocket.check_pending_mint(qid, Arc::new(connector)).await;
+
+        assert!(matches!(result, Err(Error::MintingError(_))));
+    }
+
+    #[tokio::test]
+    async fn balance_of_overflowing_stored_proofs_returns_error_not_panic() {
+        let (info, keyset) = crate::pocket::test_utils::tests::generate_wide_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let amounts = [Amount::from(1u64 << 63), Amount::from(1u64 << 63)];
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_list_unspent()
+            .times(1)
+            .returning(move || Ok(proofs.iter().map(|p| (p.y().unwrap(), p.clone())).collect()));
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()));
+        let result = pocket.balance(&k_infos).await;
+
+        assert!(matches!(result, Err(Error::MintingError(_))));
     }
 
     #[tokio::test]
