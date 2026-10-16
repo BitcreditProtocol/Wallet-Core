@@ -67,6 +67,8 @@ pub enum Error {
     PaymentRequestNotFound(String),
     #[error("Counter Exhausted")]
     CounterExhausted,
+    #[error("too many held counters, the earliest is reissuable at {earliest_deadline}")]
+    HeldCountersAtCap { earliest_deadline: u64 },
     #[error("Invalid Btc Tx Id {0}")]
     InvalidBtcTxId(String),
     #[error("Invalid Nostr Event Id {0}")]

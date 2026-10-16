@@ -659,6 +659,7 @@ mod tests {
                 assert_eq!(payload.kid, expected_kid.into());
                 assert_eq!(payload.counter, expected_counter);
             }
+            StoredCounter::V2(_) => unreachable!(),
         }
     }
 
@@ -750,6 +751,7 @@ mod tests {
                 assert_eq!(payload.kid, first_kid.into());
                 assert_eq!(payload.counter, 1);
             }
+            StoredCounter::V2(_) => unreachable!(),
         }
 
         match second {
@@ -757,6 +759,7 @@ mod tests {
                 assert_eq!(payload.kid, second_kid.into());
                 assert_eq!(payload.counter, 20);
             }
+            StoredCounter::V2(_) => unreachable!(),
         }
 
         match third {
@@ -764,6 +767,7 @@ mod tests {
                 assert_eq!(payload.kid, third_kid.into());
                 assert_eq!(payload.counter, u32::MAX);
             }
+            StoredCounter::V2(_) => unreachable!(),
         }
     }
 

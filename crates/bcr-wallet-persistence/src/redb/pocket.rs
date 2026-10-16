@@ -481,6 +481,129 @@ pub(super) fn from_stored_proof_v1(
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub(super) enum StoredCounter {
     V1(StoredCounterPayloadV1),
+    V2(StoredCounterPayloadV2),
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredCounterPayloadV2 {
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub kid: ecash::Id,
+    pub counter: u32,
+    pub held: Vec<HeldRange>,
+}
+
+/// A counter range below the tip that is not in use and may be reissued once `deadline` (unix seconds) has passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub(super) struct HeldRange {
+    pub start: u32,
+    pub n: u32,
+    pub deadline: u64,
+}
+
+impl HeldRange {
+    fn end(&self) -> u32 {
+        self.start + self.n
+    }
+}
+
+/// A keyset's counter tip and the ranges below it that are waiting to be reissued, ordered by start.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct CounterState {
+    pub counter: u32,
+    pub held: Vec<HeldRange>,
+}
+
+impl From<StoredCounter> for CounterState {
+    fn from(stored: StoredCounter) -> Self {
+        match stored {
+            StoredCounter::V1(v1) => Self {
+                counter: v1.counter,
+                held: Vec::new(),
+            },
+            StoredCounter::V2(v2) => Self {
+                counter: v2.counter,
+                held: v2.held,
+            },
+        }
+    }
+}
+
+impl CounterState {
+    /// V1 bytes stay what is written while nothing is held, so older readers keep working until a range is.
+    fn into_stored(self, kid: ecash::Id) -> StoredCounter {
+        if self.held.is_empty() {
+            StoredCounter::V1(StoredCounterPayloadV1 {
+                kid,
+                counter: self.counter,
+            })
+        } else {
+            StoredCounter::V2(StoredCounterPayloadV2 {
+                kid,
+                counter: self.counter,
+                held: self.held,
+            })
+        }
+    }
+
+    fn reserve(&mut self, n: u32, now: u64) -> Result<u32> {
+        if n == 0 {
+            return Ok(self.counter);
+        }
+        let unexpired = self.held.iter().filter(|h| h.deadline > now);
+        let held_outputs: u64 = unexpired.clone().map(|h| u64::from(h.n)).sum();
+        if held_outputs > 0 && held_outputs + u64::from(n) > u64::from(crate::MAX_HELD_COUNTERS) {
+            let earliest_deadline = unexpired.map(|h| h.deadline).min().unwrap_or(now);
+            return Err(Error::HeldCountersAtCap { earliest_deadline });
+        }
+        if let Some(i) = self.held.iter().position(|h| h.deadline <= now && h.n >= n) {
+            let held = &mut self.held[i];
+            let start = held.start;
+            if held.n == n {
+                self.held.remove(i);
+            } else {
+                held.start += n;
+                held.n -= n;
+            }
+            return Ok(start);
+        }
+        let start = self.counter;
+        self.counter = start.checked_add(n).ok_or(Error::CounterExhausted)?;
+        Ok(start)
+    }
+
+    fn release(&mut self, start: u32, n: u32) {
+        match start.checked_add(n) {
+            Some(end) if end == self.counter => self.counter = start,
+            _ => self.hold(start, n, 0),
+        }
+    }
+
+    fn hold(&mut self, start: u32, n: u32, deadline: u64) {
+        let Some(end) = start.checked_add(n) else {
+            return;
+        };
+        if n == 0 || end > self.counter {
+            return;
+        }
+        if let Some(same) = self.held.iter_mut().find(|h| h.start == start && h.n == n) {
+            same.deadline = same.deadline.max(deadline);
+            return;
+        }
+        if self.held.iter().any(|h| start < h.end() && h.start < end) {
+            return;
+        }
+        let at = self.held.partition_point(|h| h.start < start);
+        self.held.insert(at, HeldRange { start, n, deadline });
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
@@ -929,34 +1052,29 @@ impl PocketDB {
         Ok(proofs)
     }
 
-    fn update_counter_sync(
+    fn update_counter_sync<T>(
         db: Arc<Database>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         kid: ecash::Id,
-        next: impl FnOnce(u32) -> Result<u32>,
-    ) -> Result<u32> {
+        update: impl FnOnce(&mut CounterState) -> Result<T>,
+    ) -> Result<T> {
         let write_txn = db.begin_write()?;
-        let current = {
+        let result = {
             let mut table = write_txn.open_table(counter_table)?;
-            let current = match table.get(kid.to_bytes().as_slice())? {
-                Some(e) => {
-                    let StoredCounter::V1(stored) = borsh::from_slice(&e.value())
-                        .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                    stored.counter
-                }
-                None => 0,
+            let mut state = match table.get(kid.to_bytes().as_slice())? {
+                Some(e) => borsh::from_slice::<StoredCounter>(&e.value())
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?
+                    .into(),
+                None => CounterState::default(),
             };
-            let entry = StoredCounter::V1(StoredCounterPayloadV1 {
-                kid,
-                counter: next(current)?,
-            });
-            let serialized =
-                borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            let result = update(&mut state)?;
+            let serialized = borsh::to_vec(&state.into_stored(kid))
+                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
             table.insert(kid.to_bytes().as_slice(), serialized)?;
-            current
+            result
         };
         write_txn.commit()?;
-        Ok(current)
+        Ok(result)
     }
 
     fn store_commitment_sync(
@@ -1404,12 +1522,7 @@ impl PocketRepository for PocketDB {
         let db_clone = self.db.clone();
         let table = self.counter_table;
         spawn_blocking(move || {
-            Self::update_counter_sync(db_clone, table, kid, |counter| {
-                counter
-                    .checked_add(n)
-                    // TODO (future): how do we handle this? we can switch seeds / switch keyset, but if we hit u32::Max, this fails
-                    .ok_or(Error::CounterExhausted)
-            })
+            Self::update_counter_sync(db_clone, table, kid, |state| state.reserve(n, unix_now()))
         })
         .await?
     }
@@ -1418,23 +1531,36 @@ impl PocketRepository for PocketDB {
         let db_clone = self.db.clone();
         let table = self.counter_table;
         spawn_blocking(move || {
-            Self::update_counter_sync(db_clone, table, kid, |counter| Ok(counter.max(at_least)))
+            Self::update_counter_sync(db_clone, table, kid, |state| {
+                state.counter = state.counter.max(at_least);
+                Ok(())
+            })
         })
-        .await??;
-        Ok(())
+        .await?
     }
 
     async fn release_counter(&self, kid: ecash::Id, start: u32, n: u32) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.counter_table;
         spawn_blocking(move || {
-            Self::update_counter_sync(db_clone, table, kid, |counter| match start.checked_add(n) {
-                Some(end) if counter == end => Ok(start),
-                _ => Ok(counter),
+            Self::update_counter_sync(db_clone, table, kid, |state| {
+                state.release(start, n);
+                Ok(())
             })
         })
-        .await??;
-        Ok(())
+        .await?
+    }
+
+    async fn hold_counter(&self, kid: ecash::Id, start: u32, n: u32, deadline: u64) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.counter_table;
+        spawn_blocking(move || {
+            Self::update_counter_sync(db_clone, table, kid, |state| {
+                state.hold(start, n, deadline);
+                Ok(())
+            })
+        })
+        .await?
     }
 
     async fn store_commitment(&self, record: crate::SwapCommitmentRecord) -> Result<()> {
@@ -1956,6 +2082,116 @@ mod tests {
             repo.reserve_counter(kid, 0).await.expect("reserve works"),
             100
         );
+    }
+
+    const FAR_FUTURE: u64 = u64::MAX;
+
+    #[tokio::test]
+    async fn test_held_counter_not_reissued_before_deadline() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let kid = core_tests::generate_random_ecash_keyset().0.id;
+
+        let first = repo.reserve_counter(kid, 3).await.unwrap();
+        repo.reserve_counter(kid, 2).await.unwrap();
+        repo.hold_counter(kid, first, 3, FAR_FUTURE).await.unwrap();
+
+        assert_eq!(repo.reserve_counter(kid, 3).await.unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_held_counter_reissued_lowest_first_after_deadline() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let kid = core_tests::generate_random_ecash_keyset().0.id;
+
+        let a = repo.reserve_counter(kid, 4).await.unwrap();
+        let b = repo.reserve_counter(kid, 2).await.unwrap();
+        let c = repo.reserve_counter(kid, 4).await.unwrap();
+        repo.reserve_counter(kid, 1).await.unwrap();
+        repo.hold_counter(kid, c, 4, 0).await.unwrap();
+        repo.hold_counter(kid, a, 4, 0).await.unwrap();
+        repo.hold_counter(kid, b, 2, FAR_FUTURE).await.unwrap();
+
+        assert_eq!(repo.reserve_counter(kid, 3).await.unwrap(), a);
+        assert_eq!(repo.reserve_counter(kid, 1).await.unwrap(), a + 3);
+        assert_eq!(repo.reserve_counter(kid, 4).await.unwrap(), c);
+        assert_eq!(repo.reserve_counter(kid, 1).await.unwrap(), 11);
+    }
+
+    #[tokio::test]
+    async fn test_held_counter_cap_refuses_draw() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let kid = core_tests::generate_random_ecash_keyset().0.id;
+        let cap = crate::MAX_HELD_COUNTERS;
+
+        let start = repo.reserve_counter(kid, cap).await.unwrap();
+        repo.hold_counter(kid, start, cap, FAR_FUTURE)
+            .await
+            .unwrap();
+        let tip = repo.reserve_counter(kid, 0).await.unwrap();
+
+        let refused = repo.reserve_counter(kid, 1).await;
+        assert!(matches!(
+            refused,
+            Err(Error::HeldCountersAtCap {
+                earliest_deadline: FAR_FUTURE
+            })
+        ));
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), tip);
+    }
+
+    #[tokio::test]
+    async fn test_held_counters_survive_reopen() {
+        let db = std::sync::Arc::new(
+            ::redb::Builder::new()
+                .create_with_backend(::redb::backends::InMemoryBackend::new())
+                .unwrap(),
+        );
+        let keys = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let id = wallet_id();
+        let kid = core_tests::generate_random_ecash_keyset().0.id;
+        let repo = PocketDB::new(db.clone(), &id, &CurrencyUnit::Sat, keys).unwrap();
+        let start = repo.reserve_counter(kid, 3).await.unwrap();
+        let expired = repo.reserve_counter(kid, 2).await.unwrap();
+        repo.hold_counter(kid, start, 3, FAR_FUTURE).await.unwrap();
+        repo.hold_counter(kid, expired, 2, 0).await.unwrap();
+        drop(repo);
+
+        let reopened = PocketDB::new(db, &id, &CurrencyUnit::Sat, keys).unwrap();
+        assert_eq!(reopened.reserve_counter(kid, 2).await.unwrap(), expired);
+        assert_eq!(reopened.reserve_counter(kid, 3).await.unwrap(), 5);
+    }
+
+    #[test]
+    fn test_counter_v1_bytes_decode() {
+        let kid = core_tests::generate_random_ecash_keyset().0.id;
+        let v1 = borsh::to_vec(&StoredCounter::V1(StoredCounterPayloadV1 {
+            kid,
+            counter: 9,
+        }))
+        .unwrap();
+        let state: CounterState = borsh::from_slice::<StoredCounter>(&v1).unwrap().into();
+        assert_eq!(
+            state,
+            CounterState {
+                counter: 9,
+                held: vec![]
+            }
+        );
+        assert_eq!(borsh::to_vec(&state.into_stored(kid)).unwrap(), v1);
+    }
+
+    #[tokio::test]
+    async fn test_release_counter_below_tip_is_reissued() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let kid = core_tests::generate_random_ecash_keyset().0.id;
+
+        let first = repo.reserve_counter(kid, 3).await.unwrap();
+        repo.reserve_counter(kid, 2).await.unwrap();
+        repo.release_counter(kid, first, 3).await.unwrap();
+        repo.release_counter(kid, first, 3).await.unwrap();
+
+        assert_eq!(repo.reserve_counter(kid, 3).await.unwrap(), first);
+        assert_eq!(repo.reserve_counter(kid, 1).await.unwrap(), 5);
     }
 
     #[tokio::test]

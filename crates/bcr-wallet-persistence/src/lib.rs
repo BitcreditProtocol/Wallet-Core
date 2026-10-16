@@ -73,6 +73,9 @@ impl ExchangeRecord {
     }
 }
 
+/// Most outputs a keyset may hold back at once; past it a draw fails fast, so restore's gap stays bounded.
+pub const MAX_HELD_COUNTERS: u32 = 200;
+
 ///////////////////////////////////////////// PocketRepository
 #[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
 #[async_trait]
@@ -99,8 +102,11 @@ pub trait PocketRepository: SendSync {
 
     async fn reserve_counter(&self, kid: ecash::Id, n: u32) -> Result<u32>;
     async fn advance_counter_to(&self, kid: ecash::Id, at_least: u32) -> Result<()>;
-    /// Rolls the counter back to `start` if `reserve_counter(kid, n)` returned `start` and nothing reserved past it since.
+    /// Gives back a range `reserve_counter(kid, n)` returned that the mint holds no commitment for:
+    /// the counter rolls back to `start` when nothing was reserved past it, else the range is reissued by a later reservation.
     async fn release_counter(&self, kid: ecash::Id, start: u32, n: u32) -> Result<()>;
+    /// Keeps a reserved range out of circulation until `deadline` (unix seconds), then makes it reissuable lowest-first.
+    async fn hold_counter(&self, kid: ecash::Id, start: u32, n: u32, deadline: u64) -> Result<()>;
 
     async fn store_commitment(&self, record: SwapCommitmentRecord) -> Result<()>;
     async fn load_commitment(
