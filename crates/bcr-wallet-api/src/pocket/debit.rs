@@ -2216,16 +2216,25 @@ mod tests {
             Arc::new(test_beta_provider()),
         );
         // 3 outputs per attempt: far more than restore's gap limit of 300 counters
+        let mut last = None;
         for _ in 0..150 {
             let proofs = core_tests::generate_random_ecash_proofs(
                 &keyset,
                 &[Amount::from(1u64), Amount::from(2u64), Amount::from(4u64)],
             );
-            pocket
-                .receive_proofs(connector.clone(), &k_infos, proofs, test_swap_config())
-                .await
-                .expect_err("commitment times out or the held outputs are at the cap");
+            last = Some(
+                pocket
+                    .receive_proofs(connector.clone(), &k_infos, proofs, test_swap_config())
+                    .await
+                    .expect_err("commitment times out or the held outputs are at the cap"),
+            );
         }
+        assert!(matches!(
+            last,
+            Some(Error::Database(
+                bcr_wallet_persistence::error::Error::HeldCountersAtCap { .. }
+            ))
+        ));
         let proofs = core_tests::generate_random_ecash_proofs(
             &keyset,
             &[Amount::from(1u64), Amount::from(2u64)],

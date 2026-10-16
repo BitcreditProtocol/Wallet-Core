@@ -200,17 +200,6 @@ pub enum Error {
     AttestationSignature(String),
 }
 
-fn mint_answered(error: &bcr_common::client::mint::Error) -> bool {
-    use bcr_common::client::mint::Error as MintError;
-    match error {
-        MintError::InvalidRequest(_)
-        | MintError::ResourceNotFound(_)
-        | MintError::ServiceUnavailable(_) => true,
-        MintError::Reqwest(error) => error.is_connect(),
-        MintError::Internal(_) | MintError::Cdk20(_) | MintError::BorshSign(_) => false,
-    }
-}
-
 fn is_outputs_reserved(error: &bcr_common::client::mint::Error) -> bool {
     use bcr_common::client::mint::{BRError, Error as MintError};
     use bcr_common::wire::clowder::ClowderRejection;
@@ -235,7 +224,7 @@ impl Error {
     /// A timeout, a reset after the send or a response that fails verification is not provable, so it is `false`.
     pub fn is_commitment_refused(&self) -> bool {
         match self {
-            Error::Mint(error) => mint_answered(error),
+            Error::Mint(error) => crate::external::mint::commit_error_is_definite(error),
             Error::MintClientResourceNotFound(_)
             | Error::MintClientServiceUnavailable(_)
             | Error::MintClientBadRequest(_)

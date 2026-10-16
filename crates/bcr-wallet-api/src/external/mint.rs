@@ -31,6 +31,19 @@ pub struct SwapCommitmentResult {
     pub wallet_key: cashu::PublicKey,
 }
 
+/// Whether a failed commitment request provably left no commitment at the mint: it answered with an
+/// error, or the connection was refused before the request was sent. A timeout, a reset after the
+/// send or an undecodable response is not provable.
+pub(crate) fn commit_error_is_definite(error: &MintError) -> bool {
+    match error {
+        MintError::InvalidRequest(_)
+        | MintError::ResourceNotFound(_)
+        | MintError::ServiceUnavailable(_) => true,
+        MintError::Reqwest(error) => error.is_connect(),
+        MintError::Internal(_) | MintError::Cdk20(_) | MintError::BorshSign(_) => false,
+    }
+}
+
 pub struct MeltQuoteResult {
     pub quote_id: uuid::Uuid,
     pub expiry: u64,
@@ -1126,6 +1139,35 @@ impl ClowderMintConnector for SentinelClient {
 mod tests {
     use super::*;
     use std::str::FromStr;
+
+    async fn reqwest_error(url: &str) -> MintError {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(200))
+            .build()
+            .unwrap();
+        MintError::Reqwest(client.get(url).send().await.expect_err("request fails"))
+    }
+
+    #[tokio::test]
+    async fn commit_error_connect_refused_is_definite() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let error = reqwest_error(&format!("http://127.0.0.1:{port}")).await;
+        assert!(commit_error_is_definite(&error));
+        assert!(Error::from(error).is_commitment_refused());
+    }
+
+    #[tokio::test]
+    async fn commit_error_timeout_is_uncertain() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let error = reqwest_error(&format!("http://127.0.0.1:{port}")).await;
+        assert!(!commit_error_is_definite(&error));
+        assert!(!Error::from(error).is_commitment_refused());
+    }
 
     fn valid_response_body() -> wire_melt::MeltQuoteOnchainResponseBody {
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
