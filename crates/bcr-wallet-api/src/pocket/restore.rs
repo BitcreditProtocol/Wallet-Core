@@ -1,4 +1,4 @@
-use crate::{ClowderMintConnector, error::Result};
+use crate::{ClowderMintConnector, error::Result, pocket::sum_amounts};
 use bcr_common::{
     cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09},
     core::signature::{ECashSignatureError, ECashSignatureResult, unblind_ecash_signature},
@@ -87,15 +87,17 @@ async fn restore_batch(
     }
     let keyset = client.get_mint_keyset(kid).await?;
     let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
-    let mut premints_cursor = premints.secrets.iter();
+    let mut requested: HashMap<cdk00::BlindedMessage, &cdk00::PreMint> = premints
+        .secrets
+        .iter()
+        .map(|premint| (premint.blinded_message.clone(), premint))
+        .collect();
     for (output, signature) in resp.into_iter() {
-        let mut remaining = premints_cursor.clone();
-        let Some(premint) = remaining.find(|premint| premint.blinded_message == output) else {
+        let Some(premint) = requested.remove(&output) else {
             tracing::warn!("skipped unexpected restored output: kid: {kid}");
             summary.rejected += 1;
             continue;
         };
-        premints_cursor = remaining;
         match unblind_verified(&keyset, premint, signature) {
             Ok(proof) => {
                 proofs.insert(proof.y()?, proof);
@@ -128,6 +130,7 @@ async fn restore_batch(
     }
     summary.rejected += proofs.len();
     let restored_len = restored.len();
+    sum_amounts(restored.iter().map(|(_, proof)| proof.amount))?;
     for (state, proof) in restored {
         match state {
             cdk07::State::Unspent => {
@@ -664,17 +667,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_batch_out_of_order_output_skips_only_that_output() {
+    async fn restore_batch_out_of_order_outputs_are_all_restored() {
         let result = restore_batch_summary(
             |keyset, mut outputs| {
                 outputs.swap(0, 1);
                 sign_all(keyset, outputs)
             },
             all_unspent,
-            BATCH_SIZE as usize - 1,
+            BATCH_SIZE as usize,
         )
         .await;
-        assert_eq!(result, summary(BATCH_SIZE as usize - 1, 1));
+        assert_eq!(result, summary(BATCH_SIZE as usize, 0));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_rotated_response_restores_every_output() {
+        let result = restore_batch_summary(
+            |keyset, mut outputs| {
+                outputs.rotate_right(1);
+                sign_all(keyset, outputs)
+            },
+            all_unspent,
+            BATCH_SIZE as usize,
+        )
+        .await;
+        assert_eq!(result, summary(BATCH_SIZE as usize, 0));
+    }
+
+    #[tokio::test]
+    async fn restore_batch_overflowing_amounts_returns_error_not_panic() {
+        let (info, mintkeyset) = crate::pocket::test_utils::tests::generate_wide_ecash_keyset();
+        let kid = info.id;
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let mut client = MockClowderMintConnector::new();
+        client.expect_post_restore().times(1).returning(move |req| {
+            Ok(req
+                .outputs
+                .into_iter()
+                .map(|blind| {
+                    let huge = cdk00::BlindedMessage {
+                        amount: Amount::from(1u64 << 63),
+                        ..blind.clone()
+                    };
+                    let signature = signature::sign_ecash(&mintkeyset, &huge).unwrap();
+                    (blind, signature)
+                })
+                .collect())
+        });
+        client
+            .expect_get_mint_keyset()
+            .times(1)
+            .returning(move |_| Ok(keyset.clone()));
+        mock_check_state(&mut client, all_unspent);
+        let mut db = MockPocketRepository::new();
+        db.expect_store_new().times(0);
+
+        let result = run_restore_batch(kid, client, &db).await;
+
+        assert!(matches!(result, Err(crate::error::Error::MintingError(_))));
     }
 
     #[tokio::test]

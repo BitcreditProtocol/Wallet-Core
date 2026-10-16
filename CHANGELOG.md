@@ -1,6 +1,7 @@
 # 0.9.16
 
-* TBD
+* Mint-supplied amounts that overflow when summed (`wallet_check_pending_mints`, restore, `wallet_balance`) return an error instead of panicking, and nothing is stored when a mint's signatures overflow
+* Restore accepts a mint response in any order: every requested output is matched by its blinded message, not by position
 
 # 0.9.15
 
