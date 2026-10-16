@@ -961,7 +961,7 @@ impl AppState {
         tracing::debug!("wallet_check_received_payment({wallet_id}, {p_id})");
 
         let p_id = Uuid::from_str(&p_id)?;
-        let wallet = self.held_wallet(&wallet_id).await?;
+        let wallet = self.get_wallet(&wallet_id).await?;
 
         let max_wait = core::time::Duration::from_secs(max_wait_sec);
         wallet

@@ -3,7 +3,7 @@
 * An interrupted offline intermint receive completes when the token is received again: the offline exchange key is derived from the wallet seed and the token's proofs, so a retry sends the same request
 * `wallet_migrate_rabid` swaps the exchanged proofs into a keyset the substitute created during the exchange instead of failing with `MigrationIncomplete`
 * `wallet_migrate_rabid` (`purse_migrate_rabid`) no longer locks the rabid wallet for writing: it exchanges under a read lock, then swaps in a wallet rebuilt on the substitute, whose Nostr listener takes over the old one's queued events
-* Calls that move proofs or change a wallet (`wallet_receive_token`, `wallet_prepare_*`, `wallet_pay*`, `wallet_mint`, `wallet_melt`, payment requests, protests, refreshes, `wallet_rename`, `purse_delete_wallet`) wait for an in-flight `purse_migrate_rabid` of that wallet and then run on the migrated wallet; reads such as `wallet_balance` never wait for it, and a concurrent second migration of the same wallet does nothing
+* Calls that move proofs or change a wallet (`wallet_receive_token`, `wallet_prepare_*`, `wallet_pay*`, `wallet_mint`, `wallet_melt`, payment requests, protests, refreshes, `wallet_rename`, `purse_delete_wallet`) wait for an in-flight `purse_migrate_rabid` of that wallet and then run on the migrated wallet; reads such as `wallet_balance` and `wallet_check_received_payment` never wait for it, and a concurrent second migration of the same wallet does nothing
 
 
 # 0.9.14
