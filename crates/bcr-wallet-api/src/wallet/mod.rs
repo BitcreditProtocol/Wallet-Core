@@ -766,8 +766,21 @@ impl Wallet {
         self.debit.unit()
     }
 
+    /// Counts with the keyset infos the wallet holds and asks the mint only for a keyset it lacks
     pub async fn balance(&self) -> Result<WalletBalance> {
-        let keysets_info = &self.mint_keyset_infos;
+        match self.balance_with(&self.mint_keyset_infos).await {
+            Ok(balance) => Ok(balance),
+            Err(_) => {
+                let keysets_info = self.get_wallet_mint_keyset_infos().await?;
+                self.balance_with(&keysets_info).await
+            }
+        }
+    }
+
+    async fn balance_with(
+        &self,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+    ) -> Result<WalletBalance> {
         let journal = self.journal.load().await?;
         let in_flight: Vec<_> = journal
             .values()
