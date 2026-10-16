@@ -2232,6 +2232,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_expired_run_ending_at_tip_folds_into_tip() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let kid = core_tests::generate_random_ecash_keyset().0.id;
+
+        repo.reserve_counter(kid, 3).await.unwrap();
+        let tail = repo.reserve_counter(kid, 2).await.unwrap();
+        repo.hold_counter(kid, tail, 2, 0).await.unwrap();
+
+        assert_eq!(repo.reserve_counter(kid, 4).await.unwrap(), tail);
+        assert_eq!(repo.reserve_counter(kid, 1).await.unwrap(), tail + 4);
+    }
+
+    #[tokio::test]
     async fn test_release_counter_below_tip_is_reissued() {
         let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
         let kid = core_tests::generate_random_ecash_keyset().0.id;
