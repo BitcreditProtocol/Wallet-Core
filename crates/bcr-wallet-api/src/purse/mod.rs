@@ -1,3 +1,4 @@
+use crate::wallet::types::WalletBalance;
 use crate::{
     error::{Error, Result},
     wallet::{NostrReceiver, api::WalletApi, util::update_optional_field},
@@ -19,9 +20,48 @@ pub struct Purse<Wlt> {
     pub repo: Box<dyn PurseRepository>,
     pub contact_repos: HashMap<bitcoin::Network, Arc<dyn ContactStoreApi>>,
     pub wallets: Arc<RwLock<HashMap<String, Arc<RwLock<Wlt>>>>>,
-    /// One per wallet id, outliving the instances a migration swaps: a migration holds its write
-    /// side, every call that moves proofs or writes wallet state its read side
-    pub swap_guards: std::sync::Mutex<HashMap<String, Arc<RwLock<()>>>>,
+    /// One per wallet id, outliving the instances a migration swaps
+    pub swap_guards: std::sync::Mutex<HashMap<String, Arc<SwapGuard>>>,
+}
+
+/// A migration holds the write side of `lock`, every call that moves proofs or writes wallet
+/// state its read side. While a migration runs, `migrating` holds the balance the wallet had
+/// when it started, which is what a read answers: the pocket is mid-exchange and has no balance.
+#[derive(Default)]
+pub struct SwapGuard {
+    lock: Arc<RwLock<()>>,
+    migrating: std::sync::Mutex<Migrating>,
+}
+
+#[derive(Default)]
+struct Migrating {
+    generation: u64,
+    balance: Option<WalletBalance>,
+}
+
+impl SwapGuard {
+    fn record(self: &Arc<Self>, balance: WalletBalance) -> RecordedBalance {
+        let mut migrating = self.migrating.lock().unwrap();
+        migrating.generation += 1;
+        migrating.balance = Some(balance);
+        RecordedBalance(self.clone())
+    }
+
+    fn recorded(&self) -> (u64, Option<WalletBalance>) {
+        let migrating = self.migrating.lock().unwrap();
+        (migrating.generation, migrating.balance.clone())
+    }
+}
+
+/// The balance a migration answers reads with, cleared when dropped
+struct RecordedBalance(Arc<SwapGuard>);
+
+impl Drop for RecordedBalance {
+    fn drop(&mut self) {
+        let mut migrating = self.0.migrating.lock().unwrap();
+        migrating.generation += 1;
+        migrating.balance = None;
+    }
 }
 
 /// A wallet that no migration swaps out while this is held
@@ -134,7 +174,7 @@ impl<Wlt> Purse<Wlt> {
     /// The wallet, held for a call that moves proofs or writes wallet state, so the call never
     /// runs on an instance a migration has swapped out
     pub async fn hold_wallet(&self, id: &str) -> Option<HeldWallet<Wlt>> {
-        let swap_guard = self.swap_guard(id).read_owned().await;
+        let swap_guard = self.swap_guard(id).lock.clone().read_owned().await;
         let wallet = self.get_wallet(id).await?;
         Some(HeldWallet {
             wallet,
@@ -142,7 +182,7 @@ impl<Wlt> Purse<Wlt> {
         })
     }
 
-    fn swap_guard(&self, id: &str) -> Arc<RwLock<()>> {
+    fn swap_guard(&self, id: &str) -> Arc<SwapGuard> {
         self.swap_guards
             .lock()
             .unwrap()
@@ -162,6 +202,27 @@ impl<Wlt> Purse<Wlt>
 where
     Wlt: WalletApi + 'static,
 {
+    /// The balance of the wallet: the one recorded when a migration of it started while it runs,
+    /// otherwise what the current instance reads, read again if a migration overlapped the read
+    pub async fn wallet_balance(&self, id: &str) -> Option<Result<WalletBalance>> {
+        let guard = self.swap_guard(id);
+        loop {
+            let (generation, recorded) = guard.recorded();
+            if let Some(balance) = recorded {
+                return Some(Ok(balance));
+            }
+            let wallet = self.get_wallet(id).await?;
+            let read = wallet.read().await.balance().await;
+            let (after, recorded) = guard.recorded();
+            if let Some(balance) = recorded {
+                return Some(Ok(balance));
+            }
+            if after == generation {
+                return Some(read);
+            }
+        }
+    }
+
     pub async fn names_by_network(&self, network: bitcoin::Network) -> Vec<String> {
         let wallets: Vec<_> = {
             let wlts = self.wallets.read().await;
@@ -245,7 +306,8 @@ where
         wallet_id: &str,
         wlt: &Arc<RwLock<Wlt>>,
     ) -> Result<Option<url::Url>> {
-        let swapping = Arc::new(self.swap_guard(wallet_id).write_owned().await);
+        let swap_guard = self.swap_guard(wallet_id);
+        let swapping = Arc::new(swap_guard.lock.clone().write_owned().await);
         let current = self.get_wallet(wallet_id).await;
         if !current.is_some_and(|current| Arc::ptr_eq(&current, wlt)) {
             tracing::info!("Wallet {wallet_id} was migrated or deleted meanwhile");
@@ -273,7 +335,14 @@ where
             substitute_url
         };
         let paused = PausedListener::pause(wlt, &swapping).await;
-        let rebuilt = match self.rebuild_on_substitute(wlt, substitute_url).await {
+        let recorded = match wlt.read().await.balance().await {
+            Ok(balance) => Some(swap_guard.record(balance)),
+            Err(e) => {
+                tracing::warn!("Couldn't read the balance before migrating {wallet_id}: {e}");
+                None
+            }
+        };
+        let (rebuilt, cfg) = match self.rebuild_on_substitute(wlt, substitute_url).await {
             Ok(rebuilt) => rebuilt,
             Err(e) => {
                 if let Some(paused) = paused {
@@ -286,10 +355,12 @@ where
             .write()
             .await
             .insert(wallet_id.to_owned(), rebuilt.clone());
+        drop(recorded);
         match paused {
             Some(paused) => paused.resume_on(rebuilt.clone()).await,
             None => rebuilt.read().await.start_nostr_listener(None).await,
         }
+        self.repo.store(cfg).await?;
         let rebuilt = rebuilt.read().await;
         rebuilt.finish_migration().await?;
         Ok(Some(rebuilt.mint_url()))
@@ -299,7 +370,7 @@ where
         &self,
         wlt: &RwLock<Wlt>,
         substitute_url: url::Url,
-    ) -> Result<Arc<RwLock<Wlt>>> {
+    ) -> Result<(Arc<RwLock<Wlt>>, WalletConfig)> {
         let wlt = wlt.read().await;
         tracing::info!(
             "Wallet {} is found rabid, migrating to substitute beta {}",
@@ -308,8 +379,7 @@ where
         );
         let cfg = wlt.exchange_to_substitute(substitute_url).await?;
         let rebuilt = wlt.rebuild(cfg.clone()).await?;
-        self.repo.store(cfg).await?;
-        Ok(rebuilt)
+        Ok((rebuilt, cfg))
     }
 
     pub async fn wallets_nostr_connected(&self) -> HashMap<String, bool> {
@@ -641,19 +711,42 @@ mod tests {
         url::Url::from_str("https://substitute.example.com").unwrap()
     }
 
-    fn migrated_wallet() -> MockWalletApi {
+    fn test_balance() -> WalletBalance {
+        WalletBalance {
+            debit: Amount::from(100),
+            credit: Amount::ZERO,
+            total: Amount::from(100),
+        }
+    }
+
+    fn migrated_wallet(id: &'static str) -> MockWalletApi {
         let mut wlt = MockWalletApi::new();
+        let finished = Arc::new(AtomicBool::new(false));
         wlt.expect_mint_url().returning(substitute_url);
+        wlt.expect_balance().returning(|| Ok(test_balance()));
         wlt.expect_is_wallet_mint_rabid().returning(|| Ok(false));
-        wlt.expect_has_migration_entries().returning(|| Ok(false));
+        let pending = finished.clone();
+        wlt.expect_has_migration_entries()
+            .returning(move || Ok(!pending.load(Ordering::SeqCst)));
+        wlt.expect_config().returning(move || {
+            Ok(WalletConfig {
+                wallet_id: id.to_owned(),
+                mint: substitute_url(),
+                ..wlt_cfg()
+            })
+        });
         wlt.expect_start_nostr_listener().return_const(());
-        wlt.expect_finish_migration().returning(|| Ok(()));
+        wlt.expect_finish_migration().returning(move || {
+            finished.store(true, Ordering::SeqCst);
+            Ok(())
+        });
         wlt
     }
 
     fn rabid_wallet(id: &'static str, failed_rebuilds: usize) -> MockWalletApi {
         let mut wlt = MockWalletApi::new();
         wlt.expect_name().returning(move || id.to_owned());
+        wlt.expect_balance().returning(|| Ok(test_balance()));
         wlt.expect_is_wallet_mint_rabid().returning(|| Ok(true));
         wlt.expect_mint_substitute()
             .returning(|| Ok(Some(substitute_url())));
@@ -671,7 +764,7 @@ mod tests {
                 failures -= 1;
                 return Err(Error::NoBetas);
             }
-            Ok(Arc::new(RwLock::new(migrated_wallet())))
+            Ok(Arc::new(RwLock::new(migrated_wallet(id))))
         });
         wlt.expect_take_nostr_listener().returning(|| None);
         wlt.expect_start_nostr_listener().never();
@@ -774,7 +867,8 @@ mod tests {
             .await
             .expect_err("the failed config store is reported");
         assert_eq!(*stored.lock().unwrap(), vec!["wlt-2".to_owned()]);
-        assert!(Arc::ptr_eq(&purse.get_wallet("wlt-1").await.unwrap(), &old));
+        let rebuilt = purse.get_wallet("wlt-1").await.unwrap();
+        assert!(!Arc::ptr_eq(&rebuilt, &old));
 
         purse
             .migrate_rabid_wallets()
@@ -784,9 +878,9 @@ mod tests {
             *stored.lock().unwrap(),
             vec!["wlt-2".to_owned(), "wlt-1".to_owned()]
         );
-        assert!(!Arc::ptr_eq(
+        assert!(Arc::ptr_eq(
             &purse.get_wallet("wlt-1").await.unwrap(),
-            &old
+            &rebuilt
         ));
     }
 
@@ -912,6 +1006,40 @@ mod tests {
             .await
             .expect("the aborted migration released the wallet")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn balance_during_a_migration_is_the_one_recorded_when_it_started() {
+        let f = SwapFixture::new(substitute_betas()).await;
+        let (gate, migration) = spawn_migration(&f).await;
+
+        let during = f.purse.wallet_balance("w-1").await.unwrap().unwrap();
+        assert_eq!(during.total, Amount::from(100));
+
+        gate.release();
+        migration.await.unwrap().unwrap();
+        let after = f.purse.wallet_balance("w-1").await.unwrap().unwrap();
+        assert_eq!(after.total, Amount::from(100));
+    }
+
+    #[tokio::test]
+    async fn aborted_migration_retried_starts_one_consumer_and_handles_a_later_event_once() {
+        let mut f = SwapFixture::new(substitute_betas()).await;
+        let (_gate, migration) = spawn_migration(&f).await;
+        migration.abort();
+        assert!(migration.await.unwrap_err().is_cancelled());
+        tokio::time::timeout(Duration::from_secs(5), f.purse.hold_wallet("w-1"))
+            .await
+            .expect("the aborted migration released the wallet")
+            .unwrap();
+
+        f.purse.migrate_rabid_wallets().await.unwrap();
+        f.channel.publish(contact_payment(20, &f.substitute_url));
+        assert_eq!(next_received(&mut f.new_received).await, Amount::from(20));
+        settle().await;
+        assert!(f.new_received.try_recv().is_err());
+        assert!(f.old_received.try_recv().is_err());
+        assert_eq!(f.consumer_starts(), 1);
     }
 
     #[tokio::test]

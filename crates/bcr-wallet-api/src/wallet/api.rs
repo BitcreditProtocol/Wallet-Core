@@ -8,7 +8,10 @@ use crate::{
     types::{MintSummary, PaymentSummary, WalletConfig},
     wallet::{
         NostrListener, NostrReceiver,
-        types::{PayReference, SwapConfig, WalletInfo, WalletPaymentType, WalletProtestResult},
+        types::{
+            PayReference, SwapConfig, WalletBalance, WalletInfo, WalletPaymentType,
+            WalletProtestResult,
+        },
         util,
     },
 };
@@ -72,6 +75,7 @@ pub trait WalletApi: SendSync {
         cancel_token: CancellationToken,
         result_callback: PaymentResultCallback,
     ) -> Result<()>;
+    async fn balance(&self) -> Result<WalletBalance>;
     async fn is_wallet_mint_rabid(&self) -> Result<bool>;
     async fn is_wallet_mint_offline(&self) -> Result<bool>;
     async fn mint_substitute(&self) -> Result<Option<url::Url>>;
@@ -725,6 +729,10 @@ impl WalletApi for super::Wallet {
             nostr_event_id,
         )
         .await
+    }
+
+    async fn balance(&self) -> Result<WalletBalance> {
+        Self::balance(self).await
     }
 
     async fn is_wallet_mint_rabid(&self) -> Result<bool> {

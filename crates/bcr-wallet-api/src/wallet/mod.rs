@@ -767,15 +767,8 @@ impl Wallet {
     }
 
     pub async fn balance(&self) -> Result<WalletBalance> {
-        let mut keysets_info = self.get_wallet_mint_keyset_infos().await?;
+        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
         let journal = self.journal.load().await?;
-        if let Some(entry) = journal.values().next() {
-            let substitute = (self.client_factory)(entry.header.substitute_url.clone());
-            match util::keyset_infos(substitute.as_ref()).await {
-                Ok(infos) => keysets_info.extend(infos),
-                Err(e) => tracing::warn!("Couldn't fetch substitute keysets of a migration: {e}"),
-            }
-        }
         let in_flight: Vec<_> = journal
             .values()
             .filter(|e| {

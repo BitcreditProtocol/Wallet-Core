@@ -423,8 +423,10 @@ impl AppState {
     pub async fn wallet_balance(&self, wallet_id: String) -> Result<WalletBalance> {
         tracing::debug!("wallet_balance({wallet_id})");
 
-        let wallet = self.get_wallet(&wallet_id).await?;
-        wallet.read().await.balance().await
+        self.get_purse()
+            .wallet_balance(&wallet_id)
+            .await
+            .ok_or(Error::WalletNotFound(wallet_id))?
     }
 
     pub async fn wallet_receive_token(&self, wallet_id: String, token: String) -> Result<Uuid> {
