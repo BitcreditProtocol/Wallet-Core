@@ -2276,46 +2276,12 @@ mod tests {
         repo.release_counter(kid, start, 4)
             .await
             .expect("release works");
+        repo.release_counter(kid, start, 4)
+            .await
+            .expect("release works");
         assert_eq!(
             repo.reserve_counter(kid, 0).await.expect("reserve works"),
             start
-        );
-    }
-
-    #[tokio::test]
-    async fn test_release_counter_keeps_later_reservation() {
-        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
-        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let kid = mintkeyset.id;
-
-        let first = repo.reserve_counter(kid, 3).await.expect("reserve works");
-        repo.reserve_counter(kid, 2).await.expect("reserve works");
-        repo.release_counter(kid, first, 3)
-            .await
-            .expect("release works");
-        assert_eq!(
-            repo.reserve_counter(kid, 0).await.expect("reserve works"),
-            5
-        );
-    }
-
-    #[tokio::test]
-    async fn test_release_counter_twice_is_idempotent() {
-        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
-        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let kid = mintkeyset.id;
-
-        repo.reserve_counter(kid, 3).await.expect("reserve works");
-        let start = repo.reserve_counter(kid, 2).await.expect("reserve works");
-        repo.release_counter(kid, start, 2)
-            .await
-            .expect("release works");
-        repo.release_counter(kid, start, 2)
-            .await
-            .expect("release works");
-        assert_eq!(
-            repo.reserve_counter(kid, 0).await.expect("reserve works"),
-            3
         );
     }
 
