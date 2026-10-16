@@ -768,19 +768,6 @@ impl Wallet {
 
     /// Counts with the keyset infos the wallet holds and asks the mint only for a keyset it lacks
     pub async fn balance(&self) -> Result<WalletBalance> {
-        match self.balance_with(&self.mint_keyset_infos).await {
-            Ok(balance) => Ok(balance),
-            Err(_) => {
-                let keysets_info = self.get_wallet_mint_keyset_infos().await?;
-                self.balance_with(&keysets_info).await
-            }
-        }
-    }
-
-    async fn balance_with(
-        &self,
-        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
-    ) -> Result<WalletBalance> {
         let journal = self.journal.load().await?;
         let in_flight: Vec<_> = journal
             .values()
@@ -792,7 +779,25 @@ impl Wallet {
             })
             .map(|e| &e.proof)
             .collect();
-        let held = crate::pocket::balance_of(in_flight.into_iter(), keysets_info)?;
+        match self
+            .balance_with(in_flight.iter().copied(), &self.mint_keyset_infos)
+            .await
+        {
+            Ok(balance) => Ok(balance),
+            Err(_) => {
+                let keysets_info = self.get_wallet_mint_keyset_infos().await?;
+                self.balance_with(in_flight.iter().copied(), &keysets_info)
+                    .await
+            }
+        }
+    }
+
+    async fn balance_with<'p>(
+        &self,
+        in_flight: impl Iterator<Item = &'p cashu::nuts::nut00::Proof> + Clone,
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+    ) -> Result<WalletBalance> {
+        let held = crate::pocket::balance_of(in_flight, keysets_info)?;
         let balance = self.debit.balance(keysets_info).await?;
         let debit = balance.debit + held.debit;
         let credit = balance.credit + held.credit;
