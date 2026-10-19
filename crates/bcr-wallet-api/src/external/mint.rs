@@ -19,7 +19,40 @@ use bcr_wallet_core::{
     types::{ClowderBeta, MeltEstimation, MeltFeeRateEstimate},
 };
 use bitcoin::secp256k1;
+use std::{future::Future, time::Duration};
 use tracing::debug;
+
+/// Connect and total-request limits applied to every call to a mint.
+#[derive(Debug, Clone, Copy)]
+pub struct MintTimeouts {
+    pub connect: Duration,
+    pub request: Duration,
+}
+
+impl Default for MintTimeouts {
+    fn default() -> Self {
+        Self {
+            connect: Duration::from_secs(5),
+            request: Duration::from_secs(30),
+        }
+    }
+}
+
+async fn timed_with<T, E: From<MintError>>(
+    limit: Duration,
+    fut: impl Future<Output = std::result::Result<T, E>>,
+) -> std::result::Result<T, E> {
+    match tokio::time::timeout(limit, fut).await {
+        Ok(res) => res,
+        Err(_) => {
+            Err(MintError::Internal(format!("mint request timed out after {limit:?}")).into())
+        }
+    }
+}
+
+async fn timed<T>(limit: Duration, fut: impl Future<Output = MintResult<T>>) -> MintResult<T> {
+    timed_with(limit, fut).await
+}
 
 pub struct SwapCommitmentResult {
     pub inputs_ys: Vec<cashu::PublicKey>,
@@ -273,13 +306,20 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
 pub struct HttpClientExt {
     main: MintClient,
     secondary: reqwest::Client,
+    request_timeout: Duration,
 }
 
 impl HttpClientExt {
-    pub fn new(cdk_url: url::Url) -> Self {
+    pub fn new(cdk_url: url::Url, timeouts: MintTimeouts) -> Self {
+        let secondary = bcr_common::client::reqwest_client_builder()
+            .connect_timeout(timeouts.connect)
+            .timeout(timeouts.request)
+            .build()
+            .expect("mint http client");
         Self {
-            main: MintClient::new(cdk_url.clone()),
-            secondary: bcr_common::client::reqwest_client(),
+            main: MintClient::new(cdk_url),
+            secondary,
+            request_timeout: timeouts.request,
         }
     }
 }
@@ -295,7 +335,7 @@ impl ClowderMintConnector for HttpClientExt {
         request: cashu::RestoreRequest,
     ) -> MintResult<Vec<(cashu::BlindedMessage, cashu::BlindSignature)>> {
         debug!("HTTP call to post_restore");
-        self.main.restore(request.outputs).await
+        timed(self.request_timeout, self.main.restore(request.outputs)).await
     }
 
     async fn post_check_state(
@@ -303,20 +343,22 @@ impl ClowderMintConnector for HttpClientExt {
         request: cashu::CheckStateRequest,
     ) -> MintResult<Vec<cashu::ProofState>> {
         debug!("HTTP call to post_check_state");
-        self.main.check_state(request.ys).await
+        timed(self.request_timeout, self.main.check_state(request.ys)).await
     }
 
     async fn get_mint_keyset(&self, keyset_id: ecash::Id) -> MintResult<ecash::KeySet> {
         debug!("HTTP call to get_mint_keyset");
         #[allow(deprecated)]
-        self.main.keys_v1(keyset_id.into()).await
+        timed(self.request_timeout, self.main.keys_v1(keyset_id.into())).await
     }
 
     async fn get_mint_keysets(&self) -> MintResult<Vec<ecash::KeySetInfo>> {
         debug!("HTTP call to get_mint_keysets");
-        self.main
-            .list_keyset_info(KeysetInfoFilters::default())
-            .await
+        timed(
+            self.request_timeout,
+            self.main.list_keyset_info(KeysetInfoFilters::default()),
+        )
+        .await
     }
 
     /// Active alpha keysets
@@ -325,7 +367,11 @@ impl ClowderMintConnector for HttpClientExt {
         alpha_id: secp256k1::PublicKey,
     ) -> MintResult<Vec<cashu::KeySet>> {
         debug!("Clowder client call to get_alpha_keysets for {alpha_id}");
-        let response = self.main.get_active_keysets(&alpha_id).await?;
+        let response = timed(
+            self.request_timeout,
+            self.main.get_active_keysets(&alpha_id),
+        )
+        .await?;
         Ok(response.keysets)
     }
 
@@ -335,7 +381,7 @@ impl ClowderMintConnector for HttpClientExt {
         alpha_id: secp256k1::PublicKey,
     ) -> MintResult<wire_clowder::OfflineResponse> {
         debug!("Clowder client call to get_alpha_offline for {alpha_id}");
-        self.main.get_offline(&alpha_id).await
+        timed(self.request_timeout, self.main.get_offline(&alpha_id)).await
     }
 
     /// Determines the status of a mint from the view of the requested Beta
@@ -347,7 +393,7 @@ impl ClowderMintConnector for HttpClientExt {
             "Clowder client call to get_alpha_status on {} for {alpha_id}",
             self.mint_url().to_string()
         );
-        self.main.get_status(&alpha_id).await
+        timed(self.request_timeout, self.main.get_status(&alpha_id)).await
     }
 
     /// Determines the substitute beta of an alpha mint
@@ -359,12 +405,12 @@ impl ClowderMintConnector for HttpClientExt {
             "Clowder client call to get_alpha_substitute on {} for {alpha_id}",
             self.mint_url().to_string()
         );
-        self.main.get_substitute(&alpha_id).await
+        timed(self.request_timeout, self.main.get_substitute(&alpha_id)).await
     }
 
     async fn get_clowder_betas(&self) -> MintResult<Vec<ClowderBeta>> {
         debug!("Clowder client call to get_clowder_betas");
-        let response = self.main.get_betas().await?;
+        let response = timed(self.request_timeout, self.main.get_betas()).await?;
         Ok(response
             .mints
             .into_iter()
@@ -386,10 +432,12 @@ impl ClowderMintConnector for HttpClientExt {
         debug!("Clowder client call to post_offline_exchange");
         let wallet_pk = cashu::PublicKey::from_slice(&wallet_pubkey.serialize())
             .map_err(|e| MintError::Internal(e.to_string()))?;
-        let response = self
-            .main
-            .exchange_offline(proofs, locks, wallet_pk, wallet_signature, mint_pk)
-            .await?;
+        let response = timed(
+            self.request_timeout,
+            self.main
+                .exchange_offline(proofs, locks, wallet_pk, wallet_signature, mint_pk),
+        )
+        .await?;
         Ok(response.0)
     }
 
@@ -399,16 +447,17 @@ impl ClowderMintConnector for HttpClientExt {
         exchange_path: Vec<secp256k1::PublicKey>,
     ) -> MintResult<Vec<Proof>> {
         debug!("Clowder client call to post_online_exchange");
-        let proofs = self
-            .main
-            .exchange_online(alpha_proofs, exchange_path)
-            .await?;
+        let proofs = timed(
+            self.request_timeout,
+            self.main.exchange_online(alpha_proofs, exchange_path),
+        )
+        .await?;
         Ok(proofs)
     }
 
     async fn get_clowder_id(&self) -> MintResult<secp256k1::PublicKey> {
         debug!("Clowder client call to get_clowder_id");
-        let response = self.main.get_info().await?;
+        let response = timed(self.request_timeout, self.main.get_info()).await?;
         Ok(*response.node_id)
     }
 
@@ -417,7 +466,7 @@ impl ClowderMintConnector for HttpClientExt {
         origin_mint_url: url::Url,
     ) -> MintResult<ConnectedMintsResponse> {
         debug!("Clowder client call to post_clowder_path for mint url {origin_mint_url}");
-        self.main.post_path(origin_mint_url).await
+        timed(self.request_timeout, self.main.post_path(origin_mint_url)).await
     }
 
     async fn post_swap_commitment(
@@ -428,13 +477,16 @@ impl ClowderMintConnector for HttpClientExt {
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<SwapCommitmentResult> {
-        post_swap_commitment_inner(
-            &self.main,
-            inputs,
-            outputs,
-            expiry_seconds,
-            alpha_pk,
-            attestation,
+        timed_with(
+            self.request_timeout,
+            post_swap_commitment_inner(
+                &self.main,
+                inputs,
+                outputs,
+                expiry_seconds,
+                alpha_pk,
+                attestation,
+            ),
         )
         .await
     }
@@ -446,14 +498,15 @@ impl ClowderMintConnector for HttpClientExt {
         commitment: secp256k1::schnorr::Signature,
     ) -> Result<Vec<cashu::BlindSignature>> {
         debug!("HTTP call to post_swap_committed on {}", self.mint_url());
-        let signatures = self
-            .main
-            .swap(
+        let signatures = timed(
+            self.request_timeout,
+            self.main.swap(
                 inputs.into_iter().map(Into::into).collect(),
                 outputs.into_iter().map(Into::into).collect(),
                 commitment,
-            )
-            .await?;
+            ),
+        )
+        .await?;
         Ok(signatures.into_iter().map(Into::into).collect())
     }
 
@@ -492,7 +545,11 @@ impl ClowderMintConnector for HttpClientExt {
             "HTTP call to post_melt_estimate_onchain on {}",
             self.mint_url()
         );
-        let estimate = self.main.onchain_melt_estimate(amount, None).await?;
+        let estimate = timed(
+            self.request_timeout,
+            self.main.onchain_melt_estimate(amount, None),
+        )
+        .await?;
         Ok(MeltEstimation {
             tx_vsize: estimate.tx_vsize,
             fee_rates: estimate
@@ -518,15 +575,18 @@ impl ClowderMintConnector for HttpClientExt {
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<MeltQuoteResult> {
-        post_melt_quote_onchain_inner(
-            &self.main,
-            inputs,
-            amount,
-            network_fee,
-            melt_fee,
-            address,
-            alpha_pk,
-            attestation,
+        timed_with(
+            self.request_timeout,
+            post_melt_quote_onchain_inner(
+                &self.main,
+                inputs,
+                amount,
+                network_fee,
+                melt_fee,
+                address,
+                alpha_pk,
+                attestation,
+            ),
         )
         .await
     }
@@ -694,7 +754,11 @@ impl ClowderMintConnector for HttpClientExt {
             "HTTP call to post_attest_issuance on {}",
             self.main.mint_url()
         );
-        Ok(self.main.post_attest_issuance(&request).await?)
+        Ok(timed(
+            self.request_timeout,
+            self.main.post_attest_issuance(&request),
+        )
+        .await?)
     }
 }
 
@@ -706,12 +770,21 @@ impl ClowderMintConnector for HttpClientExt {
 pub struct SentinelClient {
     main: MintClient,
     secondary: reqwest::Client,
+    request_timeout: Duration,
 }
 
 impl SentinelClient {
     pub fn new(client: HttpClientExt) -> Self {
-        let HttpClientExt { main, secondary } = client;
-        Self { main, secondary }
+        let HttpClientExt {
+            main,
+            secondary,
+            request_timeout,
+        } = client;
+        Self {
+            main,
+            secondary,
+            request_timeout,
+        }
     }
 }
 
@@ -726,25 +799,27 @@ impl ClowderMintConnector for SentinelClient {
         request: cashu::RestoreRequest,
     ) -> MintResult<Vec<(cashu::BlindedMessage, cashu::BlindSignature)>> {
         debug!("HTTP call to post_restore on sentinel");
-        self.main.restore(request.outputs).await
+        timed(self.request_timeout, self.main.restore(request.outputs)).await
     }
     async fn post_check_state(
         &self,
         request: cashu::CheckStateRequest,
     ) -> MintResult<Vec<cashu::ProofState>> {
         debug!("HTTP call to post_check_state on sentinel");
-        self.main.check_state(request.ys).await
+        timed(self.request_timeout, self.main.check_state(request.ys)).await
     }
     async fn get_mint_keyset(&self, keyset_id: ecash::Id) -> MintResult<ecash::KeySet> {
         debug!("HTTP call to get_mint_keyset on sentinel");
         #[allow(deprecated)]
-        self.main.keys_v1(keyset_id.into()).await
+        timed(self.request_timeout, self.main.keys_v1(keyset_id.into())).await
     }
     async fn get_mint_keysets(&self) -> MintResult<Vec<ecash::KeySetInfo>> {
         debug!("HTTP call to get_mint_keysets on sentinel");
-        self.main
-            .list_keyset_info(KeysetInfoFilters::default())
-            .await
+        timed(
+            self.request_timeout,
+            self.main.list_keyset_info(KeysetInfoFilters::default()),
+        )
+        .await
     }
 
     /// Active alpha keysets
@@ -753,7 +828,11 @@ impl ClowderMintConnector for SentinelClient {
         alpha_id: secp256k1::PublicKey,
     ) -> MintResult<Vec<cashu::KeySet>> {
         debug!("Clowder client call to get_alpha_keysets on sentinel for {alpha_id}");
-        let response = self.main.get_active_keysets(&alpha_id).await?;
+        let response = timed(
+            self.request_timeout,
+            self.main.get_active_keysets(&alpha_id),
+        )
+        .await?;
         Ok(response.keysets)
     }
 
@@ -763,7 +842,7 @@ impl ClowderMintConnector for SentinelClient {
         alpha_id: secp256k1::PublicKey,
     ) -> MintResult<wire_clowder::OfflineResponse> {
         debug!("Clowder client call to get_alpha_offline on sentinel for {alpha_id}");
-        self.main.get_offline(&alpha_id).await
+        timed(self.request_timeout, self.main.get_offline(&alpha_id)).await
     }
 
     /// Determines the status of a mint from the view of the requested Beta
@@ -772,7 +851,7 @@ impl ClowderMintConnector for SentinelClient {
         alpha_id: secp256k1::PublicKey,
     ) -> MintResult<wire_clowder::AlphaStateResponse> {
         debug!("Clowder client call to get_alpha_status on sentinel");
-        self.main.get_status(&alpha_id).await
+        timed(self.request_timeout, self.main.get_status(&alpha_id)).await
     }
 
     /// Determines the substitute beta of an alpha mint
@@ -781,12 +860,12 @@ impl ClowderMintConnector for SentinelClient {
         alpha_id: secp256k1::PublicKey,
     ) -> MintResult<wire_clowder::ConnectedMintResponse> {
         debug!("Clowder client call to get_alpha_substitute on sentinel");
-        self.main.get_substitute(&alpha_id).await
+        timed(self.request_timeout, self.main.get_substitute(&alpha_id)).await
     }
 
     async fn get_clowder_betas(&self) -> MintResult<Vec<ClowderBeta>> {
         debug!("Clowder client call to get_clowder_betas on sentinel");
-        let response = self.main.get_betas().await?;
+        let response = timed(self.request_timeout, self.main.get_betas()).await?;
         Ok(response
             .mints
             .into_iter()
@@ -808,10 +887,12 @@ impl ClowderMintConnector for SentinelClient {
         debug!("Clowder client call to post_offline_exchange on sentinel");
         let wallet_pk = cashu::PublicKey::from_slice(&wallet_pubkey.serialize())
             .map_err(|e| MintError::Internal(e.to_string()))?;
-        let response = self
-            .main
-            .exchange_offline(proofs, locks, wallet_pk, wallet_signature, mint_pk)
-            .await?;
+        let response = timed(
+            self.request_timeout,
+            self.main
+                .exchange_offline(proofs, locks, wallet_pk, wallet_signature, mint_pk),
+        )
+        .await?;
         Ok(response.0)
     }
 
@@ -821,16 +902,17 @@ impl ClowderMintConnector for SentinelClient {
         exchange_path: Vec<secp256k1::PublicKey>,
     ) -> MintResult<Vec<Proof>> {
         debug!("Clowder client call to post_online_exchange on sentinel");
-        let proofs = self
-            .main
-            .exchange_online(alpha_proofs, exchange_path)
-            .await?;
+        let proofs = timed(
+            self.request_timeout,
+            self.main.exchange_online(alpha_proofs, exchange_path),
+        )
+        .await?;
         Ok(proofs)
     }
 
     async fn get_clowder_id(&self) -> MintResult<secp256k1::PublicKey> {
         debug!("Clowder client call to get_clowder_id on sentinel");
-        let response = self.main.get_info().await?;
+        let response = timed(self.request_timeout, self.main.get_info()).await?;
         Ok(*response.node_id)
     }
 
@@ -841,7 +923,7 @@ impl ClowderMintConnector for SentinelClient {
         debug!(
             "Clowder client call to post_clowder_path on sentinel for mint url {origin_mint_url}"
         );
-        self.main.post_path(origin_mint_url).await
+        timed(self.request_timeout, self.main.post_path(origin_mint_url)).await
     }
 
     async fn post_swap_commitment(
@@ -852,13 +934,16 @@ impl ClowderMintConnector for SentinelClient {
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<SwapCommitmentResult> {
-        post_swap_commitment_inner(
-            &self.main,
-            inputs,
-            outputs,
-            expiry_seconds,
-            alpha_pk,
-            attestation,
+        timed_with(
+            self.request_timeout,
+            post_swap_commitment_inner(
+                &self.main,
+                inputs,
+                outputs,
+                expiry_seconds,
+                alpha_pk,
+                attestation,
+            ),
         )
         .await
     }
@@ -870,14 +955,15 @@ impl ClowderMintConnector for SentinelClient {
         commitment: secp256k1::schnorr::Signature,
     ) -> Result<Vec<cashu::BlindSignature>> {
         debug!("HTTP call to post_swap_committed on {}", self.mint_url());
-        let signatures = self
-            .main
-            .swap(
+        let signatures = timed(
+            self.request_timeout,
+            self.main.swap(
                 inputs.into_iter().map(Into::into).collect(),
                 outputs.into_iter().map(Into::into).collect(),
                 commitment,
-            )
-            .await?;
+            ),
+        )
+        .await?;
         Ok(signatures.into_iter().map(Into::into).collect())
     }
 
@@ -917,7 +1003,11 @@ impl ClowderMintConnector for SentinelClient {
             "HTTP call to post_melt_estimate_onchain on {}",
             self.mint_url()
         );
-        let estimate = self.main.onchain_melt_estimate(amount, None).await?;
+        let estimate = timed(
+            self.request_timeout,
+            self.main.onchain_melt_estimate(amount, None),
+        )
+        .await?;
         Ok(MeltEstimation {
             tx_vsize: estimate.tx_vsize,
             fee_rates: estimate
@@ -943,15 +1033,18 @@ impl ClowderMintConnector for SentinelClient {
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<MeltQuoteResult> {
-        post_melt_quote_onchain_inner(
-            &self.main,
-            inputs,
-            amount,
-            network_fee,
-            melt_fee,
-            address,
-            alpha_pk,
-            attestation,
+        timed_with(
+            self.request_timeout,
+            post_melt_quote_onchain_inner(
+                &self.main,
+                inputs,
+                amount,
+                network_fee,
+                melt_fee,
+                address,
+                alpha_pk,
+                attestation,
+            ),
         )
         .await
     }
@@ -1118,7 +1211,11 @@ impl ClowderMintConnector for SentinelClient {
             "HTTP call to post_attest_issuance on sentinel {}",
             self.main.mint_url()
         );
-        Ok(self.main.post_attest_issuance(&request).await?)
+        Ok(timed(
+            self.request_timeout,
+            self.main.post_attest_issuance(&request),
+        )
+        .await?)
     }
 }
 
@@ -1126,6 +1223,40 @@ impl ClowderMintConnector for SentinelClient {
 mod tests {
     use super::*;
     use std::str::FromStr;
+
+    #[test]
+    fn default_mint_timeouts_match_the_app_config_defaults() {
+        let timeouts = MintTimeouts::default();
+        assert_eq!(
+            timeouts.connect,
+            crate::AppStateConfig::DEFAULT_MINT_CONNECT_TIMEOUT
+        );
+        assert_eq!(
+            timeouts.request,
+            crate::AppStateConfig::DEFAULT_MINT_REQUEST_TIMEOUT
+        );
+    }
+
+    #[tokio::test]
+    async fn timed_passes_through_the_result_of_a_call_within_the_limit() {
+        let ok = timed(Duration::from_secs(5), async { Ok::<_, MintError>(7) }).await;
+        assert_eq!(ok.unwrap(), 7);
+        let err = timed(Duration::from_secs(5), async {
+            Err::<u8, _>(MintError::Internal("boom".into()))
+        })
+        .await;
+        assert!(matches!(err, Err(MintError::Internal(m)) if m == "boom"));
+    }
+
+    #[test]
+    fn sentinel_client_keeps_the_request_timeout_of_its_http_client() {
+        let timeouts = MintTimeouts {
+            connect: Duration::from_secs(1),
+            request: Duration::from_secs(2),
+        };
+        let http = HttpClientExt::new(url::Url::parse("http://127.0.0.1:1").unwrap(), timeouts);
+        assert_eq!(SentinelClient::new(http).request_timeout, timeouts.request);
+    }
 
     fn valid_response_body() -> wire_melt::MeltQuoteOnchainResponseBody {
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
