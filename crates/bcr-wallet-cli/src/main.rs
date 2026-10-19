@@ -385,7 +385,7 @@ async fn main() -> Result<()> {
             )?;
         }
         Commands::GenMnemonic { network } => {
-            let (mnemonic, wallet_id) = generate_random_mnemonic(12, network);
+            let (mnemonic, wallet_id) = generate_random_mnemonic(network);
             emit(
                 cli.json,
                 "Generated",

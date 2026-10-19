@@ -1291,23 +1291,17 @@ pub fn init_crypto_provider() {
     }
 }
 
-pub fn generate_random_mnemonic(mnemonic_len: u32, network: bitcoin::Network) -> (String, String) {
-    let mnemonic_len = if mnemonic_len == 0 { 12 } else { mnemonic_len };
-    tracing::info!("Generate random {}-word mnemonic", mnemonic_len);
-
-    const VALID_MNEMONIC_LENGTHS: [u32; 5] = [12, 15, 18, 21, 24];
-    assert!(
-        VALID_MNEMONIC_LENGTHS.contains(&mnemonic_len),
-        "word count must be one of: {VALID_MNEMONIC_LENGTHS:?}"
-    );
-    let returned = bip39::Mnemonic::generate_in(bip39::Language::English, mnemonic_len as usize);
+pub fn generate_random_mnemonic(network: bitcoin::Network) -> (String, String) {
+    tracing::info!("Generate random 12-word mnemonic");
+    let returned =
+        bip39::Mnemonic::generate_in(bip39::Language::English, bip39::WordCount::Words12);
     match returned {
         Ok(mnemonic) => {
             let seed = seed_from_mnemonic(&mnemonic);
             (mnemonic.to_string(), build_wallet_id(&seed, network))
         }
         Err(e) => {
-            tracing::error!("generate_random_mnemonic({mnemonic_len}): {e}");
+            tracing::error!("generate_random_mnemonic(): {e}");
             (String::default(), String::default())
         }
     }

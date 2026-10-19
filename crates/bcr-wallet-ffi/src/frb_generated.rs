@@ -3482,10 +3482,8 @@ impl SseDecode for crate::api::MintIsRabidResponse {
 impl SseDecode for crate::api::MnemonicRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_length = <u32>::sse_decode(deserializer);
         let mut var_bitcoinNetwork = <String>::sse_decode(deserializer);
         return crate::api::MnemonicRequest {
-            length: var_length,
             bitcoin_network: var_bitcoinNetwork,
         };
     }
@@ -5548,11 +5546,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::MintIsRabidResponse>
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::MnemonicRequest {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.length.into_into_dart().into_dart(),
-            self.bitcoin_network.into_into_dart().into_dart(),
-        ]
-        .into_dart()
+        [self.bitcoin_network.into_into_dart().into_dart()].into_dart()
     }
 }
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::MnemonicRequest {}
@@ -7993,7 +7987,6 @@ impl SseEncode for crate::api::MintIsRabidResponse {
 impl SseEncode for crate::api::MnemonicRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <u32>::sse_encode(self.length, serializer);
         <String>::sse_encode(self.bitcoin_network, serializer);
     }
 }

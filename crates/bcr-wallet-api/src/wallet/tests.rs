@@ -4636,7 +4636,9 @@ async fn exchange_lock_wallet(
         CurrencyUnit::Sat,
         pdb,
         Arc::new(bcr_wallet_persistence::MockMintMeltRepository::new()),
-        bip39::Mnemonic::generate(12).unwrap().to_seed(""),
+        bip39::Mnemonic::generate(bip39::WordCount::Words12)
+            .unwrap()
+            .to_seed(""),
         Arc::new(crate::pocket::test_utils::tests::test_beta_provider()),
     );
     let wlt = wallet_with_debit(ctx, Box::new(debit)).await;

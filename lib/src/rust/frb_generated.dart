@@ -3821,12 +3821,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MnemonicRequest dco_decode_mnemonic_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
-    return MnemonicRequest(
-      length: dco_decode_u_32(arr[0]),
-      bitcoinNetwork: dco_decode_String(arr[1]),
-    );
+    if (arr.length != 1)
+      throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
+    return MnemonicRequest(bitcoinNetwork: dco_decode_String(arr[0]));
   }
 
   @protected
@@ -6118,12 +6115,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   MnemonicRequest sse_decode_mnemonic_request(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_length = sse_decode_u_32(deserializer);
     var var_bitcoinNetwork = sse_decode_String(deserializer);
-    return MnemonicRequest(
-      length: var_length,
-      bitcoinNetwork: var_bitcoinNetwork,
-    );
+    return MnemonicRequest(bitcoinNetwork: var_bitcoinNetwork);
   }
 
   @protected
@@ -8450,7 +8443,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_u_32(self.length, serializer);
     sse_encode_String(self.bitcoinNetwork, serializer);
   }
 
