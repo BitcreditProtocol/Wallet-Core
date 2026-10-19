@@ -1117,6 +1117,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn default_mint_timeouts_match_the_app_config_defaults() {
+        let timeouts = MintTimeouts::default();
+        assert_eq!(
+            timeouts.connect,
+            crate::AppStateConfig::DEFAULT_MINT_CONNECT_TIMEOUT
+        );
+        assert_eq!(
+            timeouts.request,
+            crate::AppStateConfig::DEFAULT_MINT_REQUEST_TIMEOUT
+        );
+    }
+
+    #[tokio::test]
+    async fn timed_passes_through_the_result_of_a_call_within_the_limit() {
+        let ok = timed(Duration::from_secs(5), async { Ok::<_, MintError>(7) }).await;
+        assert_eq!(ok.unwrap(), 7);
+        let err = timed(Duration::from_secs(5), async {
+            Err::<u8, _>(MintError::Internal("boom".into()))
+        })
+        .await;
+        assert!(matches!(err, Err(MintError::Internal(m)) if m == "boom"));
+    }
+
+    #[test]
+    fn sentinel_client_keeps_the_request_timeout_of_its_http_client() {
+        let timeouts = MintTimeouts {
+            connect: Duration::from_secs(1),
+            request: Duration::from_secs(2),
+        };
+        let http = HttpClientExt::new(url::Url::parse("http://127.0.0.1:1").unwrap(), timeouts);
+        assert_eq!(SentinelClient::new(http).request_timeout, timeouts.request);
+    }
+
     fn valid_response_body() -> wire_melt::MeltQuoteOnchainResponseBody {
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let wallet_key = cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral));

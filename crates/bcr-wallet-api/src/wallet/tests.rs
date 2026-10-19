@@ -5969,3 +5969,23 @@ async fn swap_exchanged_lost_response_already_restored_counts_as_swapped() {
         .unwrap();
     assert_eq!(amount, Amount::from(8));
 }
+
+#[tokio::test]
+async fn balance_whose_debit_and_credit_overflow_returns_error_not_panic() {
+    let mut ctx = wallet_ctx();
+    ctx.client
+        .expect_get_mint_keysets()
+        .times(1)
+        .returning(|| Ok(vec![]));
+    ctx.debit.expect_balance().times(1).returning(|_| {
+        Ok(PocketBalance {
+            debit: Amount::from(1u64 << 63),
+            credit: Amount::from(1u64 << 63),
+        })
+    });
+    let wlt = wallet(ctx).await;
+
+    let result = wlt.read().await.balance().await;
+
+    assert!(matches!(result, Err(Error::MintingError(_))));
+}

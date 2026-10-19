@@ -742,3 +742,24 @@ ______ _ _                    _ _ _     _    _       _ _      _
 | |_/ / | || (__| | |  __/ (_| | | |_  \  /\  / (_| | | |  __/ |_ 
 \____/|_|\__\___|_|  \___|\__,_|_|\__|  \/  \/ \__,_|_|_|\___|\__|
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_without_mint_timeouts_use_the_app_defaults() {
+        let settings: CliSettings = toml::from_str(
+            "log_level = \"INFO\"\ndb_path = \"w.db\"\nesplora_base_urls = []\n[wallets]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            settings.mint_connect_timeout_secs,
+            AppStateConfig::DEFAULT_MINT_CONNECT_TIMEOUT.as_secs()
+        );
+        assert_eq!(
+            settings.mint_request_timeout_secs,
+            AppStateConfig::DEFAULT_MINT_REQUEST_TIMEOUT.as_secs()
+        );
+    }
+}
