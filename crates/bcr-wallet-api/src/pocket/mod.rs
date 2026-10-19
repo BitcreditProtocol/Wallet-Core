@@ -1651,6 +1651,29 @@ mod tests {
             Amount::from(23)
         );
     }
+
+    #[tokio::test]
+    async fn offline_send_of_overflowing_proofs_returns_error_not_panic() {
+        let (_, keyset) = test_utils::tests::generate_wide_ecash_keyset();
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(1u64 << 63), Amount::from(1u64 << 63)],
+        );
+        let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+        let mut db = MockPocketRepository::new();
+        db.expect_mark_as_pendingspent()
+            .times(1)
+            .returning(move |_| Ok(proofs.clone()));
+
+        let result = return_proofs_to_send_for_offline_payment(
+            SendPlan::Ready { proofs: ys },
+            &db,
+            &InFlight::default(),
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::MintingError(_))));
+    }
 }
 
 pub(crate) fn add_amounts(a: Amount, b: Amount) -> Result<Amount> {
