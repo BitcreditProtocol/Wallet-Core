@@ -772,20 +772,18 @@ class MintIsRabidResponse {
 }
 
 class MnemonicRequest {
-  final int length;
   final String bitcoinNetwork;
 
-  const MnemonicRequest({required this.length, required this.bitcoinNetwork});
+  const MnemonicRequest({required this.bitcoinNetwork});
 
   @override
-  int get hashCode => length.hashCode ^ bitcoinNetwork.hashCode;
+  int get hashCode => bitcoinNetwork.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is MnemonicRequest &&
           runtimeType == other.runtimeType &&
-          length == other.length &&
           bitcoinNetwork == other.bitcoinNetwork;
 }
 

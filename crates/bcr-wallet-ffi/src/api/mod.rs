@@ -1106,8 +1106,7 @@ pub async fn generate_random_mnemonic(
     let parsed_network = bitcoin::Network::from_str(&req.bitcoin_network).expect(
         "Not a valid bitcoin network - use one of bitcoin, testnet, testnet4, signet, regtest",
     );
-    let (mnemonic, wallet_id) =
-        bcr_wallet_api::generate_random_mnemonic(req.length, parsed_network);
+    let (mnemonic, wallet_id) = bcr_wallet_api::generate_random_mnemonic(parsed_network);
     Ok(MnemonicResponse {
         wallet_id,
         mnemonic,
@@ -2135,7 +2134,6 @@ pub struct WalletsIdsResponse {
 
 #[derive(Debug, Clone)]
 pub struct MnemonicRequest {
-    pub length: u32,
     pub bitcoin_network: String,
 }
 

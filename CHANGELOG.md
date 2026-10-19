@@ -2,6 +2,8 @@
 
 * An interrupted offline intermint receive completes when the token is received again: the offline exchange key is derived from the wallet seed and the token's proofs, so a retry sends the same request
 * `wallet_migrate_rabid` swaps the exchanged proofs into a keyset the substitute created during the exchange instead of failing with `MigrationIncomplete`
+* The 12 words default for `generateRandomMnemonic` is now a restriction (for compatibility with E-Bill)
+    * `generateRandomMnemonic` has no `length` parameter anymore, it defaults to 12
 
 
 # 0.9.14

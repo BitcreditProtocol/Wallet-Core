@@ -1689,7 +1689,9 @@ mod tests {
 
     fn pocket(pdb: Arc<dyn PocketRepository>, mdb: Arc<dyn MintMeltRepository>) -> super::Pocket {
         let unit = CurrencyUnit::Sat;
-        let seed = bip39::Mnemonic::generate(12).unwrap().to_seed("");
+        let seed = bip39::Mnemonic::generate(bip39::WordCount::Words12)
+            .unwrap()
+            .to_seed("");
         super::Pocket::new(unit, pdb, mdb, seed, Arc::new(test_beta_provider()))
     }
 
@@ -1701,7 +1703,9 @@ mod tests {
     ) -> super::Pocket {
         let provider = crate::pocket::RandomBetaProvider::new(betas, alpha_id).unwrap();
         let unit = CurrencyUnit::Sat;
-        let seed = bip39::Mnemonic::generate(12).unwrap().to_seed("");
+        let seed = bip39::Mnemonic::generate(bip39::WordCount::Words12)
+            .unwrap()
+            .to_seed("");
         super::Pocket::new(unit, pdb, mdb, seed, Arc::new(provider))
     }
 
