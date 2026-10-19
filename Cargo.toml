@@ -21,7 +21,7 @@ bcr-wallet-core = {path = "./crates/bcr-wallet-core"}
 bcr-wallet-api = {path = "./crates/bcr-wallet-api"}
 bcr-wallet-persistence = {path = "./crates/bcr-wallet-persistence"}
 bcr-wallet-transport = {path = "./crates/bcr-wallet-transport"}
-bip39 = {version = "2.1", features = ["rand"]}
+bip39 = {version = "3.0", features = ["rand"]}
 bitcoin = {version = "0.32"}
 borsh = {version = "1"}
 time = {version = "0.3", features = ["serde", "formatting", "parsing", "macros"]}
