@@ -11,14 +11,17 @@ use bcr_common::{
     },
     core::swap::wallet::prepare_swap,
     ecash::{self, KeySet, KeySetInfo},
-    wire::{attestation as wire_attestation, keys as wire_keys, swap as wire_swap},
+    wire::{
+        attestation as wire_attestation, common::ProtestOutcome, keys as wire_keys,
+        swap as wire_swap,
+    },
 };
 use bcr_wallet_core::{
     SendSync,
     types::{Seed, SendSummary},
 };
 use bcr_wallet_persistence::{PocketRepository, SwapCommitmentRecord};
-use rand::seq::IndexedRandom;
+use rand::seq::{IndexedRandom, SliceRandom};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -102,7 +105,7 @@ pub(crate) trait BetaProvider: SendSync {
         &self,
         proofs: &[cdk00::Proof],
     ) -> Result<wire_attestation::IssuanceAttestation>;
-    fn random_client(&self) -> Arc<dyn ClowderMintConnector>;
+    fn shuffled_clients(&self) -> Vec<Arc<dyn ClowderMintConnector>>;
     fn alpha_id(&self) -> bitcoin::secp256k1::PublicKey;
 }
 
@@ -163,11 +166,10 @@ impl BetaProvider for RandomBetaProvider {
         Err(last_err.expect("betas is non-empty, so at least one attempt was made"))
     }
 
-    fn random_client(&self) -> Arc<dyn ClowderMintConnector> {
-        self.betas
-            .choose(&mut rand::rng())
-            .expect("betas is non-empty")
-            .clone()
+    fn shuffled_clients(&self) -> Vec<Arc<dyn ClowderMintConnector>> {
+        let mut clients = self.betas.clone();
+        clients.shuffle(&mut rand::rng());
+        clients
     }
 
     fn alpha_id(&self) -> bitcoin::secp256k1::PublicKey {
@@ -368,6 +370,10 @@ pub(crate) async fn commit_swap(
         )
         .await?;
     let commitment_sig = commit_result.commitment;
+    tracing::debug!(
+        "Swap committed: {commitment_sig} for {}s",
+        swap_config.expiry.whole_seconds()
+    );
 
     if let Some(db) = db {
         db.store_commitment(bcr_wallet_persistence::SwapCommitmentRecord {
@@ -541,12 +547,48 @@ pub(crate) async fn resume_commitment(
 }
 
 ///////////////////////////////////////////// post_swap_protest
-/// Protest a committed swap of `proofs` at one of `beta`'s clowder betas.
+/// Sends a protest to `beta`'s clowder betas in random order until one gives a final answer
+/// (`Resolved` or `Rabid`). Offline answers and failures move on to the next beta; when none is
+/// final, the answer is `Offline` when any beta reached the alpha's side and found it offline, so a
+/// dead beta cannot turn that into an error; with no offline answer the last failure is returned.
+pub(crate) async fn protest_betas<T, F, Fut>(
+    beta: &dyn BetaProvider,
+    protest: F,
+) -> Result<ProtestOutcome<T>>
+where
+    F: Fn(Arc<dyn ClowderMintConnector>) -> Fut,
+    Fut: std::future::Future<Output = Result<ProtestOutcome<T>>>,
+{
+    let mut last_err = None;
+    let mut offline = false;
+    for client in beta.shuffled_clients() {
+        match protest(client.clone()).await {
+            Ok(ProtestOutcome::Offline) => {
+                tracing::warn!("Protest at {} answered offline", client.mint_url());
+                offline = true;
+            }
+            Ok(outcome) => return Ok(outcome),
+            Err(e) => {
+                tracing::warn!("Protest at {} failed: {e}", client.mint_url());
+                last_err = Some(e);
+            }
+        }
+    }
+    match last_err {
+        Some(e) if !offline => Err(e),
+        _ => Ok(ProtestOutcome::Offline),
+    }
+}
+
+/// Protest a committed swap of `proofs` at `beta`'s clowder betas. A `Resolved` answer counts only
+/// when it unblinds, with `premints`, into every committed output; otherwise the next beta is asked.
 pub(crate) async fn post_swap_protest(
     record: &bcr_wallet_persistence::SwapCommitmentRecord,
     proofs: Vec<cdk00::Proof>,
+    premints: &HashMap<ecash::Id, cdk00::PreMintSecrets>,
+    alpha: &dyn ClowderMintConnector,
     beta: &dyn BetaProvider,
-) -> Result<wire_swap::SwapProtestResponse> {
+) -> Result<ProtestOutcome<Vec<cdk00::Proof>>> {
     let ephemeral_keypair = bitcoin::secp256k1::Keypair::from_secret_key(
         bitcoin::secp256k1::SECP256K1,
         &record.ephemeral_secret,
@@ -560,7 +602,23 @@ pub(crate) async fn post_swap_protest(
         wallet_signature,
         blind_signatures: None,
     };
-    beta.random_client().post_protest_swap(request).await
+    let request = &request;
+    protest_betas(beta, |client| async move {
+        match client.post_protest_swap(request).await? {
+            ProtestOutcome::Resolved(signatures) => {
+                let signatures = signatures.into_iter().map(Into::into).collect();
+                let mut keysets = HashMap::new();
+                for kid in premints.keys() {
+                    keysets.insert(*kid, alpha.get_mint_keyset(*kid).await?);
+                }
+                let proofs = unblind_by_keyset(premints, signatures, &keysets)?;
+                Ok(ProtestOutcome::Resolved(proofs))
+            }
+            ProtestOutcome::Rabid => Ok(ProtestOutcome::Rabid),
+            ProtestOutcome::Offline => Ok(ProtestOutcome::Offline),
+        }
+    })
+    .await
 }
 
 ///////////////////////////////////////////// unblind_by_keyset
@@ -1051,6 +1109,94 @@ mod tests {
         let signatures = core_tests::generate_ecash_signatures(&mintkeyset, &[Amount::from(16)]);
         let proofs = super::unblind_proofs(&keyset, signatures, premint);
         assert_eq!(proofs.len(), 0);
+    }
+
+    fn beta_provider_of(betas: Vec<MockClowderMintConnector>) -> RandomBetaProvider {
+        let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
+            &bitcoin::secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng()),
+        );
+        let betas = betas
+            .into_iter()
+            .map(|beta| Arc::new(beta) as Arc<dyn ClowderMintConnector>)
+            .collect();
+        RandomBetaProvider::new(betas, alpha_id).unwrap()
+    }
+
+    fn txid() -> bitcoin::Txid {
+        use bitcoin::hashes::Hash as _;
+        bitcoin::Txid::from_slice(&[7u8; 32]).unwrap()
+    }
+
+    async fn protest_melt_at(
+        provider: &RandomBetaProvider,
+    ) -> Result<ProtestOutcome<bitcoin::Txid>> {
+        protest_betas(provider, |client| async move {
+            client.post_protest_melt(&unused_melt_request()).await
+        })
+        .await
+    }
+
+    fn unused_melt_request() -> bcr_common::wire::melt::MeltProtestRequest {
+        let signature = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64]).unwrap();
+        bcr_common::wire::melt::MeltProtestRequest {
+            alpha_id: bitcoin::secp256k1::PublicKey::from_keypair(
+                &bitcoin::secp256k1::Keypair::new_global(
+                    &mut bitcoin::secp256k1::rand::thread_rng(),
+                ),
+            ),
+            quote_id: Uuid::new_v4(),
+            content: String::new(),
+            commitment: signature,
+            wallet_signature: signature,
+            inputs: None,
+        }
+    }
+
+    fn melt_beta(
+        answer: fn() -> Result<ProtestOutcome<bitcoin::Txid>>,
+        times: std::ops::RangeInclusive<usize>,
+    ) -> MockClowderMintConnector {
+        let mut beta = MockClowderMintConnector::new();
+        beta.expect_post_protest_melt()
+            .times(times)
+            .returning(move |_| answer());
+        beta
+    }
+
+    #[tokio::test]
+    async fn protest_tries_next_beta_until_a_final_answer() {
+        for _ in 0..16 {
+            let provider = beta_provider_of(vec![
+                melt_beta(
+                    || Err(Error::MintClientServiceUnavailable("down".into())),
+                    0..=1,
+                ),
+                melt_beta(
+                    || Err(Error::MintClientInternal("unknown alpha".into())),
+                    0..=1,
+                ),
+                melt_beta(|| Ok(ProtestOutcome::Offline), 0..=1),
+                melt_beta(|| Ok(ProtestOutcome::Resolved(txid())), 1..=1),
+            ]);
+            let outcome = protest_melt_at(&provider).await.unwrap();
+            assert_eq!(outcome, ProtestOutcome::Resolved(txid()));
+        }
+    }
+
+    #[tokio::test]
+    async fn protest_offline_answer_outranks_a_failed_beta() {
+        for _ in 0..16 {
+            let provider = beta_provider_of(vec![
+                melt_beta(
+                    || Err(Error::MintClientServiceUnavailable("down".into())),
+                    1..=1,
+                ),
+                melt_beta(|| Ok(ProtestOutcome::Offline), 1..=1),
+                melt_beta(|| Ok(ProtestOutcome::Offline), 1..=1),
+            ]);
+            let outcome = protest_melt_at(&provider).await.unwrap();
+            assert_eq!(outcome, ProtestOutcome::Offline);
+        }
     }
 
     #[tokio::test]

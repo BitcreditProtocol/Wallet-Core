@@ -10,6 +10,7 @@ use bcr_common::{
     wire::{
         attestation as wire_attestation,
         clowder::{self as wire_clowder, ConnectedMintsResponse},
+        common::ProtestOutcome,
         keys::{self as wire_keys, KeysetInfoFilters},
         melt as wire_melt, mint as wire_mint, swap as wire_swap,
     },
@@ -19,7 +20,20 @@ use bcr_wallet_core::{
     types::{ClowderBeta, MeltEstimation, MeltFeeRateEstimate},
 };
 use bitcoin::secp256k1;
+use std::{future::Future, time::Duration};
 use tracing::debug;
+
+const PROTEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+async fn bounded_protest<T>(
+    timeout: Duration,
+    call: impl Future<Output = MintResult<ProtestOutcome<T>>>,
+) -> Result<ProtestOutcome<T>> {
+    tokio::time::timeout(timeout, call)
+        .await
+        .map_err(|_| Error::MintClientServiceUnavailable("protest timed out".to_string()))?
+        .map_err(Error::from)
+}
 
 pub struct SwapCommitmentResult {
     pub inputs_ys: Vec<cashu::PublicKey>,
@@ -230,8 +244,8 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
     ) -> Result<Vec<cashu::BlindSignature>>;
     async fn post_protest_swap(
         &self,
-        req: wire_swap::SwapProtestRequest,
-    ) -> Result<wire_swap::SwapProtestResponse>;
+        req: &wire_swap::SwapProtestRequest,
+    ) -> Result<ProtestOutcome<Vec<ecash::BlindSignature>>>;
     async fn post_melt_estimate_onchain(&self, amount: bitcoin::Amount) -> Result<MeltEstimation>;
     async fn post_melt_quote_onchain(
         &self,
@@ -249,8 +263,8 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
     ) -> Result<wire_melt::MeltOnchainResponse>;
     async fn post_protest_melt(
         &self,
-        req: wire_melt::MeltProtestRequest,
-    ) -> Result<wire_melt::MeltProtestResponse>;
+        req: &wire_melt::MeltProtestRequest,
+    ) -> Result<ProtestOutcome<bitcoin::Txid>>;
     async fn post_mint_quote_onchain(
         &self,
         req: wire_mint::OnchainMintQuoteRequest,
@@ -261,8 +275,8 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
     ) -> Result<wire_mint::OnchainMintResponse>;
     async fn post_protest_mint(
         &self,
-        req: wire_mint::MintProtestRequest,
-    ) -> Result<wire_mint::MintProtestResponse>;
+        req: &wire_mint::MintProtestRequest,
+    ) -> Result<ProtestOutcome<Vec<cashu::BlindSignature>>>;
     async fn post_attest_issuance(
         &self,
         request: wire_attestation::IssuanceAttestationRequest,
@@ -459,32 +473,10 @@ impl ClowderMintConnector for HttpClientExt {
 
     async fn post_protest_swap(
         &self,
-        req: wire_swap::SwapProtestRequest,
-    ) -> Result<wire_swap::SwapProtestResponse> {
-        let url = self
-            .mint_url()
-            .join("v1/protest/swap")
-            .expect("protest_swap url error");
-        debug!("HTTP call to protest_swap on {url}");
-        let res = self.secondary.post(url).json(&req).send().await?;
-        match res.error_for_status_ref() {
-            Ok(_) => {
-                let response: wire_swap::SwapProtestResponse = res.json().await?;
-                Ok(response)
-            }
-            Err(err) => {
-                let status = err.status();
-                let body = res.text().await.unwrap_or_default();
-
-                tracing::error!(
-                    "post_protest_swap failed: status={:?}, body={}",
-                    status,
-                    body
-                );
-
-                Err(err.into())
-            }
-        }
+        req: &wire_swap::SwapProtestRequest,
+    ) -> Result<ProtestOutcome<Vec<ecash::BlindSignature>>> {
+        debug!("HTTP call to protest_swap on {}", self.mint_url());
+        bounded_protest(PROTEST_TIMEOUT, self.main.protest_swap(req)).await
     }
 
     async fn post_melt_estimate_onchain(&self, amount: bitcoin::Amount) -> Result<MeltEstimation> {
@@ -564,32 +556,10 @@ impl ClowderMintConnector for HttpClientExt {
 
     async fn post_protest_melt(
         &self,
-        req: wire_melt::MeltProtestRequest,
-    ) -> Result<wire_melt::MeltProtestResponse> {
-        let url = self
-            .mint_url()
-            .join("v1/protest/melt")
-            .expect("protest_melt url error");
-        debug!("HTTP call to protest_melt on {url}");
-        let res = self.secondary.post(url).json(&req).send().await?;
-        match res.error_for_status_ref() {
-            Ok(_) => {
-                let response: wire_melt::MeltProtestResponse = res.json().await?;
-                Ok(response)
-            }
-            Err(err) => {
-                let status = err.status();
-                let body = res.text().await.unwrap_or_default();
-
-                tracing::error!(
-                    "post_protest_melt failed: status={:?}, body={}",
-                    status,
-                    body
-                );
-
-                Err(err.into())
-            }
-        }
+        req: &wire_melt::MeltProtestRequest,
+    ) -> Result<ProtestOutcome<bitcoin::Txid>> {
+        debug!("HTTP call to protest_melt on {}", self.mint_url());
+        bounded_protest(PROTEST_TIMEOUT, self.main.protest_melt(req)).await
     }
 
     async fn post_mint_quote_onchain(
@@ -657,33 +627,10 @@ impl ClowderMintConnector for HttpClientExt {
 
     async fn post_protest_mint(
         &self,
-        req: wire_mint::MintProtestRequest,
-    ) -> Result<wire_mint::MintProtestResponse> {
-        let url = self
-            .mint_url()
-            .join("v1/protest/mint")
-            .expect("protest_mint url error");
-        debug!("HTTP call to protest_mint on {url}");
-
-        let res = self.secondary.post(url).json(&req).send().await?;
-        match res.error_for_status_ref() {
-            Ok(_) => {
-                let response: wire_mint::MintProtestResponse = res.json().await?;
-                Ok(response)
-            }
-            Err(err) => {
-                let status = err.status();
-                let body = res.text().await.unwrap_or_default();
-
-                tracing::error!(
-                    "post_protest_mint failed: status={:?}, body={}",
-                    status,
-                    body
-                );
-
-                Err(err.into())
-            }
-        }
+        req: &wire_mint::MintProtestRequest,
+    ) -> Result<ProtestOutcome<Vec<cashu::BlindSignature>>> {
+        debug!("HTTP call to protest_mint on {}", self.mint_url());
+        bounded_protest(PROTEST_TIMEOUT, self.main.protest_mint(req)).await
     }
 
     async fn post_attest_issuance(
@@ -883,33 +830,10 @@ impl ClowderMintConnector for SentinelClient {
 
     async fn post_protest_swap(
         &self,
-        req: wire_swap::SwapProtestRequest,
-    ) -> Result<wire_swap::SwapProtestResponse> {
-        let url = self
-            .mint_url()
-            .join("v1/protest/swap")
-            .expect("protest_swap url error");
-        debug!("HTTP call on sentinel to protest_swap on {url}");
-        let res = self.secondary.post(url).json(&req).send().await?;
-
-        match res.error_for_status_ref() {
-            Ok(_) => {
-                let response: wire_swap::SwapProtestResponse = res.json().await?;
-                Ok(response)
-            }
-            Err(err) => {
-                let status = err.status();
-                let body = res.text().await.unwrap_or_default();
-
-                tracing::error!(
-                    "post_protest_swap failed: status={:?}, body={}",
-                    status,
-                    body
-                );
-
-                Err(err.into())
-            }
-        }
+        req: &wire_swap::SwapProtestRequest,
+    ) -> Result<ProtestOutcome<Vec<ecash::BlindSignature>>> {
+        debug!("HTTP call to protest_swap on {}", self.mint_url());
+        bounded_protest(PROTEST_TIMEOUT, self.main.protest_swap(req)).await
     }
 
     async fn post_melt_estimate_onchain(&self, amount: bitcoin::Amount) -> Result<MeltEstimation> {
@@ -989,32 +913,10 @@ impl ClowderMintConnector for SentinelClient {
 
     async fn post_protest_melt(
         &self,
-        req: wire_melt::MeltProtestRequest,
-    ) -> Result<wire_melt::MeltProtestResponse> {
-        let url = self
-            .mint_url()
-            .join("v1/protest/melt")
-            .expect("protest_melt url error");
-        debug!("HTTP call on sentinel to protest_melt on {url}");
-        let res = self.secondary.post(url).json(&req).send().await?;
-        match res.error_for_status_ref() {
-            Ok(_) => {
-                let response: wire_melt::MeltProtestResponse = res.json().await?;
-                Ok(response)
-            }
-            Err(err) => {
-                let status = err.status();
-                let body = res.text().await.unwrap_or_default();
-
-                tracing::error!(
-                    "post_protest_melt failed: status={:?}, body={}",
-                    status,
-                    body
-                );
-
-                Err(err.into())
-            }
-        }
+        req: &wire_melt::MeltProtestRequest,
+    ) -> Result<ProtestOutcome<bitcoin::Txid>> {
+        debug!("HTTP call to protest_melt on {}", self.mint_url());
+        bounded_protest(PROTEST_TIMEOUT, self.main.protest_melt(req)).await
     }
 
     async fn post_mint_quote_onchain(
@@ -1081,33 +983,10 @@ impl ClowderMintConnector for SentinelClient {
 
     async fn post_protest_mint(
         &self,
-        req: wire_mint::MintProtestRequest,
-    ) -> Result<wire_mint::MintProtestResponse> {
-        let url = self
-            .mint_url()
-            .join("v1/protest/mint")
-            .expect("protest_mint url error");
-        debug!("HTTP call on sentinel to protest_mint on {url}");
-
-        let res = self.secondary.post(url).json(&req).send().await?;
-        match res.error_for_status_ref() {
-            Ok(_) => {
-                let response: wire_mint::MintProtestResponse = res.json().await?;
-                Ok(response)
-            }
-            Err(err) => {
-                let status = err.status();
-                let body = res.text().await.unwrap_or_default();
-
-                tracing::error!(
-                    "post_protest_mint failed: status={:?}, body={}",
-                    status,
-                    body
-                );
-
-                Err(err.into())
-            }
-        }
+        req: &wire_mint::MintProtestRequest,
+    ) -> Result<ProtestOutcome<Vec<cashu::BlindSignature>>> {
+        debug!("HTTP call to protest_mint on {}", self.mint_url());
+        bounded_protest(PROTEST_TIMEOUT, self.main.protest_mint(req)).await
     }
 
     async fn post_attest_issuance(
@@ -1126,6 +1005,21 @@ impl ClowderMintConnector for SentinelClient {
 mod tests {
     use super::*;
     use std::str::FromStr;
+
+    #[test]
+    fn protest_timeout_outlasts_gateway_route_timeout() {
+        const GATEWAY_PROTEST_ROUTE_TIMEOUT: Duration = Duration::from_secs(45);
+        assert!(PROTEST_TIMEOUT > GATEWAY_PROTEST_ROUTE_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn unanswered_protest_times_out_as_unavailable() {
+        let result = bounded_protest::<()>(Duration::from_millis(1), std::future::pending()).await;
+        assert!(
+            matches!(result, Err(Error::MintClientServiceUnavailable(_))),
+            "{result:?}"
+        );
+    }
 
     fn valid_response_body() -> wire_melt::MeltQuoteOnchainResponseBody {
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());

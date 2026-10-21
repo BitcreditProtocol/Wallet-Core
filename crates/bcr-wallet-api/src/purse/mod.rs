@@ -2,7 +2,7 @@ use crate::{
     error::{Error, Result},
     wallet::{api::WalletApi, util::update_optional_field},
 };
-use bcr_common::core::NodeId;
+use bcr_common::{core::NodeId, wire::common::ProtestStatus};
 use bcr_wallet_core::{contact::Contact, email::Email, name::Name, types::WalletConfig};
 use bcr_wallet_persistence::{ContactStoreApi, PurseRepository, redb::purse::PurseDB};
 use nostr::types::RelayUrl;
@@ -139,6 +139,17 @@ where
         match failure {
             Some(e) => Err(e),
             None => Ok(res),
+        }
+    }
+
+    /// Starts the rabid migration once a protest answer names the mint rabid. The migration
+    /// moves funds only when the betas' majority agrees; a refused attempt is retried by the jobs.
+    pub async fn migrate_on_rabid_protest(&self, status: ProtestStatus) {
+        if status != ProtestStatus::Rabid {
+            return;
+        }
+        if let Err(e) = self.migrate_rabid_wallets().await {
+            tracing::warn!("Migration after rabid protest failed: {e}");
         }
     }
 
@@ -500,10 +511,28 @@ mod tests {
         assert!(!migrated.is_empty());
     }
 
+    #[tokio::test]
+    async fn protest_rabid_starts_migration() {
+        let mut db = MockPurseRepository::new();
+        db.expect_store().returning(|_| Ok(()));
+        let purse = purse(Box::new(db));
+        let wlt = rabid_wallet("wlt-1");
+        purse
+            .add_wallet(Arc::new(RwLock::new(wlt)))
+            .await
+            .expect("can create wallet");
+
+        purse
+            .migrate_on_rabid_protest(ProtestStatus::Resolved)
+            .await;
+        purse.migrate_on_rabid_protest(ProtestStatus::Rabid).await;
+    }
+
     fn rabid_wallet(id: &'static str) -> MockWalletApi {
         let migrated = Arc::new(AtomicBool::new(false));
         let journaled = Arc::new(AtomicBool::new(false));
         let mut wlt = MockWalletApi::new();
+        wlt.expect_id().returning(move || id.to_owned());
         wlt.expect_name().returning(move || id.to_owned());
         let m = migrated.clone();
         wlt.expect_is_wallet_mint_rabid()

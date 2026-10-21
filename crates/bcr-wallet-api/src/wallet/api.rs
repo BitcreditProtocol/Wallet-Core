@@ -401,7 +401,7 @@ impl WalletApi for super::Wallet {
                 Ok((tx_id, Some(token)))
             }
             WalletPaymentType::OnChain => {
-                let (btc_tx_id, proofs, _reservation) = self
+                let (btc_tx_id, melt_quote_id, proofs, _reservation) = self
                     .debit
                     .pay_onchain_melt(request_id, self.client.clone())
                     .await?;
@@ -421,7 +421,7 @@ impl WalletApi for super::Wallet {
                     unit: unit.clone(),
                     ys,
                     amount,
-                    quote_id: None,
+                    quote_id: Some(melt_quote_id),
                     payment_type: PaymentType::OnChain,
                     status: TransactionStatus::Settled,
                     btc_tx_id: Some(btc_tx_id),
@@ -546,9 +546,8 @@ impl WalletApi for super::Wallet {
 
     async fn check_pending_commitments(&self) -> Result<()> {
         let now = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
-        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
         self.debit
-            .check_pending_commitments(now, &keysets_info, self.client.clone(), self.swap_config())
+            .check_pending_commitments(now, self.client.clone())
             .await
     }
 
@@ -589,17 +588,9 @@ impl WalletApi for super::Wallet {
         &self,
         commitment_sig: bitcoin::secp256k1::schnorr::Signature,
     ) -> Result<WalletProtestResult> {
-        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
-        let swap_config = self.swap_config();
-
         let ProtestResult { status, result } = self
             .debit
-            .protest_swap(
-                commitment_sig,
-                &keysets_info,
-                self.client.clone(),
-                swap_config,
-            )
+            .protest_swap(commitment_sig, self.client.clone())
             .await?;
 
         if let Some((amount, ref ys)) = result {
@@ -635,7 +626,15 @@ impl WalletApi for super::Wallet {
             txid,
         } = self.debit.protest_melt(quote_id).await?;
 
-        if let Some((amount, ref ys)) = result {
+        let already_recorded = self
+            .tx_repo
+            .list_txs()
+            .await?
+            .iter()
+            .any(|tx| tx.quote_id == Some(quote_id) && tx.btc_tx_id.is_some());
+        if let Some((amount, ref ys)) = result
+            && !already_recorded
+        {
             let now = time::OffsetDateTime::now_utc();
 
             let tx = Transaction {
@@ -671,8 +670,22 @@ impl WalletApi for super::Wallet {
             "check pending melt commitments for {} entries",
             commitments.len()
         );
+        let paid: HashSet<Uuid> = self
+            .tx_repo
+            .list_txs()
+            .await?
+            .into_iter()
+            .filter(|tx| tx.btc_tx_id.is_some())
+            .filter_map(|tx| tx.quote_id)
+            .collect();
         for (quote_id, expiry) in commitments {
             if expiry.saturating_sub(now_ts) > PROTEST_WINDOW_SECS {
+                continue;
+            }
+            if paid.contains(&quote_id) {
+                if let Err(e) = self.debit.forget_melt_commitment(quote_id).await {
+                    tracing::warn!("forgetting paid melt commitment {quote_id} failed: {e}");
+                }
                 continue;
             }
             match self.protest_melt(quote_id).await {
@@ -800,8 +813,16 @@ impl WalletApi for super::Wallet {
 
         let mut substitute_counts = HashMap::<url::Url, usize>::new();
 
+        let mut last_err = None;
         while let Some(vote) = futures.next().await {
-            let mint = vote?;
+            let mint = match vote {
+                Ok(mint) => mint,
+                Err(e) => {
+                    tracing::warn!("Beta could not name a substitute: {e}");
+                    last_err = Some(e);
+                    continue;
+                }
+            };
             let count = substitute_counts.entry(mint.clone()).or_default();
             *count += 1;
 
@@ -810,7 +831,7 @@ impl WalletApi for super::Wallet {
             }
         }
 
-        Ok(None)
+        last_err.map_or(Ok(None), Err)
     }
 
     fn betas(&self) -> Vec<url::Url> {
@@ -828,25 +849,11 @@ impl WalletApi for super::Wallet {
             .await?
             .into_values()
             .find(|e| e.header.alpha_id == self.clowder_id);
-        let header = match outage {
+        let mut header = match outage {
             Some(entry) => entry.header,
-            None => {
-                let substitute = (self.client_factory)(substitute_url.clone());
-                let substitute_clowder_id = substitute.get_clowder_id().await?;
-                let evidence_digest = substitute
-                    .get_alpha_offline(self.clowder_id)
-                    .await?
-                    .evidence_digest
-                    .ok_or_else(|| Error::Swap("alpha not offline at substitute".into()))?;
-                MigrationJournalHeader {
-                    substitute_url,
-                    substitute_clowder_id,
-                    alpha_id: self.clowder_id,
-                    evidence_digest,
-                }
-            }
+            None => self.migration_header(substitute_url.clone()).await?,
         };
-        let substitute = (self.client_factory)(header.substitute_url.clone());
+        let mut substitute = (self.client_factory)(header.substitute_url.clone());
         let substitute_kids: HashSet<ecash::Id> = util::keyset_infos(substitute.as_ref())
             .await?
             .into_keys()
@@ -863,58 +870,99 @@ impl WalletApi for super::Wallet {
         }
 
         tracing::info!("Exchanging proofs offline");
-        let mut journal: Vec<_> = self
-            .journal
-            .load()
-            .await?
-            .into_iter()
-            .filter(|(_, e)| e.header == header)
-            .collect();
-        journal.sort_by_key(|(y, _)| *y);
+        let mut reheaded = false;
+        let (exchanged_ys, exchanged_proofs) = loop {
+            let mut journal: Vec<_> = self
+                .journal
+                .load()
+                .await?
+                .into_iter()
+                .filter(|(_, e)| e.header == header)
+                .collect();
+            journal.sort_by_key(|(y, _)| *y);
+            let swapped = journal
+                .iter()
+                .any(|(_, e)| e.state == MigrationJournalState::Swapped);
 
-        let mut exchanged_ys = Vec::new();
-        let mut exchanged_proofs = Vec::new();
-        let mut unexchanged = 0;
-        for (y, entry) in journal {
-            match entry.state {
-                MigrationJournalState::Pending => {}
-                MigrationJournalState::Exchanged(beta_proofs) => {
-                    exchanged_proofs.extend(util::unlock_offline_exchanged(
-                        beta_proofs,
-                        &[entry.proof.secret],
-                        &entry.exchange_key,
-                        &header.substitute_clowder_id,
-                        0,
-                    )?);
-                    exchanged_ys.push(y);
-                    continue;
+            let mut exchanged_ys = Vec::new();
+            let mut exchanged_proofs = Vec::new();
+            let mut unexchanged = 0;
+            let mut maybe_received = false;
+            for (y, entry) in journal {
+                match entry.state {
+                    MigrationJournalState::Pending => {}
+                    MigrationJournalState::Exchanged(beta_proofs) => {
+                        exchanged_proofs.extend(util::unlock_offline_exchanged(
+                            beta_proofs,
+                            &[entry.proof.secret],
+                            &entry.exchange_key,
+                            &header.substitute_clowder_id,
+                            0,
+                        )?);
+                        exchanged_ys.push(y);
+                        continue;
+                    }
+                    MigrationJournalState::Swapped
+                    | MigrationJournalState::Held
+                    | MigrationJournalState::Reclaimed(_) => continue,
                 }
-                MigrationJournalState::Swapped
-                | MigrationJournalState::Held
-                | MigrationJournalState::Reclaimed(_) => continue,
+                match self
+                    .exchange_journaled(substitute.as_ref(), &header, y, entry)
+                    .await
+                {
+                    Ok(unlocked) => {
+                        exchanged_proofs.extend(unlocked);
+                        exchanged_ys.push(y);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Could not exchange proof {y:?} during pocket migration: {e}"
+                        );
+                        maybe_received |= e.may_have_been_received();
+                        unexchanged += 1;
+                    }
+                }
             }
-            match self
-                .exchange_journaled(substitute.as_ref(), &header, y, entry)
-                .await
-            {
-                Ok(unlocked) => {
-                    exchanged_proofs.extend(unlocked);
-                    exchanged_ys.push(y);
-                }
-                Err(e) => {
-                    tracing::error!("Could not exchange proof {y:?} during pocket migration: {e}");
-                    unexchanged += 1;
-                }
+            if unexchanged == 0 {
+                break (exchanged_ys, exchanged_proofs);
             }
-        }
-        if unexchanged > 0 {
-            return Err(Error::MigrationIncomplete(unexchanged));
-        }
+            if reheaded || maybe_received {
+                return Err(Error::MigrationIncomplete(unexchanged));
+            }
+            let fresh = if exchanged_ys.is_empty() && !swapped {
+                self.migration_header(substitute_url.clone()).await?
+            } else {
+                MigrationJournalHeader {
+                    evidence_digest: Self::alpha_evidence(substitute.as_ref(), self.clowder_id)
+                        .await?,
+                    ..header.clone()
+                }
+            };
+            if fresh == header {
+                return Err(Error::MigrationIncomplete(unexchanged));
+            }
+            self.journal.rehead(header.clone(), fresh.clone()).await?;
+            if fresh.substitute_url == header.substitute_url {
+                tracing::info!("migration evidence changed at {}", fresh.substitute_url);
+            } else {
+                tracing::info!(
+                    "migration substitute changed from {} to {}",
+                    header.substitute_url,
+                    fresh.substitute_url
+                );
+                substitute = (self.client_factory)(fresh.substitute_url.clone());
+            }
+            header = fresh;
+            reheaded = true;
+        };
 
         let keysets_info = util::keyset_infos(substitute.as_ref()).await?;
         let clowder_id = substitute.get_clowder_id().await?;
         let mut beta_clients = BTreeMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
         for beta in substitute.get_clowder_betas().await? {
+            if beta.clowder_id == clowder_id {
+                continue;
+            }
             let beta_client = (self.client_factory)(beta.url.clone());
             beta_clients.insert(beta.url, beta_client);
         }
@@ -984,6 +1032,7 @@ impl WalletApi for super::Wallet {
         if unfinished > 0 {
             return Err(Error::MigrationIncomplete(unfinished));
         }
+        self.recover_held().await?;
         self.journal.prune_swapped().await?;
         Ok(())
     }
@@ -1099,6 +1148,9 @@ impl WalletApi for super::Wallet {
             let mut beta_clients = BTreeMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
 
             for beta in substitute_client.as_ref().get_clowder_betas().await? {
+                if beta.clowder_id == substitute_clowder_id {
+                    continue;
+                }
                 let beta_client = (self.client_factory)(beta.url.clone());
                 beta_clients.insert(beta.url, beta_client);
             }

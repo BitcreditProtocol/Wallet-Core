@@ -159,6 +159,8 @@ pub trait MigrationJournalRepository: SendSync {
         entries: Vec<(cdk01::PublicKey, cashu::SecretKey)>,
     ) -> Result<()>;
     async fn update(&self, ys: Vec<cdk01::PublicKey>, state: MigrationJournalState) -> Result<()>;
+    /// Moves every entry journaled under `old` to `new`, keeping its proof, exchange key and state
+    async fn rehead(&self, old: MigrationJournalHeader, new: MigrationJournalHeader) -> Result<()>;
     async fn load(&self) -> Result<HashMap<cdk01::PublicKey, MigrationJournalEntry>>;
     async fn prune_swapped(&self) -> Result<()>;
 }

@@ -129,7 +129,11 @@ impl AppState {
             };
             match client.get_clowder_betas().await {
                 Ok(betas) => {
-                    w_cfg.betas = betas.into_iter().map(|b| b.url).collect();
+                    w_cfg.betas = betas
+                        .into_iter()
+                        .filter(|b| b.clowder_id != w_cfg.clowder_id)
+                        .map(|b| b.url)
+                        .collect();
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -892,6 +896,7 @@ impl AppState {
         let qid = Uuid::from_str(&quote_id)?;
         let wallet = self.get_wallet(&wallet_id).await?;
         let WalletProtestResult { status, result } = wallet.read().await.protest_mint(qid).await?;
+        self.get_purse().migrate_on_rabid_protest(status).await;
         Ok((status, result.map(|(amount, _)| amount)))
     }
 
@@ -908,6 +913,7 @@ impl AppState {
             .map_err(|e| Error::SchnorrSignature(e.to_string()))?;
         let wallet = self.get_wallet(&wallet_id).await?;
         let WalletProtestResult { status, result } = wallet.read().await.protest_swap(sig).await?;
+        self.get_purse().migrate_on_rabid_protest(status).await;
         Ok((status, result.map(|(amount, _)| amount)))
     }
 
@@ -923,6 +929,7 @@ impl AppState {
         let qid = Uuid::from_str(&quote_id)?;
         let wallet = self.get_wallet(&wallet_id).await?;
         let WalletProtestResult { status, result } = wallet.read().await.protest_melt(qid).await?;
+        self.get_purse().migrate_on_rabid_protest(status).await;
         Ok((status, result.map(|(amount, _)| amount)))
     }
 
@@ -1280,6 +1287,11 @@ impl AppState {
             };
         }
 
+        if let Err(e) = self.purse_migrate_rabid().await {
+            job_failed = true;
+            tracing::error!("Error running purse_migrate_rabid job: {e}");
+        }
+
         // successful = true
         !job_failed
     }
@@ -1359,6 +1371,7 @@ async fn create_new_wallet(
         .get_clowder_betas()
         .await?
         .into_iter()
+        .filter(|b| b.clowder_id != clowder_id)
         .map(|b| b.url)
         .collect();
     // Attempt to find debit unit in the given keysets

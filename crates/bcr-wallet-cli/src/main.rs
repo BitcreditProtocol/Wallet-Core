@@ -21,7 +21,14 @@ pub struct CliSettings {
     pub log_level: String,
     pub db_path: PathBuf,
     pub esplora_base_urls: Vec<url::Url>,
+    /// How long a committed swap asks the mint to hold its inputs
+    #[serde(default = "default_swap_expiry_minutes")]
+    pub swap_expiry_minutes: u32,
     pub wallets: HashMap<String, WalletSettings>,
+}
+
+fn default_swap_expiry_minutes() -> u32 {
+    15
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,7 +248,7 @@ async fn main() -> Result<()> {
             .iter()
             .map(|(wid, w)| (wid.to_owned(), w.mnemonic.to_owned()))
             .collect(),
-        swap_expiry: time::Duration::minutes(15),
+        swap_expiry: time::Duration::minutes(settings.swap_expiry_minutes.into()),
         esplora_base_urls: settings.esplora_base_urls,
         dev_mode: false.into(),
     };

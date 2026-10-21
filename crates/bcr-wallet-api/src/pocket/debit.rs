@@ -16,7 +16,10 @@ use bcr_common::{
         swap::wallet::{PaymentPlan, prepare_payment},
     },
     ecash::{self, KeySet, KeySetInfo},
-    wire::{common as wire_common, melt as wire_melt, mint as wire_mint},
+    wire::{
+        common::{self as wire_common, ProtestOutcome},
+        melt as wire_melt, mint as wire_mint,
+    },
 };
 use bcr_wallet_core::types::{
     ForeignMintProof, ForeignMintProofReason, MeltSummary, MintSummary, Seed, SendSummary,
@@ -77,6 +80,7 @@ pub trait DebitPocketApi: super::PocketApi {
         client: Arc<dyn ClowderMintConnector>,
     ) -> Result<(
         bitcoin::Txid,
+        Uuid,
         HashMap<cashu::PublicKey, cashu::Proof>,
         super::Reservation,
     )>;
@@ -98,19 +102,16 @@ pub trait DebitPocketApi: super::PocketApi {
     async fn check_pending_commitments(
         &self,
         tstamp: u64,
-        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
-        swap_config: SwapConfig,
     ) -> Result<()>;
     async fn protest_swap(
         &self,
         commitment_sig: bitcoin::secp256k1::schnorr::Signature,
-        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         alpha_client: Arc<dyn ClowderMintConnector>,
-        swap_config: SwapConfig,
     ) -> Result<ProtestResult>;
     async fn protest_melt(&self, quote_id: Uuid) -> Result<MeltProtestResult>;
     async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>>;
+    async fn forget_melt_commitment(&self, quote_id: Uuid) -> Result<()>;
     /// Stores the exchange record, then HTLC-locks its alpha inputs, keeping the lock swap's
     /// commitment until the record holds the locked proofs.
     async fn lock_exchange(
@@ -297,17 +298,26 @@ impl Pocket {
                     .get_clowder_betas()
                     .await?
                     .into_iter()
+                    .filter(|beta| beta.clowder_id != record.alpha_clowder_id)
                     .map(|beta| client_factory(beta.url))
                     .collect();
                 let alpha_beta = super::RandomBetaProvider::new(betas, record.alpha_clowder_id)?;
                 let inputs =
                     crate::wallet::util::remove_dleq_from_proofs(record.alpha_inputs.clone());
-                let response = super::post_swap_protest(commitment, inputs, &alpha_beta).await?;
-                match (response.status, response.signatures) {
-                    (wire_common::ProtestStatus::Resolved, Some(signatures)) => {
-                        signatures.into_iter().map(Into::into).collect()
+                let response = super::post_swap_protest(
+                    commitment,
+                    inputs,
+                    &record.premints,
+                    alpha_client.as_ref(),
+                    &alpha_beta,
+                )
+                .await?;
+                match response {
+                    ProtestOutcome::Resolved(locked) => {
+                        return Ok(Some(refund_proofs(record, locked)?));
                     }
-                    (status, _) => {
+                    outcome => {
+                        let (status, _) = outcome.into_parts();
                         tracing::warn!(
                             "Protest of lock swap {} for exchange {} returned {status:?}, retrying next run",
                             commitment.commitment,
@@ -360,12 +370,26 @@ impl Pocket {
         }
     }
 
+    /// Sets the inputs of a request the alpha refused back to Unspent, so migrating away from
+    /// the rabid alpha carries them. Inputs that are no longer PendingSpent are left alone.
+    async fn release_refused_inputs(&self, ys: &[cdk01::PublicKey]) {
+        for y in ys {
+            match self.pdb.load_proof(*y).await {
+                Ok((_, cdk07::State::PendingSpent)) => {
+                    if let Err(e) = self.pdb.revert_pendingspent_to_unspent(*y).await {
+                        tracing::error!("failed to release refused input {y}: {e}");
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!("refused input {y} not in the pocket: {e}"),
+            }
+        }
+    }
+
     async fn recover_commitment(
         &self,
         record: bcr_wallet_persistence::SwapCommitmentRecord,
-        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
-        swap_config: SwapConfig,
     ) -> Result<()> {
         let commitment = record.commitment;
         let proofs = self.committed_proofs(&record).await;
@@ -388,9 +412,7 @@ impl Pocket {
             );
             return Ok(self.pdb.delete_commitment(commitment).await?);
         }
-        let protest = self
-            .protest_swap(commitment, keysets_info, client, swap_config)
-            .await?;
+        let protest = self.protest_swap(commitment, client).await?;
         match protest.status {
             wire_common::ProtestStatus::Resolved => Ok(()),
             wire_common::ProtestStatus::Rabid => Ok(self.pdb.delete_commitment(commitment).await?),
@@ -544,22 +566,33 @@ impl Pocket {
         Ok((pocket_summary, send_ref))
     }
 
-    /// Construct proofs from blind signatures, persist into the wallet, and return the result.
-    async fn finalize_mint_proofs(
-        &self,
+    /// Constructs the proofs of `premint` from exactly one signature per blinded message.
+    async fn mint_proofs(
         signatures: Vec<cdk00::BlindSignature>,
         premint: &cdk00::PreMintSecrets,
-        client: Arc<dyn ClowderMintConnector>,
-    ) -> Result<(cashu::Amount, Vec<cashu::PublicKey>)> {
-        let active_keyset = client.get_mint_keyset(premint.keyset_id.into()).await?;
-
-        let proofs = cashu::dhke::construct_proofs(
+        client: &dyn ClowderMintConnector,
+    ) -> Result<Vec<cdk00::Proof>> {
+        let keyset = client.get_mint_keyset(premint.keyset_id.into()).await?;
+        if signatures.len() != premint.len() {
+            return Err(Error::Swap(format!(
+                "mint returned {} signatures for {} blinded messages",
+                signatures.len(),
+                premint.len()
+            )));
+        }
+        Ok(cashu::dhke::construct_proofs(
             signatures,
             premint.rs(),
             premint.secrets(),
-            &active_keyset.keys,
-        )?;
+            &keyset.keys,
+        )?)
+    }
 
+    /// Persists the minted `proofs` into the wallet and returns their total and ys.
+    async fn store_minted_proofs(
+        &self,
+        proofs: Vec<cdk00::Proof>,
+    ) -> Result<(cashu::Amount, Vec<cashu::PublicKey>)> {
         let mut total_cashed_in = Amount::ZERO;
         let mut ys = Vec::with_capacity(proofs.len());
         for proof in proofs.into_iter() {
@@ -589,9 +622,9 @@ impl Pocket {
         };
         match client.post_mint_onchain(mint_req).await {
             Ok(mint_response) => {
-                let (amount, ys) = self
-                    .finalize_mint_proofs(mint_response.signatures, &premint, client)
-                    .await?;
+                let proofs =
+                    Self::mint_proofs(mint_response.signatures, &premint, client.as_ref()).await?;
+                let (amount, ys) = self.store_minted_proofs(proofs).await?;
 
                 self.mdb.delete_mint(qid).await?;
                 let fee = if mint_amount > amount {
@@ -1159,6 +1192,7 @@ impl DebitPocketApi for Pocket {
                 body_content: quote_result.body_content,
             };
             self.mdb.store_melt_commitment(record).await?;
+            tracing::debug!("Melt committed: {quote_id}");
             Ok::<_, Error>((quote_id, expiry, quote_result.amount))
         }
         .await;
@@ -1200,6 +1234,7 @@ impl DebitPocketApi for Pocket {
         client: Arc<dyn ClowderMintConnector>,
     ) -> Result<(
         bitcoin::Txid,
+        Uuid,
         HashMap<cdk01::PublicKey, cdk00::Proof>,
         super::Reservation,
     )> {
@@ -1223,8 +1258,12 @@ impl DebitPocketApi for Pocket {
         };
         let response = client.post_melt_onchain(request).await?;
 
-        self.mdb.delete_melt_commitment(melt_ref.quote_id).await?;
-        Ok((response.txid, sending_proofs, melt_ref.reservation))
+        Ok((
+            response.txid,
+            melt_ref.quote_id,
+            sending_proofs,
+            melt_ref.reservation,
+        ))
     }
 
     async fn mint_onchain(
@@ -1336,9 +1375,7 @@ impl DebitPocketApi for Pocket {
     async fn check_pending_commitments(
         &self,
         tstamp: u64,
-        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         client: Arc<dyn ClowderMintConnector>,
-        swap_config: SwapConfig,
     ) -> Result<()> {
         let commitments = self.pdb.list_commitments().await?;
         tracing::debug!(
@@ -1374,15 +1411,7 @@ impl DebitPocketApi for Pocket {
                         "Swap commitment {commitment} expired at {} (now: {tstamp}) - recovering record.",
                         record.expiry,
                     );
-                    if let Err(e) = self
-                        .recover_commitment(
-                            record,
-                            keysets_info,
-                            client.clone(),
-                            swap_config.clone(),
-                        )
-                        .await
-                    {
+                    if let Err(e) = self.recover_commitment(record, client.clone()).await {
                         tracing::error!("Recovering swap commitment {commitment} failed: {e}");
                     }
                 }
@@ -1410,17 +1439,24 @@ impl DebitPocketApi for Pocket {
             wallet_signature,
         };
 
-        let response = client.post_protest_mint(request).await?;
+        let request = &request;
+        let premint = &record.premint;
+        let alpha = &client;
+        let outcome = super::protest_betas(self.beta.as_ref(), |beta_client| async move {
+            match beta_client.post_protest_mint(request).await? {
+                ProtestOutcome::Resolved(signatures) => {
+                    let proofs = Self::mint_proofs(signatures, premint, alpha.as_ref()).await?;
+                    Ok(ProtestOutcome::Resolved(proofs))
+                }
+                ProtestOutcome::Rabid => Ok(ProtestOutcome::Rabid),
+                ProtestOutcome::Offline => Ok(ProtestOutcome::Offline),
+            }
+        })
+        .await?;
 
-        match response.status {
-            wire_common::ProtestStatus::Resolved => {
-                let signatures = response.signatures.ok_or(Error::MintingError(
-                    "protest resolved but no signatures returned".to_string(),
-                ))?;
-
-                let (amount, ys) = self
-                    .finalize_mint_proofs(signatures, &record.premint, client)
-                    .await?;
+        match outcome {
+            ProtestOutcome::Resolved(proofs) => {
+                let (amount, ys) = self.store_minted_proofs(proofs).await?;
 
                 self.mdb.delete_mint(qid).await?;
 
@@ -1430,14 +1466,14 @@ impl DebitPocketApi for Pocket {
                     result: Some((amount, ys)),
                 })
             }
-            wire_common::ProtestStatus::Rabid => {
+            ProtestOutcome::Rabid => {
                 tracing::warn!("Protest for {qid} returned rabid");
                 Ok(ProtestResult {
                     status: wire_common::ProtestStatus::Rabid,
                     result: None,
                 })
             }
-            wire_common::ProtestStatus::Offline => {
+            ProtestOutcome::Offline => {
                 tracing::warn!("Protest for {qid} returned offline");
                 Ok(ProtestResult {
                     status: wire_common::ProtestStatus::Offline,
@@ -1450,54 +1486,22 @@ impl DebitPocketApi for Pocket {
     async fn protest_swap(
         &self,
         commitment_sig: bitcoin::secp256k1::schnorr::Signature,
-        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         alpha_client: Arc<dyn ClowderMintConnector>,
-        swap_config: SwapConfig,
     ) -> Result<ProtestResult> {
         let record = self.pdb.load_commitment(commitment_sig).await?;
         let proofs = self.committed_proofs(&record).await;
-        let response = super::post_swap_protest(&record, proofs, self.beta.as_ref()).await?;
+        let response = super::post_swap_protest(
+            &record,
+            proofs,
+            &record.premints,
+            alpha_client.as_ref(),
+            self.beta.as_ref(),
+        )
+        .await?;
 
-        match response.status {
-            wire_common::ProtestStatus::Resolved => {
-                let signatures = response.signatures.ok_or(Error::MintingError(
-                    "swap protest resolved but no signatures returned".to_string(),
-                ))?;
-
-                let mut sigs_by_kid: HashMap<ecash::Id, Vec<cdk00::BlindSignature>> =
-                    HashMap::new();
-                for signature in signatures {
-                    sigs_by_kid
-                        .entry(signature.keyset_id)
-                        .or_default()
-                        .push(signature.into());
-                }
-
-                let mut keysets: HashMap<ecash::Id, KeySet> = HashMap::new();
-                for kid in sigs_by_kid.keys() {
-                    let keyset = alpha_client.get_mint_keyset(*kid).await?;
-                    keysets.insert(*kid, keyset);
-                }
-
-                // Unblind using the ORIGINAL premint secrets stored with the commitment
-                let mut unblinded: Vec<Proof> = Vec::new();
-                for (kid, ps) in record.premints {
-                    let keyset = keysets.get(&kid).expect("keyset should be here");
-                    let sigs = sigs_by_kid.get(&kid).expect("signatures should be here");
-                    let unblinded_proofs = super::unblind_proofs(keyset, sigs.to_owned(), ps);
-                    unblinded.extend(unblinded_proofs);
-                }
-
-                let mut proofs: HashMap<cdk01::PublicKey, cdk00::Proof> =
-                    HashMap::with_capacity(unblinded.len());
-                for proof in unblinded {
-                    let y = proof.y()?;
-                    proofs.insert(y, proof);
-                }
-
-                let (amount, ys) = self
-                    .digest_proofs(alpha_client, keysets_info, proofs, swap_config)
-                    .await?;
+        match response {
+            ProtestOutcome::Resolved(unblinded) => {
+                let (amount, ys) = self.store_minted_proofs(unblinded).await?;
 
                 self.pdb.delete_commitment(commitment_sig).await?;
 
@@ -1507,14 +1511,15 @@ impl DebitPocketApi for Pocket {
                     result: Some((amount, ys)),
                 })
             }
-            wire_common::ProtestStatus::Rabid => {
+            ProtestOutcome::Rabid => {
                 tracing::warn!("Swap protest for {commitment_sig} returned rabid");
+                self.release_refused_inputs(&record.inputs).await;
                 Ok(ProtestResult {
                     status: wire_common::ProtestStatus::Rabid,
                     result: None,
                 })
             }
-            wire_common::ProtestStatus::Offline => {
+            ProtestOutcome::Offline => {
                 tracing::warn!("Swap protest for {commitment_sig} returned offline");
                 Ok(ProtestResult {
                     status: wire_common::ProtestStatus::Offline,
@@ -1530,22 +1535,38 @@ impl DebitPocketApi for Pocket {
             secp256k1::Keypair::from_secret_key(secp256k1::SECP256K1, &record.ephemeral_secret);
         let wallet_signature = super::sign_content_b64(&record.body_content, &ephemeral_keypair)?;
 
+        let body: wire_melt::MeltQuoteOnchainResponseBody =
+            bcr_common::core::signature::deserialize_borsh_msg(&record.body_content)?;
+        let ys: Vec<cashu::PublicKey> = body.inputs.inputs.iter().map(|fp| fp.y.into()).collect();
+        let inputs = self.pdb.load_proofs(&ys).await.ok().map(|inputs| {
+            crate::wallet::util::remove_dleq_from_proofs(inputs.into_values().collect())
+                .into_iter()
+                .map(Into::into)
+                .collect()
+        });
+
         let request = wire_melt::MeltProtestRequest {
             alpha_id: self.beta.alpha_id(),
             quote_id,
             content: record.body_content.clone(),
             commitment: record.commitment,
             wallet_signature,
+            inputs,
         };
 
-        let response = self.beta.random_client().post_protest_melt(request).await?;
+        let request = &request;
+        let outcome = super::protest_betas(self.beta.as_ref(), |beta_client| async move {
+            beta_client.post_protest_melt(request).await
+        })
+        .await?;
 
-        match response.status {
-            wire_common::ProtestStatus::Resolved => {
-                let body: wire_melt::MeltQuoteOnchainResponseBody =
-                    bcr_common::core::signature::deserialize_borsh_msg(&record.body_content)?;
-                let ys: Vec<cashu::PublicKey> =
-                    body.inputs.inputs.iter().map(|fp| fp.y.into()).collect();
+        match outcome {
+            ProtestOutcome::Resolved(txid) => {
+                for y in &ys {
+                    if let Err(e) = self.pdb.mark_pending_as_spent(*y).await {
+                        tracing::error!("failed to settle melt input {y} as spent: {e}");
+                    }
+                }
                 self.mdb.delete_melt_commitment(quote_id).await?;
                 tracing::info!("Melt protest resolved for {quote_id}");
                 Ok(MeltProtestResult {
@@ -1553,11 +1574,12 @@ impl DebitPocketApi for Pocket {
                         status: wire_common::ProtestStatus::Resolved,
                         result: Some((cashu::Amount::from(body.amount.to_sat()), ys)),
                     },
-                    txid: response.txid,
+                    txid: Some(txid),
                 })
             }
-            wire_common::ProtestStatus::Rabid => {
+            ProtestOutcome::Rabid => {
                 tracing::warn!("Melt protest for {quote_id} returned rabid");
+                self.release_refused_inputs(&ys).await;
                 Ok(MeltProtestResult {
                     base: ProtestResult {
                         status: wire_common::ProtestStatus::Rabid,
@@ -1566,7 +1588,7 @@ impl DebitPocketApi for Pocket {
                     txid: None,
                 })
             }
-            wire_common::ProtestStatus::Offline => {
+            ProtestOutcome::Offline => {
                 tracing::warn!("Melt protest for {quote_id} returned offline");
                 Ok(MeltProtestResult {
                     base: ProtestResult {
@@ -1577,6 +1599,10 @@ impl DebitPocketApi for Pocket {
                 })
             }
         }
+    }
+
+    async fn forget_melt_commitment(&self, quote_id: Uuid) -> Result<()> {
+        Ok(self.mdb.delete_melt_commitment(quote_id).await?)
     }
 
     async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>> {
@@ -1707,6 +1733,12 @@ mod tests {
             .unwrap()
             .to_seed("");
         super::Pocket::new(unit, pdb, mdb, seed, Arc::new(provider))
+    }
+
+    fn random_alpha_id() -> bitcoin::secp256k1::PublicKey {
+        bitcoin::secp256k1::PublicKey::from_keypair(&bitcoin::secp256k1::Keypair::new_global(
+            &mut secp256k1::rand::thread_rng(),
+        ))
     }
 
     #[tokio::test]
@@ -2173,8 +2205,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_commitment_without_input_proofs_is_deleted_when_nothing_restored() {
-        let (info, keyset) = core_tests::generate_random_ecash_keyset();
-        let k_infos = test_kinfos(info);
+        let (_, keyset) = core_tests::generate_random_ecash_keyset();
         let pdb = in_memory_pdb();
         pdb.store_commitment(expired_commitment(&keyset, false))
             .await
@@ -2197,7 +2228,7 @@ mod tests {
             alpha_id,
         );
         pocket
-            .check_pending_commitments(1, &k_infos, Arc::new(connector), test_swap_config())
+            .check_pending_commitments(1, Arc::new(connector))
             .await
             .unwrap();
 
@@ -2206,8 +2237,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_receive_commitments_recover_without_local_inputs() {
-        let (info, keyset) = core_tests::generate_random_ecash_keyset();
-        let k_infos = test_kinfos(info);
+        let (_, keyset) = core_tests::generate_random_ecash_keyset();
         let mint_keyset = bcr_wallet_core::util::to_keyset(&keyset, None);
         let pdb = in_memory_pdb();
 
@@ -2268,13 +2298,13 @@ mod tests {
         let connector: Arc<dyn ClowderMintConnector> = Arc::new(connector);
         let pocket = pocket(pdb.clone(), Arc::new(MockMintMeltRepository::new()));
         pocket
-            .check_pending_commitments(1, &k_infos, connector.clone(), test_swap_config())
+            .check_pending_commitments(1, connector.clone())
             .await
             .unwrap();
         assert_eq!(pdb.list_commitments().await.unwrap().len(), 2);
         assert!(pdb.list_unspent().await.unwrap().is_empty());
         pocket
-            .check_pending_commitments(1, &k_infos, connector, test_swap_config())
+            .check_pending_commitments(1, connector)
             .await
             .unwrap();
 
@@ -2705,10 +2735,6 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(wire_melt::MeltOnchainResponse { txid: tx_id }));
 
-        mdb.expect_delete_melt_commitment()
-            .times(1)
-            .returning(|_| Ok(()));
-
         let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
         let melt_ref = MeltReference {
             rid,
@@ -2725,12 +2751,20 @@ mod tests {
     }
 
     fn mock_melt_commitment_body(quote_id: Uuid, amount: u64) -> String {
+        mock_melt_commitment_body_with_inputs(quote_id, amount, vec![])
+    }
+
+    fn mock_melt_commitment_body_with_inputs(
+        quote_id: Uuid,
+        amount: u64,
+        inputs: Vec<bcr_common::wire::keys::ProofFingerprint>,
+    ) -> String {
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let wallet_key = cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral));
         let body = wire_melt::MeltQuoteOnchainResponseBody {
             quote: quote_id,
             inputs: bcr_common::wire::attestation::AttestedFingerprints {
-                inputs: vec![],
+                inputs,
                 attestation: crate::pocket::test_utils::tests::mock_attestation(),
             },
             address: bitcoin::Address::from_str("tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0")
@@ -2754,7 +2788,8 @@ mod tests {
         .unwrap();
 
         let mut mdb = MockMintMeltRepository::new();
-        let pdb = MockPocketRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_load_proofs().returning(|_| Ok(HashMap::new()));
 
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let commitment_sig = cashu::SecretKey::generate().sign(&[0u8; 32]).unwrap();
@@ -2779,12 +2814,7 @@ mod tests {
         beta_mock
             .expect_post_protest_melt()
             .times(1)
-            .returning(move |_| {
-                Ok(wire_melt::MeltProtestResponse {
-                    status: wire_common::ProtestStatus::Resolved,
-                    txid: Some(tx_id),
-                })
-            });
+            .returning(move |_| Ok(ProtestOutcome::Resolved(tx_id)));
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
             &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
         );
@@ -2812,7 +2842,12 @@ mod tests {
         let quote_id = Uuid::new_v4();
 
         let mut mdb = MockMintMeltRepository::new();
-        let pdb = MockPocketRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_load_proofs().returning(|_| {
+            Err(bcr_wallet_persistence::error::Error::ProofNotFound(
+                cashu::SecretKey::generate().public_key(),
+            ))
+        });
 
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let commitment_sig = cashu::SecretKey::generate().sign(&[0u8; 32]).unwrap();
@@ -2833,12 +2868,8 @@ mod tests {
         beta_mock
             .expect_post_protest_melt()
             .times(1)
-            .returning(|_| {
-                Ok(wire_melt::MeltProtestResponse {
-                    status: wire_common::ProtestStatus::Rabid,
-                    txid: None,
-                })
-            });
+            .withf(|req| req.inputs.is_none())
+            .returning(|_| Ok(ProtestOutcome::Rabid));
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
             &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
         );
@@ -2859,6 +2890,130 @@ mod tests {
         ));
         assert!(result.txid.is_none());
         assert!(result.base.result.is_none());
+    }
+
+    fn melt_record(
+        quote_id: Uuid,
+        body_content: String,
+    ) -> bcr_wallet_persistence::MeltCommitmentRecord {
+        let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        bcr_wallet_persistence::MeltCommitmentRecord {
+            quote_id,
+            expiry: 999999,
+            commitment: cashu::SecretKey::generate().sign(&[0u8; 32]).unwrap(),
+            ephemeral_secret: secp256k1::SecretKey::from_keypair(&ephemeral),
+            body_content,
+        }
+    }
+
+    async fn stored_states(
+        pdb: &dyn PocketRepository,
+        ys: &[cdk01::PublicKey],
+    ) -> Vec<cdk07::State> {
+        let mut states = Vec::with_capacity(ys.len());
+        for y in ys {
+            states.push(pdb.load_proof(*y).await.unwrap().1);
+        }
+        states
+    }
+
+    async fn spend(pdb: &dyn PocketRepository, ys: &[cdk01::PublicKey]) {
+        pdb.mark_as_pendingspent(ys.to_vec()).await.unwrap();
+        for y in ys {
+            pdb.mark_pending_as_spent(*y).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn protest_rabid_releases_melt_inputs() {
+        let quote_id = Uuid::new_v4();
+        let (_, keyset) = core_tests::generate_random_ecash_keyset();
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(16u64), Amount::from(8u64)],
+        );
+        let fingerprints: Vec<_> = proofs
+            .iter()
+            .cloned()
+            .map(|p| bcr_common::wire::keys::ProofFingerprint::try_from(p).unwrap())
+            .collect();
+        let ys: Vec<cashu::PublicKey> = proofs.iter().map(|p| p.y().unwrap()).collect();
+        let mut sent_secrets: Vec<String> = proofs.iter().map(|p| p.secret.to_string()).collect();
+        sent_secrets.sort();
+        let pdb = in_memory_pdb();
+        for proof in proofs {
+            pdb.store_pendingspent(proof).await.unwrap();
+        }
+
+        let mut mdb = MockMintMeltRepository::new();
+        let record = melt_record(
+            quote_id,
+            mock_melt_commitment_body_with_inputs(quote_id, 100, fingerprints),
+        );
+        mdb.expect_load_melt_commitment()
+            .times(2)
+            .returning(move |_| Ok(record.clone()));
+        mdb.expect_delete_melt_commitment().never();
+        let mut beta = MockClowderMintConnector::new();
+        beta.expect_post_protest_melt()
+            .times(2)
+            .withf(move |req| {
+                let sent = req.inputs.as_ref().expect("inputs are sent");
+                let mut secrets: Vec<String> = sent.iter().map(|p| p.secret.to_string()).collect();
+                secrets.sort();
+                secrets == sent_secrets && sent.iter().all(|p| p.dleq.is_none())
+            })
+            .returning(|_| Ok(ProtestOutcome::Rabid));
+        let pocket = pocket_with_beta(
+            pdb.clone(),
+            Arc::new(mdb),
+            vec![Arc::new(beta) as Arc<dyn crate::ClowderMintConnector>],
+            random_alpha_id(),
+        );
+
+        let result = pocket.protest_melt(quote_id).await.unwrap();
+        assert_eq!(result.base.status, wire_common::ProtestStatus::Rabid);
+        assert_eq!(
+            stored_states(pdb.as_ref(), &ys).await,
+            vec![cdk07::State::Unspent; 2]
+        );
+
+        spend(pdb.as_ref(), &ys).await;
+        let result = pocket.protest_melt(quote_id).await.unwrap();
+        assert_eq!(result.base.status, wire_common::ProtestStatus::Rabid);
+        assert_eq!(
+            stored_states(pdb.as_ref(), &ys).await,
+            vec![cdk07::State::Spent; 2]
+        );
+    }
+
+    #[tokio::test]
+    async fn protest_all_betas_failing_keeps_commitment() {
+        let quote_id = Uuid::new_v4();
+        let mut mdb = MockMintMeltRepository::new();
+        let record = melt_record(quote_id, mock_melt_commitment_body(quote_id, 100));
+        mdb.expect_load_melt_commitment()
+            .returning(move |_| Ok(record.clone()));
+        mdb.expect_delete_melt_commitment().never();
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_load_proofs().returning(|_| Ok(HashMap::new()));
+
+        let betas: Vec<Arc<dyn crate::ClowderMintConnector>> = (0..3)
+            .map(|_| {
+                let mut beta = MockClowderMintConnector::new();
+                beta.expect_post_protest_melt().times(1).returning(|_| {
+                    Err(Error::MintClientServiceUnavailable("beta down".to_string()))
+                });
+                Arc::new(beta) as Arc<dyn crate::ClowderMintConnector>
+            })
+            .collect();
+        let pocket = pocket_with_beta(Arc::new(pdb), Arc::new(mdb), betas, random_alpha_id());
+
+        let result = pocket.protest_melt(quote_id).await;
+        assert!(
+            matches!(result, Err(Error::MintClientServiceUnavailable(_))),
+            "{result:?}"
+        );
     }
 
     #[tokio::test]
@@ -3037,6 +3192,7 @@ mod tests {
         let mut mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
         let mut connector = MockClowderMintConnector::new();
+        let mut beta_connector = MockClowderMintConnector::new();
 
         let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64])
             .expect("valid sig bytes");
@@ -3059,15 +3215,10 @@ mod tests {
             })
         });
 
-        connector
+        beta_connector
             .expect_post_protest_mint()
             .times(1)
-            .returning(move |_| {
-                Ok(wire_mint::MintProtestResponse {
-                    status: wire_common::ProtestStatus::Resolved,
-                    signatures: Some(blind_sigs.clone()),
-                })
-            });
+            .returning(move |_| Ok(ProtestOutcome::Resolved(blind_sigs.clone())));
 
         let keyset_clone = mintkeyset.clone();
         connector
@@ -3083,7 +3234,12 @@ mod tests {
 
         mdb.expect_delete_mint().times(1).returning(move |_| Ok(()));
 
-        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let pocket = pocket_with_beta(
+            Arc::new(pdb),
+            Arc::new(mdb),
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
+            random_alpha_id(),
+        );
         let ProtestResult { status, result } = pocket
             .protest_mint(uuid, Arc::new(connector))
             .await
@@ -3115,7 +3271,8 @@ mod tests {
 
         let mut mdb = MockMintMeltRepository::new();
         let pdb = MockPocketRepository::new();
-        let mut connector = MockClowderMintConnector::new();
+        let connector = MockClowderMintConnector::new();
+        let mut beta_connector = MockClowderMintConnector::new();
 
         let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64])
             .expect("valid sig bytes");
@@ -3138,17 +3295,17 @@ mod tests {
             })
         });
 
-        connector
+        beta_connector
             .expect_post_protest_mint()
             .times(1)
-            .returning(move |_| {
-                Ok(wire_mint::MintProtestResponse {
-                    status: wire_common::ProtestStatus::Rabid,
-                    signatures: None,
-                })
-            });
+            .returning(move |_| Ok(ProtestOutcome::Rabid));
 
-        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let pocket = pocket_with_beta(
+            Arc::new(pdb),
+            Arc::new(mdb),
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
+            random_alpha_id(),
+        );
         let ProtestResult { status, result } = pocket
             .protest_mint(uuid, Arc::new(connector))
             .await
@@ -3163,7 +3320,6 @@ mod tests {
         let amount = Amount::from(24u64);
         let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
-        let k_infos = test_kinfos(info);
 
         // Generate input proofs that were committed
         let input_amounts = [Amount::from(16u64), Amount::from(8u64)];
@@ -3241,33 +3397,17 @@ mod tests {
             .expect_post_protest_swap()
             .times(1)
             .returning(move |_| {
-                Ok(wire_swap::SwapProtestResponse {
-                    status: wire_common::ProtestStatus::Resolved,
-                    signatures: Some(blind_sigs.iter().cloned().map(Into::into).collect()),
-                })
+                Ok(ProtestOutcome::Resolved(
+                    blind_sigs.iter().cloned().map(Into::into).collect(),
+                ))
             });
         setup_attestation_mock(&mut beta_connector);
 
-        // Alpha handles keyset lookup (for unblinding + digest_proofs)
+        // Alpha handles keyset lookup (for unblinding); it is never asked to swap again
         let keyset_clone = mintkeyset.clone();
         alpha_connector
             .expect_get_mint_keyset()
             .returning(move |_| Ok(bcr_wallet_core::util::to_keyset(&keyset_clone, None)));
-
-        // Mocks for digest_proofs swap (runs against alpha)
-        pdb.expect_reserve_counter()
-            .with(eq(kid), always())
-            .returning(|_, _| Ok(0));
-        setup_commitment_mocks(&mut alpha_connector, &mut pdb);
-        let swap_keyset = mintkeyset.clone();
-        alpha_connector
-            .expect_post_swap_committed()
-            .times(1)
-            .returning(move |_, outp, _| {
-                let amounts: Vec<_> = outp.iter().map(|b| b.amount).collect();
-                let signatures = core_tests::generate_ecash_signatures(&swap_keyset, &amounts);
-                Ok(signatures)
-            });
 
         pdb.expect_store_new().returning(|p| {
             let y = p.y().expect("Hash to curve should not fail");
@@ -3288,12 +3428,7 @@ mod tests {
             alpha_id,
         );
         let ProtestResult { status, result } = pocket
-            .protest_swap(
-                commitment_sig,
-                &k_infos,
-                Arc::new(alpha_connector),
-                test_swap_config(),
-            )
+            .protest_swap(commitment_sig, Arc::new(alpha_connector))
             .await
             .expect("protest_swap resolved works");
 
@@ -3305,8 +3440,7 @@ mod tests {
 
     #[tokio::test]
     async fn protest_swap_rabid() {
-        let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
-        let k_infos = test_kinfos(info);
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
 
         let input_amounts = [Amount::from(16u64), Amount::from(8u64)];
         let input_proofs = core_tests::generate_random_ecash_proofs(&mintkeyset, &input_amounts);
@@ -3354,16 +3488,17 @@ mod tests {
         pdb.expect_load_proofs()
             .times(1)
             .returning(move |_| Ok(proofs_map.clone()));
+        let pending = input_proofs_map.clone();
+        pdb.expect_load_proof()
+            .returning(move |y| Ok((pending[&y].clone(), cdk07::State::PendingSpent)));
+        pdb.expect_revert_pendingspent_to_unspent()
+            .times(input_ys.len())
+            .returning(move |y| Ok(input_proofs_map[&y].clone()));
 
         beta_connector
             .expect_post_protest_swap()
             .times(1)
-            .returning(|_| {
-                Ok(wire_swap::SwapProtestResponse {
-                    status: wire_common::ProtestStatus::Rabid,
-                    signatures: None,
-                })
-            });
+            .returning(|_| Ok(ProtestOutcome::Rabid));
 
         let alpha_id = bitcoin::secp256k1::PublicKey::from_keypair(
             &bitcoin::secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
@@ -3375,17 +3510,72 @@ mod tests {
             alpha_id,
         );
         let ProtestResult { status, result } = pocket
-            .protest_swap(
-                commitment_sig,
-                &k_infos,
-                Arc::new(alpha_connector),
-                test_swap_config(),
-            )
+            .protest_swap(commitment_sig, Arc::new(alpha_connector))
             .await
             .expect("protest_swap rabid works");
 
         assert!(matches!(status, wire_common::ProtestStatus::Rabid));
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn protest_rabid_releases_swap_inputs() {
+        let (_, keyset) = core_tests::generate_random_ecash_keyset();
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(16u64), Amount::from(8u64)],
+        );
+        let ys: Vec<cashu::PublicKey> = proofs.iter().map(|p| p.y().unwrap()).collect();
+        let pdb = in_memory_pdb();
+        for proof in proofs {
+            pdb.store_pendingspent(proof).await.unwrap();
+        }
+        let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let commitment = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64]).unwrap();
+        pdb.store_commitment(bcr_wallet_persistence::SwapCommitmentRecord {
+            inputs: ys.clone(),
+            outputs: vec![],
+            expiry: 1000,
+            commitment,
+            ephemeral_secret: secp256k1::SecretKey::from_keypair(&ephemeral),
+            body_content: "dGVzdA==".to_string(),
+            wallet_key: cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral)),
+            premints: HashMap::new(),
+            input_proofs: vec![],
+        })
+        .await
+        .unwrap();
+
+        let mut beta = MockClowderMintConnector::new();
+        beta.expect_post_protest_swap()
+            .times(2)
+            .returning(|_| Ok(ProtestOutcome::Rabid));
+        let pocket = pocket_with_beta(
+            pdb.clone(),
+            Arc::new(MockMintMeltRepository::new()),
+            vec![Arc::new(beta) as Arc<dyn crate::ClowderMintConnector>],
+            random_alpha_id(),
+        );
+        let protest = || pocket.protest_swap(commitment, Arc::new(MockClowderMintConnector::new()));
+
+        assert_eq!(
+            protest().await.unwrap().status,
+            wire_common::ProtestStatus::Rabid
+        );
+        assert_eq!(
+            stored_states(pdb.as_ref(), &ys).await,
+            vec![cdk07::State::Unspent; 2]
+        );
+
+        spend(pdb.as_ref(), &ys).await;
+        assert_eq!(
+            protest().await.unwrap().status,
+            wire_common::ProtestStatus::Rabid
+        );
+        assert_eq!(
+            stored_states(pdb.as_ref(), &ys).await,
+            vec![cdk07::State::Spent; 2]
+        );
     }
 
     #[tokio::test]

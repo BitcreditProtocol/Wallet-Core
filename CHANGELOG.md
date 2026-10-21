@@ -4,6 +4,8 @@
 * `wallet_migrate_rabid` swaps the exchanged proofs into a keyset the substitute created during the exchange instead of failing with `MigrationIncomplete`
 * The 12 words default for `generateRandomMnemonic` is now a restriction (for compatibility with E-Bill)
     * `generateRandomMnemonic` has no `length` parameter anymore, it defaults to 12
+* `wallet_protest_mint`, `wallet_protest_swap` and `wallet_protest_melt` start the rabid migration when the answer is `Rabid`, and a resolved melt protest settles the melt's inputs as spent; `run_jobs` retries the migration
+* Onchain melt transactions store their `quote_id`, so `wallet_protest_melt` can be called with it by hand
 
 
 # 0.9.14
