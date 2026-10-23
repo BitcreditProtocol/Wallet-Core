@@ -455,19 +455,16 @@ impl Pocket {
             keysets.insert(*kid, keyset);
         }
 
+        let attestation = self.beta.attest(&swap_proofs).await?;
+
         // prepare the premints
+        let mut counters = Counters::new(self.pdb.as_ref());
         let mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets> = BTreeMap::new();
         for (kid, amount) in swap_plan {
             let kid: ecash::Id = kid.into();
-            let premint = premint_from_counter(
-                self.pdb.as_ref(),
-                &self.seed,
-                kid,
-                amount,
-                &SplitTarget::None,
-                &keysets[&kid],
-            )
-            .await?;
+            let premint = counters
+                .premint_from_counter(&self.seed, kid, amount, &SplitTarget::None, &keysets[&kid])
+                .await?;
             premints.insert(kid, premint);
         }
 
@@ -476,11 +473,12 @@ impl Pocket {
             self.unit.clone(),
             swap_proofs,
             premints,
+            &counters,
             keysets,
             client,
             self.pdb.as_ref(),
             swap_config,
-            self.beta.as_ref(),
+            attestation,
         )
         .await?;
         Ok((cashed_in, ys))
@@ -832,7 +830,10 @@ impl super::PocketApi for Pocket {
             "Swapping to unlocked substitute proofs {swap_plan:?} - {change_amount} will be used for fees and stored temporarily as foreign mint proofs."
         );
 
+        let attestation = beta_provider.attest(&proofs).await?;
+
         // prepare the premints
+        let mut counters = Counters::new(self.pdb.as_ref());
         let mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets> = BTreeMap::new();
         let mut remaining_payment = send_amount;
         // collect payments by kid, so we can reconstruct it after the swap
@@ -852,19 +853,14 @@ impl super::PocketApi for Pocket {
             };
 
             let kid: ecash::Id = kid.into();
-            let premint = premint_from_counter(
-                self.pdb.as_ref(),
-                &self.seed,
-                kid,
-                amount,
-                &target,
-                &keysets[&kid],
-            )
-            .await?;
+            let premint = counters
+                .premint_from_counter(&self.seed, kid, amount, &target, &keysets[&kid])
+                .await?;
             premints.insert(kid, premint);
         }
 
         if remaining_payment != Amount::ZERO {
+            counters.release().await;
             return Err(Error::Swap(format!(
                 "swap plan cannot fund payment target {send_amount}, missing {remaining_payment}"
             )));
@@ -875,7 +871,6 @@ impl super::PocketApi for Pocket {
             .flat_map(|premint| premint.blinded_messages())
             .collect();
 
-        let attestation = beta_provider.attest(&proofs).await?;
         let ((signatures, mut premints), _) = super::committed_swap(
             substitute_client.as_ref(),
             None,
@@ -884,6 +879,7 @@ impl super::PocketApi for Pocket {
             &swap_config,
             premints.into_iter().collect(),
             attestation,
+            &counters,
         )
         .await?;
 
@@ -1282,15 +1278,15 @@ impl DebitPocketApi for Pocket {
         };
         let kid = active_info.id;
         let keyset = client.get_mint_keyset(kid).await?;
-        let premint = premint_from_counter(
-            self.pdb.as_ref(),
-            &self.seed,
-            kid,
-            cashu::Amount::from(amount.to_sat()),
-            &SplitTarget::None,
-            &keyset,
-        )
-        .await?;
+        let premint = Counters::new(self.pdb.as_ref())
+            .premint_from_counter(
+                &self.seed,
+                kid,
+                cashu::Amount::from(amount.to_sat()),
+                &SplitTarget::None,
+                &keyset,
+            )
+            .await?;
 
         let blinded_messages = premint.blinded_messages();
 
@@ -2043,6 +2039,7 @@ mod tests {
         let stored = Arc::new(Mutex::new(Vec::<cdk00::Proof>::new()));
         let mut pdb = MockPocketRepository::new();
         pdb.expect_reserve_counter().returning(|_, _| Ok(0));
+        pdb.expect_release_counter().returning(|_, _, _| Ok(()));
         let records = commitments.clone();
         pdb.expect_store_commitment()
             .times(1)
@@ -2149,6 +2146,56 @@ mod tests {
         let stored = stored.lock().unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].amount, cashed);
+    }
+
+    #[tokio::test]
+    async fn receive_releases_counters_only_when_the_mint_rejects_the_inputs() {
+        use bcr_common::{
+            client::mint::{BRError, Error as MintError},
+            wire::clowder::ClowderRejection,
+        };
+        let rejection = |r: ClowderRejection| {
+            Error::Mint(MintError::InvalidRequest(BRError::Clowder(
+                serde_json::to_value(r).unwrap(),
+            )))
+        };
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = test_kinfos(info);
+        let cases = [
+            (rejection(ClowderRejection::AlreadySpent { index: 0 }), true),
+            (
+                rejection(ClowderRejection::DuplicateSignature { index: 0 }),
+                false,
+            ),
+            (rejection(ClowderRejection::OutputsReserved), false),
+            (
+                Error::MintClientInternal("operation timed out".into()),
+                false,
+            ),
+        ];
+        for (error, released) in cases {
+            let mut connector = MockClowderMintConnector::new();
+            let mint_keyset = bcr_wallet_core::util::to_keyset(&keyset, None);
+            connector
+                .expect_get_mint_keyset()
+                .returning(move |_| Ok(mint_keyset.clone()));
+            let mut error = Some(error);
+            connector
+                .expect_post_swap_commitment()
+                .returning(move |_, _, _, _, _| Err(error.take().unwrap()));
+            let pdb = in_memory_pdb();
+            let proofs = core_tests::generate_random_ecash_proofs(
+                &keyset,
+                &[Amount::from(1u64), Amount::from(2u64)],
+            );
+            pocket(pdb.clone(), Arc::new(MockMintMeltRepository::new()))
+                .receive_proofs(Arc::new(connector), &k_infos, proofs, test_swap_config())
+                .await
+                .expect_err("commitment fails");
+            let tip = pdb.reserve_counter(kid, 0).await.unwrap();
+            assert_eq!(tip == 0, released, "tip {tip}");
+        }
     }
 
     fn expired_commitment(
