@@ -1424,6 +1424,22 @@ impl PocketRepository for PocketDB {
         Ok(())
     }
 
+    async fn release_counter(&self, kid: ecash::Id, start: u32, n: u32) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.counter_table;
+        spawn_blocking(move || {
+            Self::update_counter_sync(db_clone, table, kid, |counter| {
+                Ok(if start.checked_add(n) == Some(counter) {
+                    start
+                } else {
+                    counter
+                })
+            })
+        })
+        .await??;
+        Ok(())
+    }
+
     async fn store_commitment(&self, record: crate::SwapCommitmentRecord) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.commitment_table;
@@ -1943,6 +1959,21 @@ mod tests {
             repo.reserve_counter(kid, 0).await.expect("reserve works"),
             100
         );
+    }
+
+    #[tokio::test]
+    async fn test_release_counter_rolls_back_only_the_latest_reservation() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let kid = core_tests::generate_random_ecash_keyset().0.id;
+
+        let first = repo.reserve_counter(kid, 3).await.unwrap();
+        let second = repo.reserve_counter(kid, 2).await.unwrap();
+        repo.release_counter(kid, first, 3).await.unwrap();
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 5);
+
+        repo.release_counter(kid, second, 2).await.unwrap();
+        repo.release_counter(kid, second, 2).await.unwrap();
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), second);
     }
 
     #[tokio::test]
