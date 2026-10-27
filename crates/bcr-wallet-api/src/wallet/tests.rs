@@ -5914,6 +5914,25 @@ async fn finish_migration_recovers_held_inputs_after_the_evidence_moved() {
 }
 
 #[tokio::test]
+async fn finish_migration_retries_the_swap_of_an_exchanged_held_input() {
+    let t = MigrationCtx::new(&[], &[4]).await;
+    let wlt = t.wallet(vec![], 1, false).await;
+    t.migrate(&wlt).await.unwrap();
+    let mut tx_repo = MockTransactionRepository::new();
+    tx_repo.expect_list_txs().returning(|| Ok(vec![]));
+    wlt.write().await.tx_repo = Box::new(tx_repo);
+    assert!(wlt.read().await.finish_migration().await.is_err());
+    assert!(matches!(
+        t.states().await[&t.y(0)],
+        MigrationJournalState::Exchanged(_)
+    ));
+    assert_eq!(t.received(), Amount::ZERO);
+    wlt.read().await.finish_migration().await.unwrap();
+    assert_eq!(t.received(), Amount::from(4));
+    assert!(t.pdb.load().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn swap_exchanged_lost_response_already_restored_counts_as_swapped() {
     let (info, keyset) = core_tests::generate_random_ecash_keyset();
     let proofs = core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8)]);

@@ -553,20 +553,27 @@ impl Wallet {
             .filter(tx_can_be_refreshed)
             .flat_map(|tx| tx.ys)
             .collect();
-        let mut held: Vec<_> = self
-            .journal
-            .load()
-            .await?
-            .into_iter()
-            .filter(|(y, e)| {
-                &e.header.substitute_url == self.client.mint_url()
-                    && e.state == MigrationJournalState::Held
-                    && !in_tx.contains(y)
-            })
-            .collect();
-        held.sort_by_key(|(y, _)| *y);
+        let mut held = Vec::new();
         let mut ys = Vec::new();
         let mut unlocked = Vec::new();
+        for (y, entry) in self.journal.load().await? {
+            if &entry.header.substitute_url != self.client.mint_url() || in_tx.contains(&y) {
+                continue;
+            }
+            if entry.state == MigrationJournalState::Held {
+                held.push((y, entry));
+            } else if let MigrationJournalState::Exchanged(beta_proofs) = entry.state {
+                unlocked.extend(util::unlock_offline_exchanged(
+                    beta_proofs,
+                    &[entry.proof.secret],
+                    &entry.exchange_key,
+                    &entry.header.substitute_clowder_id,
+                    0,
+                )?);
+                ys.push(y);
+            }
+        }
+        held.sort_by_key(|(y, _)| *y);
         for attempt in 0..2 {
             let mut failed = Vec::new();
             for (y, entry) in held {
