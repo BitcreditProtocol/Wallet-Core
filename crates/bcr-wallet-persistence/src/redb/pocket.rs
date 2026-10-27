@@ -1604,6 +1604,33 @@ impl PocketDB {
         Ok(())
     }
 
+    fn rehead_journal_sync(
+        db: Arc<Database>,
+        journal_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        keys: bitcoin::secp256k1::Keypair,
+        old: MigrationJournalHeader,
+        new: MigrationJournalHeader,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+        {
+            let mut journal = write_txn.open_table(journal_table)?;
+            let mut moved = Vec::new();
+            for item in journal.range::<&[u8]>(..)? {
+                let (k, v) = item?;
+                let entry = from_stored_journal_entry_v1(&v.value(), keys)?;
+                if entry.header == old {
+                    moved.push((k.value().to_vec(), entry));
+                }
+            }
+            for (key, mut entry) in moved {
+                entry.header = new.clone();
+                journal.insert(key.as_slice(), to_stored_journal_entry_v1(entry, keys)?)?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
     fn load_journal_sync(
         db: Arc<Database>,
         journal_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
@@ -1672,6 +1699,13 @@ impl MigrationJournalRepository for PocketDB {
         let table = self.migration_journal_table;
         let keys = self.keys;
         spawn_blocking(move || Self::update_journal_sync(db_clone, table, keys, ys, state)).await?
+    }
+
+    async fn rehead(&self, old: MigrationJournalHeader, new: MigrationJournalHeader) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.migration_journal_table;
+        let keys = self.keys;
+        spawn_blocking(move || Self::rehead_journal_sync(db_clone, table, keys, old, new)).await?
     }
 
     async fn load(&self) -> Result<HashMap<cdk01::PublicKey, MigrationJournalEntry>> {
@@ -2275,5 +2309,62 @@ mod tests {
         let entries = repo.load().await.expect("load");
         assert_eq!(entries[&y1].header, first);
         assert_eq!(entries[&y2].header, second);
+    }
+
+    #[tokio::test]
+    async fn migration_journal_rehead_moves_only_that_headers_entries() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let (_, keyset) = core_tests::generate_random_ecash_keyset();
+        let [held, unspent, other] =
+            core_tests::generate_random_ecash_proofs(&keyset, &[1u64, 2, 4].map(Amount::from))
+                .try_into()
+                .expect("three proofs");
+        let y1 = repo.store_pendingspent(held).await.expect("store");
+        let y2 = repo.store_new(unspent).await.expect("store");
+        let y3 = repo.store_new(other).await.expect("store");
+        let old = MigrationJournalHeader {
+            substitute_url: url::Url::parse("https://sub.example/").expect("valid url"),
+            substitute_clowder_id: crate::test_utils::tests::test_pub_key(),
+            alpha_id: crate::test_utils::tests::test_other_pub_key(),
+            evidence_digest: [0x11; 32],
+        };
+        let other_outage = MigrationJournalHeader {
+            evidence_digest: [0x22; 32],
+            ..old.clone()
+        };
+        let new = MigrationJournalHeader {
+            substitute_url: url::Url::parse("https://moved.example/").expect("valid url"),
+            substitute_clowder_id: crate::test_utils::tests::test_other_pub_key(),
+            evidence_digest: [0x33; 32],
+            ..old.clone()
+        };
+        repo.put(
+            old.clone(),
+            vec![
+                (y1, cashu::SecretKey::generate()),
+                (y2, cashu::SecretKey::generate()),
+            ],
+        )
+        .await
+        .expect("put works");
+        repo.put(
+            other_outage.clone(),
+            vec![(y3, cashu::SecretKey::generate())],
+        )
+        .await
+        .expect("put works");
+        let before = repo.load().await.expect("load");
+
+        repo.rehead(old, new.clone()).await.expect("rehead works");
+
+        let after = repo.load().await.expect("load");
+        for y in [y1, y2] {
+            assert_eq!(after[&y].header, new);
+            assert_eq!(after[&y].proof, before[&y].proof);
+            assert_eq!(after[&y].exchange_key, before[&y].exchange_key);
+            assert_eq!(after[&y].state, before[&y].state);
+        }
+        assert_eq!(after[&y1].state, MigrationJournalState::Held);
+        assert_eq!(after[&y3], before[&y3]);
     }
 }

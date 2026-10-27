@@ -194,7 +194,7 @@ pub mod tests {
                 &self,
                 rid: Uuid,
                 client: Arc<dyn ClowderMintConnector>,
-            ) -> Result<(bitcoin::Txid, HashMap<cashu::PublicKey, cashu::Proof>, crate::pocket::Reservation)>;
+            ) -> Result<(bitcoin::Txid, Uuid, HashMap<cashu::PublicKey, cashu::Proof>, crate::pocket::Reservation)>;
             async fn mint_onchain(
                 &self,
                 amount: bitcoin::Amount,
@@ -208,9 +208,7 @@ pub mod tests {
             async fn check_pending_commitments(
                 &self,
                 tstamp: u64,
-                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
                 client: Arc<dyn ClowderMintConnector>,
-                swap_config: SwapConfig,
             ) -> Result<()>;
             async fn protest_mint(
                 &self,
@@ -220,15 +218,14 @@ pub mod tests {
             async fn protest_swap(
                 &self,
                 commitment_sig: bitcoin::secp256k1::schnorr::Signature,
-                keysets_info: &HashMap<ecash::Id, KeySetInfo>,
                 alpha_client: Arc<dyn ClowderMintConnector>,
-                swap_config: SwapConfig,
             ) -> Result<ProtestResult>;
             async fn protest_melt(
                 &self,
                 quote_id: Uuid,
             ) -> Result<MeltProtestResult>;
             async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>>;
+            async fn forget_melt_commitment(&self, quote_id: Uuid) -> Result<()>;
             async fn lock_exchange(
                 &self,
                 record: bcr_wallet_persistence::ExchangeRecord,

@@ -468,6 +468,32 @@ impl Wallet {
         }
     }
 
+    /// The journal header of a migration to `substitute_url`, from the substitute's clowder id
+    /// and its evidence that this wallet's alpha is offline
+    async fn migration_header(&self, substitute_url: url::Url) -> Result<MigrationJournalHeader> {
+        let substitute = (self.client_factory)(substitute_url.clone());
+        let substitute_clowder_id = substitute.get_clowder_id().await?;
+        let evidence_digest = Self::alpha_evidence(substitute.as_ref(), self.clowder_id).await?;
+        Ok(MigrationJournalHeader {
+            substitute_url,
+            substitute_clowder_id,
+            alpha_id: self.clowder_id,
+            evidence_digest,
+        })
+    }
+
+    /// The digest of the substitute's current evidence that this wallet's alpha is offline
+    async fn alpha_evidence(
+        substitute: &dyn ClowderMintConnector,
+        alpha_id: secp256k1::PublicKey,
+    ) -> Result<[u8; 32]> {
+        substitute
+            .get_alpha_offline(alpha_id)
+            .await?
+            .evidence_digest
+            .ok_or_else(|| Error::Swap("alpha not offline at substitute".into()))
+    }
+
     async fn exchange_journaled(
         &self,
         substitute: &dyn ClowderMintConnector,
@@ -516,6 +542,104 @@ impl Wallet {
         }
         journaled.sort_by_key(|(y, _)| *y);
         Ok(Some(journaled))
+    }
+
+    pub(crate) async fn recover_held(&self) -> Result<()> {
+        let in_tx: HashSet<_> = self
+            .tx_repo
+            .list_txs()
+            .await?
+            .into_iter()
+            .filter(tx_can_be_refreshed)
+            .flat_map(|tx| tx.ys)
+            .collect();
+        let mut held = Vec::new();
+        let mut ys = Vec::new();
+        let mut unlocked = Vec::new();
+        for (y, entry) in self.journal.load().await? {
+            if &entry.header.substitute_url != self.client.mint_url() || in_tx.contains(&y) {
+                continue;
+            }
+            if entry.state == MigrationJournalState::Held {
+                held.push((y, entry));
+            } else if let MigrationJournalState::Exchanged(beta_proofs) = entry.state {
+                unlocked.extend(util::unlock_offline_exchanged(
+                    beta_proofs,
+                    &[entry.proof.secret],
+                    &entry.exchange_key,
+                    &entry.header.substitute_clowder_id,
+                    0,
+                )?);
+                ys.push(y);
+            }
+        }
+        held.sort_by_key(|(y, _)| *y);
+        for attempt in 0..2 {
+            let mut failed = Vec::new();
+            for (y, entry) in held {
+                let header = entry.header.clone();
+                match self
+                    .exchange_journaled(self.client.as_ref(), &header, y, entry)
+                    .await
+                {
+                    Ok(proofs) => {
+                        unlocked.extend(proofs);
+                        ys.push(y);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Held proof {y:?} not yet recoverable: {e}");
+                        if !e.may_have_been_received() {
+                            failed.push((y, header));
+                        }
+                    }
+                }
+            }
+            if failed.is_empty() || attempt == 1 {
+                break;
+            }
+            let mut stale: Vec<MigrationJournalHeader> = Vec::new();
+            for (_, header) in &failed {
+                if !stale.contains(header) {
+                    stale.push(header.clone());
+                }
+            }
+            for header in stale {
+                let digest = match Self::alpha_evidence(self.client.as_ref(), header.alpha_id).await
+                {
+                    Ok(digest) => digest,
+                    Err(e) => {
+                        tracing::warn!("Alpha evidence unavailable at the substitute: {e}");
+                        continue;
+                    }
+                };
+                let fresh = MigrationJournalHeader {
+                    evidence_digest: digest,
+                    ..header.clone()
+                };
+                if fresh != header {
+                    self.journal.rehead(header, fresh).await?;
+                }
+            }
+            let journal = self.journal.load().await?;
+            held = failed
+                .into_iter()
+                .filter_map(|(y, _)| journal.get(&y).map(|e| (y, e.clone())))
+                .collect();
+        }
+        if unlocked.is_empty() {
+            return Ok(());
+        }
+        self.swap_exchanged(
+            self.client.clone(),
+            &self.mint_keyset_infos,
+            unlocked,
+            self.swap_config(),
+        )
+        .await?;
+        self.journal
+            .update(ys, MigrationJournalState::Swapped)
+            .await?;
+        Ok(())
     }
 
     async fn reclaim_journaled(
@@ -1334,6 +1458,7 @@ impl Wallet {
         let alpha_betas = alpha_client.get_clowder_betas().await?;
         let alpha_beta_clients: Vec<_> = alpha_betas
             .iter()
+            .filter(|b| b.clowder_id != path[0].node_id)
             .map(|b| (self.client_factory)(b.url.clone()))
             .collect();
         let alpha_beta = Arc::new(crate::pocket::RandomBetaProvider::new(

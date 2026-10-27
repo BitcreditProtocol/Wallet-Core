@@ -213,6 +213,18 @@ impl Error {
             _ => false,
         }
     }
+
+    /// Whether the mint may have acted on the request despite this error: no answer came, a
+    /// gateway answered in the mint's place, or the mint's answer could not be used
+    pub fn may_have_been_received(&self) -> bool {
+        !matches!(
+            self,
+            Error::Mint(
+                bcr_common::client::mint::Error::InvalidRequest(_)
+                    | bcr_common::client::mint::Error::ResourceNotFound(_),
+            )
+        )
+    }
 }
 
 impl From<crate::external::Error> for Error {
@@ -284,6 +296,9 @@ impl From<crate::external::Error> for Error {
                     Error::MintClientInternal(error.to_string())
                 }
                 bcr_common::client::mint::Error::BorshSign(error) => {
+                    Error::MintClientInternal(error.to_string())
+                }
+                bcr_common::client::mint::Error::ProtestOutcome(error) => {
                     Error::MintClientInternal(error.to_string())
                 }
             },
