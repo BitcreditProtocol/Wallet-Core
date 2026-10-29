@@ -1,3 +1,7 @@
+# 0.9.16
+
+* TBD
+
 # 0.9.15
 
 * A swap whose inputs the mint rejects (already spent, reserved by another commitment or invalid), that resumes a stored commitment or that fails before sending its commitment gives back the seed counters it reserved, and a failed attestation no longer reserves any, so repeated failed receives no longer push restore past its gap limit (adds `PocketRepository::release_counter`)
