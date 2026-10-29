@@ -197,6 +197,21 @@ pub enum Error {
 }
 
 impl Error {
+    pub fn is_input_rejection(&self) -> bool {
+        use bcr_common::wire::clowder::ClowderRejection;
+        match self {
+            Error::Mint(bcr_common::client::mint::Error::InvalidRequest(
+                bcr_common::client::mint::BRError::Clowder(value),
+            )) => matches!(
+                serde_json::from_value(value.clone()),
+                Ok(ClowderRejection::AlreadySpent { .. }
+                    | ClowderRejection::InputsReserved
+                    | ClowderRejection::InvalidProof)
+            ),
+            _ => false,
+        }
+    }
+
     pub fn is_mint_rejection(&self) -> bool {
         match self {
             Error::Mint(bcr_common::client::mint::Error::InvalidRequest(

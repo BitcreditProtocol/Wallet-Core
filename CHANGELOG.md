@@ -1,5 +1,6 @@
 # 0.9.15
 
+* A swap whose inputs the mint rejects (already spent, reserved by another commitment or invalid), that resumes a stored commitment or that fails before sending its commitment gives back the seed counters it reserved, and a failed attestation no longer reserves any, so repeated failed receives no longer push restore past its gap limit (adds `PocketRepository::release_counter`)
 * An interrupted offline intermint receive completes when the token is received again: the offline exchange key is derived from the wallet seed and the token's proofs, so a retry sends the same request
 * `wallet_migrate_rabid` swaps the exchanged proofs into a keyset the substitute created during the exchange instead of failing with `MigrationIncomplete`
 * The 12 words default for `generateRandomMnemonic` is now a restriction (for compatibility with E-Bill)
