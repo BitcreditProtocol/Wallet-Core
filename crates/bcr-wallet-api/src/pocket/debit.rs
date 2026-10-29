@@ -2198,6 +2198,32 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn receive_releases_counters_when_the_stored_commitment_lookup_fails() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_reserve_counter().returning(|_, _| Ok(0));
+        pdb.expect_release_counter()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        pdb.expect_list_commitments().returning(|| {
+            Err(bcr_wallet_persistence::error::Error::BorshSerialization(
+                "simulated lookup failure".to_string(),
+            ))
+        });
+        let mut connector = MockClowderMintConnector::new();
+        let mint_keyset = bcr_wallet_core::util::to_keyset(&keyset, None);
+        connector
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(mint_keyset.clone()));
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(1u64)]);
+        pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()))
+            .receive_proofs(Arc::new(connector), &k_infos, proofs, test_swap_config())
+            .await
+            .expect_err("lookup fails");
+    }
+
     fn expired_commitment(
         keyset: &ecash::MintKeySet,
         with_input_proofs: bool,

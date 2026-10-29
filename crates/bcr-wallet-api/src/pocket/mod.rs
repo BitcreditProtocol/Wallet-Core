@@ -293,6 +293,23 @@ impl<'a> Counters<'a> {
         target: &SplitTarget,
         keyset: &KeySet,
     ) -> Result<cdk00::PreMintSecrets> {
+        let premint = self
+            .reserve_premint(seed, kid, amount, target, keyset)
+            .await;
+        if premint.is_err() {
+            self.release().await;
+        }
+        premint
+    }
+
+    async fn reserve_premint(
+        &mut self,
+        seed: &Seed,
+        kid: ecash::Id,
+        amount: Amount,
+        target: &SplitTarget,
+        keyset: &KeySet,
+    ) -> Result<cdk00::PreMintSecrets> {
         let fee_and_amounts = bcr_wallet_core::util::to_fee_and_amounts(keyset);
         let n = amount.split_targeted(target, &fee_and_amounts)?.len() as u32;
         let start = self.db.reserve_counter(kid, n).await?;
@@ -434,15 +451,14 @@ pub(crate) async fn committed_swap(
     attestation: wire_attestation::IssuanceAttestation,
     counters: &Counters<'_>,
 ) -> Result<(SwapSignatures, bitcoin::secp256k1::schnorr::Signature)> {
-    if let Some(db) = db
-        && let Some(record) = stored_commitment(db, &inputs).await?
-    {
-        let commitment = record.commitment;
-        if let Some(resumed) = resume_commitment(client, record, inputs.clone()).await? {
+    if let Some(db) = db {
+        let resumed = resume_stored(client, db, &inputs).await;
+        if !matches!(resumed, Ok(None)) {
             counters.release().await;
-            return Ok((resumed, commitment));
         }
-        db.delete_commitment(commitment).await?;
+        if let Some(resumed) = resumed? {
+            return Ok(resumed);
+        }
     }
     let committed = commit_swap(
         client,
@@ -464,6 +480,22 @@ pub(crate) async fn committed_swap(
         .await?;
 
     Ok(((signatures, premints), commitment_sig))
+}
+
+async fn resume_stored(
+    client: &dyn ClowderMintConnector,
+    db: &dyn PocketRepository,
+    inputs: &[cdk00::Proof],
+) -> Result<Option<(SwapSignatures, bitcoin::secp256k1::schnorr::Signature)>> {
+    let Some(record) = stored_commitment(db, inputs).await? else {
+        return Ok(None);
+    };
+    let commitment = record.commitment;
+    if let Some(resumed) = resume_commitment(client, record, inputs.to_vec()).await? {
+        return Ok(Some((resumed, commitment)));
+    }
+    db.delete_commitment(commitment).await?;
+    Ok(None)
 }
 
 async fn delete_swap_commitment(
