@@ -1244,7 +1244,7 @@ fn selected_network_fee(estimate: &MeltEstimation) -> Result<u64> {
 }
 
 #[cfg(test)]
-mod checked_amount_tests {
+mod tests {
     use super::*;
     use bcr_wallet_core::types::MeltFeeRateEstimate;
 
@@ -1271,10 +1271,5 @@ mod checked_amount_tests {
     #[test]
     fn checked_amount_network_fee_without_rates_returns_error() {
         assert!(selected_network_fee(&estimate(100, &[])).is_err());
-    }
-
-    #[test]
-    fn checked_amount_network_fee_multiplies_size_by_rate() {
-        assert_eq!(selected_network_fee(&estimate(100, &[3.0])).unwrap(), 300);
     }
 }

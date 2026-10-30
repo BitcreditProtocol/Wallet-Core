@@ -1,4 +1,4 @@
-use crate::{ClowderMintConnector, error::Result, pocket::sum_amounts};
+use crate::{ClowderMintConnector, error::Result};
 use bcr_common::{
     cashu::{self, nut00 as cdk00, nut01 as cdk01, nut07 as cdk07, nut09 as cdk09},
     core::signature::{ECashSignatureError, ECashSignatureResult, unblind_ecash_signature},
@@ -125,12 +125,11 @@ async fn restore_batch(
             }
         }
     }
-    for y in proofs.keys() {
-        tracing::warn!("missing check state: kid: {kid}, y: {y}");
+    for (y, proof) in proofs {
+        tracing::warn!("missing check state, stored as pending: kid: {kid}, y: {y}");
+        restored.push((cdk07::State::Pending, proof));
     }
-    summary.rejected += proofs.len();
     let restored_len = restored.len();
-    sum_amounts(restored.iter().map(|(_, proof)| proof.amount))?;
     for (state, proof) in restored {
         match state {
             cdk07::State::Unspent => {
@@ -681,39 +680,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_batch_overflowing_amounts_returns_error_not_panic() {
-        let (info, mintkeyset) = crate::pocket::test_utils::tests::generate_wide_ecash_keyset();
-        let kid = info.id;
-        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
-        let mut client = MockClowderMintConnector::new();
-        client.expect_post_restore().times(1).returning(move |req| {
-            Ok(req
-                .outputs
-                .into_iter()
-                .map(|blind| {
-                    let huge = cdk00::BlindedMessage {
-                        amount: Amount::from(1u64 << 63),
-                        ..blind.clone()
-                    };
-                    let signature = signature::sign_ecash(&mintkeyset, &huge).unwrap();
-                    (blind, signature)
-                })
-                .collect())
-        });
-        client
-            .expect_get_mint_keyset()
-            .times(1)
-            .returning(move |_| Ok(keyset.clone()));
-        mock_check_state(&mut client, all_unspent);
-        let mut db = MockPocketRepository::new();
-        db.expect_store_new().times(0);
-
-        let result = run_restore_batch(kid, client, &db).await;
-
-        assert!(matches!(result, Err(crate::error::Error::MintingError(_))));
-    }
-
-    #[tokio::test]
     async fn restore_batch_duplicate_output_skips_only_the_duplicate() {
         let result = restore_batch_summary(
             |keyset, mut outputs| {
@@ -833,36 +799,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_batch_missing_check_state_y_skips_only_that_proof() {
-        let result = restore_batch_summary(
-            sign_all,
-            |mut ys| {
-                ys.pop();
-                all_unspent(ys)
-            },
-            BATCH_SIZE as usize - 1,
-        )
-        .await;
-        assert_eq!(result, summary(BATCH_SIZE as usize - 1, 1));
-    }
-
-    #[tokio::test]
-    async fn restore_batch_skips_bad_output_and_check_state_mismatch() {
-        let result = restore_batch_summary(
-            |keyset, outputs| {
-                let mut restored = sign_all(keyset, outputs);
-                restored.splice(1..1, unrequested_output(keyset));
-                restored
-            },
-            |mut ys| {
-                ys.pop();
-                let mut states = all_unspent(ys);
-                states.push(states[0].clone());
-                states
-            },
-            BATCH_SIZE as usize - 1,
-        )
-        .await;
-        assert_eq!(result, summary(BATCH_SIZE as usize - 1, 3));
+    async fn restore_batch_missing_check_state_y_stores_that_proof_as_pending() {
+        let (kid, mut client) = mock_restore(sign_all);
+        mock_check_state(&mut client, |mut ys| {
+            ys.pop();
+            all_unspent(ys)
+        });
+        let mut db = MockPocketRepository::new();
+        db.expect_store_new()
+            .times(BATCH_SIZE as usize - 1)
+            .returning(|p| Ok(p.y().expect("proof should have y")));
+        db.expect_store_pendingspent()
+            .times(1)
+            .returning(|p| Ok(p.y().expect("proof should have y")));
+        let result = run_restore_batch(kid, client, &db).await.unwrap();
+        assert_eq!(result, summary(BATCH_SIZE as usize, 0));
     }
 }

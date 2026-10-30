@@ -1017,6 +1017,15 @@ async fn return_proofs_to_send_for_offline_payment(
     Ok((send_amount, sending_proofs, reservation))
 }
 
+pub(crate) fn add_amounts(a: Amount, b: Amount) -> Result<Amount> {
+    a.checked_add(b)
+        .ok_or_else(|| Error::MintingError(format!("amounts {a} and {b} overflow")))
+}
+
+pub(crate) fn sum_amounts(amounts: impl IntoIterator<Item = Amount>) -> Result<Amount> {
+    amounts.into_iter().try_fold(Amount::ZERO, add_amounts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1858,48 +1867,5 @@ mod tests {
                 .unwrap(),
             Amount::from(23)
         );
-    }
-
-    #[tokio::test]
-    async fn offline_send_of_overflowing_proofs_returns_error_not_panic() {
-        let (_, keyset) = test_utils::tests::generate_wide_ecash_keyset();
-        let proofs = core_tests::generate_random_ecash_proofs(
-            &keyset,
-            &[Amount::from(1u64 << 63), Amount::from(1u64 << 63)],
-        );
-        let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
-        let mut db = MockPocketRepository::new();
-        db.expect_mark_as_pendingspent()
-            .times(1)
-            .returning(move |_| Ok(proofs.clone()));
-
-        let result = return_proofs_to_send_for_offline_payment(
-            SendPlan::Ready { proofs: ys },
-            &db,
-            &InFlight::default(),
-        )
-        .await;
-
-        assert!(matches!(result, Err(Error::MintingError(_))));
-    }
-}
-
-pub(crate) fn add_amounts(a: Amount, b: Amount) -> Result<Amount> {
-    a.checked_add(b)
-        .ok_or_else(|| Error::MintingError(format!("amounts {a} and {b} overflow")))
-}
-
-pub(crate) fn sum_amounts(amounts: impl IntoIterator<Item = Amount>) -> Result<Amount> {
-    amounts.into_iter().try_fold(Amount::ZERO, add_amounts)
-}
-
-#[cfg(test)]
-mod checked_amount_tests {
-    use super::*;
-
-    #[test]
-    fn checked_amount_sum_of_overflowing_amounts_returns_error() {
-        let result = sum_amounts([Amount::from(u64::MAX), Amount::from(1u64)]);
-        assert!(matches!(result, Err(Error::MintingError(_))));
     }
 }

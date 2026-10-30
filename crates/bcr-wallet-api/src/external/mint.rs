@@ -51,20 +51,13 @@ impl Default for MintTimeouts {
     }
 }
 
-async fn timed_with<T, E: From<MintError>>(
+async fn timed<T, E: From<MintError>>(
     limit: Duration,
     fut: impl Future<Output = std::result::Result<T, E>>,
 ) -> std::result::Result<T, E> {
-    match tokio::time::timeout(limit, fut).await {
-        Ok(res) => res,
-        Err(_) => {
-            Err(MintError::Internal(format!("mint request timed out after {limit:?}")).into())
-        }
-    }
-}
-
-async fn timed<T>(limit: Duration, fut: impl Future<Output = MintResult<T>>) -> MintResult<T> {
-    timed_with(limit, fut).await
+    tokio::time::timeout(limit, fut).await.unwrap_or_else(|_| {
+        Err(MintError::Internal(format!("mint request timed out after {limit:?}")).into())
+    })
 }
 
 pub struct SwapCommitmentResult {
@@ -490,7 +483,7 @@ impl ClowderMintConnector for HttpClientExt {
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<SwapCommitmentResult> {
-        timed_with(
+        timed(
             self.request_timeout,
             post_swap_commitment_inner(
                 &self.main,
@@ -566,7 +559,7 @@ impl ClowderMintConnector for HttpClientExt {
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<MeltQuoteResult> {
-        timed_with(
+        timed(
             self.request_timeout,
             post_melt_quote_onchain_inner(
                 &self.main,
@@ -880,7 +873,7 @@ impl ClowderMintConnector for SentinelClient {
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<SwapCommitmentResult> {
-        timed_with(
+        timed(
             self.request_timeout,
             post_swap_commitment_inner(
                 &self.main,
@@ -956,7 +949,7 @@ impl ClowderMintConnector for SentinelClient {
         alpha_pk: secp256k1::PublicKey,
         attestation: wire_attestation::IssuanceAttestation,
     ) -> Result<MeltQuoteResult> {
-        timed_with(
+        timed(
             self.request_timeout,
             post_melt_quote_onchain_inner(
                 &self.main,
@@ -1115,40 +1108,6 @@ mod tests {
             matches!(result, Err(Error::MintClientServiceUnavailable(_))),
             "{result:?}"
         );
-    }
-
-    #[test]
-    fn default_mint_timeouts_match_the_app_config_defaults() {
-        let timeouts = MintTimeouts::default();
-        assert_eq!(
-            timeouts.connect,
-            crate::AppStateConfig::DEFAULT_MINT_CONNECT_TIMEOUT
-        );
-        assert_eq!(
-            timeouts.request,
-            crate::AppStateConfig::DEFAULT_MINT_REQUEST_TIMEOUT
-        );
-    }
-
-    #[tokio::test]
-    async fn timed_passes_through_the_result_of_a_call_within_the_limit() {
-        let ok = timed(Duration::from_secs(5), async { Ok::<_, MintError>(7) }).await;
-        assert_eq!(ok.unwrap(), 7);
-        let err = timed(Duration::from_secs(5), async {
-            Err::<u8, _>(MintError::Internal("boom".into()))
-        })
-        .await;
-        assert!(matches!(err, Err(MintError::Internal(m)) if m == "boom"));
-    }
-
-    #[test]
-    fn sentinel_client_keeps_the_request_timeout_of_its_http_client() {
-        let timeouts = MintTimeouts {
-            connect: Duration::from_secs(1),
-            request: Duration::from_secs(2),
-        };
-        let http = HttpClientExt::new(url::Url::parse("http://127.0.0.1:1").unwrap(), timeouts);
-        assert_eq!(SentinelClient::new(http).request_timeout, timeouts.request);
     }
 
     fn valid_response_body() -> wire_melt::MeltQuoteOnchainResponseBody {

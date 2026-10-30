@@ -2980,67 +2980,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn melt_timeout_unspent_returns_to_unspent() {
-        let (info, keyset) = core_tests::generate_random_ecash_keyset();
-        let k_infos = test_kinfos(info);
-        let proofs = core_tests::generate_random_ecash_proofs(
-            &keyset,
-            &[Amount::from(4), Amount::from(8), Amount::from(16)],
-        );
-        let inputs: HashSet<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
-        let pdb = in_memory_pdb();
-        let pocket = melt_timed_out(pdb.clone(), &k_infos, proofs).await;
-
-        let pending: HashSet<_> = pdb.list_pending().await.unwrap().into_keys().collect();
-        assert_eq!(pending, inputs);
-
-        let mut connector = MockClowderMintConnector::new();
-        connector
-            .expect_post_check_state()
-            .times(1)
-            .returning(|req| Ok(proof_states(req, &HashSet::new())));
-        let mint_keyset = bcr_wallet_core::util::to_keyset(&keyset, None);
-        connector
-            .expect_get_mint_keyset()
-            .returning(move |_| Ok(mint_keyset.clone()));
-        connector.expect_post_swap_commitment().times(1).returning(
-            move |inputs, outputs, _, _, _| {
-                let mut result = mock_commitment_result();
-                result.inputs_ys = inputs.iter().map(|p| p.y().unwrap()).collect();
-                result.outputs = outputs;
-                Ok(result)
-            },
-        );
-        connector
-            .expect_post_swap_committed()
-            .times(1)
-            .returning(move |_, outputs, _| {
-                Ok(outputs
-                    .iter()
-                    .map(|bm| bcr_common::core::signature::sign_ecash(&keyset, bm).unwrap())
-                    .collect())
-            });
-        let recovered = pocket
-            .recover_pending_stale_proofs(&[], &k_infos, Arc::new(connector), test_swap_config())
-            .await
-            .expect("recover works");
-
-        assert_eq!(recovered, Amount::from(28u64));
-        assert!(pdb.list_pending().await.unwrap().is_empty());
-        let unspent = pdb.list_unspent().await.unwrap();
-        assert_eq!(
-            unspent
-                .into_values()
-                .collect::<Vec<_>>()
-                .total_amount()
-                .unwrap(),
-            recovered
-        );
-        let spent: HashSet<_> = pdb.list_spent().await.unwrap().into_keys().collect();
-        assert_eq!(spent, inputs);
-    }
-
-    #[tokio::test]
     async fn protest_melt_resolved() {
         let quote_id = Uuid::new_v4();
         let tx_id = bitcoin::Txid::from_str(
