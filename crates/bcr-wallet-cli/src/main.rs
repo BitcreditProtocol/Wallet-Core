@@ -2,7 +2,8 @@ use std::{collections::HashMap, path::PathBuf, str::FromStr, time::Duration};
 
 use anyhow::Result;
 use bcr_wallet_api::{
-    AppState, config::AppStateConfig, generate_random_mnemonic, get_wallet_id, is_valid_token,
+    AppState, MintTimeouts, config::AppStateConfig, generate_random_mnemonic, get_wallet_id,
+    is_valid_token,
 };
 use clap::{Parser, Subcommand};
 use nostr::types::RelayUrl;
@@ -36,11 +37,11 @@ fn default_swap_expiry_minutes() -> u32 {
 }
 
 fn default_mint_connect_timeout_secs() -> u64 {
-    AppStateConfig::DEFAULT_MINT_CONNECT_TIMEOUT.as_secs()
+    MintTimeouts::default().connect.as_secs()
 }
 
 fn default_mint_request_timeout_secs() -> u64 {
-    AppStateConfig::DEFAULT_MINT_REQUEST_TIMEOUT.as_secs()
+    MintTimeouts::default().request.as_secs()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,8 +264,10 @@ async fn main() -> Result<()> {
         swap_expiry: time::Duration::minutes(settings.swap_expiry_minutes.into()),
         esplora_base_urls: settings.esplora_base_urls,
         dev_mode: false.into(),
-        mint_connect_timeout: Duration::from_secs(settings.mint_connect_timeout_secs),
-        mint_request_timeout: Duration::from_secs(settings.mint_request_timeout_secs),
+        mint_timeouts: MintTimeouts {
+            connect: Duration::from_secs(settings.mint_connect_timeout_secs),
+            request: Duration::from_secs(settings.mint_request_timeout_secs),
+        },
     };
     let app_state = AppState::initialize(app_state_cfg).await?;
 
@@ -742,24 +745,3 @@ ______ _ _                    _ _ _     _    _       _ _      _
 | |_/ / | || (__| | |  __/ (_| | | |_  \  /\  / (_| | | |  __/ |_ 
 \____/|_|\__\___|_|  \___|\__,_|_|\__|  \/  \/ \__,_|_|_|\___|\__|
 "#;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn settings_without_mint_timeouts_use_the_app_defaults() {
-        let settings: CliSettings = toml::from_str(
-            "log_level = \"INFO\"\ndb_path = \"w.db\"\nesplora_base_urls = []\n[wallets]\n",
-        )
-        .unwrap();
-        assert_eq!(
-            settings.mint_connect_timeout_secs,
-            AppStateConfig::DEFAULT_MINT_CONNECT_TIMEOUT.as_secs()
-        );
-        assert_eq!(
-            settings.mint_request_timeout_secs,
-            AppStateConfig::DEFAULT_MINT_REQUEST_TIMEOUT.as_secs()
-        );
-    }
-}

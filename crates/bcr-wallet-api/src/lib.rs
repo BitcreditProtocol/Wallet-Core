@@ -1,5 +1,6 @@
 use crate::config::{AppStateConfig, CreateWalletConfig};
-use crate::external::mint::{ClowderMintConnector, HttpClientExt, MintTimeouts};
+pub use crate::external::mint::MintTimeouts;
+use crate::external::mint::{ClowderMintConnector, HttpClientExt};
 use crate::wallet::Wallet;
 use crate::wallet::api::WalletApi;
 pub use crate::wallet::types::{
@@ -100,7 +101,7 @@ impl AppState {
             let seed = seed_from_mnemonic(mnemonic);
             let keypair = keypair_from_seed(seed);
 
-            let client = HttpClientExt::new(w_cfg.mint.clone(), self.cfg.mint_timeouts());
+            let client = HttpClientExt::new(w_cfg.mint.clone(), self.cfg.mint_timeouts);
             let nostr_cl =
                 Arc::new(nostr::Client::new(&keypair, w_cfg.nostr_relays.clone()).await?);
 
@@ -153,7 +154,7 @@ impl AppState {
                 client,
                 Self::DB_VERSION,
                 self.cfg.swap_expiry,
-                self.cfg.mint_timeouts(),
+                self.cfg.mint_timeouts,
                 db.clone(),
                 purse.get_contact_repo(network),
                 seed,
@@ -211,7 +212,7 @@ impl AppState {
             cfg,
             AppState::DB_VERSION,
             self.cfg.swap_expiry,
-            self.cfg.mint_timeouts(),
+            self.cfg.mint_timeouts,
             self.get_db(),
             purse.get_contact_repo(network),
         )
@@ -238,7 +239,7 @@ impl AppState {
             cfg,
             AppState::DB_VERSION,
             self.cfg.swap_expiry,
-            self.cfg.mint_timeouts(),
+            self.cfg.mint_timeouts,
             self.get_db(),
             purse.get_contact_repo(network),
         )
