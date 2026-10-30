@@ -591,14 +591,12 @@ impl Pocket {
         &self,
         proofs: Vec<cdk00::Proof>,
     ) -> Result<(cashu::Amount, Vec<cashu::PublicKey>)> {
-        let mut total_cashed_in = Amount::ZERO;
+        let total_cashed_in = sum_amounts(proofs.iter().map(|proof| proof.amount))?;
         let mut ys = Vec::with_capacity(proofs.len());
         for proof in proofs.into_iter() {
-            let amount = proof.amount;
             let y = proof.y()?;
             self.pdb.store_new(proof).await?;
             ys.push(y);
-            total_cashed_in += amount;
         }
 
         Ok((total_cashed_in, ys))
@@ -683,11 +681,8 @@ impl super::PocketApi for Pocket {
                 None => false,
             };
 
-            if is_credit {
-                credit += proof.amount;
-            } else {
-                debit += proof.amount;
-            }
+            let total = if is_credit { &mut credit } else { &mut debit };
+            *total = add_amounts(*total, proof.amount)?;
         }
 
         Ok(PocketBalance { debit, credit })
@@ -819,7 +814,11 @@ impl super::PocketApi for Pocket {
         swap_config: SwapConfig,
     ) -> Result<Vec<cashu::Proof>> {
         let total_amount = proofs.total_amount()?;
-        let change_amount = total_amount - send_amount;
+        let change_amount = total_amount.checked_sub(send_amount).ok_or_else(|| {
+            Error::Swap(format!(
+                "substitute proofs total {total_amount} is less than send amount {send_amount}"
+            ))
+        })?;
 
         let keysets_info: HashMap<cashu::Id, KeySetInfo> = keysets_info
             .iter()
@@ -971,7 +970,7 @@ impl super::PocketApi for Pocket {
                 .entry(kid)
                 .or_insert((info.final_expiry, Amount::ZERO));
 
-            entry.1 += proof.amount;
+            entry.1 = add_amounts(entry.1, proof.amount)?;
         }
 
         Ok(balances)
@@ -1145,7 +1144,14 @@ impl DebitPocketApi for Pocket {
             .map_err(|e| Error::MintingError(format!("invalid address: {e}")))?;
 
         // inputs need to cover amount + network_fee + melt_fee
-        let full_amount = amount + network_fee + melt_fee;
+        let full_amount = amount
+            .checked_add(network_fee)
+            .and_then(|a| a.checked_add(melt_fee))
+            .ok_or_else(|| {
+                Error::MintingError(format!(
+                    "melt amount {amount} plus fees {network_fee} and {melt_fee} overflows"
+                ))
+            })?;
         let (send_summary, send_ref) = self
             .compute_send_costs(Amount::from(full_amount), keysets_info)
             .await?;
@@ -2852,6 +2858,127 @@ mod tests {
         STANDARD.encode(borsh::to_vec(&body).unwrap())
     }
 
+    fn unresponsive_mint() -> crate::external::mint::HttpClientExt {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = url::Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming() {
+                held.push(stream);
+            }
+        });
+        crate::external::mint::HttpClientExt::new(
+            url,
+            crate::external::mint::MintTimeouts {
+                connect: std::time::Duration::from_secs(1),
+                request: std::time::Duration::from_millis(200),
+            },
+        )
+    }
+
+    async fn melt_timed_out(
+        pdb: Arc<bcr_wallet_persistence::redb::pocket::PocketDB>,
+        k_infos: &HashMap<ecash::Id, KeySetInfo>,
+        proofs: Vec<cdk00::Proof>,
+    ) -> super::Pocket {
+        for proof in proofs {
+            pdb.store_new(proof).await.unwrap();
+        }
+        let quote_id = Uuid::new_v4();
+        let stored = Arc::new(Mutex::new(None));
+        let mut mdb = MockMintMeltRepository::new();
+        let record = stored.clone();
+        mdb.expect_store_melt_commitment()
+            .times(1)
+            .returning(move |r| {
+                *record.lock().unwrap() = Some(r);
+                Ok(())
+            });
+        mdb.expect_load_melt_commitment()
+            .times(1)
+            .returning(move |_| Ok(stored.lock().unwrap().clone().unwrap()));
+        let mut connector = MockClowderMintConnector::new();
+        connector
+            .expect_post_melt_quote_onchain()
+            .times(1)
+            .returning(move |inputs, amount, _, _, _, _, _| {
+                let fingerprints = inputs
+                    .into_iter()
+                    .map(|p| bcr_common::wire::keys::ProofFingerprint::try_from(p).unwrap())
+                    .collect();
+                Ok(MeltQuoteResult {
+                    quote_id,
+                    expiry: 999999,
+                    amount,
+                    commitment: cashu::SecretKey::generate().sign(&[0; 32]).unwrap(),
+                    ephemeral_secret: secp256k1::SecretKey::from_keypair(
+                        &secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+                    ),
+                    body_content: mock_melt_commitment_body_with_inputs(
+                        quote_id,
+                        amount.to_sat(),
+                        fingerprints,
+                    ),
+                })
+            });
+
+        let pocket = pocket(pdb, Arc::new(mdb));
+        let summary = pocket
+            .prepare_onchain_melt(
+                valid_payment_address_testnet().assume_checked().to_string(),
+                24,
+                3,
+                1,
+                k_infos,
+                Arc::new(connector),
+                test_swap_config(),
+            )
+            .await
+            .expect("prepare melt works");
+        let Err(err) = pocket
+            .pay_onchain_melt(summary.request_id, Arc::new(unresponsive_mint()))
+            .await
+        else {
+            panic!("the melt request must time out");
+        };
+        assert!(matches!(err, Error::ReqwestClient(ref e) if e.is_timeout()));
+        pocket
+    }
+
+    #[tokio::test]
+    async fn melt_timeout_reconciles_via_check_state() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(4), Amount::from(8), Amount::from(16)],
+        );
+        let inputs: HashSet<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+        let pdb = in_memory_pdb();
+        let pocket = melt_timed_out(pdb.clone(), &k_infos, proofs).await;
+
+        let pending: HashSet<_> = pdb.list_pending().await.unwrap().into_keys().collect();
+        assert_eq!(pending, inputs);
+        assert!(pdb.list_unspent().await.unwrap().is_empty());
+
+        let spent_at_mint = inputs.clone();
+        let mut connector = MockClowderMintConnector::new();
+        connector
+            .expect_post_check_state()
+            .times(1)
+            .returning(move |req| Ok(proof_states(req, &spent_at_mint)));
+        let recovered = pocket
+            .recover_pending_stale_proofs(&[], &k_infos, Arc::new(connector), test_swap_config())
+            .await
+            .expect("recover works");
+
+        assert_eq!(recovered, Amount::ZERO);
+        assert!(pdb.list_pending().await.unwrap().is_empty());
+        assert!(pdb.list_unspent().await.unwrap().is_empty());
+        let spent: HashSet<_> = pdb.list_spent().await.unwrap().into_keys().collect();
+        assert_eq!(spent, inputs);
+    }
+
     #[tokio::test]
     async fn protest_melt_resolved() {
         let quote_id = Uuid::new_v4();
@@ -4020,6 +4147,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn check_pending_mint_overflowing_signature_amounts_returns_error_not_panic() {
+        let qid = Uuid::new_v4();
+        let amount = bitcoin::Amount::from_sat(3);
+        let (info, mintkeyset) = crate::pocket::test_utils::tests::generate_wide_ecash_keyset();
+        let kid = info.id;
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let premint = cdk00::PreMintSecrets::random(
+            kid.into(),
+            Amount::from(amount.to_sat()),
+            &SplitTarget::None,
+            &bcr_wallet_core::util::to_fee_and_amounts(&keyset),
+        )
+        .unwrap();
+        let blind_sigs: Vec<cdk00::BlindSignature> = premint
+            .blinded_messages()
+            .into_iter()
+            .map(|bm| {
+                let huge = cdk00::BlindedMessage {
+                    amount: Amount::from(1u64 << 63),
+                    ..bm
+                };
+                bcr_common::core::signature::sign_ecash(&mintkeyset, &huge).unwrap()
+            })
+            .collect();
+        assert_eq!(blind_sigs.len(), 2);
+
+        let mut mdb = MockMintMeltRepository::new();
+        let mut pdb = MockPocketRepository::new();
+        let mut connector = MockClowderMintConnector::new();
+        let dummy_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64]).unwrap();
+        let dummy_secret = secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap();
+        mdb.expect_load_mint().times(1).returning(move |_| {
+            Ok(bcr_wallet_persistence::MintRecord {
+                summary: MintSummary {
+                    quote_id: qid,
+                    amount,
+                    address: valid_payment_address_testnet(),
+                    expiry: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
+                },
+                premint: premint.clone(),
+                content: "dGVzdA==".to_string(),
+                commitment: dummy_sig,
+                ephemeral_secret: dummy_secret,
+            })
+        });
+        connector
+            .expect_post_mint_onchain()
+            .times(1)
+            .returning(move |_| {
+                Ok(OnchainMintResponse {
+                    signatures: blind_sigs.clone(),
+                })
+            });
+        connector
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(keyset.clone()));
+        pdb.expect_store_new().times(0);
+        mdb.expect_delete_mint().times(0);
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let result = pocket.check_pending_mint(qid, Arc::new(connector)).await;
+
+        assert!(matches!(result, Err(Error::MintingError(_))));
+    }
+
+    #[tokio::test]
+    async fn balance_of_overflowing_stored_proofs_returns_error_not_panic() {
+        let (info, keyset) = crate::pocket::test_utils::tests::generate_wide_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let amounts = [Amount::from(1u64 << 63), Amount::from(1u64 << 63)];
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_list_unspent()
+            .times(1)
+            .returning(move || Ok(proofs.iter().map(|p| (p.y().unwrap(), p.clone())).collect()));
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()));
+        let result = pocket.balance(&k_infos).await;
+
+        assert!(matches!(result, Err(Error::MintingError(_))));
+    }
+
+    #[tokio::test]
     async fn check_pending_mint_returns_error_when_minting_fails() {
         let qid = Uuid::new_v4();
         let amount = bitcoin::Amount::from_sat(24);
@@ -4186,6 +4396,70 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(Error::MintingError(_))));
+    }
+
+    #[tokio::test]
+    async fn prepare_onchain_melt_overflowing_fees_returns_error_not_panic() {
+        let (info, _keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let pocket = pocket(
+            Arc::new(MockPocketRepository::new()),
+            Arc::new(MockMintMeltRepository::new()),
+        );
+
+        let result = pocket
+            .prepare_onchain_melt(
+                valid_payment_address_testnet().assume_checked().to_string(),
+                u64::MAX,
+                1,
+                1,
+                &k_infos,
+                Arc::new(MockClowderMintConnector::new()),
+                test_swap_config(),
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::MintingError(_))));
+    }
+
+    #[tokio::test]
+    async fn swap_to_unlocked_substitute_proofs_total_below_send_returns_error_not_panic() {
+        let (info, mint_keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let keysets_info = test_kinfos(info);
+        let keysets = HashMap::from([(kid, bcr_wallet_core::util::to_keyset(&mint_keyset, None))]);
+        let input_proofs =
+            core_tests::generate_random_ecash_proofs(&mint_keyset, &[Amount::from(8u64)]);
+
+        let substitute_keypair = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
+        let substitute_clowder_id = secp256k1::PublicKey::from_keypair(&substitute_keypair);
+        let swap_config = test_swap_config();
+        let mut beta_connector = MockClowderMintConnector::new();
+        setup_attestation_mock(&mut beta_connector);
+        let beta_provider = RandomBetaProvider::new(
+            vec![Arc::new(beta_connector) as Arc<dyn crate::ClowderMintConnector>],
+            swap_config.alpha_pk,
+        )
+        .expect("can create beta provider");
+
+        let pocket = pocket(
+            Arc::new(MockPocketRepository::new()),
+            Arc::new(MockMintMeltRepository::new()),
+        );
+        let result = pocket
+            .swap_to_unlocked_substitute_proofs(
+                input_proofs,
+                &keysets_info,
+                keysets,
+                Arc::new(MockClowderMintConnector::new()),
+                substitute_clowder_id,
+                beta_provider,
+                Amount::from(16u64),
+                swap_config,
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::Swap(_))));
     }
 
     #[tokio::test]

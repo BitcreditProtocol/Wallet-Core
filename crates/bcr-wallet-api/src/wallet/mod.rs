@@ -8,7 +8,7 @@ use crate::{
     ClowderMintConnector,
     error::{Error, Result},
     external::mint::ClientFactory,
-    pocket::{RestoreSummary, debit::DebitPocketApi},
+    pocket::{RestoreSummary, add_amounts, debit::DebitPocketApi},
     types::PaymentSummary,
     wallet::{
         api::WalletApi,
@@ -432,9 +432,7 @@ impl Wallet {
             .iter()
             .map(|(id, info)| ((*id).into(), info.clone()))
             .collect();
-        let planned = prepare_swap(&proofs, &infos)?
-            .into_values()
-            .fold(Amount::ZERO, |acc, a| acc + a);
+        let planned = crate::pocket::sum_amounts(prepare_swap(&proofs, &infos)?.into_values())?;
         let e = match self
             .debit
             .receive_proofs(substitute.clone(), keysets_info, proofs, swap_config)
@@ -860,7 +858,7 @@ impl Wallet {
         Ok(WalletBalance {
             debit: balance.debit,
             credit: balance.credit,
-            total: balance.debit + balance.credit,
+            total: add_amounts(balance.debit, balance.credit)?,
         })
     }
 
@@ -1069,7 +1067,7 @@ impl Wallet {
                             "Reclaimed {amount} from foreign mint proofs from {}, tx_id: {tx_id}",
                             mint.url
                         );
-                        reclaimed += amount;
+                        reclaimed = add_amounts(reclaimed, amount)?;
                         // if everything went well, delete the foreign mint proofs
                         self.debit
                             .delete_foreign_mint_proofs(mint.clowder_id, unspent_ys)
@@ -1080,9 +1078,10 @@ impl Wallet {
                             "Could not reclaim foreign mint proofs from mint {}: {e}",
                             mint.url
                         );
-                        reclaimed += self
+                        let one_by_one = self
                             .reclaim_foreign_proofs_one_by_one(mint, unspent_ys, proofs)
                             .await;
+                        reclaimed = add_amounts(reclaimed, one_by_one)?;
                     }
                 }
             }

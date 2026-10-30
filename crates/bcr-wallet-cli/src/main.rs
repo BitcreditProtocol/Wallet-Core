@@ -1,8 +1,9 @@
-use std::{collections::HashMap, path::PathBuf, str::FromStr};
+use std::{collections::HashMap, path::PathBuf, str::FromStr, time::Duration};
 
 use anyhow::Result;
 use bcr_wallet_api::{
-    AppState, config::AppStateConfig, generate_random_mnemonic, get_wallet_id, is_valid_token,
+    AppState, MintTimeouts, config::AppStateConfig, generate_random_mnemonic, get_wallet_id,
+    is_valid_token,
 };
 use clap::{Parser, Subcommand};
 use nostr::types::RelayUrl;
@@ -24,11 +25,23 @@ pub struct CliSettings {
     /// How long a committed swap asks the mint to hold its inputs
     #[serde(default = "default_swap_expiry_minutes")]
     pub swap_expiry_minutes: u32,
+    #[serde(default = "default_mint_connect_timeout_secs")]
+    pub mint_connect_timeout_secs: u64,
+    #[serde(default = "default_mint_request_timeout_secs")]
+    pub mint_request_timeout_secs: u64,
     pub wallets: HashMap<String, WalletSettings>,
 }
 
 fn default_swap_expiry_minutes() -> u32 {
     15
+}
+
+fn default_mint_connect_timeout_secs() -> u64 {
+    MintTimeouts::default().connect.as_secs()
+}
+
+fn default_mint_request_timeout_secs() -> u64 {
+    MintTimeouts::default().request.as_secs()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,6 +264,10 @@ async fn main() -> Result<()> {
         swap_expiry: time::Duration::minutes(settings.swap_expiry_minutes.into()),
         esplora_base_urls: settings.esplora_base_urls,
         dev_mode: false.into(),
+        mint_timeouts: MintTimeouts {
+            connect: Duration::from_secs(settings.mint_connect_timeout_secs),
+            request: Duration::from_secs(settings.mint_request_timeout_secs),
+        },
     };
     let app_state = AppState::initialize(app_state_cfg).await?;
 

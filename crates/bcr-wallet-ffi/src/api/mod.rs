@@ -139,6 +139,7 @@ pub async fn init_wallet_ffi(conf: WalletFfiConfig) {
         swap_expiry,
         esplora_base_urls: parsed_esplora_base_urls,
         dev_mode: conf.dev_mode.into(),
+        mint_timeouts: Default::default(),
     };
 
     let app_state = AppState::initialize(app_state_cfg)

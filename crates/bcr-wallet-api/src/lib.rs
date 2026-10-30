@@ -1,4 +1,5 @@
 use crate::config::{AppStateConfig, CreateWalletConfig};
+pub use crate::external::mint::MintTimeouts;
 use crate::external::mint::{ClowderMintConnector, HttpClientExt};
 use crate::wallet::Wallet;
 use crate::wallet::api::WalletApi;
@@ -100,7 +101,7 @@ impl AppState {
             let seed = seed_from_mnemonic(mnemonic);
             let keypair = keypair_from_seed(seed);
 
-            let client = HttpClientExt::new(w_cfg.mint.clone());
+            let client = HttpClientExt::new(w_cfg.mint.clone(), self.cfg.mint_timeouts);
             let nostr_cl =
                 Arc::new(nostr::Client::new(&keypair, w_cfg.nostr_relays.clone()).await?);
 
@@ -153,6 +154,7 @@ impl AppState {
                 client,
                 Self::DB_VERSION,
                 self.cfg.swap_expiry,
+                self.cfg.mint_timeouts,
                 db.clone(),
                 purse.get_contact_repo(network),
                 seed,
@@ -210,6 +212,7 @@ impl AppState {
             cfg,
             AppState::DB_VERSION,
             self.cfg.swap_expiry,
+            self.cfg.mint_timeouts,
             self.get_db(),
             purse.get_contact_repo(network),
         )
@@ -236,6 +239,7 @@ impl AppState {
             cfg,
             AppState::DB_VERSION,
             self.cfg.swap_expiry,
+            self.cfg.mint_timeouts,
             self.get_db(),
             purse.get_contact_repo(network),
         )
@@ -1352,12 +1356,13 @@ async fn create_new_wallet(
     cfg: CreateWalletConfig,
     db_version: u32,
     swap_expiry: time::Duration,
+    mint_timeouts: MintTimeouts,
     db: Arc<Database>,
     contact_repo: Arc<dyn ContactStoreApi>,
 ) -> Result<Arc<RwLock<wallet::Wallet>>> {
     let seed = seed_from_mnemonic(&cfg.mnemonic);
     let keypair = keypair_from_mnemonic(&cfg.mnemonic);
-    let client = HttpClientExt::new(cfg.default_mint_url.clone());
+    let client = HttpClientExt::new(cfg.default_mint_url.clone(), mint_timeouts);
 
     let wallet_id = build_wallet_id(&seed, cfg.network);
     let clowder_id = client.get_clowder_id().await?;
@@ -1413,6 +1418,7 @@ async fn create_new_wallet(
         client,
         db_version,
         swap_expiry,
+        mint_timeouts,
         db,
         contact_repo,
         seed,
@@ -1426,6 +1432,7 @@ async fn build_wallet(
     client: HttpClientExt,
     db_version: u32,
     swap_expiry: time::Duration,
+    mint_timeouts: MintTimeouts,
     db: Arc<Database>,
     contactdb: Arc<dyn ContactStoreApi>,
     seed: Seed,
@@ -1447,7 +1454,7 @@ async fn build_wallet(
     // building the debit pocket
     let mut beta_clients = BTreeMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
     for beta in w_cfg.betas.clone() {
-        let beta_client = HttpClientExt::new(beta.clone());
+        let beta_client = HttpClientExt::new(beta.clone(), mint_timeouts);
         beta_clients.insert(beta, Arc::new(beta_client));
     }
 
@@ -1484,7 +1491,7 @@ async fn build_wallet(
         w_cfg.pub_key,
         w_cfg.clowder_id,
         beta_clients,
-        Box::new(|url| Arc::new(external::mint::HttpClientExt::new(url))),
+        Box::new(move |url| Arc::new(external::mint::HttpClientExt::new(url, mint_timeouts))),
         swap_expiry,
         Arc::new(nostr_transport),
         nostr_event_channel,
