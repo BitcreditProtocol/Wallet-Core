@@ -428,6 +428,9 @@ impl ConsumerApi for Consumer {
             earliest_offset = offset;
         }
 
+        // create notifications channel before subscriptions so we don't drop events in-between
+        let mut notifications = client.client.notifications();
+
         let nostr_filter = nostr::filter::Filter::new()
             .kind(nostr::event::Kind::GiftWrap)
             .pubkey(client.signer.public_key());
@@ -442,7 +445,6 @@ impl ConsumerApi for Consumer {
         let event_channel = self.event_channel.clone();
         tasks.spawn(async move {
             let result: Result<()> = async {
-                let mut notifications = client.client.notifications();
                 while let Some(note) = notifications.next().await {
                     let offset_store = offset_store_clone.clone();
                     let signer = signer.clone();
