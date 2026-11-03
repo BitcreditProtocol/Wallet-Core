@@ -472,8 +472,7 @@ pub async fn cmd_melt(
         .wallet_estimate_melt(id.to_owned(), amount)
         .await?;
     info!("Melt Estimate for Amount: {}", amount,);
-    let selected_network_fee =
-        melt_estimate.tx_vsize * melt_estimate.fee_rates[0].sat_per_vb as u64;
+    let selected_network_fee = selected_network_fee(&melt_estimate)?;
     info!(
         "Tx Size: {}, Melt Fee: {}, FeeRates: {:?}",
         melt_estimate.tx_vsize, melt_estimate.melt_fee, melt_estimate.fee_rates,
@@ -1230,5 +1229,47 @@ fn format_fees(fees: TransactionFees) -> String {
         "Fees: 0".to_string()
     } else {
         format!("Fees: {}", parts.join(", "))
+    }
+}
+
+fn selected_network_fee(estimate: &MeltEstimation) -> Result<u64> {
+    let rate = estimate
+        .fee_rates
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("mint returned no fee rate estimates"))?;
+    estimate
+        .tx_vsize
+        .checked_mul(rate.sat_per_vb as u64)
+        .ok_or_else(|| anyhow::anyhow!("network fee overflows for tx size {}", estimate.tx_vsize))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bcr_wallet_core::types::MeltFeeRateEstimate;
+
+    fn estimate(tx_vsize: u64, rates: &[f32]) -> MeltEstimation {
+        MeltEstimation {
+            tx_vsize,
+            fee_rates: rates
+                .iter()
+                .map(|r| MeltFeeRateEstimate {
+                    target_blocks: 1,
+                    sat_per_vb: *r,
+                })
+                .collect(),
+            melt_fee: 0,
+            melt_fee_ppk: 0,
+        }
+    }
+
+    #[test]
+    fn checked_amount_network_fee_overflow_returns_error() {
+        assert!(selected_network_fee(&estimate(u64::MAX, &[2.0])).is_err());
+    }
+
+    #[test]
+    fn checked_amount_network_fee_without_rates_returns_error() {
+        assert!(selected_network_fee(&estimate(100, &[])).is_err());
     }
 }
