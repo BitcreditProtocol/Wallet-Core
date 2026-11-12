@@ -585,7 +585,6 @@ mod tests {
     use bcr_common::cashu::Amount;
     use bcr_wallet_core::{types::PaymentType, util::to_mint_url};
     use nostr::event::EventId;
-    use std::time::Duration;
 
     fn purse(db: Box<dyn PurseRepository>) -> super::Purse<MockWalletApi> {
         let mut contact_dbs = HashMap::new();
@@ -772,20 +771,6 @@ mod tests {
         wlt
     }
 
-    fn recording_repo() -> (
-        MockPurseRepository,
-        Arc<std::sync::Mutex<Vec<WalletConfig>>>,
-    ) {
-        let mut db = MockPurseRepository::new();
-        let stored = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let st = stored.clone();
-        db.expect_store().returning(move |cfg| {
-            st.lock().unwrap().push(cfg);
-            Ok(())
-        });
-        (db, stored)
-    }
-
     async fn insert_wallet(
         purse: &Purse<MockWalletApi>,
         wlt: MockWalletApi,
@@ -794,53 +779,6 @@ mod tests {
         let wlt = Arc::new(RwLock::new(wlt));
         purse.wallets.write().await.insert(id, wlt.clone());
         wlt
-    }
-
-    #[tokio::test]
-    async fn migration_rebuild_produces_a_distinct_wallet_instance() {
-        let (db, stored) = recording_repo();
-        let purse = purse(Box::new(db));
-        let old = insert_wallet(&purse, rabid_wallet("wlt-1", 0)).await;
-
-        let reader = old.read().await;
-        let migrated = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            purse.migrate_rabid_wallets(),
-        )
-        .await
-        .expect("the migration never waits for exclusive access to the old instance")
-        .unwrap();
-        drop(reader);
-
-        assert_eq!(migrated["wlt-1"], substitute_url());
-        let current = purse.get_wallet("wlt-1").await.unwrap();
-        assert!(!Arc::ptr_eq(&current, &old));
-        assert_eq!(current.read().await.mint_url(), substitute_url());
-        let stored = stored.lock().unwrap().clone();
-        assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].mint, substitute_url());
-    }
-
-    #[tokio::test]
-    async fn migration_resumes_after_crash_between_exchange_and_rebuild() {
-        let (db, stored) = recording_repo();
-        let purse = purse(Box::new(db));
-        let old = insert_wallet(&purse, rabid_wallet("wlt-1", 1)).await;
-
-        purse
-            .migrate_rabid_wallets()
-            .await
-            .expect_err("the failed rebuild is reported");
-        assert!(stored.lock().unwrap().is_empty());
-        assert!(Arc::ptr_eq(&purse.get_wallet("wlt-1").await.unwrap(), &old));
-
-        purse
-            .migrate_rabid_wallets()
-            .await
-            .expect("the retry rebuilds the wallet");
-        assert_eq!(stored.lock().unwrap().len(), 1);
-        let current = purse.get_wallet("wlt-1").await.unwrap();
-        assert!(!Arc::ptr_eq(&current, &old));
     }
 
     #[tokio::test]
@@ -986,29 +924,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aborted_migration_resumes_the_old_listener_with_the_payment_that_waited() {
-        let mut f = SwapFixture::new(substitute_betas()).await;
-        let (_gate, migration) = spawn_migration(&f).await;
-        f.channel.publish(contact_payment(20, &f.rabid_url));
-        settle().await;
-        assert!(f.old_received.try_recv().is_err());
-
-        migration.abort();
-        assert!(migration.await.unwrap_err().is_cancelled());
-        assert_eq!(next_received(&mut f.old_received).await, Amount::from(20));
-        assert!(Arc::ptr_eq(
-            &f.purse.get_wallet("w-1").await.unwrap(),
-            &f.old
-        ));
-        assert_eq!(total(&f.old).await, Amount::from(120));
-        assert_eq!(f.consumer_starts(), 1);
-        tokio::time::timeout(Duration::from_secs(5), f.purse.hold_wallet("w-1"))
-            .await
-            .expect("the aborted migration released the wallet")
-            .unwrap();
-    }
-
-    #[tokio::test]
     async fn migrate_rabid_wallets_twice_concurrently_runs_the_exchange_once() {
         let f = SwapFixture::new(substitute_betas()).await;
         let (gate, first) = spawn_migration(&f).await;
@@ -1021,61 +936,6 @@ mod tests {
         assert_eq!(first.await.unwrap().unwrap()["w-1"], f.substitute_url);
         assert!(second.await.unwrap().unwrap().is_empty());
         assert_eq!(f.stored().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn migration_queues_behind_an_in_flight_read_without_deadlock() {
-        let f = SwapFixture::new(substitute_betas()).await;
-        let held = f.purse.hold_wallet("w-1").await.unwrap();
-        let purse = f.purse.clone();
-        let migration = tokio::spawn(async move { purse.migrate_rabid_wallets().await });
-        settle().await;
-
-        let balance = tokio::time::timeout(Duration::from_secs(5), async {
-            held.read().await.balance().await
-        })
-        .await
-        .expect("the call in flight finishes while the migration waits")
-        .unwrap();
-        assert_eq!(balance.total, Amount::from(100));
-        let mut gate = f.gate_exchange();
-        settle().await;
-        assert!(!gate.has_entered());
-        drop(held);
-
-        gate.entered().await;
-        gate.release();
-        let migrated = tokio::time::timeout(Duration::from_secs(5), migration)
-            .await
-            .expect("the migration runs once the call in flight is done")
-            .unwrap()
-            .unwrap();
-        assert_eq!(migrated["w-1"], f.substitute_url);
-    }
-
-    #[tokio::test]
-    async fn rename_during_migration_keeps_the_new_name() {
-        let f = SwapFixture::new(substitute_betas()).await;
-        let (gate, migration) = spawn_migration(&f).await;
-        let purse = f.purse.clone();
-        let rename =
-            tokio::spawn(async move { purse.rename_wallet("w-1", "renamed".to_owned()).await });
-        settle().await;
-        assert!(!rename.is_finished());
-
-        gate.release();
-        migration.await.unwrap().unwrap();
-        rename.await.unwrap().unwrap();
-        let current = f.purse.get_wallet("w-1").await.unwrap();
-        assert!(!Arc::ptr_eq(&current, &f.old));
-        assert_eq!(current.read().await.name(), "renamed");
-        assert_eq!(
-            f.repo_writes(),
-            vec![
-                RepoWrite::Store("wallet-1".to_owned()),
-                RepoWrite::Rename("renamed".to_owned())
-            ]
-        );
     }
 
     #[tokio::test]

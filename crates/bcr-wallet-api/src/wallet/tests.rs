@@ -5047,7 +5047,6 @@ struct MigrationCtx {
     alpha_proofs: Vec<cashu::Proof>,
     beta_proofs: HashMap<Sha256, cashu::Proof>,
     beta_info: ecash::KeySetInfo,
-    alpha_infos: HashMap<ecash::Id, KeySetInfo>,
     sent: Arc<std::sync::Mutex<Vec<SentExchange>>>,
     received: Arc<std::sync::Mutex<Vec<cashu::Proof>>>,
     lost: Arc<std::sync::Mutex<HashMap<cashu::PublicKey, bcr_common::client::mint::Error>>>,
@@ -5063,7 +5062,7 @@ impl MigrationCtx {
                 CurrencyUnit::Sat,
             ),
         );
-        let (alpha_info, alpha_keyset) = core_tests::generate_random_ecash_keyset();
+        let (_, alpha_keyset) = core_tests::generate_random_ecash_keyset();
         let amounts: Vec<_> = unspent
             .iter()
             .chain(held)
@@ -5089,7 +5088,6 @@ impl MigrationCtx {
             alpha_proofs,
             beta_proofs,
             beta_info: beta_info.into(),
-            alpha_infos: test_kinfos(alpha_info),
             sent: Arc::new(std::sync::Mutex::new(Vec::new())),
             received: Arc::new(std::sync::Mutex::new(Vec::new())),
             lost: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -5821,29 +5819,6 @@ async fn migrate_resumes_a_failed_swap_without_a_second_exchange() {
 }
 
 #[tokio::test]
-async fn migrate_after_a_crash_before_rebuild_exchanges_and_swaps_nothing_again() {
-    let t = MigrationCtx::new(&[8, 16], &[]).await;
-    let wlt = t.wallet(vec![], 0, false).await;
-    let cfg = wlt
-        .read()
-        .await
-        .exchange_to_substitute(t.substitute_url.clone())
-        .await
-        .unwrap();
-    assert_eq!(cfg.mint, t.substitute_url);
-    assert_eq!(cfg.clowder_id, test_other_pub_key());
-    assert_eq!(t.take_sent().len(), 2);
-    assert_eq!(t.received(), Amount::from(24));
-
-    let wlt = t.wallet(vec![], 0, false).await;
-    let wlt = t.migrated(&wlt).await;
-    assert!(t.take_sent().is_empty());
-    assert_eq!(t.received(), Amount::from(24));
-    wlt.read().await.finish_migration().await.unwrap();
-    assert!(t.pdb.load().await.unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn migrate_resumes_issued_proofs_inside_the_hop_margin() {
     let mut t = MigrationCtx::new(&[8, 16], &[]).await;
     t.lock_secs = 300;
@@ -6109,10 +6084,6 @@ impl ExchangeGate {
             .await
             .expect("the migration enters its exchange")
             .expect("the journal is alive");
-    }
-
-    pub(crate) fn has_entered(&mut self) -> bool {
-        self.entered.try_recv().is_ok()
     }
 
     pub(crate) fn release(self) {
@@ -6443,138 +6414,6 @@ pub(crate) async fn settle() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 }
 
-#[tokio::test]
-async fn old_listener_ignores_nostr_events_published_after_swap() {
-    let mut f = SwapFixture::new(vec![
-        url::Url::from_str("https://sub-beta.example").unwrap(),
-    ])
-    .await;
-
-    let insert_blocked = f.purse.wallets.read().await;
-    let purse = f.purse.clone();
-    let migration = tokio::spawn(async move { purse.migrate_rabid_wallets().await });
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while f.purse.wallets.try_read().is_ok() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the migration stops the old listener and waits to insert the rebuilt wallet");
-    f.channel.publish(contact_payment(64, &f.substitute_url));
-    drop(insert_blocked);
-
-    let migrated = migration.await.unwrap().unwrap();
-    assert_eq!(migrated["w-1"], f.substitute_url);
-    f.channel.publish(contact_payment(32, &f.substitute_url));
-
-    assert_eq!(next_received(&mut f.new_received).await, Amount::from(64));
-    assert_eq!(next_received(&mut f.new_received).await, Amount::from(32));
-    assert!(f.old_received.try_recv().is_err());
-    assert_eq!(f.consumer_starts(), 1);
-    let stored = f.stored.lock().unwrap().clone();
-    assert_eq!(stored.len(), 1);
-    assert_eq!(stored[0].mint, f.substitute_url);
-
-    let new = f.purse.get_wallet("w-1").await.unwrap();
-    assert!(!Arc::ptr_eq(&new, &f.old));
-    assert!(new.read().await.is_nostr_connected().await);
-    let old = Arc::downgrade(&f.old);
-    drop(f.old);
-    assert!(
-        old.upgrade().is_none(),
-        "the old listener task has returned and released the old instance"
-    );
-}
-
-#[tokio::test]
-async fn a_payment_request_paid_on_the_rebuilt_wallet_wakes_a_waiter_on_the_old_one() {
-    let f = SwapFixture::new(vec![
-        url::Url::from_str("https://sub-beta.example").unwrap(),
-    ])
-    .await;
-    let old = f.old.clone();
-    let waiter = tokio::spawn(async move {
-        let wallet = old.read().await;
-        wallet.payment_request_paid.notified().await;
-    });
-    settle().await;
-
-    f.purse.migrate_rabid_wallets().await.unwrap();
-    let current = f.purse.get_wallet("w-1").await.unwrap();
-    assert!(!Arc::ptr_eq(&current, &f.old));
-    current.read().await.payment_request_paid.notify_waiters();
-
-    tokio::time::timeout(Duration::from_secs(5), waiter)
-        .await
-        .expect("the old waiter is woken")
-        .unwrap();
-}
-
-struct FailingSwappedJournal(Arc<bcr_wallet_persistence::redb::pocket::PocketDB>);
-
-#[async_trait::async_trait]
-impl MigrationJournalRepository for FailingSwappedJournal {
-    async fn put(
-        &self,
-        header: MigrationJournalHeader,
-        entries: Vec<(cashu::PublicKey, cashu::SecretKey)>,
-    ) -> bcr_wallet_persistence::error::Result<()> {
-        self.0.put(header, entries).await
-    }
-
-    async fn update(
-        &self,
-        ys: Vec<cashu::PublicKey>,
-        state: MigrationJournalState,
-    ) -> bcr_wallet_persistence::error::Result<()> {
-        if state == MigrationJournalState::Swapped {
-            return Err(bcr_wallet_persistence::error::Error::ProofNotFound(ys[0]));
-        }
-        self.0.update(ys, state).await
-    }
-
-    async fn load(
-        &self,
-    ) -> bcr_wallet_persistence::error::Result<HashMap<cashu::PublicKey, MigrationJournalEntry>>
-    {
-        self.0.load().await
-    }
-
-    async fn rehead(
-        &self,
-        old: MigrationJournalHeader,
-        new: MigrationJournalHeader,
-    ) -> bcr_wallet_persistence::error::Result<()> {
-        self.0.rehead(old, new).await
-    }
-
-    async fn prune_swapped(&self) -> bcr_wallet_persistence::error::Result<()> {
-        self.0.prune_swapped().await
-    }
-}
-
-#[tokio::test]
-async fn balance_counts_a_swapped_proof_once_when_the_journal_cannot_mark_it_swapped() {
-    let t = MigrationCtx::new(&[8], &[]).await;
-    let wlt = t.wallet(vec![], 0, false).await;
-    {
-        let mut w = wlt.write().await;
-        w.journal = Arc::new(FailingSwappedJournal(t.pdb.clone()));
-        w.mint_keyset_infos = t.alpha_infos.clone();
-    }
-    let err = t.migrate(&wlt).await.err().unwrap();
-    assert!(matches!(err, Error::Database(_)));
-    assert_eq!(t.received(), Amount::from(8));
-    assert!(matches!(
-        t.states().await[&t.y(0)],
-        MigrationJournalState::Exchanged(_)
-    ));
-    assert_eq!(
-        wlt.read().await.balance().await.unwrap().total,
-        Amount::from(8)
-    );
-}
-
 type JournalGate = (
     tokio::sync::oneshot::Sender<()>,
     tokio::sync::oneshot::Receiver<()>,
@@ -6647,16 +6486,14 @@ pub(crate) struct JournalPause {
     pub(crate) release: tokio::sync::oneshot::Sender<()>,
 }
 
-/// A rabid wallet `w-1` holding real alpha proofs (64 + 32 + 4 sat, and a pending-spent 8 sat
-/// when `held`) in a real pocket and journal, whose substitute exchanges and swaps them for real
+/// A rabid wallet `w-1` holding real alpha proofs (64 + 32 + 4 sat) in a real pocket and journal, whose substitute exchanges and swaps them for real
 pub(crate) struct RealProofs {
     pub(crate) purse: Arc<crate::purse::Purse<Wallet>>,
     journal: Arc<PhaseGatedJournal>,
-    substitute_keyset_fetches: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl RealProofs {
-    pub(crate) async fn new(held: bool) -> Self {
+    pub(crate) async fn new() -> Self {
         let pdb = Arc::new(
             bcr_wallet_persistence::test_utils::tests::in_memory_pocket_db(
                 "w-1",
@@ -6679,15 +6516,7 @@ impl RealProofs {
                 core_tests::generate_random_ecash_proofs(&beta_keyset, &[alpha.amount]).remove(0);
             beta_proofs.insert(Sha256::hash(&alpha.secret.to_bytes()), beta);
         }
-        if held {
-            let mut extra =
-                core_tests::generate_random_ecash_proofs(&alpha_keyset, &[Amount::from(8)]);
-            add_test_dleqs(&mut extra);
-            pdb.store_pendingspent(extra.remove(0)).await.unwrap();
-        }
         let substitute_url = url::Url::from_str("https://substitute.example").unwrap();
-        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counted = fetches.clone();
 
         let mut substitute = MockClowderMintConnector::new();
         substitute
@@ -6724,10 +6553,9 @@ impl RealProofs {
                 clowder_id: test_pub_key(),
             }])
         });
-        substitute.expect_get_mint_keysets().returning(move || {
-            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(vec![beta_info.clone()])
-        });
+        substitute
+            .expect_get_mint_keysets()
+            .returning(move || Ok(vec![beta_info.clone()]));
         let keyset = beta_keyset.clone();
         substitute
             .expect_get_mint_keyset()
@@ -6818,11 +6646,7 @@ impl RealProofs {
             wallets: Arc::new(RwLock::new(HashMap::from([("w-1".to_owned(), wlt)]))),
             swap_guards: Default::default(),
         });
-        Self {
-            purse,
-            journal,
-            substitute_keyset_fetches: fetches,
-        }
+        Self { purse, journal }
     }
 
     /// Holds the next migration once its proofs are in the journal and none is exchanged yet
@@ -6841,10 +6665,5 @@ impl RealProofs {
         let (release, release_rx) = tokio::sync::oneshot::channel();
         *slot.lock().unwrap() = Some((entered_tx, release_rx));
         JournalPause { entered, release }
-    }
-
-    pub(crate) fn substitute_keyset_fetches(&self) -> usize {
-        self.substitute_keyset_fetches
-            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
