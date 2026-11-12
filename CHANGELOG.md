@@ -1,6 +1,6 @@
 # 0.9.16
 
-* TBD
+* `wallet_protest_mint`, `wallet_protest_swap` and `wallet_protest_melt` no longer start the rabid migration when the answer is `Rabid`; `run_jobs` and `purse_migrate_rabid` still do
 
 # 0.9.15
 
