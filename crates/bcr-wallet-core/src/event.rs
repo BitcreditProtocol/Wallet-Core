@@ -262,4 +262,73 @@ mod tests {
         assert_eq!(decoded.actor, payload.actor);
         assert_eq!(decoded.reason, payload.reason);
     }
+
+    fn node_id() -> NodeId {
+        NodeId::from_str("bitcrt03205b8dec12bc9e879f5b517aa32192a2550e88adcee3e54ec2c7294802568fef")
+            .unwrap()
+    }
+
+    fn envelope_for(event_type: &EventType) -> EventEnvelope {
+        let mint = MintUrl::from_str("https://mint.example.com").unwrap();
+        match event_type {
+            EventType::ContactPayment => Event::new_contact_payment(ContactPaymentPayload {
+                payment_request_id: Some(Uuid::new_v4()),
+                sender: node_id(),
+                proofs: vec![],
+                memo: Some("memo".into()),
+                mint,
+                unit: CurrencyUnit::Sat,
+                created_at: 1,
+            })
+            .try_into()
+            .unwrap(),
+            EventType::ContactPaymentRequest => {
+                Event::new_contact_payment_request(ContactPaymentRequestPayload::new(
+                    node_id(),
+                    Amount::from(5u64),
+                    CurrencyUnit::Sat,
+                    None,
+                    Some(10),
+                    mint,
+                ))
+                .try_into()
+                .unwrap()
+            }
+            EventType::PaymentRequestAction => {
+                Event::new_payment_request_action(PaymentRequestActionPayload::new(
+                    Uuid::new_v4(),
+                    PaymentRequestActionKind::Reject,
+                    node_id(),
+                    None,
+                ))
+                .try_into()
+                .unwrap()
+            }
+        }
+    }
+
+    #[test]
+    fn test_event_envelope_version_round_trips_for_every_event_type() {
+        use strum::VariantArray;
+        for event_type in EventType::VARIANTS {
+            let envelope = envelope_for(event_type);
+            assert_eq!(envelope.version, DEFAULT_EVENT_VERSION);
+            let bytes = borsh::to_vec(&envelope).unwrap();
+            let decoded: EventEnvelope = borsh::from_slice(&bytes).unwrap();
+            assert_eq!(&decoded.event_type, event_type);
+            assert_eq!(decoded.version, "1.0");
+            assert_eq!(decoded.data, envelope.data);
+        }
+    }
+
+    #[test]
+    fn test_event_envelope_version_other_than_default_still_decodes_header() {
+        let mut envelope = envelope_for(&EventType::PaymentRequestAction);
+        envelope.version = "2.0".into();
+        let bytes = borsh::to_vec(&envelope).unwrap();
+        let decoded: EventEnvelope = borsh::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.event_type, EventType::PaymentRequestAction);
+        assert_eq!(decoded.version, "2.0");
+        assert_eq!(decoded.data, envelope.data);
+    }
 }
