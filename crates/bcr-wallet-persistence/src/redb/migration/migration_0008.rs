@@ -34,7 +34,9 @@ pub(super) fn migration_0008_mint_melt_envelope(
     })?;
     migrate_table(txn, &namespace.mint_table, |bytes| {
         let legacy: LegacyMintEntry = ciborium::from_reader(bytes)?;
-        convertible(legacy.try_into(), |e| encode_mint_entry(&e, &namespace.keys))
+        convertible(legacy.try_into(), |e| {
+            encode_mint_entry(&e, &namespace.keys)
+        })
     })?;
     migrate_table(txn, &namespace.melt_commitment_table, |bytes| {
         let legacy: LegacyMeltCommitmentEntry = ciborium::from_reader(bytes)?;
