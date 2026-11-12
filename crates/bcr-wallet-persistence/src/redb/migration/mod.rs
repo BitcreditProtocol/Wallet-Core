@@ -1,7 +1,7 @@
 use crate::{
     error::{Error, Result},
     redb::{
-        nostr::NostrDB, payment_request::PaymentRequestDB, pocket::PocketDB,
+        mintmelt::MintMeltDB, nostr::NostrDB, payment_request::PaymentRequestDB, pocket::PocketDB,
         transaction::TransactionDB,
     },
 };
@@ -17,6 +17,7 @@ mod migration_0004;
 mod migration_0005;
 mod migration_0006;
 mod migration_0007;
+mod migration_0008;
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct AppliedMigration {
@@ -138,6 +139,18 @@ fn migrate_wallet_sync(db: Arc<Database>, namespace: WalletStorageNamespace) -> 
         tracing::info!("Applied Migration 0007 for wallet {}", &namespace.wallet_id);
     }
 
+    let migration_0008_id_for_wallet =
+        migration_0008::migration_name_for_wallet(&namespace.wallet_id);
+    if !applied.contains(&migration_0008_id_for_wallet) {
+        tracing::info!(
+            "Applying Migration 0008 for wallet {}",
+            &namespace.wallet_id
+        );
+        migration_0008::migration_0008_mint_melt_envelope(&write_txn, &namespace)?;
+        mark_migration_applied(&write_txn, &migration_0008_id_for_wallet)?;
+        tracing::info!("Applied Migration 0008 for wallet {}", &namespace.wallet_id);
+    }
+
     write_txn.commit()?;
     tracing::info!(
         "Finished DB migrations for wallet {}.",
@@ -158,6 +171,9 @@ pub struct WalletStorageNamespace {
     queued_message_table: String,
     dead_letter_table: String,
     payment_request_table: String,
+    melt_table: String,
+    mint_table: String,
+    melt_commitment_table: String,
     keys: bitcoin::secp256k1::Keypair,
 }
 
@@ -176,6 +192,9 @@ pub fn collect_wallet_namespace(
         queued_message_table: NostrDB::queued_message_table_name(&wallet_id),
         dead_letter_table: NostrDB::dead_letter_table_name(&wallet_id),
         payment_request_table: PaymentRequestDB::payment_requests_table_name(&wallet_id),
+        melt_table: MintMeltDB::melt_table_name(&wallet_id, &unit),
+        mint_table: MintMeltDB::mint_table_name(&wallet_id, &unit),
+        melt_commitment_table: MintMeltDB::melt_commitment_table_name(&wallet_id, &unit),
         keys,
     }
 }

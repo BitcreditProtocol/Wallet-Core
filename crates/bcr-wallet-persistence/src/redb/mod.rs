@@ -94,7 +94,7 @@ pub async fn build_wallet_dbs(
 
     let txdb = transaction::TransactionDB::new(db.clone(), wallet_id)?;
     let debitdb = pocket::PocketDB::new(db.clone(), wallet_id, debit, keys)?;
-    let mintmeltdb = mintmelt::MintMeltDB::new(db.clone(), wallet_id, debit)?;
+    let mintmeltdb = mintmelt::MintMeltDB::new(db.clone(), wallet_id, debit, keys)?;
     let nostrdb = nostr::NostrDB::new(db.clone(), wallet_id, keys)?;
     let pending_payment_requests_db =
         payment_request::PaymentRequestDB::new(db.clone(), wallet_id)?;
