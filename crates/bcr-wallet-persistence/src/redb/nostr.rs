@@ -1,4 +1,6 @@
-use crate::{NostrEventOffset, NostrQueuedMessage, NostrRepository, error::Result};
+use crate::{
+    NostrEventOffset, NostrPendingEvent, NostrQueuedMessage, NostrRepository, error::Result,
+};
 use async_trait::async_trait;
 use nostr::types::Timestamp;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
@@ -73,6 +75,30 @@ impl NostrQueuedMessageEntry {
         }
     }
 }
+///////////////////////////////////////////// NostrPendingEventEntry
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct NostrPendingEventEntry {
+    pub event_id: String,
+    pub payload: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created: time::OffsetDateTime,
+    pub attempts: i32,
+    pub max_attempts: i32,
+    #[serde(with = "time::serde::rfc3339")]
+    pub processing_started_at: time::OffsetDateTime,
+}
+
+impl From<NostrPendingEventEntry> for NostrPendingEvent {
+    fn from(value: NostrPendingEventEntry) -> Self {
+        Self {
+            event_id: value.event_id,
+            payload: value.payload,
+        }
+    }
+}
+
+type Table = TableDefinition<'static, &'static [u8], Vec<u8>>;
+
 ///////////////////////////////////////////// NostrDB
 pub struct NostrDB {
     db: Arc<Database>,
@@ -80,6 +106,8 @@ pub struct NostrDB {
     offset_entry_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     dead_letter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    event_retry_table: Table,
+    event_dead_letter_table: Table,
 }
 
 impl NostrDB {
@@ -87,6 +115,8 @@ impl NostrDB {
     const LAST_OFFSET_DB_NAME: &'static str = "last_offset";
     const QUEUED_MESSAGE_DB_NAME: &'static str = "queued_message";
     const DEAD_LETTER_DB_NAME: &'static str = "dead_letter";
+    const EVENT_RETRY_DB_NAME: &'static str = "event_retry";
+    const EVENT_DEAD_LETTER_DB_NAME: &'static str = "event_dead_letter";
     const CURRENT_OFFSET_UNIQUE_ID: &'static str = "current_offset";
     const NOSTR_QUEUE_PROCESSING_TIMEOUT_SECS: i64 = 60;
 
@@ -104,6 +134,11 @@ impl NostrDB {
         let dead_letter_name: &'static str =
             Box::leak(format!("{wallet_id}_{}", Self::DEAD_LETTER_DB_NAME).into_boxed_str());
 
+        let event_retry_name: &'static str =
+            Box::leak(format!("{wallet_id}_{}", Self::EVENT_RETRY_DB_NAME).into_boxed_str());
+        let event_dead_letter_name: &'static str =
+            Box::leak(format!("{wallet_id}_{}", Self::EVENT_DEAD_LETTER_DB_NAME).into_boxed_str());
+
         let offset_entry_table = TableDefinition::new(offset_entry_name);
         let last_offset_table = TableDefinition::new(last_offset_name);
         let queued_message_table = TableDefinition::new(queued_message_name);
@@ -115,6 +150,8 @@ impl NostrDB {
             last_offset_table,
             queued_message_table,
             dead_letter_table,
+            event_retry_table: TableDefinition::new(event_retry_name),
+            event_dead_letter_table: TableDefinition::new(event_dead_letter_name),
         })
     }
 
@@ -150,9 +187,9 @@ impl NostrDB {
                 let entry = table.get(event_id.as_bytes())?;
                 match entry {
                     Some(e) => {
-                        let _entry: NostrEventOffsetEntry =
+                        let entry: NostrEventOffsetEntry =
                             ciborium::from_reader(e.value().as_slice())?;
-                        Ok(true)
+                        Ok(entry.success)
                     }
                     None => Ok(false),
                 }
@@ -312,6 +349,79 @@ impl NostrDB {
         Ok(())
     }
 
+    ///////////////////////////////////////////// Pending Events
+    fn add_pending_event_sync(
+        db: Arc<Database>,
+        table: Table,
+        entry: NostrPendingEventEntry,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(table)?;
+            if table.get(entry.event_id.as_bytes())?.is_none() {
+                let mut serialized = Vec::new();
+                ciborium::into_writer(&entry, &mut serialized)?;
+                table.insert(entry.event_id.as_bytes(), serialized)?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    fn claim_retry_events_sync(
+        db: Arc<Database>,
+        retry_table: Table,
+        dead_letter_table: Table,
+        limit: u64,
+    ) -> Result<Vec<NostrPendingEventEntry>> {
+        let now = time::OffsetDateTime::now_utc();
+        let retry_before = now - time::Duration::seconds(Self::NOSTR_QUEUE_PROCESSING_TIMEOUT_SECS);
+        let write_txn = db.begin_write()?;
+
+        let claimed = {
+            let mut table = write_txn.open_table(retry_table)?;
+            let mut dead_table = write_txn.open_table(dead_letter_table)?;
+            let mut idle = Vec::new();
+            for (_, v) in table.range::<&[u8]>(..)?.flatten() {
+                let entry: NostrPendingEventEntry = ciborium::from_reader(v.value().as_slice())?;
+                if entry.processing_started_at < retry_before {
+                    idle.push(entry);
+                }
+            }
+            idle.sort_by_key(|e| (e.attempts, e.created));
+
+            let mut claimed = Vec::new();
+            for mut entry in idle {
+                let mut serialized = Vec::new();
+                if entry.attempts >= entry.max_attempts {
+                    ciborium::into_writer(&entry, &mut serialized)?;
+                    table.remove(entry.event_id.as_bytes())?;
+                    dead_table.insert(entry.event_id.as_bytes(), serialized)?;
+                } else if (claimed.len() as u64) < limit {
+                    entry.attempts += 1;
+                    entry.processing_started_at = now;
+                    ciborium::into_writer(&entry, &mut serialized)?;
+                    table.insert(entry.event_id.as_bytes(), serialized)?;
+                    claimed.push(entry);
+                }
+            }
+            claimed
+        };
+
+        write_txn.commit()?;
+        Ok(claimed)
+    }
+
+    fn complete_event_sync(db: Arc<Database>, table: Table, event_id: String) -> Result<()> {
+        let write_txn = db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(table)?;
+            table.remove(event_id.as_bytes())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
     ///////////////////////////////////////////// Delete Repo
     fn delete_repo_sync(
         db: Arc<Database>,
@@ -319,10 +429,17 @@ impl NostrDB {
         last_offset_table: TableDefinition<'static, &'static [u8], u64>,
         queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         dead_letter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        event_tables: [Table; 2],
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
 
         {
+            for table in event_tables {
+                if write_txn.open_table(table).is_ok() {
+                    write_txn.delete_table(table)?;
+                }
+            }
+
             if write_txn.open_table(offset_entry_table).is_ok() {
                 write_txn.delete_table(offset_entry_table)?;
             }
@@ -380,6 +497,7 @@ impl NostrRepository for NostrDB {
         let offset_entry_table = self.offset_entry_table;
         let queued_message_table = self.queued_message_table;
         let dead_letter_table = self.dead_letter_table;
+        let event_tables = [self.event_retry_table, self.event_dead_letter_table];
         spawn_blocking(move || {
             Self::delete_repo_sync(
                 db_clone,
@@ -387,6 +505,7 @@ impl NostrRepository for NostrDB {
                 last_offset_table,
                 queued_message_table,
                 dead_letter_table,
+                event_tables,
             )
         })
         .await?
@@ -434,12 +553,46 @@ impl NostrRepository for NostrDB {
             spawn_blocking(move || Self::succeed_retry_sync(db_clone, table, id_clone)).await??;
         Ok(res)
     }
+
+    async fn add_pending_event(&self, event: NostrPendingEvent, max_attempts: i32) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.event_retry_table;
+        let now = time::OffsetDateTime::now_utc();
+        let entry = NostrPendingEventEntry {
+            event_id: event.event_id,
+            payload: event.payload,
+            created: now,
+            attempts: 0,
+            max_attempts,
+            // the first attempt is already running, so it is not claimable until the timeout
+            processing_started_at: now,
+        };
+        spawn_blocking(move || Self::add_pending_event_sync(db_clone, table, entry)).await?
+    }
+
+    async fn claim_retry_events(&self, limit: u64) -> Result<Vec<NostrPendingEvent>> {
+        let db_clone = self.db.clone();
+        let table = self.event_retry_table;
+        let dead_letter_table = self.event_dead_letter_table;
+        let res = spawn_blocking(move || {
+            Self::claim_retry_events_sync(db_clone, table, dead_letter_table, limit)
+        })
+        .await??;
+        Ok(res.into_iter().map(Into::into).collect())
+    }
+
+    async fn complete_event(&self, event_id: &str) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.event_retry_table;
+        let event_id = event_id.to_owned();
+        spawn_blocking(move || Self::complete_event_sync(db_clone, table, event_id)).await?
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use redb::{Builder, backends::InMemoryBackend};
+    use redb::{Builder, ReadableTableMetadata, backends::InMemoryBackend};
 
     fn get_db(wallet_id: &str) -> NostrDB {
         let in_mem = InMemoryBackend::new();
@@ -531,7 +684,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_failed_event_is_still_processed_and_updates_offset() {
+    async fn test_failed_event_is_not_processed_but_updates_offset() {
         let repo = get_db("wallet-failed-event");
         repo.add_event(offset("event-1", 100, true))
             .await
@@ -544,7 +697,7 @@ mod tests {
             .await
             .expect("is_processed works");
         let current = repo.current_offset().await.expect("current_offset works");
-        assert!(processed);
+        assert!(!processed);
         assert_eq!(current, Timestamp::from(200));
     }
 
@@ -757,5 +910,146 @@ mod tests {
 
         assert!(messages.is_empty());
         assert!(read_queued_entry(&repo, "msg-1").is_none());
+    }
+
+    // Pending Event Tests
+    fn pending(id: &str) -> NostrPendingEvent {
+        NostrPendingEvent {
+            event_id: id.to_string(),
+            payload: format!("{{\"id\":\"{id}\"}}"),
+        }
+    }
+
+    fn read_event_entry(repo: &NostrDB, table: Table, id: &str) -> Option<NostrPendingEventEntry> {
+        let read_txn = repo.db.begin_read().expect("can begin read txn");
+        let table = read_txn.open_table(table).ok()?;
+        let value = table.get(id.as_bytes()).expect("can read entry")?;
+        Some(ciborium::from_reader(value.value().as_slice()).expect("can deserialize entry"))
+    }
+
+    fn make_claimable(repo: &NostrDB, id: &str) {
+        let mut entry = read_event_entry(repo, repo.event_retry_table, id).expect("entry exists");
+        entry.processing_started_at = time::OffsetDateTime::from_unix_timestamp(0).expect("valid");
+        let mut serialized = Vec::new();
+        ciborium::into_writer(&entry, &mut serialized).expect("can serialize");
+        let write_txn = repo.db.begin_write().expect("can begin write txn");
+        {
+            let mut table = write_txn
+                .open_table(repo.event_retry_table)
+                .expect("can open table");
+            table
+                .insert(id.as_bytes(), serialized)
+                .expect("can insert entry");
+        }
+        write_txn.commit().expect("can commit");
+    }
+
+    #[tokio::test]
+    async fn event_retry_not_claimable_within_processing_window() {
+        let repo = get_db("wallet-event-window");
+        repo.add_pending_event(pending("e1"), 3)
+            .await
+            .expect("add works");
+        assert!(
+            repo.claim_retry_events(10)
+                .await
+                .expect("claim works")
+                .is_empty()
+        );
+
+        make_claimable(&repo, "e1");
+        let claimed = repo.claim_retry_events(10).await.expect("claim works");
+        assert_eq!(claimed, vec![pending("e1")]);
+        assert!(
+            repo.claim_retry_events(10)
+                .await
+                .expect("claim works")
+                .is_empty()
+        );
+        let entry = read_event_entry(&repo, repo.event_retry_table, "e1").expect("still stored");
+        assert_eq!(entry.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn event_retry_dead_letters_after_max_attempts() {
+        let repo = get_db("wallet-event-dead");
+        repo.add_pending_event(pending("e1"), 2)
+            .await
+            .expect("add works");
+        for _ in 0..2 {
+            make_claimable(&repo, "e1");
+            assert_eq!(repo.claim_retry_events(10).await.expect("claim").len(), 1);
+        }
+        make_claimable(&repo, "e1");
+        assert!(
+            repo.claim_retry_events(10)
+                .await
+                .expect("claim works")
+                .is_empty()
+        );
+        assert!(read_event_entry(&repo, repo.event_retry_table, "e1").is_none());
+        let dead =
+            read_event_entry(&repo, repo.event_dead_letter_table, "e1").expect("dead letter");
+        assert_eq!(dead.attempts, 2);
+    }
+
+    #[tokio::test]
+    async fn event_retry_complete_removes_event_and_unknown_id_is_noop() {
+        let repo = get_db("wallet-event-complete");
+        repo.add_pending_event(pending("e1"), 3)
+            .await
+            .expect("add works");
+        repo.complete_event("unknown")
+            .await
+            .expect("unknown id is a no-op");
+        repo.complete_event("e1").await.expect("complete works");
+        assert!(
+            repo.claim_retry_events(10)
+                .await
+                .expect("claim works")
+                .is_empty()
+        );
+        assert!(read_event_entry(&repo, repo.event_retry_table, "e1").is_none());
+    }
+
+    #[tokio::test]
+    async fn event_retry_repeated_add_keeps_one_row() {
+        let repo = get_db("wallet-event-dup");
+        repo.add_pending_event(pending("e1"), 3)
+            .await
+            .expect("add works");
+        make_claimable(&repo, "e1");
+        repo.claim_retry_events(10).await.expect("claim works");
+        repo.add_pending_event(pending("e1"), 3)
+            .await
+            .expect("re-add works");
+        let entry = read_event_entry(&repo, repo.event_retry_table, "e1").expect("stored");
+        assert_eq!(entry.attempts, 1);
+        let read_txn = repo.db.begin_read().expect("read txn");
+        let table = read_txn.open_table(repo.event_retry_table).expect("table");
+        assert_eq!(table.len().expect("len"), 1);
+    }
+
+    #[tokio::test]
+    async fn event_retry_claim_respects_limit() {
+        let repo = get_db("wallet-event-limit");
+        for id in ["e1", "e2", "e3"] {
+            repo.add_pending_event(pending(id), 3)
+                .await
+                .expect("add works");
+            make_claimable(&repo, id);
+        }
+        assert_eq!(repo.claim_retry_events(2).await.expect("claim").len(), 2);
+        assert_eq!(repo.claim_retry_events(2).await.expect("claim").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn event_retry_delete_repo_clears_events() {
+        let repo = get_db("wallet-event-delete");
+        repo.add_pending_event(pending("e1"), 3)
+            .await
+            .expect("add works");
+        repo.delete_repo().await.expect("delete works");
+        assert!(read_event_entry(&repo, repo.event_retry_table, "e1").is_none());
     }
 }

@@ -262,6 +262,14 @@ pub struct NostrQueuedMessage {
     pub payload: String,
 }
 
+/// A received Nostr event that has not been fully processed yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NostrPendingEvent {
+    pub event_id: String,
+    /// The raw event as JSON.
+    pub payload: String,
+}
+
 #[cfg_attr(any(test, feature = "test-utils"), mockall::automock)]
 #[async_trait]
 pub trait NostrRepository: SendSync {
@@ -272,6 +280,13 @@ pub trait NostrRepository: SendSync {
     async fn get_retry_messages(&self, limit: u64) -> Result<Vec<NostrQueuedMessage>>;
     async fn fail_retry(&self, id: &str) -> Result<()>;
     async fn succeed_retry(&self, id: &str) -> Result<()>;
+    /// Stores a received event for processing. Keeps the existing row if the id is already stored.
+    async fn add_pending_event(&self, event: NostrPendingEvent, max_attempts: i32) -> Result<()>;
+    /// Claims stored events that are not being processed, counting an attempt for each. Events
+    /// that used up their attempts are moved to the dead letter table instead.
+    async fn claim_retry_events(&self, limit: u64) -> Result<Vec<NostrPendingEvent>>;
+    /// Removes a stored event once it was handled or permanently rejected.
+    async fn complete_event(&self, event_id: &str) -> Result<()>;
     async fn delete_repo(&self) -> Result<()>;
 }
 

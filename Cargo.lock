@@ -469,6 +469,7 @@ dependencies = [
  "async-trait",
  "bcr-common",
  "bcr-wallet-core",
+ "bcr-wallet-persistence",
  "bitcoin",
  "borsh",
  "ciborium",
