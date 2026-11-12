@@ -99,6 +99,7 @@ pub trait PocketRepository: SendSync {
 
     async fn reserve_counter(&self, kid: ecash::Id, n: u32) -> Result<u32>;
     async fn advance_counter_to(&self, kid: ecash::Id, at_least: u32) -> Result<()>;
+    /// A range is identified by `(kid, start)`, so the holder of a reservation releases it at most once.
     async fn release_counter(&self, kid: ecash::Id, start: u32, n: u32) -> Result<()>;
 
     /// Keeps the reserved ranges a mint may still sign; they are no longer released at open.
