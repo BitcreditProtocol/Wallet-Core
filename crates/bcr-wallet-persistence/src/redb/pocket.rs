@@ -749,13 +749,6 @@ impl PocketDB {
         let released_counter_table = TableDefinition::new(released_counter_name);
         let reservation_table = TableDefinition::new(reservation_name);
 
-        Self::release_leftover_reservations(
-            &db,
-            counter_table,
-            released_counter_table,
-            reservation_table,
-        )?;
-
         Ok(Self {
             db,
             proof_table,
@@ -1163,13 +1156,13 @@ impl PocketDB {
 
     /// A reservation still present when the pocket opens was never covered by a stored
     /// commitment, so no swap can have been made with its counters.
-    fn release_leftover_reservations(
-        db: &Database,
-        counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        released_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        reservation_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-    ) -> Result<()> {
-        let write_txn = db.begin_write()?;
+    pub(super) fn release_leftover_reservations(&self) -> Result<()> {
+        let (counter_table, released_table, reservation_table) = (
+            self.counter_table,
+            self.released_counter_table,
+            self.reservation_table,
+        );
+        let write_txn = self.db.begin_write()?;
         {
             let mut counters = write_txn.open_table(counter_table)?;
             let mut released = write_txn.open_table(released_table)?;
@@ -2713,7 +2706,9 @@ mod tests {
     }
 
     fn open(db: &Arc<Database>, keys: bitcoin::secp256k1::Keypair) -> PocketDB {
-        PocketDB::new(db.clone(), &wallet_id(), &CurrencyUnit::Sat, keys).unwrap()
+        let repo = PocketDB::new(db.clone(), &wallet_id(), &CurrencyUnit::Sat, keys).unwrap();
+        repo.release_leftover_reservations().unwrap();
+        repo
     }
 
     fn commitment_record() -> crate::SwapCommitmentRecord {
@@ -2782,5 +2777,34 @@ mod tests {
 
         let repo = open(&db, keys);
         assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn reservation_lifecycle_across_reopens() {
+        let (db, keys) = reopenable_db();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let k = mintkeyset.id;
+        let record = commitment_record();
+        let sig = record.commitment;
+
+        let p = open(&db, keys);
+        assert_eq!(p.reserve_counter(k, 3).await.unwrap(), 0);
+        p.store_commitment(record, vec![(k, 0, 3)]).await.unwrap();
+        assert_eq!(p.reserve_counter(k, 2).await.unwrap(), 3);
+        drop(p);
+
+        let p = open(&db, keys);
+        assert!(p.load_commitment(sig).await.is_ok());
+        assert_eq!(p.reserve_counter(k, 2).await.unwrap(), 3);
+        p.clear_reservations(vec![(k, 3, 2)]).await.unwrap();
+        drop(p);
+
+        let p = open(&db, keys);
+        assert_eq!(p.reserve_counter(k, 1).await.unwrap(), 5);
+        assert_eq!(p.reserve_counter(k, 4).await.unwrap(), 6);
+        drop(p);
+
+        let p = open(&db, keys);
+        assert_eq!(p.reserve_counter(k, 0).await.unwrap(), 5);
     }
 }
