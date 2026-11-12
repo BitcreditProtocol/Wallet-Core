@@ -225,7 +225,6 @@ pub mod tests {
                 quote_id: Uuid,
             ) -> Result<MeltProtestResult>;
             async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>>;
-            async fn forget_melt_commitment(&self, quote_id: Uuid) -> Result<()>;
             async fn lock_exchange(
                 &self,
                 record: bcr_wallet_persistence::ExchangeRecord,

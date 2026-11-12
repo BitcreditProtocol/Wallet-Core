@@ -111,7 +111,6 @@ pub trait DebitPocketApi: super::PocketApi {
     ) -> Result<ProtestResult>;
     async fn protest_melt(&self, quote_id: Uuid) -> Result<MeltProtestResult>;
     async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>>;
-    async fn forget_melt_commitment(&self, quote_id: Uuid) -> Result<()>;
     /// Stores the exchange record, then HTLC-locks its alpha inputs, keeping the lock swap's
     /// commitment until the record holds the locked proofs.
     async fn lock_exchange(
@@ -1595,10 +1594,6 @@ impl DebitPocketApi for Pocket {
                 })
             }
         }
-    }
-
-    async fn forget_melt_commitment(&self, quote_id: Uuid) -> Result<()> {
-        Ok(self.mdb.delete_melt_commitment(quote_id).await?)
     }
 
     async fn list_melt_commitments(&self) -> Result<Vec<(Uuid, u64)>> {

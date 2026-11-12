@@ -1,6 +1,6 @@
 # 0.9.16
 
-* TBD
+* `wallet_check_pending_melt_commitments` protests every melt commitment inside the protest window, including melts that already returned a txid; a melt commitment is deleted only when its protest answers `Resolved`
 
 # 0.9.15
 

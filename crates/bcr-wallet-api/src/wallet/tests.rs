@@ -857,6 +857,45 @@ async fn protest_resolved_melt_stores_txid() {
 }
 
 #[tokio::test]
+async fn check_pending_melt_commitments_protests_paid_melt() {
+    let mut ctx = wallet_ctx();
+    let quote_id = Uuid::new_v4();
+    let expiry = time::OffsetDateTime::now_utc().unix_timestamp() as u64 + 60;
+
+    ctx.debit
+        .expect_list_melt_commitments()
+        .times(1)
+        .returning(move || Ok(vec![(quote_id, expiry)]));
+    ctx.debit
+        .expect_protest_melt()
+        .withf(move |q| *q == quote_id)
+        .times(1)
+        .returning(|_| {
+            Ok(MeltProtestResult {
+                base: ProtestResult {
+                    status: wire_common::ProtestStatus::Offline,
+                    result: None,
+                },
+                txid: None,
+            })
+        });
+    ctx.tx_repo.expect_list_txs().returning(move || {
+        Ok(vec![Transaction {
+            quote_id: Some(quote_id),
+            btc_tx_id: Some(bitcoin::Txid::from_byte_array([7u8; 32])),
+            ..reclaimable_tx(Amount::from(100u64))
+        }])
+    });
+
+    let wlt = wallet(ctx).await;
+    wlt.read()
+        .await
+        .check_pending_melt_commitments()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn test_pay_contact() {
     let mut ctx = wallet_ctx();
 
