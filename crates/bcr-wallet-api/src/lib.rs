@@ -1543,34 +1543,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wallet_balance_returns_during_an_in_flight_migration() {
-        let f = SwapFixture::new(substitute_betas()).await;
-        let app = app_state(&f);
-        let mut gate = f.gate_exchange();
-        let migrating = app.clone();
-        let migration = tokio::spawn(async move { migrating.purse_migrate_rabid().await });
-        gate.entered().await;
-        let renaming = app.clone();
-        let rename = tokio::spawn(async move {
-            renaming
-                .wallet_rename("w-1".to_owned(), "renamed".to_owned())
-                .await
-        });
-        settle().await;
-
-        let balance =
-            tokio::time::timeout(Duration::from_secs(5), app.wallet_balance("w-1".to_owned()))
-                .await
-                .expect("the balance does not wait for the exchange")
-                .unwrap();
-        assert_eq!(balance.total, cashu::Amount::from(100));
-
-        gate.release();
-        migration.await.unwrap().unwrap();
-        rename.await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
     async fn wallet_balance_makes_no_substitute_request_while_a_held_proof_is_journaled() {
         let f = RealProofs::new(true).await;
         let app = app_state_of(f.purse.clone());

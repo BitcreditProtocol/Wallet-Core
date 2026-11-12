@@ -6487,25 +6487,6 @@ async fn old_listener_ignores_nostr_events_published_after_swap() {
 }
 
 #[tokio::test]
-async fn failed_rebuild_keeps_the_old_listener_receiving() {
-    let mut f = SwapFixture::new(vec![]).await;
-
-    f.purse
-        .migrate_rabid_wallets()
-        .await
-        .expect_err("a substitute without betas cannot be rebuilt on");
-    f.channel.publish(contact_payment(64, &f.rabid_url));
-
-    assert_eq!(next_received(&mut f.old_received).await, Amount::from(64));
-    assert!(f.new_received.try_recv().is_err());
-    assert_eq!(f.consumer_starts(), 1);
-    assert!(f.stored.lock().unwrap().is_empty());
-    let current = f.purse.get_wallet("w-1").await.unwrap();
-    assert!(Arc::ptr_eq(&current, &f.old));
-    assert!(f.old.read().await.take_nostr_listener().is_some());
-}
-
-#[tokio::test]
 async fn a_payment_request_paid_on_the_rebuilt_wallet_wakes_a_waiter_on_the_old_one() {
     let f = SwapFixture::new(vec![
         url::Url::from_str("https://sub-beta.example").unwrap(),

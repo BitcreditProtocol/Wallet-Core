@@ -940,8 +940,8 @@ impl Wallet {
     ) -> Result<WalletBalance> {
         let held = crate::pocket::balance_of(in_flight, keysets_info)?;
         let balance = self.debit.balance(keysets_info).await?;
-        let debit = balance.debit + held.debit;
-        let credit = balance.credit + held.credit;
+        let debit = add_amounts(balance.debit, held.debit)?;
+        let credit = add_amounts(balance.credit, held.credit)?;
         Ok(WalletBalance {
             debit,
             credit,

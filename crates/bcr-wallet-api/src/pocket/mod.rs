@@ -918,11 +918,12 @@ pub(crate) fn balance_of<'p>(
         let is_credit = infos[&proof.keyset_id.into()]
             .final_expiry
             .is_some_and(|expiry| expiry >= start_of_today);
-        if is_credit {
-            balance.credit += proof.amount;
+        let total = if is_credit {
+            &mut balance.credit
         } else {
-            balance.debit += proof.amount;
-        }
+            &mut balance.debit
+        };
+        *total = add_amounts(*total, proof.amount)?;
     }
     Ok(balance)
 }

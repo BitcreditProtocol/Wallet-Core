@@ -306,13 +306,6 @@ where
         wallet_id: &str,
         wlt: &Arc<RwLock<Wlt>>,
     ) -> Result<Option<url::Url>> {
-        let swap_guard = self.swap_guard(wallet_id);
-        let swapping = Arc::new(swap_guard.lock.clone().write_owned().await);
-        let current = self.get_wallet(wallet_id).await;
-        if !current.is_some_and(|current| Arc::ptr_eq(&current, wlt)) {
-            tracing::info!("Wallet {wallet_id} was migrated or deleted meanwhile");
-            return Ok(None);
-        }
         let substitute_url = {
             let wlt = wlt.read().await;
             tracing::info!("Checking if alpha is rabid..");
@@ -334,6 +327,13 @@ where
             };
             substitute_url
         };
+        let swap_guard = self.swap_guard(wallet_id);
+        let swapping = Arc::new(swap_guard.lock.clone().write_owned().await);
+        let current = self.get_wallet(wallet_id).await;
+        if !current.is_some_and(|current| Arc::ptr_eq(&current, wlt)) {
+            tracing::info!("Wallet {wallet_id} was migrated or deleted meanwhile");
+            return Ok(None);
+        }
         let paused = PausedListener::pause(wlt, &swapping).await;
         let recorded = match wlt.read().await.balance().await {
             Ok(balance) => Some(swap_guard.record(balance)),
