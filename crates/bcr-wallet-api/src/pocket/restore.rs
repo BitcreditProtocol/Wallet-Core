@@ -95,7 +95,6 @@ async fn restore_batch(
     for (output, signature) in resp.into_iter() {
         let Some(premint) = requested.remove(&output) else {
             tracing::warn!("skipped unexpected restored output: kid: {kid}");
-            summary.rejected += 1;
             continue;
         };
         match unblind_verified(&keyset, premint, signature) {
@@ -662,7 +661,7 @@ mod tests {
             BATCH_SIZE as usize,
         )
         .await;
-        assert_eq!(result, summary(BATCH_SIZE as usize, 1));
+        assert_eq!(result, summary(BATCH_SIZE as usize, 0));
     }
 
     #[tokio::test]
@@ -690,7 +689,7 @@ mod tests {
             BATCH_SIZE as usize,
         )
         .await;
-        assert_eq!(result, summary(BATCH_SIZE as usize, 1));
+        assert_eq!(result, summary(BATCH_SIZE as usize, 0));
     }
 
     async fn restore_batch_rejecting_first(
@@ -781,6 +780,22 @@ mod tests {
                 rejected: BATCH_SIZE as usize,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn restore_keysetid_unrequested_outputs_do_not_extend_scan() {
+        let (kid, mut client) = mock_restore(|keyset, _| unrequested_output(keyset));
+        client
+            .expect_post_restore()
+            .times(EMPTY_RESPONSES_BEFORE_ABORT - 1)
+            .returning(|_| Ok(vec![]));
+        let db = MockPocketRepository::new();
+
+        let client: Arc<dyn ClowderMintConnector> = Arc::new(client);
+        let summary = restore_keysetid(&zero_seed(), kid, &client, &db)
+            .await
+            .unwrap();
+        assert_eq!(summary, RestoreSummary::default());
     }
 
     #[tokio::test]
