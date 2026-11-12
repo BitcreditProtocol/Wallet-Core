@@ -1052,8 +1052,10 @@ impl PocketDB {
         start: u32,
         n: u32,
     ) -> Result<()> {
-        reservations.remove(Self::released_key(kid, start).as_slice())?;
-        let Some(end) = start.checked_add(n).filter(|_| n > 0) else {
+        let held = reservations
+            .remove(Self::released_key(kid, start).as_slice())?
+            .is_some();
+        let Some(end) = start.checked_add(n).filter(|_| held && n > 0) else {
             return Ok(());
         };
         match end.cmp(&Self::counter_in(counters, kid)?) {
