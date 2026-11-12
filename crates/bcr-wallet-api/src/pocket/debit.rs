@@ -1284,7 +1284,8 @@ impl DebitPocketApi for Pocket {
         };
         let kid = active_info.id;
         let keyset = client.get_mint_keyset(kid).await?;
-        let premint = Counters::new(self.pdb.as_ref())
+        let mut counters = Counters::new(self.pdb.as_ref());
+        let premint = counters
             .premint_from_counter(
                 &self.seed,
                 kid,
@@ -1308,7 +1309,13 @@ impl DebitPocketApi for Pocket {
         };
 
         // Request mint quote
-        let response = client.post_mint_quote_onchain(request).await?;
+        let response = match client.post_mint_quote_onchain(request).await {
+            Ok(response) => response,
+            Err(e) => {
+                counters.release().await;
+                return Err(e);
+            }
+        };
 
         bcr_common::core::signature::schnorr_verify_b64(
             &response.content,
@@ -3448,6 +3455,108 @@ mod tests {
             .await
             .expect("mint onchain works");
         assert_eq!(summary.amount, amount);
+    }
+
+    fn mint_quote_pocket(
+        pdb: Arc<dyn PocketRepository>,
+        clowder_id: bitcoin::secp256k1::PublicKey,
+    ) -> super::Pocket {
+        let mut mdb = MockMintMeltRepository::new();
+        mdb.expect_store_mint()
+            .returning(|_, _, _, _, _, _, _, _| Ok(Uuid::new_v4()));
+        let mut beta_mock = MockClowderMintConnector::new();
+        setup_attestation_mock(&mut beta_mock);
+        pocket_with_beta(
+            pdb,
+            Arc::new(mdb),
+            vec![Arc::new(beta_mock) as Arc<dyn crate::ClowderMintConnector>],
+            clowder_id,
+        )
+    }
+
+    #[tokio::test]
+    async fn mint_onchain_releases_counters_on_quote_failure() {
+        use bcr_common::{
+            client::mint::{BRError, Error as MintError},
+            wire::clowder::ClowderRejection,
+        };
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = test_kinfos(info);
+        let amount = bitcoin::Amount::from_sat(24);
+        let failures = [
+            Error::MintClientServiceUnavailable("operation timed out".into()),
+            Error::Mint(MintError::InvalidRequest(BRError::Clowder(
+                serde_json::to_value(ClowderRejection::OutputsReserved).unwrap(),
+            ))),
+        ];
+        for failure in failures {
+            let mut connector = MockClowderMintConnector::new();
+            let mint_keyset = bcr_wallet_core::util::to_keyset(&keyset, None);
+            connector
+                .expect_get_mint_keyset()
+                .returning(move |_| Ok(mint_keyset.clone()));
+            let mut failure = Some(failure);
+            connector
+                .expect_post_mint_quote_onchain()
+                .returning(move |_| Err(failure.take().unwrap()));
+            let pdb = in_memory_pdb();
+            mint_quote_pocket(pdb.clone(), random_alpha_id())
+                .mint_onchain(amount, &k_infos, Arc::new(connector))
+                .await
+                .expect_err("quote fails");
+            assert_eq!(pdb.reserve_counter(kid, 0).await.unwrap(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_mint_quote_keeps_counters() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = test_kinfos(info);
+        let amount = bitcoin::Amount::from_sat(24);
+        let clowder_keypair = {
+            let secret_bytes: [u8; 32] = rand::random();
+            bitcoin::secp256k1::Keypair::from_seckey_slice(
+                bitcoin::secp256k1::SECP256K1,
+                &secret_bytes,
+            )
+            .unwrap()
+        };
+        let clowder_id = bitcoin::secp256k1::PublicKey::from_keypair(&clowder_keypair);
+        let mut connector = MockClowderMintConnector::new();
+        let mint_keyset = bcr_wallet_core::util::to_keyset(&keyset, None);
+        connector
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(mint_keyset.clone()));
+        connector
+            .expect_post_mint_quote_onchain()
+            .returning(move |req| {
+                let body = wire_mint::OnchainMintQuoteResponseBodyV1 {
+                    quote: Uuid::new_v4(),
+                    address: "tb1qteyk7pfvvql2r2zrsu4h4xpvju0nz7ykvguyk0".to_string(),
+                    payment_amount: amount,
+                    expiry: time::OffsetDateTime::now_utc().unix_timestamp() as u64,
+                    blinded_messages: req.blinded_messages,
+                    wallet_key: req.wallet_key,
+                };
+                let (content, commitment) =
+                    bcr_common::core::signature::serialize_n_schnorr_sign_borsh_msg(
+                        &body,
+                        &clowder_keypair,
+                    )
+                    .unwrap();
+                Ok(wire_mint::OnchainMintQuoteResponse {
+                    content,
+                    commitment,
+                })
+            });
+        let pdb = in_memory_pdb();
+        mint_quote_pocket(pdb.clone(), clowder_id)
+            .mint_onchain(amount, &k_infos, Arc::new(connector))
+            .await
+            .expect("mint onchain works");
+        assert_eq!(pdb.reserve_counter(kid, 0).await.unwrap(), 2);
     }
 
     #[tokio::test]
