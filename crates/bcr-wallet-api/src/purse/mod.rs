@@ -1,22 +1,139 @@
+use crate::wallet::types::WalletBalance;
 use crate::{
     error::{Error, Result},
-    wallet::{api::WalletApi, util::update_optional_field},
+    wallet::{NostrReceiver, api::WalletApi, util::update_optional_field},
 };
 use bcr_common::core::NodeId;
 use bcr_wallet_core::{contact::Contact, email::Email, name::Name, types::WalletConfig};
 use bcr_wallet_persistence::{ContactStoreApi, PurseRepository, redb::purse::PurseDB};
+use futures::future::BoxFuture;
 use nostr::types::RelayUrl;
 use std::{
     collections::{BTreeSet, HashMap},
+    ops::Deref,
     sync::Arc,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use uuid::Uuid;
 
 pub struct Purse<Wlt> {
     pub repo: Box<dyn PurseRepository>,
     pub contact_repos: HashMap<bitcoin::Network, Arc<dyn ContactStoreApi>>,
     pub wallets: Arc<RwLock<HashMap<String, Arc<RwLock<Wlt>>>>>,
+    /// One per wallet id, outliving the instances a migration swaps
+    pub swap_guards: std::sync::Mutex<HashMap<String, Arc<SwapGuard>>>,
+}
+
+/// A migration holds the write side of `lock`, every call that moves proofs or writes wallet
+/// state its read side. While a migration runs, `migrating` holds the balance the wallet had
+/// when it started, which is what a read answers: the pocket is mid-exchange and has no balance.
+#[derive(Default)]
+pub struct SwapGuard {
+    lock: Arc<RwLock<()>>,
+    migrating: std::sync::Mutex<Migrating>,
+}
+
+#[derive(Default)]
+struct Migrating {
+    generation: u64,
+    balance: Option<WalletBalance>,
+}
+
+impl SwapGuard {
+    fn record(self: &Arc<Self>, balance: WalletBalance) -> RecordedBalance {
+        let mut migrating = self.migrating.lock().unwrap();
+        migrating.generation += 1;
+        migrating.balance = Some(balance);
+        RecordedBalance(self.clone())
+    }
+
+    fn recorded(&self) -> (u64, Option<WalletBalance>) {
+        let migrating = self.migrating.lock().unwrap();
+        (migrating.generation, migrating.balance.clone())
+    }
+}
+
+/// The balance a migration answers reads with, cleared when dropped
+struct RecordedBalance(Arc<SwapGuard>);
+
+impl Drop for RecordedBalance {
+    fn drop(&mut self) {
+        let mut migrating = self.0.migrating.lock().unwrap();
+        migrating.generation += 1;
+        migrating.balance = None;
+    }
+}
+
+/// A wallet that no migration swaps out while this is held
+pub struct HeldWallet<Wlt> {
+    wallet: Arc<RwLock<Wlt>>,
+    _swap_guard: OwnedRwLockReadGuard<()>,
+}
+
+impl<Wlt> Deref for HeldWallet<Wlt> {
+    type Target = RwLock<Wlt>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.wallet
+    }
+}
+
+/// The subscription of a wallet's stopped nostr listener, holding every event it has not handled
+/// yet. It is resumed on `wallet`, also when dropped, so no event is left unhandled; the swap
+/// guard stays held until then, so a retried migration never meets a listener that is not back.
+struct PausedListener<Wlt: WalletApi + 'static> {
+    wallet: Arc<RwLock<Wlt>>,
+    swapping: Arc<OwnedRwLockWriteGuard<()>>,
+    subscription: Option<BoxFuture<'static, NostrReceiver>>,
+}
+
+impl<Wlt: WalletApi + 'static> PausedListener<Wlt> {
+    /// Stops the nostr listener of `wallet` once it has handled the event it is on
+    async fn pause(
+        wallet: &Arc<RwLock<Wlt>>,
+        swapping: &Arc<OwnedRwLockWriteGuard<()>>,
+    ) -> Option<Self> {
+        let listener = wallet.read().await.take_nostr_listener()?;
+        let mut paused = Self {
+            wallet: wallet.clone(),
+            swapping: swapping.clone(),
+            subscription: Some(Box::pin(listener.stop())),
+        };
+        let nostr_receiver = paused.subscription.as_mut()?.await;
+        paused.subscription = Some(Box::pin(std::future::ready(nostr_receiver)));
+        Some(paused)
+    }
+
+    async fn resume(mut self) {
+        let wallet = self.wallet.clone();
+        let wallet = wallet.read().await;
+        if let Some(subscription) = self.subscription.take() {
+            wallet.start_nostr_listener(Some(subscription.await)).await;
+        }
+    }
+
+    async fn resume_on(mut self, wallet: Arc<RwLock<Wlt>>) {
+        self.wallet = wallet;
+        self.resume().await;
+    }
+}
+
+impl<Wlt: WalletApi + 'static> Drop for PausedListener<Wlt> {
+    fn drop(&mut self) {
+        if let Some(subscription) = self.subscription.take() {
+            let wallet = self.wallet.clone();
+            let swapping = self.swapping.clone();
+            tokio::spawn(async move {
+                let nostr_receiver = subscription.await;
+                wallet
+                    .read()
+                    .await
+                    .start_nostr_listener(Some(nostr_receiver))
+                    .await;
+                drop(swapping);
+            });
+        }
+    }
 }
 
 impl<Wlt> Purse<Wlt> {
@@ -28,6 +145,7 @@ impl<Wlt> Purse<Wlt> {
             repo: Box::new(repo),
             contact_repos,
             wallets: Arc::new(RwLock::new(HashMap::default())),
+            swap_guards: Default::default(),
         })
     }
 
@@ -53,6 +171,26 @@ impl<Wlt> Purse<Wlt> {
         self.wallets.read().await.get(id).cloned()
     }
 
+    /// The wallet, held for a call that moves proofs or writes wallet state, so the call never
+    /// runs on an instance a migration has swapped out
+    pub async fn hold_wallet(&self, id: &str) -> Option<HeldWallet<Wlt>> {
+        let swap_guard = self.swap_guard(id).lock.clone().read_owned().await;
+        let wallet = self.get_wallet(id).await?;
+        Some(HeldWallet {
+            wallet,
+            _swap_guard: swap_guard,
+        })
+    }
+
+    fn swap_guard(&self, id: &str) -> Arc<SwapGuard> {
+        self.swap_guards
+            .lock()
+            .unwrap()
+            .entry(id.to_owned())
+            .or_default()
+            .clone()
+    }
+
     pub async fn ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self.wallets.read().await.keys().cloned().collect();
         ids.sort();
@@ -62,8 +200,29 @@ impl<Wlt> Purse<Wlt> {
 
 impl<Wlt> Purse<Wlt>
 where
-    Wlt: WalletApi,
+    Wlt: WalletApi + 'static,
 {
+    /// The balance of the wallet: the one recorded when a migration of it started while it runs,
+    /// otherwise what the current instance reads, read again if a migration overlapped the read
+    pub async fn wallet_balance(&self, id: &str) -> Option<Result<WalletBalance>> {
+        let guard = self.swap_guard(id);
+        loop {
+            let (generation, recorded) = guard.recorded();
+            if let Some(balance) = recorded {
+                return Some(Ok(balance));
+            }
+            let wallet = self.get_wallet(id).await?;
+            let read = wallet.read().await.balance().await;
+            let (after, recorded) = guard.recorded();
+            if let Some(balance) = recorded {
+                return Some(Ok(balance));
+            }
+            if after == generation {
+                return Some(read);
+            }
+        }
+    }
+
     pub async fn names_by_network(&self, network: bitcoin::Network) -> Vec<String> {
         let wallets: Vec<_> = {
             let wlts = self.wallets.read().await;
@@ -88,7 +247,7 @@ where
     }
 
     pub async fn delete_wallet(&self, id: &str) -> Result<()> {
-        let Some(wlt) = self.get_wallet(id).await else {
+        let Some(wlt) = self.hold_wallet(id).await else {
             return Err(Error::WalletNotFound(id.to_owned()));
         };
         wlt.read().await.delete().await?;
@@ -98,7 +257,7 @@ where
     }
 
     pub async fn rename_wallet(&self, id: &str, new_name: String) -> Result<()> {
-        let Some(wlt) = self.get_wallet(id).await else {
+        let Some(wlt) = self.hold_wallet(id).await else {
             return Err(Error::WalletNotFound(id.to_owned()));
         };
         let info = wlt.read().await.info();
@@ -125,7 +284,7 @@ where
         let mut res = HashMap::new();
         let mut failure = None;
         for (wallet_id, wlt) in wlts {
-            match self.migrate_rabid_wallet(&wlt).await {
+            match self.migrate_rabid_wallet(&wallet_id, &wlt).await {
                 Ok(Some(new_mint_url)) => {
                     res.insert(wallet_id, new_mint_url);
                 }
@@ -142,33 +301,85 @@ where
         }
     }
 
-    async fn migrate_rabid_wallet(&self, wlt: &RwLock<Wlt>) -> Result<Option<url::Url>> {
-        let mut wlt = wlt.write().await;
-        tracing::info!("Checking if alpha is rabid..");
-        if !wlt.is_wallet_mint_rabid().await? {
-            if wlt.has_migration_entries().await? {
-                tracing::info!("Finishing a migrated wallet whose config or journal was not saved");
-                self.repo.store(wlt.config()?).await?;
-                wlt.finish_migration().await?;
-            } else {
-                tracing::info!("Alpha is not rabid - nothing to migrate.");
-            }
+    async fn migrate_rabid_wallet(
+        &self,
+        wallet_id: &str,
+        wlt: &Arc<RwLock<Wlt>>,
+    ) -> Result<Option<url::Url>> {
+        let swap_guard = self.swap_guard(wallet_id);
+        let swapping = Arc::new(swap_guard.lock.clone().write_owned().await);
+        let current = self.get_wallet(wallet_id).await;
+        if !current.is_some_and(|current| Arc::ptr_eq(&current, wlt)) {
+            tracing::info!("Wallet {wallet_id} was migrated or deleted meanwhile");
             return Ok(None);
         }
-        tracing::warn!("Alpha is rabid - finding substitute");
-        let Some(substitute_url) = wlt.mint_substitute().await? else {
-            return Ok(None);
+        let substitute_url = {
+            let wlt = wlt.read().await;
+            tracing::info!("Checking if alpha is rabid..");
+            if !wlt.is_wallet_mint_rabid().await? {
+                if wlt.has_migration_entries().await? {
+                    tracing::info!(
+                        "Finishing a migrated wallet whose config or journal was not saved"
+                    );
+                    self.repo.store(wlt.config()?).await?;
+                    wlt.finish_migration().await?;
+                } else {
+                    tracing::info!("Alpha is not rabid - nothing to migrate.");
+                }
+                return Ok(None);
+            }
+            tracing::warn!("Alpha is rabid - finding substitute");
+            let Some(substitute_url) = wlt.mint_substitute().await? else {
+                return Ok(None);
+            };
+            substitute_url
         };
-        let wallet_name = wlt.name();
+        let paused = PausedListener::pause(wlt, &swapping).await;
+        let recorded = match wlt.read().await.balance().await {
+            Ok(balance) => Some(swap_guard.record(balance)),
+            Err(e) => {
+                tracing::warn!("Couldn't read the balance before migrating {wallet_id}: {e}");
+                None
+            }
+        };
+        let (rebuilt, cfg) = match self.rebuild_on_substitute(wlt, substitute_url).await {
+            Ok(rebuilt) => rebuilt,
+            Err(e) => {
+                if let Some(paused) = paused {
+                    paused.resume().await;
+                }
+                return Err(e);
+            }
+        };
+        self.wallets
+            .write()
+            .await
+            .insert(wallet_id.to_owned(), rebuilt.clone());
+        drop(recorded);
+        match paused {
+            Some(paused) => paused.resume_on(rebuilt.clone()).await,
+            None => rebuilt.read().await.start_nostr_listener(None).await,
+        }
+        self.repo.store(cfg).await?;
+        let rebuilt = rebuilt.read().await;
+        rebuilt.finish_migration().await?;
+        Ok(Some(rebuilt.mint_url()))
+    }
+
+    async fn rebuild_on_substitute(
+        &self,
+        wlt: &RwLock<Wlt>,
+        substitute_url: url::Url,
+    ) -> Result<(Arc<RwLock<Wlt>>, WalletConfig)> {
+        let wlt = wlt.read().await;
         tracing::info!(
             "Wallet {} is found rabid, migrating to substitute beta {}",
-            wallet_name,
+            wlt.name(),
             substitute_url
         );
-        let new_mint_url = wlt.migrate_pockets_substitute(substitute_url).await?;
-        self.repo.store(wlt.config()?).await?;
-        wlt.finish_migration().await?;
-        Ok(Some(new_mint_url))
+        let cfg = wlt.exchange_to_substitute(substitute_url).await?;
+        let rebuilt = wlt.rebuild(cfg.clone()).await?;
+        Ok((rebuilt, cfg))
     }
 
     pub async fn wallets_nostr_connected(&self) -> HashMap<String, bool> {
@@ -365,7 +576,16 @@ mod tests {
     use mockall::predicate::eq;
 
     use super::*;
-    use crate::wallet::{api::MockWalletApi, types::WalletInfo};
+    use crate::wallet::{
+        Wallet,
+        api::MockWalletApi,
+        tests::{ExchangeGate, RepoWrite, SwapFixture, contact_payment, next_received, settle},
+        types::WalletInfo,
+    };
+    use bcr_common::cashu::Amount;
+    use bcr_wallet_core::{types::PaymentType, util::to_mint_url};
+    use nostr::event::EventId;
+    use std::time::Duration;
 
     fn purse(db: Box<dyn PurseRepository>) -> super::Purse<MockWalletApi> {
         let mut contact_dbs = HashMap::new();
@@ -397,6 +617,7 @@ mod tests {
             repo: db,
             contact_repos,
             wallets: Arc::new(RwLock::new(HashMap::default())),
+            swap_guards: Default::default(),
         }
     }
 
@@ -472,23 +693,9 @@ mod tests {
         let mut db = MockPurseRepository::new();
         db.expect_store().times(2).returning(|_| Ok(()));
         let purse = purse(Box::new(db));
-        let mut wlt = MockWalletApi::new();
+        let mut wlt = rabid_wallet("wlt-1", 0);
         wlt.expect_id().times(1).returning(|| "wlt-1".to_owned());
-        wlt.expect_name()
-            .times(1)
-            .returning(|| "wallet-1".to_owned());
-        wlt.expect_config().times(2).returning(|| Ok(wlt_cfg()));
-        wlt.expect_is_wallet_mint_rabid()
-            .times(1)
-            .returning(|| Ok(true));
-        wlt.expect_mint_substitute().times(1).returning(|| {
-            Ok(Some(
-                url::Url::from_str("https://substitute.example.com").unwrap(),
-            ))
-        });
-        wlt.expect_migrate_pockets_substitute()
-            .returning(|_| Ok(url::Url::from_str("https://substitute.example.com").unwrap()));
-        wlt.expect_finish_migration().times(1).returning(|| Ok(()));
+        wlt.expect_config().times(1).returning(|| Ok(wlt_cfg()));
 
         let wallet = Arc::new(RwLock::new(wlt));
         let _wlt_id = purse.add_wallet(wallet).await.expect("can create wallet");
@@ -500,42 +707,140 @@ mod tests {
         assert!(!migrated.is_empty());
     }
 
-    fn rabid_wallet(id: &'static str) -> MockWalletApi {
-        let migrated = Arc::new(AtomicBool::new(false));
-        let journaled = Arc::new(AtomicBool::new(false));
+    fn substitute_url() -> url::Url {
+        url::Url::from_str("https://substitute.example.com").unwrap()
+    }
+
+    fn test_balance() -> WalletBalance {
+        WalletBalance {
+            debit: Amount::from(100),
+            credit: Amount::ZERO,
+            total: Amount::from(100),
+        }
+    }
+
+    fn migrated_wallet(id: &'static str) -> MockWalletApi {
         let mut wlt = MockWalletApi::new();
-        wlt.expect_id().returning(move || id.to_owned());
-        wlt.expect_name().returning(move || id.to_owned());
-        let m = migrated.clone();
-        wlt.expect_is_wallet_mint_rabid()
-            .returning(move || Ok(!m.load(Ordering::SeqCst)));
-        wlt.expect_mint_substitute().returning(|| {
-            Ok(Some(
-                url::Url::from_str("https://substitute.example.com").unwrap(),
-            ))
-        });
-        let j = journaled.clone();
-        wlt.expect_migrate_pockets_substitute()
-            .times(1)
-            .returning(move |url| {
-                migrated.store(true, Ordering::SeqCst);
-                j.store(true, Ordering::SeqCst);
-                Ok(url)
-            });
+        let finished = Arc::new(AtomicBool::new(false));
+        wlt.expect_mint_url().returning(substitute_url);
+        wlt.expect_balance().returning(|| Ok(test_balance()));
+        wlt.expect_is_wallet_mint_rabid().returning(|| Ok(false));
+        let pending = finished.clone();
+        wlt.expect_has_migration_entries()
+            .returning(move || Ok(!pending.load(Ordering::SeqCst)));
         wlt.expect_config().returning(move || {
             Ok(WalletConfig {
                 wallet_id: id.to_owned(),
+                mint: substitute_url(),
                 ..wlt_cfg()
             })
         });
-        let j = journaled.clone();
-        wlt.expect_has_migration_entries()
-            .returning(move || Ok(j.load(Ordering::SeqCst)));
+        wlt.expect_start_nostr_listener().return_const(());
         wlt.expect_finish_migration().returning(move || {
-            journaled.store(false, Ordering::SeqCst);
+            finished.store(true, Ordering::SeqCst);
             Ok(())
         });
         wlt
+    }
+
+    fn rabid_wallet(id: &'static str, failed_rebuilds: usize) -> MockWalletApi {
+        let mut wlt = MockWalletApi::new();
+        wlt.expect_name().returning(move || id.to_owned());
+        wlt.expect_balance().returning(|| Ok(test_balance()));
+        wlt.expect_is_wallet_mint_rabid().returning(|| Ok(true));
+        wlt.expect_mint_substitute()
+            .returning(|| Ok(Some(substitute_url())));
+        wlt.expect_exchange_to_substitute().returning(move |mint| {
+            Ok(WalletConfig {
+                wallet_id: id.to_owned(),
+                mint,
+                ..wlt_cfg()
+            })
+        });
+        let mut failures = failed_rebuilds;
+        wlt.expect_rebuild().returning(move |cfg| {
+            assert_eq!(cfg.mint, substitute_url());
+            if failures > 0 {
+                failures -= 1;
+                return Err(Error::NoBetas);
+            }
+            Ok(Arc::new(RwLock::new(migrated_wallet(id))))
+        });
+        wlt.expect_take_nostr_listener().returning(|| None);
+        wlt.expect_start_nostr_listener().never();
+        wlt.expect_finish_migration().never();
+        wlt
+    }
+
+    fn recording_repo() -> (
+        MockPurseRepository,
+        Arc<std::sync::Mutex<Vec<WalletConfig>>>,
+    ) {
+        let mut db = MockPurseRepository::new();
+        let stored = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let st = stored.clone();
+        db.expect_store().returning(move |cfg| {
+            st.lock().unwrap().push(cfg);
+            Ok(())
+        });
+        (db, stored)
+    }
+
+    async fn insert_wallet(
+        purse: &Purse<MockWalletApi>,
+        wlt: MockWalletApi,
+    ) -> Arc<RwLock<MockWalletApi>> {
+        let id = wlt.name();
+        let wlt = Arc::new(RwLock::new(wlt));
+        purse.wallets.write().await.insert(id, wlt.clone());
+        wlt
+    }
+
+    #[tokio::test]
+    async fn migration_rebuild_produces_a_distinct_wallet_instance() {
+        let (db, stored) = recording_repo();
+        let purse = purse(Box::new(db));
+        let old = insert_wallet(&purse, rabid_wallet("wlt-1", 0)).await;
+
+        let reader = old.read().await;
+        let migrated = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            purse.migrate_rabid_wallets(),
+        )
+        .await
+        .expect("the migration never waits for exclusive access to the old instance")
+        .unwrap();
+        drop(reader);
+
+        assert_eq!(migrated["wlt-1"], substitute_url());
+        let current = purse.get_wallet("wlt-1").await.unwrap();
+        assert!(!Arc::ptr_eq(&current, &old));
+        assert_eq!(current.read().await.mint_url(), substitute_url());
+        let stored = stored.lock().unwrap().clone();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].mint, substitute_url());
+    }
+
+    #[tokio::test]
+    async fn migration_resumes_after_crash_between_exchange_and_rebuild() {
+        let (db, stored) = recording_repo();
+        let purse = purse(Box::new(db));
+        let old = insert_wallet(&purse, rabid_wallet("wlt-1", 1)).await;
+
+        purse
+            .migrate_rabid_wallets()
+            .await
+            .expect_err("the failed rebuild is reported");
+        assert!(stored.lock().unwrap().is_empty());
+        assert!(Arc::ptr_eq(&purse.get_wallet("wlt-1").await.unwrap(), &old));
+
+        purse
+            .migrate_rabid_wallets()
+            .await
+            .expect("the retry rebuilds the wallet");
+        assert_eq!(stored.lock().unwrap().len(), 1);
+        let current = purse.get_wallet("wlt-1").await.unwrap();
+        assert!(!Arc::ptr_eq(&current, &old));
     }
 
     #[tokio::test]
@@ -554,19 +859,16 @@ mod tests {
             Ok(())
         });
         let purse = purse(Box::new(db));
-        for id in ["wlt-1", "wlt-2"] {
-            purse
-                .wallets
-                .write()
-                .await
-                .insert(id.to_owned(), Arc::new(RwLock::new(rabid_wallet(id))));
-        }
+        let old = insert_wallet(&purse, rabid_wallet("wlt-1", 0)).await;
+        insert_wallet(&purse, rabid_wallet("wlt-2", 0)).await;
 
         purse
             .migrate_rabid_wallets()
             .await
             .expect_err("the failed config store is reported");
         assert_eq!(*stored.lock().unwrap(), vec!["wlt-2".to_owned()]);
+        let rebuilt = purse.get_wallet("wlt-1").await.unwrap();
+        assert!(!Arc::ptr_eq(&rebuilt, &old));
 
         purse
             .migrate_rabid_wallets()
@@ -576,8 +878,223 @@ mod tests {
             *stored.lock().unwrap(),
             vec!["wlt-2".to_owned(), "wlt-1".to_owned()]
         );
-        let wlt = purse.get_wallet("wlt-1").await.unwrap();
-        assert!(!wlt.read().await.has_migration_entries().await.unwrap());
+        assert!(Arc::ptr_eq(
+            &purse.get_wallet("wlt-1").await.unwrap(),
+            &rebuilt
+        ));
+    }
+
+    fn substitute_betas() -> Vec<url::Url> {
+        vec![url::Url::from_str("https://sub-beta.example").unwrap()]
+    }
+
+    async fn total(wlt: &RwLock<Wallet>) -> Amount {
+        wlt.read().await.balance().await.unwrap().total
+    }
+
+    async fn spawn_migration(f: &SwapFixture) -> (ExchangeGate, MigrationTask) {
+        let mut gate = f.gate_exchange();
+        let purse = f.purse.clone();
+        let migration = tokio::spawn(async move { purse.migrate_rabid_wallets().await });
+        gate.entered().await;
+        (gate, migration)
+    }
+
+    type MigrationTask = tokio::task::JoinHandle<Result<HashMap<String, url::Url>>>;
+
+    #[tokio::test]
+    async fn migrate_rabid_wallet_keeps_total_proof_value_during_concurrent_receive() {
+        let mut f = SwapFixture::new(substitute_betas()).await;
+        let (gate, migration) = spawn_migration(&f).await;
+
+        f.channel.publish(contact_payment(20, &f.substitute_url));
+        let token = f.substitute_token(8);
+        let purse = f.purse.clone();
+        let receive = tokio::spawn(async move {
+            let wlt = purse.hold_wallet("w-1").await.unwrap();
+            wlt.read().await.receive_token(token, 123).await
+        });
+        settle().await;
+        assert!(f.old_received.try_recv().is_err());
+        assert!(f.new_received.try_recv().is_err());
+        assert!(!receive.is_finished());
+        assert!(f.txs().is_empty());
+
+        gate.release();
+        let migrated = migration.await.unwrap().unwrap();
+        assert_eq!(migrated["w-1"], f.substitute_url);
+        let new = f.purse.get_wallet("w-1").await.unwrap();
+        assert!(!Arc::ptr_eq(&new, &f.old));
+        receive.await.unwrap().unwrap();
+        f.channel.publish(contact_payment(10, &f.substitute_url));
+
+        let mut received = Vec::new();
+        for _ in 0..3 {
+            received.push(u64::from(next_received(&mut f.new_received).await));
+        }
+        received.sort();
+        assert_eq!(received, vec![8, 10, 20]);
+        settle().await;
+        assert!(f.new_received.try_recv().is_err());
+        assert!(f.old_received.try_recv().is_err());
+        assert_eq!(total(&new).await, Amount::from(100 + 20 + 10 + 8));
+        let txs = f.txs();
+        assert!(
+            txs.iter()
+                .all(|tx| tx.mint_url == to_mint_url(&f.substitute_url))
+        );
+        let mut contact_events: Vec<_> = txs
+            .iter()
+            .filter(|tx| tx.payment_type == PaymentType::Contact)
+            .map(|tx| tx.nostr_event_id)
+            .collect();
+        contact_events.sort();
+        assert_eq!(
+            contact_events,
+            vec![
+                Some(EventId::from_byte_array([10; 32])),
+                Some(EventId::from_byte_array([20; 32]))
+            ]
+        );
+        assert_eq!(f.consumer_starts(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_migration_resumes_the_old_listener_with_the_payment_that_waited() {
+        let mut f = SwapFixture::new(substitute_betas()).await;
+        let (gate, migration) = spawn_migration(&f).await;
+        f.channel.publish(contact_payment(20, &f.rabid_url));
+        settle().await;
+        assert!(f.old_received.try_recv().is_err());
+
+        gate.fail();
+        migration
+            .await
+            .unwrap()
+            .expect_err("the substitute fails the exchange");
+        assert!(Arc::ptr_eq(
+            &f.purse.get_wallet("w-1").await.unwrap(),
+            &f.old
+        ));
+        assert_eq!(next_received(&mut f.old_received).await, Amount::from(20));
+        settle().await;
+        assert!(f.old_received.try_recv().is_err());
+        assert!(f.new_received.try_recv().is_err());
+        assert_eq!(total(&f.old).await, Amount::from(120));
+        assert!(f.stored().is_empty());
+        assert_eq!(f.consumer_starts(), 1);
+    }
+
+    #[tokio::test]
+    async fn aborted_migration_resumes_the_old_listener_with_the_payment_that_waited() {
+        let mut f = SwapFixture::new(substitute_betas()).await;
+        let (_gate, migration) = spawn_migration(&f).await;
+        f.channel.publish(contact_payment(20, &f.rabid_url));
+        settle().await;
+        assert!(f.old_received.try_recv().is_err());
+
+        migration.abort();
+        assert!(migration.await.unwrap_err().is_cancelled());
+        assert_eq!(next_received(&mut f.old_received).await, Amount::from(20));
+        assert!(Arc::ptr_eq(
+            &f.purse.get_wallet("w-1").await.unwrap(),
+            &f.old
+        ));
+        assert_eq!(total(&f.old).await, Amount::from(120));
+        assert_eq!(f.consumer_starts(), 1);
+        tokio::time::timeout(Duration::from_secs(5), f.purse.hold_wallet("w-1"))
+            .await
+            .expect("the aborted migration released the wallet")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn migrate_rabid_wallets_twice_concurrently_runs_the_exchange_once() {
+        let f = SwapFixture::new(substitute_betas()).await;
+        let (gate, first) = spawn_migration(&f).await;
+        let purse = f.purse.clone();
+        let second = tokio::spawn(async move { purse.migrate_rabid_wallets().await });
+        settle().await;
+        assert!(!second.is_finished());
+
+        gate.release();
+        assert_eq!(first.await.unwrap().unwrap()["w-1"], f.substitute_url);
+        assert!(second.await.unwrap().unwrap().is_empty());
+        assert_eq!(f.stored().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn migration_queues_behind_an_in_flight_read_without_deadlock() {
+        let f = SwapFixture::new(substitute_betas()).await;
+        let held = f.purse.hold_wallet("w-1").await.unwrap();
+        let purse = f.purse.clone();
+        let migration = tokio::spawn(async move { purse.migrate_rabid_wallets().await });
+        settle().await;
+
+        let balance = tokio::time::timeout(Duration::from_secs(5), async {
+            held.read().await.balance().await
+        })
+        .await
+        .expect("the call in flight finishes while the migration waits")
+        .unwrap();
+        assert_eq!(balance.total, Amount::from(100));
+        let mut gate = f.gate_exchange();
+        settle().await;
+        assert!(!gate.has_entered());
+        drop(held);
+
+        gate.entered().await;
+        gate.release();
+        let migrated = tokio::time::timeout(Duration::from_secs(5), migration)
+            .await
+            .expect("the migration runs once the call in flight is done")
+            .unwrap()
+            .unwrap();
+        assert_eq!(migrated["w-1"], f.substitute_url);
+    }
+
+    #[tokio::test]
+    async fn rename_during_migration_keeps_the_new_name() {
+        let f = SwapFixture::new(substitute_betas()).await;
+        let (gate, migration) = spawn_migration(&f).await;
+        let purse = f.purse.clone();
+        let rename =
+            tokio::spawn(async move { purse.rename_wallet("w-1", "renamed".to_owned()).await });
+        settle().await;
+        assert!(!rename.is_finished());
+
+        gate.release();
+        migration.await.unwrap().unwrap();
+        rename.await.unwrap().unwrap();
+        let current = f.purse.get_wallet("w-1").await.unwrap();
+        assert!(!Arc::ptr_eq(&current, &f.old));
+        assert_eq!(current.read().await.name(), "renamed");
+        assert_eq!(
+            f.repo_writes(),
+            vec![
+                RepoWrite::Store("wallet-1".to_owned()),
+                RepoWrite::Rename("renamed".to_owned())
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_during_migration_does_not_resurrect_the_wallet() {
+        let f = SwapFixture::new(substitute_betas()).await;
+        let (gate, migration) = spawn_migration(&f).await;
+        let purse = f.purse.clone();
+        let delete = tokio::spawn(async move { purse.delete_wallet("w-1").await });
+        settle().await;
+        assert!(!delete.is_finished());
+
+        gate.release();
+        migration.await.unwrap().unwrap();
+        delete.await.unwrap().unwrap();
+        assert!(f.purse.get_wallet("w-1").await.is_none());
+        assert_eq!(
+            f.repo_writes(),
+            vec![RepoWrite::Store("wallet-1".to_owned()), RepoWrite::Delete]
+        );
     }
 
     const NODE_ID_1: &str =

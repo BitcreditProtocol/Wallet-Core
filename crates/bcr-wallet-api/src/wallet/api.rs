@@ -7,7 +7,11 @@ use crate::{
     },
     types::{MintSummary, PaymentSummary, WalletConfig},
     wallet::{
-        types::{PayReference, SwapConfig, WalletInfo, WalletPaymentType, WalletProtestResult},
+        NostrListener, NostrReceiver,
+        types::{
+            PayReference, SwapConfig, WalletBalance, WalletInfo, WalletPaymentType,
+            WalletProtestResult,
+        },
         util,
     },
 };
@@ -40,6 +44,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -70,6 +75,7 @@ pub trait WalletApi: SendSync {
         cancel_token: CancellationToken,
         result_callback: PaymentResultCallback,
     ) -> Result<()>;
+    async fn balance(&self) -> Result<WalletBalance>;
     async fn is_wallet_mint_rabid(&self) -> Result<bool>;
     async fn is_wallet_mint_offline(&self) -> Result<bool>;
     async fn mint_substitute(&self) -> Result<Option<url::Url>>;
@@ -84,7 +90,13 @@ pub trait WalletApi: SendSync {
     ) -> Result<WalletProtestResult>;
     async fn protest_melt(&self, quote_id: Uuid) -> Result<WalletProtestResult>;
     async fn check_pending_melt_commitments(&self) -> Result<()>;
-    async fn migrate_pockets_substitute(&mut self, substitute_url: url::Url) -> Result<url::Url>;
+    /// Exchanges every migratable proof for the substitute's and returns the config of this
+    /// wallet on the substitute; a repeated call resumes from the migration journal
+    async fn exchange_to_substitute(&self, substitute_url: url::Url) -> Result<WalletConfig>;
+    /// A new instance on `cfg`'s mint, sharing this one's stores, seed and nostr pipeline
+    async fn rebuild(&self, cfg: WalletConfig) -> Result<Arc<RwLock<Self>>>
+    where
+        Self: Sized;
     async fn finish_migration(&self) -> Result<()>;
     async fn has_migration_entries(&self) -> Result<bool>;
     async fn receive_proofs(
@@ -129,6 +141,10 @@ pub trait WalletApi: SendSync {
         now: u64,
     ) -> Result<(Uuid, Option<Token>)>;
     async fn is_nostr_connected(&self) -> bool;
+    /// Starts handling nostr events from the subscription a stopped listener handed over, or
+    /// subscribes and starts the nostr consumer
+    async fn start_nostr_listener(&self, handed_over: Option<NostrReceiver>);
+    fn take_nostr_listener(&self) -> Option<NostrListener>;
     async fn fetch_nostr_relays(
         &self,
         npub: nostr::key::PublicKey,
@@ -726,6 +742,10 @@ impl WalletApi for super::Wallet {
         .await
     }
 
+    async fn balance(&self) -> Result<WalletBalance> {
+        Self::balance(self).await
+    }
+
     async fn is_wallet_mint_rabid(&self) -> Result<bool> {
         let betas_count = self.betas().len();
         let mut futures = FuturesUnordered::new();
@@ -840,7 +860,7 @@ impl WalletApi for super::Wallet {
         NodeId::new(self.clowder_id, self.network)
     }
 
-    async fn migrate_pockets_substitute(&mut self, substitute_url: url::Url) -> Result<url::Url> {
+    async fn exchange_to_substitute(&self, substitute_url: url::Url) -> Result<WalletConfig> {
         let outage = self
             .journal
             .load()
@@ -956,61 +976,87 @@ impl WalletApi for super::Wallet {
 
         let keysets_info = util::keyset_infos(substitute.as_ref()).await?;
         let clowder_id = substitute.get_clowder_id().await?;
-        let mut beta_clients = BTreeMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
-        for beta in substitute.get_clowder_betas().await? {
-            if beta.clowder_id == clowder_id {
-                continue;
-            }
-            let beta_client = (self.client_factory)(beta.url.clone());
-            beta_clients.insert(beta.url, beta_client);
-        }
-        let beta_provider = Arc::new(RandomBetaProvider::new(
-            beta_clients.values().cloned().collect(),
-            clowder_id,
-        )?);
+        let betas: Vec<url::Url> = substitute
+            .get_clowder_betas()
+            .await?
+            .into_iter()
+            .filter(|beta| beta.clowder_id != clowder_id)
+            .map(|beta| beta.url)
+            .collect();
 
         if !exchanged_proofs.is_empty() {
             tracing::info!("Swapping exchanged proofs");
-            self.debit.set_beta_provider(beta_provider.clone());
+            let beta_provider = RandomBetaProvider::new(
+                betas
+                    .iter()
+                    .map(|beta| (self.client_factory)(beta.clone()))
+                    .collect(),
+                clowder_id,
+            )?;
+            let debit = self.debit.with_beta_provider(Arc::new(beta_provider));
             let swap_config = SwapConfig {
                 expiry: self.swap_expiry,
                 alpha_pk: clowder_id,
             };
-            let swapped = async {
-                self.swap_exchanged(
-                    substitute.clone(),
-                    &keysets_info,
-                    exchanged_proofs,
-                    swap_config,
-                )
-                .await
-                .map_err(|_| Error::MigrationIncomplete(exchanged_ys.len()))?;
-                self.journal
-                    .update(exchanged_ys, MigrationJournalState::Swapped)
-                    .await?;
-                Ok::<(), Error>(())
-            }
-            .await;
-            if let Err(e) = swapped {
-                self.debit
-                    .set_beta_provider(Arc::new(RandomBetaProvider::new(
-                        self.beta_clients.values().cloned().collect(),
-                        self.clowder_id,
-                    )?));
-                return Err(e);
-            }
+            self.swap_exchanged(
+                debit.as_ref(),
+                substitute.clone(),
+                &keysets_info,
+                exchanged_proofs,
+                swap_config,
+            )
+            .await
+            .map_err(|_| Error::MigrationIncomplete(exchanged_ys.len()))?;
+            self.mark_swapped_in(exchanged_ys, MigrationJournalState::Swapped)
+                .await?;
         }
 
-        self.debit.set_beta_provider(beta_provider);
-        self.client = substitute;
-        self.clowder_id = clowder_id;
-        self.beta_clients = beta_clients;
-        self.mint_keyset_infos = keysets_info;
-        let balance = self.debit.balance(&self.mint_keyset_infos).await?;
+        Ok(WalletConfig {
+            mint: substitute.mint_url().to_owned(),
+            mint_keyset_infos: keysets_info,
+            clowder_id,
+            betas,
+            ..self.config()?
+        })
+    }
 
-        tracing::info!("Migration successful balance: {:?}", balance);
-
-        Ok(self.client.mint_url().to_owned())
+    async fn rebuild(&self, cfg: WalletConfig) -> Result<Arc<RwLock<Self>>> {
+        let beta_clients: BTreeMap<url::Url, Arc<dyn ClowderMintConnector>> = cfg
+            .betas
+            .into_iter()
+            .map(|beta| (beta.clone(), (self.client_factory)(beta)))
+            .collect();
+        let beta_provider =
+            RandomBetaProvider::new(beta_clients.values().cloned().collect(), cfg.clowder_id)?;
+        let wallet = Self::new(
+            cfg.network,
+            (self.client_factory)(cfg.mint),
+            cfg.mint_keyset_infos,
+            self.tx_repo.clone(),
+            self.contact_repo.clone(),
+            self.payment_request_repo.clone(),
+            self.debit.with_beta_provider(Arc::new(beta_provider)),
+            self.journal.clone(),
+            cfg.name,
+            cfg.wallet_id,
+            cfg.pub_key,
+            cfg.clowder_id,
+            beta_clients,
+            self.client_factory.clone(),
+            self.swap_expiry,
+            self.nostr_transport.clone(),
+            self.nostr_event_channel.clone(),
+            self.nostr_repo.clone(),
+            self.nostr_consumer.clone(),
+        )
+        .await;
+        {
+            let mut rebuilt = wallet.write().await;
+            rebuilt.nostr_consumer_running = self.nostr_consumer_running.clone();
+            rebuilt.nostr_shutdown = self.nostr_shutdown.clone();
+            rebuilt.payment_request_paid = self.payment_request_paid.clone();
+        }
+        Ok(wallet)
     }
 
     async fn finish_migration(&self) -> Result<()> {
@@ -1270,6 +1316,23 @@ impl WalletApi for super::Wallet {
     async fn is_nostr_connected(&self) -> bool {
         self.nostr_transport.has_connected_relays().await
             && *self.nostr_consumer_running.lock().await
+    }
+
+    async fn start_nostr_listener(&self, handed_over: Option<NostrReceiver>) {
+        let nostr_receiver = match handed_over {
+            Some(nostr_receiver) => nostr_receiver,
+            None => {
+                // subscribe before events are published to avoid events being lost
+                let nostr_receiver = self.nostr_event_channel.subscribe();
+                self.nostr_connect(self.nostr_consumer()).await;
+                nostr_receiver
+            }
+        };
+        self.listen_nostr(nostr_receiver);
+    }
+
+    fn take_nostr_listener(&self) -> Option<NostrListener> {
+        self.nostr_listener.lock().unwrap().take()
     }
 
     async fn fetch_nostr_relays(

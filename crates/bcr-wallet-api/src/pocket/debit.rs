@@ -130,6 +130,8 @@ pub trait DebitPocketApi: super::PocketApi {
         tstamp: u64,
         client_factory: &ClientFactory,
     ) -> Result<usize>;
+    /// A pocket on the same stores, seed and in-flight proofs whose swaps `beta` attests
+    fn with_beta_provider(&self, beta: Arc<dyn BetaProvider>) -> Box<dyn DebitPocketApi>;
 }
 
 #[derive(Debug, Clone)]
@@ -649,43 +651,12 @@ impl super::PocketApi for Pocket {
         self.unit.clone()
     }
 
-    fn set_beta_provider(&mut self, beta_provider: Arc<dyn BetaProvider>) {
-        self.beta = beta_provider;
-    }
-
     async fn balance(
         &self,
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
     ) -> Result<PocketBalance> {
         let proofs: Vec<Proof> = self.pdb.list_unspent().await?.into_values().collect();
-        let mut debit = Amount::ZERO;
-        let mut credit = Amount::ZERO;
-
-        let infos = collect_keyset_infos_from_proofs(proofs.iter(), keysets_info)?;
-        let start_of_today = time::OffsetDateTime::now_utc()
-            .date()
-            .midnight()
-            .assume_utc()
-            .unix_timestamp() as u64;
-
-        for proof in proofs {
-            let info = infos
-                .get(&proof.keyset_id.into())
-                .ok_or(Error::UnknownKeysetId(proof.keyset_id.into()))?;
-
-            // no final expiry -> debit
-            // final expiry before today -> debit
-            // final expiry today, or after -> credit
-            let is_credit = match info.final_expiry {
-                Some(expiry) => expiry >= start_of_today,
-                None => false,
-            };
-
-            let total = if is_credit { &mut credit } else { &mut debit };
-            *total = add_amounts(*total, proof.amount)?;
-        }
-
-        Ok(PocketBalance { debit, credit })
+        super::balance_of(proofs.iter(), keysets_info)
     }
 
     async fn receive_proofs(
@@ -991,6 +962,19 @@ impl super::PocketApi for Pocket {
 
 #[async_trait]
 impl DebitPocketApi for Pocket {
+    fn with_beta_provider(&self, beta: Arc<dyn BetaProvider>) -> Box<dyn DebitPocketApi> {
+        Box::new(Self {
+            in_flight: self.in_flight.clone(),
+            ..Self::new(
+                self.unit.clone(),
+                self.pdb.clone(),
+                self.mdb.clone(),
+                self.seed,
+                beta,
+            )
+        })
+    }
+
     async fn reclaim_proofs(
         &self,
         ys: &[cdk01::PublicKey],
