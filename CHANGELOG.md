@@ -1,5 +1,6 @@
 # 0.9.16
 
+* `wallet_protest_mint`, `wallet_protest_swap` and `wallet_protest_melt` no longer start the rabid migration when the answer is `Rabid`; `run_jobs` and `purse_migrate_rabid` still do
 * Mint calls time out (5 seconds to connect, 30 seconds per request) instead of hanging; a timed-out melt leaves its inputs pending for `wallet_recover_pending_stale_proofs` to settle
 * Amounts supplied by a mint that overflow or underflow (`wallet_check_pending_mints`, `wallet_balance`, melts and sends) return an error instead of panicking
 * `wallet_restore` matches outputs by blinded message instead of position, skips unexpected outputs and check states instead of aborting, and stores a proof the mint returns no state for as pending

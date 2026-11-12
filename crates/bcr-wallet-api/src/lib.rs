@@ -900,7 +900,6 @@ impl AppState {
         let qid = Uuid::from_str(&quote_id)?;
         let wallet = self.get_wallet(&wallet_id).await?;
         let WalletProtestResult { status, result } = wallet.read().await.protest_mint(qid).await?;
-        self.get_purse().migrate_on_rabid_protest(status).await;
         Ok((status, result.map(|(amount, _)| amount)))
     }
 
@@ -917,7 +916,6 @@ impl AppState {
             .map_err(|e| Error::SchnorrSignature(e.to_string()))?;
         let wallet = self.get_wallet(&wallet_id).await?;
         let WalletProtestResult { status, result } = wallet.read().await.protest_swap(sig).await?;
-        self.get_purse().migrate_on_rabid_protest(status).await;
         Ok((status, result.map(|(amount, _)| amount)))
     }
 
@@ -933,7 +931,6 @@ impl AppState {
         let qid = Uuid::from_str(&quote_id)?;
         let wallet = self.get_wallet(&wallet_id).await?;
         let WalletProtestResult { status, result } = wallet.read().await.protest_melt(qid).await?;
-        self.get_purse().migrate_on_rabid_protest(status).await;
         Ok((status, result.map(|(amount, _)| amount)))
     }
 
