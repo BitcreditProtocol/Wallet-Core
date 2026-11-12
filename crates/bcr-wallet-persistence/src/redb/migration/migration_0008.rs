@@ -1,7 +1,7 @@
 use crate::{
     error::Result,
     redb::{
-        migration::WalletStorageNamespace,
+        migration::{WalletStorageNamespace, migrate_table},
         mintmelt::{
             MeltCommitmentEntry, MeltEntry, MintEntry, encode_melt_commitment_entry,
             encode_melt_entry, encode_mint_entry, premint_entries,
@@ -13,7 +13,6 @@ use bcr_common::{
     ecash,
 };
 use bitcoin::address::NetworkUnchecked;
-use redb::{ReadableTable, TableDefinition};
 use uuid::Uuid;
 
 ///////////////////////////////////////////////////////////////// MIGRATION 0008
@@ -28,67 +27,24 @@ pub(super) fn migration_0008_mint_melt_envelope(
     namespace: &WalletStorageNamespace,
 ) -> Result<()> {
     tracing::info!("Migrating mint and melt tables..");
-    migrate_table(txn, &namespace.melt_table, |bytes| {
+    migrate_table(txn, &namespace.melt_table, &namespace.keys, |bytes| {
         let legacy: LegacyMeltEntry = ciborium::from_reader(bytes)?;
-        encode_melt_entry(&legacy.into(), &namespace.keys).map(Some)
+        encode_melt_entry(&legacy.into(), &namespace.keys)
     })?;
-    migrate_table(txn, &namespace.mint_table, |bytes| {
+    migrate_table(txn, &namespace.mint_table, &namespace.keys, |bytes| {
         let legacy: LegacyMintEntry = ciborium::from_reader(bytes)?;
-        convertible(legacy.try_into(), |e| {
-            encode_mint_entry(&e, &namespace.keys)
-        })
+        encode_mint_entry(&legacy.try_into()?, &namespace.keys)
     })?;
-    migrate_table(txn, &namespace.melt_commitment_table, |bytes| {
-        let legacy: LegacyMeltCommitmentEntry = ciborium::from_reader(bytes)?;
-        convertible(legacy.try_into(), |e| {
-            encode_melt_commitment_entry(&e, &namespace.keys)
-        })
-    })?;
+    migrate_table(
+        txn,
+        &namespace.melt_commitment_table,
+        &namespace.keys,
+        |bytes| {
+            let legacy: LegacyMeltCommitmentEntry = ciborium::from_reader(bytes)?;
+            encode_melt_commitment_entry(&legacy.try_into()?, &namespace.keys)
+        },
+    )?;
     tracing::info!("Migrated mint and melt tables.");
-    Ok(())
-}
-
-fn convertible<T>(
-    entry: Result<T>,
-    encode: impl FnOnce(T) -> Result<Vec<u8>>,
-) -> Result<Option<Vec<u8>>> {
-    match entry {
-        Ok(entry) => encode(entry).map(Some),
-        Err(e) => {
-            tracing::warn!("Dropping legacy row with an invalid secret: {e}");
-            Ok(None)
-        }
-    }
-}
-
-/// A row that does not decode is kept as is; a decoded row whose secret is invalid (`None`)
-/// is removed, so no legacy plaintext secret survives the migration.
-fn migrate_table(
-    txn: &redb::WriteTransaction,
-    table_name: &str,
-    convert: impl Fn(&[u8]) -> Result<Option<Vec<u8>>>,
-) -> Result<()> {
-    let table_def: TableDefinition<&[u8], Vec<u8>> = TableDefinition::new(table_name);
-    let mut table = match txn.open_table(table_def) {
-        Ok(table) => table,
-        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
-        Err(e) => return Err(e.into()),
-    };
-
-    let mut migrated: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
-    for item in table.iter()? {
-        let (k, v) = item?;
-        match convert(v.value().as_slice()) {
-            Ok(converted) => migrated.push((k.value().to_vec(), converted)),
-            Err(e) => tracing::warn!("Leaving undecodable legacy row in {table_name}: {e}"),
-        }
-    }
-    for (key, value) in migrated {
-        match value {
-            Some(value) => table.insert(key.as_slice(), value)?,
-            None => table.remove(key.as_slice())?,
-        };
-    }
     Ok(())
 }
 
@@ -205,7 +161,10 @@ mod tests {
         cashu::{CurrencyUnit, amount::SplitTarget},
         core_tests,
     };
-    use redb::{Builder, Database, ReadableDatabase, backends::InMemoryBackend};
+    use redb::{
+        Builder, Database, ReadableDatabase, ReadableTable, TableDefinition,
+        backends::InMemoryBackend,
+    };
     use std::sync::Arc;
 
     const WALLET_ID: &str = "wallet-1";
@@ -449,49 +408,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_0008_keeps_a_corrupted_row_and_succeeds() {
-        let db = test_database();
-        let keys = test_keypair();
-        insert_legacy(
-            &db,
-            &MintMeltDB::melt_commitment_table_name(WALLET_ID, &CurrencyUnit::Sat),
-            b"bad",
-            &"not a commitment entry",
-        );
-        let namespace = collect_wallet_namespace(WALLET_ID.to_string(), CurrencyUnit::Sat, keys);
-        migrate_wallet(db.clone(), namespace).await.unwrap();
-        assert_eq!(
-            raw_values(
-                &db,
-                &MintMeltDB::melt_commitment_table_name(WALLET_ID, &CurrencyUnit::Sat)
-            )
-            .len(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn migration_0008_drops_decoded_row_with_invalid_secret_length() {
+    async fn migration_0008_quarantines_undecodable_and_invalid_secret_rows() {
+        #[derive(serde::Serialize)]
+        struct TypeError {
+            quote_id: Uuid,
+            expiry: String,
+            commitment: bitcoin::secp256k1::schnorr::Signature,
+            ephemeral_secret: Vec<u8>,
+            body_content: String,
+        }
         let db = test_database();
         let keys = test_keypair();
         let table = MintMeltDB::melt_commitment_table_name(WALLET_ID, &CurrencyUnit::Sat);
-        let id = Uuid::new_v4();
-        let bad_secret = [0x37u8; 5];
+        let (decode_id, secret_id) = (Uuid::new_v4(), Uuid::new_v4());
         insert_legacy(
             &db,
             &table,
-            id.as_bytes(),
+            decode_id.as_bytes(),
+            &TypeError {
+                quote_id: decode_id,
+                expiry: "not-a-u64".to_string(),
+                commitment: test_signature(),
+                ephemeral_secret: EPHEMERAL_SECRET.to_vec(),
+                body_content: "bWVsdA==".to_string(),
+            },
+        );
+        let short_secret = [0x37u8; 5];
+        insert_legacy(
+            &db,
+            &table,
+            secret_id.as_bytes(),
             &LegacyMeltCommitmentEntry {
-                quote_id: id,
+                quote_id: secret_id,
                 expiry: 77,
                 commitment: test_signature(),
-                ephemeral_secret: bad_secret.to_vec(),
+                ephemeral_secret: short_secret.to_vec(),
                 body_content: "bWVsdA==".to_string(),
             },
         );
         let namespace = collect_wallet_namespace(WALLET_ID.to_string(), CurrencyUnit::Sat, keys);
+        migrate_wallet(db.clone(), namespace.clone()).await.unwrap();
         migrate_wallet(db.clone(), namespace).await.unwrap();
         assert!(raw_values(&db, &table).is_empty());
+        let quarantined = raw_values(&db, &format!("{table}_quarantine"));
+        assert_eq!(quarantined.len(), 2);
+        for row in quarantined {
+            assert!(!contains(&row, &EPHEMERAL_SECRET));
+            assert!(!contains(&row, &short_secret));
+        }
     }
 
     #[tokio::test]

@@ -8,6 +8,7 @@
     * migration 0006 (nostr): Nostr offsets and queued messages are stored as versioned borsh and queue entries are encrypted, legacy rows are migrated
     * migration 0007 (payment requests): payment requests are stored as versioned records
     * migration 0008 (mint/melt): mint and melt records are stored as versioned records
+    * a legacy row that cannot be converted is moved, encrypted, to a `<table>_quarantine` table (migrations 0006 and 0008)
 * The Nostr `EventEnvelope` format is unchanged and keeps its version string `1.0`; an envelope with another version still decodes its header
 
 # 0.9.15

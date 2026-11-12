@@ -199,6 +199,55 @@ pub fn collect_wallet_namespace(
     }
 }
 
+/// Rewrites every row of `table_name` with `convert`. A row that cannot be converted is moved,
+/// encrypted with the wallet key, to `<table_name>_quarantine`, so no legacy plaintext remains
+/// and the wallet still opens.
+fn migrate_table(
+    txn: &redb::WriteTransaction,
+    table_name: &str,
+    keys: &bitcoin::secp256k1::Keypair,
+    convert: impl Fn(&[u8]) -> Result<Vec<u8>>,
+) -> Result<()> {
+    let table_def: TableDefinition<&[u8], Vec<u8>> = TableDefinition::new(table_name);
+    let mut table = match txn.open_table(table_def) {
+        Ok(table) => table,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut converted: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut quarantined: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for item in table.iter()? {
+        let (k, v) = item?;
+        let key = k.value().to_vec();
+        match convert(v.value().as_slice()) {
+            Ok(value) => converted.push((key, value)),
+            Err(e) => {
+                tracing::warn!("Quarantining unconvertible legacy row in {table_name}: {e}");
+                let sealed = bcr_wallet_core::crypto::encrypt_ecies(
+                    v.value().as_slice(),
+                    &keys.public_key(),
+                )?;
+                quarantined.push((key, sealed));
+            }
+        }
+    }
+    for (key, value) in converted {
+        table.insert(key.as_slice(), value)?;
+    }
+    if !quarantined.is_empty() {
+        let quarantine_name = format!("{table_name}_quarantine");
+        let quarantine_def: TableDefinition<&[u8], Vec<u8>> =
+            TableDefinition::new(&quarantine_name);
+        let mut quarantine = txn.open_table(quarantine_def)?;
+        for (key, sealed) in quarantined {
+            table.remove(key.as_slice())?;
+            quarantine.insert(key.as_slice(), sealed)?;
+        }
+    }
+    Ok(())
+}
+
 fn load_applied_migrations(
     txn: &redb::WriteTransaction,
 ) -> Result<std::collections::HashSet<String>> {

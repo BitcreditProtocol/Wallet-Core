@@ -1,7 +1,7 @@
 use crate::{
     error::Result,
     redb::{
-        migration::WalletStorageNamespace,
+        migration::{WalletStorageNamespace, migrate_table},
         nostr::{
             NostrEventOffsetEntry, NostrQueuedMessageEntry, encode_event_offset,
             encode_queued_message,
@@ -9,7 +9,6 @@ use crate::{
     },
 };
 use nostr::types::Timestamp;
-use redb::{ReadableTable, TableDefinition};
 
 ///////////////////////////////////////////////////////////////// MIGRATION 0006
 const MIGRATION_0006_NOSTR_ENVELOPE: &str = "0006_nostr_envelope";
@@ -23,46 +22,25 @@ pub(super) fn migration_0006_nostr_envelope(
     namespace: &WalletStorageNamespace,
 ) -> Result<()> {
     tracing::info!("Migrating nostr tables..");
-    migrate_table(txn, &namespace.offset_entry_table, |bytes| {
-        let legacy: LegacyOffsetEntry = ciborium::from_reader(bytes)?;
-        encode_event_offset(&legacy.into())
-    })?;
+    migrate_table(
+        txn,
+        &namespace.offset_entry_table,
+        &namespace.keys,
+        |bytes| {
+            let legacy: LegacyOffsetEntry = ciborium::from_reader(bytes)?;
+            encode_event_offset(&legacy.into())
+        },
+    )?;
     for table_name in [
         &namespace.queued_message_table,
         &namespace.dead_letter_table,
     ] {
-        migrate_table(txn, table_name, |bytes| {
+        migrate_table(txn, table_name, &namespace.keys, |bytes| {
             let legacy: LegacyQueuedMessageEntry = ciborium::from_reader(bytes)?;
             encode_queued_message(&legacy.into(), &namespace.keys)
         })?;
     }
     tracing::info!("Migrated nostr tables.");
-    Ok(())
-}
-
-fn migrate_table(
-    txn: &redb::WriteTransaction,
-    table_name: &str,
-    convert: impl Fn(&[u8]) -> Result<Vec<u8>>,
-) -> Result<()> {
-    let table_def: TableDefinition<&[u8], Vec<u8>> = TableDefinition::new(table_name);
-    let mut table = match txn.open_table(table_def) {
-        Ok(table) => table,
-        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
-        Err(e) => return Err(e.into()),
-    };
-
-    let mut migrated: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for item in table.iter()? {
-        let (k, v) = item?;
-        match convert(v.value().as_slice()) {
-            Ok(converted) => migrated.push((k.value().to_vec(), converted)),
-            Err(e) => tracing::warn!("Leaving undecodable legacy row in {table_name}: {e}"),
-        }
-    }
-    for (key, value) in migrated {
-        table.insert(key.as_slice(), value)?;
-    }
     Ok(())
 }
 
@@ -125,7 +103,10 @@ mod tests {
         },
     };
     use bcr_common::cashu::CurrencyUnit;
-    use redb::{Builder, Database, ReadableDatabase, backends::InMemoryBackend};
+    use redb::{
+        Builder, Database, ReadableDatabase, ReadableTable, TableDefinition,
+        backends::InMemoryBackend,
+    };
     use std::sync::Arc;
 
     const WALLET_ID: &str = "wallet-1";
@@ -274,7 +255,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_0006_keeps_a_corrupted_row_and_succeeds() {
+    async fn migration_0006_quarantines_a_corrupted_row_and_succeeds() {
         let db = test_database();
         let keys = test_keypair();
         let table_def: TableDefinition<&[u8], Vec<u8>> = TableDefinition::new(Box::leak(
@@ -289,10 +270,11 @@ mod tests {
 
         let namespace = collect_wallet_namespace(WALLET_ID.to_string(), CurrencyUnit::Sat, keys);
         migrate_wallet(db.clone(), namespace).await.unwrap();
-        assert_eq!(
-            raw_values(&db, &NostrDB::queued_message_table_name(WALLET_ID)),
-            vec![vec![0xff, 0x01]]
-        );
+        let table = NostrDB::queued_message_table_name(WALLET_ID);
+        assert!(raw_values(&db, &table).is_empty());
+        let quarantined = raw_values(&db, &format!("{table}_quarantine"));
+        assert_eq!(quarantined.len(), 1);
+        assert_ne!(quarantined[0], vec![0xff, 0x01]);
     }
 
     #[tokio::test]
