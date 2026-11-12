@@ -458,7 +458,7 @@ impl Pocket {
         let attestation = self.beta.attest(&swap_proofs).await?;
 
         // prepare the premints
-        let mut counters = Counters::new(self.pdb.as_ref());
+        let mut counters = Counters::for_inputs(self.pdb.as_ref(), &self.in_flight, &swap_proofs)?;
         let mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets> = BTreeMap::new();
         for (kid, amount) in swap_plan {
             let kid: ecash::Id = kid.into();
@@ -832,7 +832,7 @@ impl super::PocketApi for Pocket {
         let attestation = beta_provider.attest(&proofs).await?;
 
         // prepare the premints
-        let mut counters = Counters::new(self.pdb.as_ref());
+        let mut counters = Counters::for_inputs(self.pdb.as_ref(), &self.in_flight, &proofs)?;
         let mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets> = BTreeMap::new();
         let mut remaining_payment = send_amount;
         // collect payments by kid, so we can reconstruct it after the swap
@@ -2202,6 +2202,162 @@ mod tests {
             let tip = pdb.reserve_counter(kid, 0).await.unwrap();
             assert_eq!(tip == 0, released, "tip {tip}");
         }
+    }
+
+    fn commit_timeout_connector(
+        keyset: &ecash::MintKeySet,
+        failures: usize,
+        signed: Arc<Mutex<HashMap<cdk01::PublicKey, cdk00::BlindedMessage>>>,
+    ) -> Arc<dyn ClowderMintConnector> {
+        let mut connector = MockClowderMintConnector::new();
+        let mint_keyset = bcr_wallet_core::util::to_keyset(keyset, None);
+        connector
+            .expect_get_mint_keyset()
+            .returning(move |_| Ok(mint_keyset.clone()));
+        let mut commits = 0;
+        connector
+            .expect_post_swap_commitment()
+            .returning(move |inputs, outputs, _, _, _| {
+                commits += 1;
+                if commits <= failures {
+                    return Err(Error::MintClientServiceUnavailable(
+                        "operation timed out".to_string(),
+                    ));
+                }
+                let mut result = mock_commitment_result();
+                result.inputs_ys = inputs.iter().map(|p| p.y().unwrap()).collect();
+                result.outputs = outputs;
+                Ok(result)
+            });
+        let signer = keyset.clone();
+        let issued = signed.clone();
+        connector
+            .expect_post_swap_committed()
+            .returning(move |_, outputs, _| {
+                let mut issued = issued.lock().unwrap();
+                Ok(outputs
+                    .iter()
+                    .map(|bm| {
+                        issued.insert(bm.blinded_secret, bm.clone());
+                        bcr_common::core::signature::sign_ecash(&signer, bm).unwrap()
+                    })
+                    .collect())
+            });
+        let signer = keyset.clone();
+        connector.expect_post_restore().returning(move |req| {
+            let issued = signed.lock().unwrap();
+            Ok(req
+                .outputs
+                .into_iter()
+                .filter_map(|bm| {
+                    let issued = issued.get(&bm.blinded_secret)?;
+                    let signature =
+                        bcr_common::core::signature::sign_ecash(&signer, issued).unwrap();
+                    Some((bm, signature))
+                })
+                .collect())
+        });
+        connector
+            .expect_post_check_state()
+            .returning(|req| Ok(proof_states(req, &HashSet::new())));
+        Arc::new(connector)
+    }
+
+    fn seeded_pocket(
+        pdb: Arc<dyn PocketRepository>,
+        seed: bcr_wallet_core::types::Seed,
+    ) -> super::Pocket {
+        super::Pocket::new(
+            CurrencyUnit::Sat,
+            pdb,
+            Arc::new(MockMintMeltRepository::new()),
+            seed,
+            Arc::new(test_beta_provider()),
+        )
+    }
+
+    fn test_seed() -> bcr_wallet_core::types::Seed {
+        bip39::Mnemonic::generate(bip39::WordCount::Words12)
+            .unwrap()
+            .to_seed("")
+    }
+
+    #[tokio::test]
+    async fn commit_failure_releases_counters_to_the_retry() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = test_kinfos(info);
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(8u64), Amount::from(16u64)],
+        );
+        let connector = commit_timeout_connector(&keyset, 5, Default::default());
+        let pdb = in_memory_pdb();
+        let pocket = seeded_pocket(pdb.clone(), test_seed());
+        for _ in 0..5 {
+            pocket
+                .receive_proofs(
+                    connector.clone(),
+                    &k_infos,
+                    proofs.clone(),
+                    test_swap_config(),
+                )
+                .await
+                .expect_err("the commitment times out");
+        }
+        assert_eq!(pdb.reserve_counter(kid, 0).await.unwrap(), 2);
+        let (cashed, _) = pocket
+            .receive_proofs(connector, &k_infos, proofs, test_swap_config())
+            .await
+            .unwrap();
+        assert_eq!(cashed, Amount::from(24u64));
+        assert_eq!(pdb.reserve_counter(kid, 0).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_swaps_restore_finds_proofs() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let k_infos = test_kinfos(info);
+        let amounts: Vec<Amount> = (0..8).map(|i| Amount::from(1u64 << i)).collect();
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &amounts);
+        let seed = test_seed();
+        let connector = commit_timeout_connector(&keyset, 40, Default::default());
+        let pocket = seeded_pocket(in_memory_pdb(), seed);
+        for _ in 0..40 {
+            pocket
+                .receive_proofs(
+                    connector.clone(),
+                    &k_infos,
+                    proofs.clone(),
+                    test_swap_config(),
+                )
+                .await
+                .expect_err("the commitment times out");
+        }
+        let (cashed, _) = pocket
+            .receive_proofs(connector.clone(), &k_infos, proofs, test_swap_config())
+            .await
+            .unwrap();
+        assert_eq!(cashed, Amount::from(255u64));
+
+        let reinstalled = in_memory_pdb();
+        let summary =
+            crate::pocket::restore::restore_keysetid(&seed, kid, &connector, reinstalled.as_ref())
+                .await
+                .unwrap();
+        assert_eq!(summary.restored, 8);
+        assert_eq!(
+            reinstalled
+                .list_unspent()
+                .await
+                .unwrap()
+                .into_values()
+                .collect::<Vec<_>>()
+                .total_amount()
+                .unwrap(),
+            cashed
+        );
     }
 
     #[tokio::test]

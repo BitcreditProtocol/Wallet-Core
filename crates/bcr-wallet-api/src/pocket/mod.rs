@@ -199,7 +199,10 @@ enum SendPlan {
 
 ///////////////////////////////////////////// InFlight
 #[derive(Default, Clone)]
-pub(crate) struct InFlight(Arc<Mutex<HashMap<cdk01::PublicKey, usize>>>);
+pub(crate) struct InFlight(
+    Arc<Mutex<HashMap<cdk01::PublicKey, usize>>>,
+    Arc<Mutex<HashMap<AttemptKey, u32>>>,
+);
 
 impl InFlight {
     fn reservation(&self) -> Reservation {
@@ -272,9 +275,19 @@ pub(crate) fn exchange_key(seed: &Seed, proofs: &[cdk00::Proof]) -> Result<cdk01
 }
 
 ///////////////////////////////////////////// Counters
+/// Counters a swap of these inputs reserved for one keyset's outputs
+type AttemptKey = (Vec<cdk01::PublicKey>, ecash::Id, Amount, String);
+
+struct Attempt {
+    ledger: Arc<Mutex<HashMap<AttemptKey, u32>>>,
+    inputs: Vec<cdk01::PublicKey>,
+    held: Vec<AttemptKey>,
+}
+
 pub(crate) struct Counters<'a> {
     db: &'a dyn PocketRepository,
     reserved: Vec<(ecash::Id, u32, u32)>,
+    attempt: Option<Attempt>,
 }
 
 impl<'a> Counters<'a> {
@@ -282,7 +295,30 @@ impl<'a> Counters<'a> {
         Self {
             db,
             reserved: Vec::new(),
+            attempt: None,
         }
+    }
+
+    /// A retry of a swap of the same inputs, after its commitment failed without a definite
+    /// answer, reuses the counters of the failed attempt instead of reserving new ones.
+    pub(crate) fn for_inputs(
+        db: &'a dyn PocketRepository,
+        in_flight: &InFlight,
+        inputs: &[cdk00::Proof],
+    ) -> Result<Self> {
+        let mut inputs = inputs
+            .iter()
+            .map(|proof| proof.y())
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        inputs.sort();
+        Ok(Self {
+            attempt: Some(Attempt {
+                ledger: in_flight.1.clone(),
+                inputs,
+                held: Vec::new(),
+            }),
+            ..Self::new(db)
+        })
     }
 
     async fn premint_from_counter(
@@ -312,7 +348,20 @@ impl<'a> Counters<'a> {
     ) -> Result<cdk00::PreMintSecrets> {
         let fee_and_amounts = bcr_wallet_core::util::to_fee_and_amounts(keyset);
         let n = amount.split_targeted(target, &fee_and_amounts)?.len() as u32;
-        let start = self.db.reserve_counter(kid, n).await?;
+        let start = match self.attempt.as_mut() {
+            Some(attempt) => {
+                let key = (attempt.inputs.clone(), kid, amount, format!("{target:?}"));
+                let known = attempt.ledger.lock().unwrap().get(&key).copied();
+                let start = match known {
+                    Some(start) => start,
+                    None => self.db.reserve_counter(kid, n).await?,
+                };
+                attempt.ledger.lock().unwrap().insert(key.clone(), start);
+                attempt.held.push(key);
+                start
+            }
+            None => self.db.reserve_counter(kid, n).await?,
+        };
         self.reserved.push((kid, start, n));
         Ok(cdk00::PreMintSecrets::from_seed(
             kid.into(),
@@ -324,7 +373,22 @@ impl<'a> Counters<'a> {
         )?)
     }
 
+    fn forget_attempt(&self) {
+        if let Some(attempt) = &self.attempt {
+            let mut ledger = attempt.ledger.lock().unwrap();
+            for key in &attempt.held {
+                ledger.remove(key);
+            }
+        }
+    }
+
+    /// The commitment is stored, so its counters are held by it and a retry resumes it.
+    fn settle(&self) {
+        self.forget_attempt();
+    }
+
     async fn release(&self) {
+        self.forget_attempt();
         for &(kid, start, n) in &self.reserved {
             if let Err(e) = self.db.release_counter(kid, start, n).await {
                 tracing::warn!("Failed to release counters {start}+{n} of {kid}: {e}");
@@ -474,6 +538,7 @@ pub(crate) async fn committed_swap(
         counters.release().await;
     }
     let (inputs, commitment_sig) = committed?;
+    counters.settle();
 
     let signatures = client
         .post_swap_committed(inputs, outputs, commitment_sig)
@@ -779,6 +844,7 @@ async fn swap_proofs_to_target(
     client: &Arc<dyn ClowderMintConnector>,
     swap_config: SwapConfig,
     beta: &dyn BetaProvider,
+    in_flight: &InFlight,
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
     let keysets_info: HashMap<cashu::Id, KeySetInfo> = keysets_info
         .iter()
@@ -792,7 +858,7 @@ async fn swap_proofs_to_target(
     let attestation = beta.attest(&swap_proofs).await?;
 
     // prepare the premints
-    let mut counters = Counters::new(db);
+    let mut counters = Counters::for_inputs(db, in_flight, &swap_proofs)?;
     let mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets> = BTreeMap::new();
     let mut remaining_payment = target_amount;
     // collect payments by kid, so we can reconstruct it after the swap
@@ -974,6 +1040,7 @@ async fn send_proofs(
                 client,
                 swap_config,
                 beta,
+                in_flight,
             )
             .await?;
 
@@ -1349,6 +1416,7 @@ mod tests {
             &arc_client,
             test_swap_config(),
             &beta,
+            &InFlight::default(),
         )
         .await
         .unwrap();
