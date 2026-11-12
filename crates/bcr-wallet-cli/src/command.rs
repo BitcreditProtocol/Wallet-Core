@@ -472,8 +472,7 @@ pub async fn cmd_melt(
         .wallet_estimate_melt(id.to_owned(), amount)
         .await?;
     info!("Melt Estimate for Amount: {}", amount,);
-    let selected_network_fee =
-        melt_estimate.tx_vsize * melt_estimate.fee_rates[0].sat_per_vb as u64;
+    let selected_network_fee = selected_network_fee(&melt_estimate)?;
     info!(
         "Tx Size: {}, Melt Fee: {}, FeeRates: {:?}",
         melt_estimate.tx_vsize, melt_estimate.melt_fee, melt_estimate.fee_rates,
@@ -1231,4 +1230,15 @@ fn format_fees(fees: TransactionFees) -> String {
     } else {
         format!("Fees: {}", parts.join(", "))
     }
+}
+
+fn selected_network_fee(estimate: &MeltEstimation) -> Result<u64> {
+    let rate = estimate
+        .fee_rates
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("mint returned no fee rate estimates"))?;
+    estimate
+        .tx_vsize
+        .checked_mul(rate.sat_per_vb as u64)
+        .ok_or_else(|| anyhow::anyhow!("network fee overflows for tx size {}", estimate.tx_vsize))
 }

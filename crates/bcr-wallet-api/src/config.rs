@@ -1,3 +1,4 @@
+use crate::external::mint::MintTimeouts;
 use nostr::types::RelayUrl;
 use std::{collections::HashMap, path::PathBuf, sync::atomic::AtomicBool};
 
@@ -14,6 +15,7 @@ pub struct AppStateConfig {
     /// The first URL is used for API requests with fallback to subsequent URLs on failure.
     pub esplora_base_urls: Vec<url::Url>,
     pub dev_mode: AtomicBool,
+    pub mint_timeouts: MintTimeouts,
 }
 
 #[derive(Debug, Clone)]

@@ -407,9 +407,7 @@ impl WalletApi for super::Wallet {
                     .await?;
                 let (ys, proofs): (Vec<cashu::PublicKey>, Vec<cashu::Proof>) =
                     proofs.into_iter().unzip();
-                let mut amount = proofs.total_amount()?;
-                // the proofs are for amount + network_fee + melt_fee, so we need to subtract them
-                amount = amount - fees.network - fees.melt;
+                let amount = onchain_sent_amount(proofs.total_amount()?, &fees)?;
 
                 let partial_tx = Transaction {
                     id: Uuid::new_v4(),
@@ -1569,4 +1567,20 @@ impl WalletApi for super::Wallet {
             }
         }
     }
+}
+
+/// The proofs of an on-chain melt cover amount + network_fee + melt_fee; returns the amount.
+fn onchain_sent_amount(
+    proofs_total: cashu::Amount,
+    fees: &TransactionFees,
+) -> Result<cashu::Amount> {
+    proofs_total
+        .checked_sub(fees.network)
+        .and_then(|a| a.checked_sub(fees.melt))
+        .ok_or_else(|| {
+            Error::MintingError(format!(
+                "melt proofs total {proofs_total} is less than fees {} and {}",
+                fees.network, fees.melt
+            ))
+        })
 }
