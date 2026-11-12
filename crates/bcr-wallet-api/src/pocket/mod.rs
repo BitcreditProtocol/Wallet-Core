@@ -288,6 +288,7 @@ pub(crate) struct Counters<'a> {
     db: &'a dyn PocketRepository,
     reserved: Vec<(ecash::Id, u32, u32)>,
     attempt: Option<Attempt>,
+    released: std::sync::atomic::AtomicBool,
 }
 
 impl<'a> Counters<'a> {
@@ -296,6 +297,7 @@ impl<'a> Counters<'a> {
             db,
             reserved: Vec::new(),
             attempt: None,
+            released: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -396,8 +398,15 @@ impl<'a> Counters<'a> {
         Ok(self.db.clear_reservations(self.reserved()).await?)
     }
 
+    /// Gives the ranges back once: a repeat would roll back a later reservation of the same start.
     async fn release(&self) {
         self.forget_attempt();
+        if self
+            .released
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
         for &(kid, start, n) in &self.reserved {
             if let Err(e) = self.db.release_counter(kid, start, n).await {
                 tracing::warn!("Failed to release counters {start}+{n} of {kid}: {e}");
@@ -1163,6 +1172,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(premint.secrets(), expected.secrets());
+    }
+
+    #[tokio::test]
+    async fn counters_release_their_ranges_once() {
+        let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let mut db = MockPocketRepository::new();
+        db.expect_reserve_counter().returning(|_, _| Ok(0));
+        db.expect_release_counter()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        let mut counters = Counters::new(&db);
+        counters
+            .premint_from_counter(
+                &zero_seed(),
+                kid,
+                Amount::from(8),
+                &SplitTarget::None,
+                &keyset,
+            )
+            .await
+            .unwrap();
+        counters.release().await;
+        counters.release().await;
     }
 
     #[test]

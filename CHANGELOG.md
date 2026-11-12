@@ -5,6 +5,7 @@
 * Amounts supplied by a mint that overflow or underflow (`wallet_check_pending_mints`, `wallet_balance`, melts and sends) return an error instead of panicking
 * `wallet_restore` matches outputs by blinded message instead of position, skips unexpected outputs and check states instead of aborting, and stores a proof the mint returns no state for as pending
 * Seed counter reservations are persisted when they are reserved and cleared in the transaction that stores the swap commitment (or once an onchain mint quote exists), and the pocket releases any reservation still present when it opens unless its commitment request was already sent to the mint (`PocketRepository::mark_reservations_sent`), in which case its counters stay used, so a crash between reserving counters and storing the commitment leaves no gap (DB change, no migration needed: adds the pocket DB `counter_reservations` table, no stored record layout changes)
+    * `mint_onchain` gives its counters back only when the mint refuses the quote request; a timeout or gateway error keeps them
     * `PocketRepository::store_commitment` takes the reservations it covers and `PocketRepository::clear_reservations` is added
 
 # 0.9.15

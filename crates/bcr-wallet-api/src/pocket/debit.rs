@@ -1312,7 +1312,11 @@ impl DebitPocketApi for Pocket {
         let response = match client.post_mint_quote_onchain(request).await {
             Ok(response) => response,
             Err(e) => {
-                counters.release().await;
+                if e.may_have_been_received() {
+                    counters.keep().await?;
+                } else {
+                    counters.release().await;
+                }
                 return Err(e);
             }
         };
@@ -3484,7 +3488,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mint_onchain_releases_counters_on_quote_failure() {
+    async fn mint_onchain_releases_counters_only_when_the_quote_is_refused() {
         use bcr_common::{
             client::mint::{BRError, Error as MintError},
             wire::clowder::ClowderRejection,
@@ -3494,12 +3498,18 @@ mod tests {
         let k_infos = test_kinfos(info);
         let amount = bitcoin::Amount::from_sat(24);
         let failures = [
-            Error::MintClientServiceUnavailable("operation timed out".into()),
-            Error::Mint(MintError::InvalidRequest(BRError::Clowder(
-                serde_json::to_value(ClowderRejection::OutputsReserved).unwrap(),
-            ))),
+            (
+                Error::MintClientServiceUnavailable("operation timed out".into()),
+                2,
+            ),
+            (
+                Error::Mint(MintError::InvalidRequest(BRError::Clowder(
+                    serde_json::to_value(ClowderRejection::OutputsReserved).unwrap(),
+                ))),
+                0,
+            ),
         ];
-        for failure in failures {
+        for (failure, tip) in failures {
             let mut connector = MockClowderMintConnector::new();
             let mint_keyset = bcr_wallet_core::util::to_keyset(&keyset, None);
             connector
@@ -3514,7 +3524,8 @@ mod tests {
                 .mint_onchain(amount, &k_infos, Arc::new(connector))
                 .await
                 .expect_err("quote fails");
-            assert_eq!(pdb.reserve_counter(kid, 0).await.unwrap(), 0);
+            assert_eq!(pdb.reserve_counter(kid, 0).await.unwrap(), tip);
+            drop(pdb);
         }
     }
 
