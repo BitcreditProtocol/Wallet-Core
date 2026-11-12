@@ -197,8 +197,9 @@ mod tests {
     fn insert_legacy<T: serde::Serialize>(db: &Arc<Database>, id: Uuid, value: &T) {
         let mut bytes = Vec::new();
         ciborium::into_writer(value, &mut bytes).unwrap();
+        let ns = namespace();
         let table_def: TableDefinition<&[u8], Vec<u8>> =
-            TableDefinition::new(&namespace().payment_request_table);
+            TableDefinition::new(&ns.payment_request_table);
         let txn = db.begin_write().unwrap();
         {
             let mut table = txn.open_table(table_def).unwrap();
