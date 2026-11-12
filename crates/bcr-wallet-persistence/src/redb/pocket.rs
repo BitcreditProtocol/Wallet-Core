@@ -493,6 +493,18 @@ pub(super) struct StoredCounterPayloadV1 {
     pub counter: u32,
 }
 
+/// StoredReleasedRange is a versioned, borsh-serialized counter range released below the counter
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) enum StoredReleasedRange {
+    V1(StoredReleasedRangePayloadV1),
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredReleasedRangePayloadV1 {
+    pub start: u32,
+    pub n: u32,
+}
+
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub(super) enum StoredJournalEntry {
     V1(EncryptedJournalPayloadV1),
@@ -939,6 +951,32 @@ impl PocketDB {
         Ok(proofs)
     }
 
+    fn counter_in(
+        table: &impl ReadableTable<&'static [u8], Vec<u8>>,
+        kid: ecash::Id,
+    ) -> Result<u32> {
+        Ok(match table.get(kid.to_bytes().as_slice())? {
+            Some(e) => {
+                let StoredCounter::V1(stored) = borsh::from_slice(&e.value())
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                stored.counter
+            }
+            None => 0,
+        })
+    }
+
+    fn set_counter(
+        table: &mut redb::Table<'_, &'static [u8], Vec<u8>>,
+        kid: ecash::Id,
+        counter: u32,
+    ) -> Result<()> {
+        let entry = StoredCounter::V1(StoredCounterPayloadV1 { kid, counter });
+        let serialized =
+            borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+        table.insert(kid.to_bytes().as_slice(), serialized)?;
+        Ok(())
+    }
+
     fn update_counter_sync(
         db: Arc<Database>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
@@ -948,21 +986,8 @@ impl PocketDB {
         let write_txn = db.begin_write()?;
         let current = {
             let mut table = write_txn.open_table(counter_table)?;
-            let current = match table.get(kid.to_bytes().as_slice())? {
-                Some(e) => {
-                    let StoredCounter::V1(stored) = borsh::from_slice(&e.value())
-                        .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                    stored.counter
-                }
-                None => 0,
-            };
-            let entry = StoredCounter::V1(StoredCounterPayloadV1 {
-                kid,
-                counter: next(current)?,
-            });
-            let serialized =
-                borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
-            table.insert(kid.to_bytes().as_slice(), serialized)?;
+            let current = Self::counter_in(&table, kid)?;
+            Self::set_counter(&mut table, kid, next(current)?)?;
             current
         };
         write_txn.commit()?;
@@ -973,6 +998,21 @@ impl PocketDB {
         let mut key = kid.to_bytes().to_vec();
         key.extend_from_slice(&start.to_be_bytes());
         key
+    }
+
+    fn released_range_ending_at(
+        released: &impl ReadableTable<&'static [u8], Vec<u8>>,
+        kid: ecash::Id,
+        end: u32,
+    ) -> Result<Option<u32>> {
+        let lo = Self::released_key(kid, 0);
+        let hi = Self::released_key(kid, end);
+        let Some(entry) = released.range(lo.as_slice()..hi.as_slice())?.next_back() else {
+            return Ok(None);
+        };
+        let StoredReleasedRange::V1(range) = borsh::from_slice(&entry?.1.value())
+            .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+        Ok((range.start.checked_add(range.n) == Some(end)).then_some(range.start))
     }
 
     fn release_counter_sync(
@@ -990,53 +1030,22 @@ impl PocketDB {
         {
             let mut counters = write_txn.open_table(counter_table)?;
             let mut released = write_txn.open_table(released_table)?;
-            let kid_key = kid.to_bytes();
-            let mut tip = match counters.get(kid_key.as_slice())? {
-                Some(e) => {
-                    let StoredCounter::V1(stored) = borsh::from_slice(&e.value())
+            match end.cmp(&Self::counter_in(&counters, kid)?) {
+                std::cmp::Ordering::Greater => return Ok(()),
+                std::cmp::Ordering::Less => {
+                    let entry = StoredReleasedRange::V1(StoredReleasedRangePayloadV1 { start, n });
+                    let serialized = borsh::to_vec(&entry)
                         .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                    stored.counter
+                    released.insert(Self::released_key(kid, start).as_slice(), serialized)?;
                 }
-                None => 0,
-            };
-            if end > tip {
-                return Ok(());
-            }
-            if end == tip {
-                tip = start;
-                loop {
-                    let lo = Self::released_key(kid, 0);
-                    let hi = Self::released_key(kid, u32::MAX);
-                    let mut found = None;
-                    for entry in released.range(lo.as_slice()..=hi.as_slice())? {
-                        let (k, v) = entry?;
-                        let k = k.value();
-                        let s =
-                            u32::from_be_bytes(k[k.len() - 4..].try_into().map_err(|_| {
-                                Error::BorshSerialization("bad released key".into())
-                            })?);
-                        let len =
-                            u32::from_le_bytes(v.value().as_slice().try_into().map_err(|_| {
-                                Error::BorshSerialization("bad released range".into())
-                            })?);
-                        if s.checked_add(len) == Some(tip) {
-                            found = Some(s);
-                            break;
-                        }
+                std::cmp::Ordering::Equal => {
+                    let mut tip = start;
+                    while let Some(below) = Self::released_range_ending_at(&released, kid, tip)? {
+                        released.remove(Self::released_key(kid, below).as_slice())?;
+                        tip = below;
                     }
-                    let Some(s) = found else { break };
-                    released.remove(Self::released_key(kid, s).as_slice())?;
-                    tip = s;
+                    Self::set_counter(&mut counters, kid, tip)?;
                 }
-                let entry = StoredCounter::V1(StoredCounterPayloadV1 { kid, counter: tip });
-                let serialized =
-                    borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                counters.insert(kid_key.as_slice(), serialized)?;
-            } else {
-                released.insert(
-                    Self::released_key(kid, start).as_slice(),
-                    n.to_le_bytes().to_vec(),
-                )?;
             }
         }
         write_txn.commit()?;
