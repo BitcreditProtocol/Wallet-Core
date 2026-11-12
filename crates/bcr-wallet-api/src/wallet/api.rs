@@ -90,10 +90,7 @@ pub trait WalletApi: SendSync {
     ) -> Result<WalletProtestResult>;
     async fn protest_melt(&self, quote_id: Uuid) -> Result<WalletProtestResult>;
     async fn check_pending_melt_commitments(&self) -> Result<()>;
-    /// Exchanges every migratable proof for the substitute's and returns the config of this
-    /// wallet on the substitute; a repeated call resumes from the migration journal
     async fn exchange_to_substitute(&self, substitute_url: url::Url) -> Result<WalletConfig>;
-    /// A new instance on `cfg`'s mint, sharing this one's stores, seed and nostr pipeline
     async fn rebuild(&self, cfg: WalletConfig) -> Result<Arc<RwLock<Self>>>
     where
         Self: Sized;
@@ -141,8 +138,6 @@ pub trait WalletApi: SendSync {
         now: u64,
     ) -> Result<(Uuid, Option<Token>)>;
     async fn is_nostr_connected(&self) -> bool;
-    /// Starts handling nostr events from the subscription a stopped listener handed over, or
-    /// subscribes and starts the nostr consumer
     async fn start_nostr_listener(&self, handed_over: Option<NostrReceiver>);
     fn take_nostr_listener(&self) -> Option<NostrListener>;
     async fn fetch_nostr_relays(

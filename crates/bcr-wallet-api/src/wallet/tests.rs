@@ -6071,7 +6071,6 @@ fn receiving_pocket(
     pocket
 }
 
-/// Holds a migration inside its exchange until the test lets it go on
 pub(crate) struct ExchangeGate {
     entered: tokio::sync::oneshot::Receiver<()>,
     release: tokio::sync::oneshot::Sender<()>,
@@ -6090,7 +6089,6 @@ impl ExchangeGate {
         let _ = self.release.send(());
     }
 
-    /// Lets the exchange go on against a substitute that has gone down
     pub(crate) fn fail(self) {
         self.substitute_down
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -6103,8 +6101,6 @@ type Gate = (
     tokio::sync::oneshot::Receiver<()>,
 );
 
-/// A journal that can hold a migration at its next load, after `put` has moved the migratable
-/// proofs out of the pocket, and just before the exchanged proofs are marked Swapped
 struct GatedJournal {
     journal: Arc<bcr_wallet_persistence::redb::pocket::PocketDB>,
     on_load: std::sync::Mutex<Option<Gate>>,
@@ -6188,8 +6184,6 @@ pub(crate) enum RepoWrite {
     Delete,
 }
 
-/// A rabid wallet `w-1` holding 100 sat, its nostr listener running, in a purse whose
-/// migration rebuilds it on a substitute
 pub(crate) struct SwapFixture {
     pub(crate) purse: Arc<crate::purse::Purse<Wallet>>,
     pub(crate) old: Arc<RwLock<Wallet>>,
@@ -6384,7 +6378,6 @@ impl SwapFixture {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Holds the next migration inside its exchange
     pub(crate) fn gate_exchange(&self) -> ExchangeGate {
         let JournalPause { entered, release } = pause(&self.journal.on_load);
         ExchangeGate {
@@ -6394,7 +6387,6 @@ impl SwapFixture {
         }
     }
 
-    /// A token of the substitute mint
     pub(crate) fn substitute_token(&self, amount: u64) -> Token {
         let proofs =
             core_tests::generate_random_ecash_proofs(&self.token_keyset, &[Amount::from(amount)]);
@@ -6428,18 +6420,15 @@ pub(crate) async fn next_received(
         .expect("the pocket is alive")
 }
 
-/// Gives every task that can make progress the time to make it
 pub(crate) async fn settle() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 }
 
-/// A migration paused at a journal gate: `entered` fires when it arrives, `release` lets it go on
 pub(crate) struct JournalPause {
     pub(crate) entered: tokio::sync::oneshot::Receiver<()>,
     pub(crate) release: tokio::sync::oneshot::Sender<()>,
 }
 
-/// A rabid wallet `w-1` holding real alpha proofs (64 + 32 + 4 sat) in a real pocket and journal, whose substitute exchanges and swaps them for real
 pub(crate) struct RealProofs {
     pub(crate) purse: Arc<crate::purse::Purse<Wallet>>,
     journal: Arc<GatedJournal>,
@@ -6597,13 +6586,10 @@ impl RealProofs {
         Self { purse, journal }
     }
 
-    /// Holds the next migration once its proofs are in the journal and none is exchanged yet
     pub(crate) fn pause_after_proofs_are_journaled(&self) -> JournalPause {
         pause(&self.journal.after_put)
     }
 
-    /// Holds the next migration after the substitute's proofs are in the pocket and before the
-    /// journal marks the exchanged proofs Swapped
     pub(crate) fn pause_before_proofs_are_marked_swapped(&self) -> JournalPause {
         pause(&self.journal.before_swapped)
     }

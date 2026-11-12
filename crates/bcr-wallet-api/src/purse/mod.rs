@@ -20,12 +20,9 @@ pub struct Purse<Wlt> {
     pub repo: Box<dyn PurseRepository>,
     pub contact_repos: HashMap<bitcoin::Network, Arc<dyn ContactStoreApi>>,
     pub wallets: Arc<RwLock<HashMap<String, Arc<RwLock<Wlt>>>>>,
-    /// One per wallet id, outliving the instances a migration swaps
     pub swap_guards: std::sync::Mutex<HashMap<String, Arc<SwapGuard>>>,
 }
 
-/// A migration holds the write side of `lock`, a call that moves proofs or writes wallet state
-/// its read side. `migrating` is the balance reads answer while the pocket is mid-exchange.
 #[derive(Default)]
 pub struct SwapGuard {
     lock: Arc<RwLock<()>>,
@@ -52,7 +49,6 @@ impl SwapGuard {
     }
 }
 
-/// The balance a migration answers reads with, cleared when dropped
 struct RecordedBalance(Arc<SwapGuard>);
 
 impl Drop for RecordedBalance {
@@ -63,7 +59,6 @@ impl Drop for RecordedBalance {
     }
 }
 
-/// A wallet that no migration swaps out while this is held
 pub struct HeldWallet<Wlt> {
     wallet: Arc<RwLock<Wlt>>,
     _swap_guard: OwnedRwLockReadGuard<()>,
@@ -77,9 +72,6 @@ impl<Wlt> Deref for HeldWallet<Wlt> {
     }
 }
 
-/// The subscription of a wallet's stopped nostr listener, holding every event it has not handled
-/// yet. It is resumed on `wallet`, also when dropped, so no event is left unhandled; the swap
-/// guard stays held until then, so a retried migration never meets a listener that is not back.
 struct PausedListener<Wlt: WalletApi + 'static> {
     wallet: Arc<RwLock<Wlt>>,
     swapping: Arc<OwnedRwLockWriteGuard<()>>,
@@ -87,7 +79,6 @@ struct PausedListener<Wlt: WalletApi + 'static> {
 }
 
 impl<Wlt: WalletApi + 'static> PausedListener<Wlt> {
-    /// Stops the nostr listener of `wallet` once it has handled the event it is on
     async fn pause(
         wallet: &Arc<RwLock<Wlt>>,
         swapping: &Arc<OwnedRwLockWriteGuard<()>>,
@@ -170,8 +161,6 @@ impl<Wlt> Purse<Wlt> {
         self.wallets.read().await.get(id).cloned()
     }
 
-    /// The wallet, held for a call that moves proofs or writes wallet state, so the call never
-    /// runs on an instance a migration has swapped out
     pub async fn hold_wallet(&self, id: &str) -> Option<HeldWallet<Wlt>> {
         let swap_guard = self.swap_guard(id).lock.clone().read_owned().await;
         let wallet = self.get_wallet(id).await?;
@@ -201,8 +190,6 @@ impl<Wlt> Purse<Wlt>
 where
     Wlt: WalletApi + 'static,
 {
-    /// The balance recorded when a migration started while it runs, otherwise what the current
-    /// instance reads, read again if a migration overlapped the read
     pub async fn wallet_balance(&self, id: &str) -> Option<Result<WalletBalance>> {
         let guard = self.swap_guard(id);
         loop {

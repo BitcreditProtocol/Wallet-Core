@@ -66,18 +66,15 @@ use uuid::Uuid;
 
 pub type NostrReceiver = broadcast::Receiver<NostrWalletEvent>;
 
-/// The task handling the nostr events of one wallet instance
 pub struct NostrListener {
-    stop: CancellationToken,
+    cancel: CancellationToken,
     task: tokio::task::JoinHandle<NostrReceiver>,
     channel: NostrEventChannel,
 }
 
 impl NostrListener {
-    /// Stops the listener between two events and returns its subscription, which keeps every
-    /// event it has not taken yet
     pub async fn stop(self) -> NostrReceiver {
-        self.stop.cancel();
+        self.cancel.cancel();
         match self.task.await {
             Ok(nostr_receiver) => nostr_receiver,
             Err(e) => {
@@ -266,13 +263,13 @@ impl Wallet {
             .upgrade()
             .expect("a wallet is only reached through the Arc it was created in");
         let wallet_network = self.network;
-        let stop = CancellationToken::new();
-        let stopped = stop.clone();
+        let cancel = CancellationToken::new();
+        let cancelled = cancel.clone();
         let task = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     biased;
-                    _ = stopped.cancelled() => return nostr_receiver,
+                    _ = cancelled.cancelled() => return nostr_receiver,
                     evt = nostr_receiver.recv() => {
                         let received_evt = match evt {
                             Ok(e) => e,
@@ -379,7 +376,7 @@ impl Wallet {
             }
         });
         *self.nostr_listener.lock().unwrap() = Some(NostrListener {
-            stop,
+            cancel,
             task,
             channel: self.nostr_event_channel.clone(),
         });
@@ -677,8 +674,6 @@ impl Wallet {
         Ok(())
     }
 
-    /// Records `ys` as already in the pocket before the journal says so, so `balance` does not
-    /// count them in both places when the journal update fails or has not run yet
     pub(crate) async fn mark_swapped_in(
         &self,
         ys: Vec<cashu::PublicKey>,
@@ -905,11 +900,10 @@ impl Wallet {
         self.debit.unit()
     }
 
-    /// Counts with the keyset infos the wallet holds and asks the mint only for a keyset it lacks
     pub async fn balance(&self) -> Result<WalletBalance> {
         let journal = self.journal.load().await?;
         let swapped_in = self.swapped_in.lock().unwrap().clone();
-        let in_flight: Vec<_> = journal
+        let journaled: Vec<_> = journal
             .iter()
             .filter(|(y, e)| {
                 !swapped_in.contains(*y)
@@ -921,13 +915,13 @@ impl Wallet {
             .map(|(_, e)| &e.proof)
             .collect();
         match self
-            .balance_with(in_flight.iter().copied(), &self.mint_keyset_infos)
+            .balance_with(journaled.iter().copied(), &self.mint_keyset_infos)
             .await
         {
             Ok(balance) => Ok(balance),
             Err(_) => {
                 let keysets_info = self.get_wallet_mint_keyset_infos().await?;
-                self.balance_with(in_flight.iter().copied(), &keysets_info)
+                self.balance_with(journaled.iter().copied(), &keysets_info)
                     .await
             }
         }
@@ -935,13 +929,13 @@ impl Wallet {
 
     async fn balance_with<'p>(
         &self,
-        in_flight: impl Iterator<Item = &'p cashu::nuts::nut00::Proof> + Clone,
+        journaled: impl Iterator<Item = &'p cashu::nuts::nut00::Proof> + Clone,
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
     ) -> Result<WalletBalance> {
-        let held = crate::pocket::balance_of(in_flight, keysets_info)?;
+        let journaled = crate::pocket::balance_of(journaled, keysets_info)?;
         let balance = self.debit.balance(keysets_info).await?;
-        let debit = add_amounts(balance.debit, held.debit)?;
-        let credit = add_amounts(balance.credit, held.credit)?;
+        let debit = add_amounts(balance.debit, journaled.debit)?;
+        let credit = add_amounts(balance.credit, journaled.credit)?;
         Ok(WalletBalance {
             debit,
             credit,

@@ -130,7 +130,6 @@ pub trait DebitPocketApi: super::PocketApi {
         tstamp: u64,
         client_factory: &ClientFactory,
     ) -> Result<usize>;
-    /// A pocket on the same stores, seed and in-flight proofs whose swaps `beta` attests
     fn with_beta_provider(&self, beta: Arc<dyn BetaProvider>) -> Box<dyn DebitPocketApi>;
 }
 
