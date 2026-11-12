@@ -59,7 +59,10 @@ fn migrate_table(
     let mut migrated: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     for item in table.iter()? {
         let (k, v) = item?;
-        migrated.push((k.value().to_vec(), convert(v.value().as_slice())?));
+        match convert(v.value().as_slice()) {
+            Ok(converted) => migrated.push((k.value().to_vec(), converted)),
+            Err(e) => tracing::warn!("Leaving undecodable legacy row in {table_name}: {e}"),
+        }
     }
     for (key, value) in migrated {
         table.insert(key.as_slice(), value)?;
@@ -424,7 +427,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_0008_rejects_a_corrupted_row() {
+    async fn migration_0008_keeps_a_corrupted_row_and_succeeds() {
         let db = test_database();
         let keys = test_keypair();
         insert_legacy(
@@ -434,7 +437,15 @@ mod tests {
             &"not a commitment entry",
         );
         let namespace = collect_wallet_namespace(WALLET_ID.to_string(), CurrencyUnit::Sat, keys);
-        assert!(migrate_wallet(db, namespace).await.is_err());
+        migrate_wallet(db.clone(), namespace).await.unwrap();
+        assert_eq!(
+            raw_values(
+                &db,
+                &MintMeltDB::melt_commitment_table_name(WALLET_ID, &CurrencyUnit::Sat)
+            )
+            .len(),
+            1
+        );
     }
 
     #[tokio::test]

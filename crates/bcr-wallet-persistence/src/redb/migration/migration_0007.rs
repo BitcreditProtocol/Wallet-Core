@@ -38,8 +38,12 @@ pub(super) fn migration_0007_payment_request_envelope(
     let mut migrated: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     for item in table.iter()? {
         let (k, v) = item?;
-        let legacy: LegacyPaymentRequestEntry = ciborium::from_reader(v.value().as_slice())?;
-        migrated.push((k.value().to_vec(), encode_payment_request(&legacy.into())?));
+        match ciborium::from_reader::<LegacyPaymentRequestEntry, _>(v.value().as_slice()) {
+            Ok(legacy) => {
+                migrated.push((k.value().to_vec(), encode_payment_request(&legacy.into())?))
+            }
+            Err(e) => tracing::warn!("Leaving undecodable legacy payment request: {e}"),
+        }
     }
     for (key, value) in migrated {
         table.insert(key.as_slice(), value)?;
