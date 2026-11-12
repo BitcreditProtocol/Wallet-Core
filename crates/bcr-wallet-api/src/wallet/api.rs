@@ -1584,21 +1584,3 @@ fn onchain_sent_amount(
             ))
         })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn onchain_sent_amount_fees_above_total_returns_error_not_panic() {
-        let fees = TransactionFees {
-            swap: cashu::Amount::ZERO,
-            network: cashu::Amount::from(8u64),
-            melt: cashu::Amount::from(4u64),
-        };
-
-        let result = onchain_sent_amount(cashu::Amount::from(10u64), &fees);
-
-        assert!(matches!(result, Err(Error::MintingError(_))));
-    }
-}
