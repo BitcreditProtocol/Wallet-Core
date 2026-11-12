@@ -351,7 +351,9 @@ impl NostrDB {
             let mut table = write_txn.open_table(queued_message_table)?;
             let mut res = Vec::new();
             for (_, v) in table.range::<&[u8]>(..)?.flatten() {
-                let entry = decode_queued_message(v.value().as_slice(), &keys)?;
+                let Ok(entry) = decode_queued_message(v.value().as_slice(), &keys) else {
+                    continue;
+                };
                 if entry.processing_started_at < retry_before {
                     res.push(entry);
                 }
@@ -579,6 +581,31 @@ mod tests {
         );
 
         NostrDB::new(db, wallet_id, test_keys()).expect("can create NostrDB")
+    }
+
+    #[tokio::test]
+    async fn corrupt_queue_row_does_not_hide_valid_messages() {
+        let repo = get_db("w");
+        repo.add_retry_message(
+            NostrQueuedMessage {
+                id: "good".to_string(),
+                recipient: None,
+                payload: "p".to_string(),
+            },
+            3,
+        )
+        .await
+        .unwrap();
+        let txn = repo.db.begin_write().unwrap();
+        {
+            let mut t = txn.open_table(repo.queued_message_table).unwrap();
+            t.insert(b"zzz-bad".as_slice(), vec![0xff, 0x01]).unwrap();
+        }
+        txn.commit().unwrap();
+
+        let msgs = repo.get_retry_messages(10).await.unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].id, "good");
     }
 
     fn offset(event_id: &str, time: u64, success: bool) -> NostrEventOffset {
