@@ -1316,7 +1316,7 @@ impl DebitPocketApi for Pocket {
                 return Err(e);
             }
         };
-        counters.keep().await;
+        counters.keep().await?;
 
         bcr_common::core::signature::schnorr_verify_b64(
             &response.content,
@@ -4724,6 +4724,9 @@ mod tests {
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
         pdb.expect_reserve_counter().returning(|_, _| Ok(0));
+        pdb.expect_clear_reservations()
+            .times(1)
+            .returning(|_| Ok(()));
         let mut substitute_client = MockClowderMintConnector::new();
 
         substitute_client

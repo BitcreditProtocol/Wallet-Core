@@ -392,10 +392,8 @@ impl<'a> Counters<'a> {
     }
 
     /// The mint may still sign these counters, so they are never released or reused.
-    pub(crate) async fn keep(&self) {
-        if let Err(e) = self.db.clear_reservations(self.reserved()).await {
-            tracing::warn!("Failed to clear counter reservations: {e}");
-        }
+    pub(crate) async fn keep(&self) -> Result<()> {
+        Ok(self.db.clear_reservations(self.reserved()).await?)
     }
 
     async fn release(&self) {
@@ -555,6 +553,9 @@ pub(crate) async fn committed_swap(
     }
     let (inputs, commitment_sig) = committed?;
     counters.settle();
+    if db.is_none() {
+        counters.keep().await?;
+    }
 
     let signatures = client
         .post_swap_committed(inputs, outputs, commitment_sig)
