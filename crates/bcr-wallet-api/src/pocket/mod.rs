@@ -387,6 +387,17 @@ impl<'a> Counters<'a> {
         self.forget_attempt();
     }
 
+    fn reserved(&self) -> Vec<(ecash::Id, u32, u32)> {
+        self.reserved.clone()
+    }
+
+    /// The mint may still sign these counters, so they are never released or reused.
+    pub(crate) async fn keep(&self) {
+        if let Err(e) = self.db.clear_reservations(self.reserved()).await {
+            tracing::warn!("Failed to clear counter reservations: {e}");
+        }
+    }
+
     async fn release(&self) {
         self.forget_attempt();
         for &(kid, start, n) in &self.reserved {
@@ -461,6 +472,7 @@ pub(crate) async fn commit_swap(
     swap_config: &SwapConfig,
     premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
     attestation: wire_attestation::IssuanceAttestation,
+    reservations: Vec<(ecash::Id, u32, u32)>,
 ) -> Result<(Vec<cdk00::Proof>, bitcoin::secp256k1::schnorr::Signature)> {
     // Remove dleqs from same-mint swaps to not give up a blinding factor
     let inputs = crate::wallet::util::remove_dleq_from_proofs(inputs);
@@ -480,17 +492,20 @@ pub(crate) async fn commit_swap(
     );
 
     if let Some(db) = db {
-        db.store_commitment(bcr_wallet_persistence::SwapCommitmentRecord {
-            inputs: commit_result.inputs_ys,
-            outputs: commit_result.outputs,
-            expiry: commit_result.expiry,
-            commitment: commitment_sig,
-            ephemeral_secret: commit_result.ephemeral_secret,
-            body_content: commit_result.body_content,
-            wallet_key: commit_result.wallet_key,
-            premints,
-            input_proofs: inputs.clone(),
-        })
+        db.store_commitment(
+            bcr_wallet_persistence::SwapCommitmentRecord {
+                inputs: commit_result.inputs_ys,
+                outputs: commit_result.outputs,
+                expiry: commit_result.expiry,
+                commitment: commitment_sig,
+                ephemeral_secret: commit_result.ephemeral_secret,
+                body_content: commit_result.body_content,
+                wallet_key: commit_result.wallet_key,
+                premints,
+                input_proofs: inputs.clone(),
+            },
+            reservations,
+        )
         .await?;
     }
     Ok((inputs, commitment_sig))
@@ -532,6 +547,7 @@ pub(crate) async fn committed_swap(
         swap_config,
         premints.clone(),
         attestation,
+        counters.reserved(),
     )
     .await;
     if matches!(&committed, Err(e) if e.is_input_rejection()) {

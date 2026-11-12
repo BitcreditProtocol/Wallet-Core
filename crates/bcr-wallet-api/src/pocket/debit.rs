@@ -1316,6 +1316,7 @@ impl DebitPocketApi for Pocket {
                 return Err(e);
             }
         };
+        counters.keep().await;
 
         bcr_common::core::signature::schnorr_verify_b64(
             &response.content,
@@ -1642,6 +1643,7 @@ impl DebitPocketApi for Pocket {
             &swap_config,
             record.premints.clone(),
             attestation,
+            Vec::new(),
         )
         .await?;
         let signatures = alpha_client
@@ -2056,7 +2058,7 @@ mod tests {
         let records = commitments.clone();
         pdb.expect_store_commitment()
             .times(1)
-            .returning(move |record| {
+            .returning(move |record, _| {
                 records.lock().unwrap().push(record);
                 Ok(())
             });
@@ -2449,7 +2451,7 @@ mod tests {
     async fn expired_commitment_without_input_proofs_is_deleted_when_nothing_restored() {
         let (_, keyset) = core_tests::generate_random_ecash_keyset();
         let pdb = in_memory_pdb();
-        pdb.store_commitment(expired_commitment(&keyset, false))
+        pdb.store_commitment(expired_commitment(&keyset, false), vec![])
             .await
             .unwrap();
 
@@ -2486,7 +2488,7 @@ mod tests {
         let mut records = Vec::new();
         for _ in 0..2 {
             let record = expired_commitment(&keyset, true);
-            pdb.store_commitment(record.clone()).await.unwrap();
+            pdb.store_commitment(record.clone(), vec![]).await.unwrap();
             records.push(record);
         }
         let (offline, executed) = (records[0].commitment, records[1].clone());
@@ -2881,7 +2883,9 @@ mod tests {
                     ))
                 }
             });
-        pdb.expect_store_commitment().times(1).returning(|_| Ok(()));
+        pdb.expect_store_commitment()
+            .times(1)
+            .returning(|_, _| Ok(()));
         pdb.expect_delete_commitment().times(0);
         let pocket = pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()));
 
@@ -3396,6 +3400,9 @@ mod tests {
             .times(1)
             .with(eq(kid), always())
             .returning(|_, _| Ok(0));
+        pdb.expect_clear_reservations()
+            .times(1)
+            .returning(|_| Ok(()));
 
         mdb.expect_store_mint()
             .times(1)
@@ -3997,17 +4004,20 @@ mod tests {
         }
         let ephemeral = secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng());
         let commitment = bitcoin::secp256k1::schnorr::Signature::from_slice(&[0xab; 64]).unwrap();
-        pdb.store_commitment(bcr_wallet_persistence::SwapCommitmentRecord {
-            inputs: ys.clone(),
-            outputs: vec![],
-            expiry: 1000,
-            commitment,
-            ephemeral_secret: secp256k1::SecretKey::from_keypair(&ephemeral),
-            body_content: "dGVzdA==".to_string(),
-            wallet_key: cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral)),
-            premints: HashMap::new(),
-            input_proofs: vec![],
-        })
+        pdb.store_commitment(
+            bcr_wallet_persistence::SwapCommitmentRecord {
+                inputs: ys.clone(),
+                outputs: vec![],
+                expiry: 1000,
+                commitment,
+                ephemeral_secret: secp256k1::SecretKey::from_keypair(&ephemeral),
+                body_content: "dGVzdA==".to_string(),
+                wallet_key: cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral)),
+                premints: HashMap::new(),
+                input_proofs: vec![],
+            },
+            vec![],
+        )
         .await
         .unwrap();
 
