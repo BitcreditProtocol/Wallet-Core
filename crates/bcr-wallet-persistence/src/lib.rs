@@ -104,6 +104,10 @@ pub trait PocketRepository: SendSync {
     /// Keeps the reserved ranges a mint may still sign; they are no longer released at open.
     async fn clear_reservations(&self, ranges: Vec<(ecash::Id, u32, u32)>) -> Result<()>;
 
+    /// Marks reserved ranges whose commitment request is about to reach the mint, so a reopen
+    /// keeps their counters instead of releasing them.
+    async fn mark_reservations_sent(&self, ranges: Vec<(ecash::Id, u32, u32)>) -> Result<()>;
+
     /// Stores the commitment and clears the reservations it covers in one transaction.
     async fn store_commitment(
         &self,
