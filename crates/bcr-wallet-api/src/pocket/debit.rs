@@ -2056,6 +2056,7 @@ mod tests {
         pdb.expect_reserve_counter().returning(|_, _| Ok(0));
         pdb.expect_release_counter().returning(|_, _, _| Ok(()));
         let records = commitments.clone();
+        pdb.expect_mark_reservations_sent().returning(|_| Ok(()));
         pdb.expect_store_commitment()
             .times(1)
             .returning(move |record, _| {
@@ -2883,6 +2884,7 @@ mod tests {
                     ))
                 }
             });
+        pdb.expect_mark_reservations_sent().returning(|_| Ok(()));
         pdb.expect_store_commitment()
             .times(1)
             .returning(|_, _| Ok(()));

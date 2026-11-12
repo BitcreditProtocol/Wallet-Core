@@ -474,6 +474,11 @@ pub(crate) async fn commit_swap(
 ) -> Result<(Vec<cdk00::Proof>, bitcoin::secp256k1::schnorr::Signature)> {
     // Remove dleqs from same-mint swaps to not give up a blinding factor
     let inputs = crate::wallet::util::remove_dleq_from_proofs(inputs);
+    if let Some(db) = db
+        && !reservations.is_empty()
+    {
+        db.mark_reservations_sent(reservations.clone()).await?;
+    }
     let commit_result = client
         .post_swap_commitment(
             inputs.clone(),

@@ -83,6 +83,7 @@ pub mod tests {
             .expect_post_swap_commitment()
             .times(1)
             .returning(|_, _, _, _, _| Ok(mock_commitment_result()));
+        db.expect_mark_reservations_sent().returning(|_| Ok(()));
         db.expect_store_commitment()
             .times(1)
             .returning(|_, _| Ok(()));

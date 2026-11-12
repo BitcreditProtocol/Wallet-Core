@@ -521,6 +521,7 @@ pub(super) struct StoredReservationPayloadV1 {
     pub kid: ecash::Id,
     pub start: u32,
     pub n: u32,
+    pub sent: bool,
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
@@ -1120,7 +1121,12 @@ impl PocketDB {
             let end = start.checked_add(n).ok_or(Error::CounterExhausted)?;
             Self::set_counter(&mut counters, kid, end)?;
             if n > 0 {
-                let entry = StoredReservation::V1(StoredReservationPayloadV1 { kid, start, n });
+                let entry = StoredReservation::V1(StoredReservationPayloadV1 {
+                    kid,
+                    start,
+                    n,
+                    sent: false,
+                });
                 let serialized =
                     borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
                 let mut reservations = write_txn.open_table(reservation_table)?;
@@ -1156,8 +1162,34 @@ impl PocketDB {
         Ok(())
     }
 
-    /// A reservation still present when the pocket opens was never covered by a stored
-    /// commitment, so no swap can have been made with its counters.
+    fn mark_reservations_sent_sync(
+        db: Arc<Database>,
+        reservation_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        ranges: &[(ecash::Id, u32, u32)],
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+        {
+            let mut reservations = write_txn.open_table(reservation_table)?;
+            for &(kid, start, _) in ranges {
+                let key = Self::released_key(kid, start);
+                let Some(entry) = reservations.get(key.as_slice())?.map(|e| e.value()) else {
+                    continue;
+                };
+                let StoredReservation::V1(mut held) = borsh::from_slice(&entry)
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                held.sent = true;
+                let serialized = borsh::to_vec(&StoredReservation::V1(held))
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                reservations.insert(key.as_slice(), serialized)?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// A reservation still present when the pocket opens whose commitment request was never
+    /// sent cannot have been signed by the mint; one that was sent may have been, so its
+    /// counters stay used.
     pub(super) fn release_leftover_reservations(&self) -> Result<()> {
         let (counter_table, released_table, reservation_table) = (
             self.counter_table,
@@ -1176,6 +1208,10 @@ impl PocketDB {
                 leftovers.push(r);
             }
             for r in leftovers {
+                if r.sent {
+                    Self::clear_reservations_in(&mut reservations, &[(r.kid, r.start, r.n)])?;
+                    continue;
+                }
                 Self::release_in(
                     &mut counters,
                     &mut released,
@@ -1688,6 +1724,12 @@ impl PocketRepository for PocketDB {
         let db_clone = self.db.clone();
         let table = self.reservation_table;
         spawn_blocking(move || Self::clear_reservations_sync(db_clone, table, &ranges)).await?
+    }
+
+    async fn mark_reservations_sent(&self, ranges: Vec<(ecash::Id, u32, u32)>) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.reservation_table;
+        spawn_blocking(move || Self::mark_reservations_sent_sync(db_clone, table, &ranges)).await?
     }
 
     async fn store_commitment(
@@ -2808,5 +2850,39 @@ mod tests {
 
         let p = open(&db, keys);
         assert_eq!(p.reserve_counter(k, 0).await.unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn reopen_keeps_counters_of_a_reservation_whose_commitment_was_sent() {
+        let (db, keys) = reopenable_db();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = mintkeyset.id;
+        let repo = open(&db, keys);
+        assert_eq!(repo.reserve_counter(kid, 2).await.unwrap(), 0);
+        assert_eq!(repo.reserve_counter(kid, 1).await.unwrap(), 2);
+        repo.mark_reservations_sent(vec![(kid, 2, 1)])
+            .await
+            .unwrap();
+        drop(repo);
+
+        let repo = open(&db, keys);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 3);
+        drop(repo);
+        let repo = open(&db, keys);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn sent_reservation_is_still_released_on_a_definite_rejection() {
+        let (db, keys) = reopenable_db();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = mintkeyset.id;
+        let repo = open(&db, keys);
+        assert_eq!(repo.reserve_counter(kid, 2).await.unwrap(), 0);
+        repo.mark_reservations_sent(vec![(kid, 0, 2)])
+            .await
+            .unwrap();
+        repo.release_counter(kid, 0, 2).await.unwrap();
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 0);
     }
 }
