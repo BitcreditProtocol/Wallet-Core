@@ -6103,9 +6103,39 @@ type Gate = (
     tokio::sync::oneshot::Receiver<()>,
 );
 
+/// A journal that can hold a migration at its next load, after `put` has moved the migratable
+/// proofs out of the pocket, and just before the exchanged proofs are marked Swapped
 struct GatedJournal {
-    journal: bcr_wallet_persistence::redb::pocket::PocketDB,
-    gate: std::sync::Mutex<Option<Gate>>,
+    journal: Arc<bcr_wallet_persistence::redb::pocket::PocketDB>,
+    on_load: std::sync::Mutex<Option<Gate>>,
+    after_put: std::sync::Mutex<Option<Gate>>,
+    before_swapped: std::sync::Mutex<Option<Gate>>,
+}
+
+impl GatedJournal {
+    fn new(journal: Arc<bcr_wallet_persistence::redb::pocket::PocketDB>) -> Arc<Self> {
+        Arc::new(Self {
+            journal,
+            on_load: Default::default(),
+            after_put: Default::default(),
+            before_swapped: Default::default(),
+        })
+    }
+}
+
+async fn hold(gate: &std::sync::Mutex<Option<Gate>>) {
+    let gate = gate.lock().unwrap().take();
+    if let Some((entered, release)) = gate {
+        let _ = entered.send(());
+        let _ = release.await;
+    }
+}
+
+fn pause(gate: &std::sync::Mutex<Option<Gate>>) -> JournalPause {
+    let (entered_tx, entered) = tokio::sync::oneshot::channel();
+    let (release, release_rx) = tokio::sync::oneshot::channel();
+    *gate.lock().unwrap() = Some((entered_tx, release_rx));
+    JournalPause { entered, release }
 }
 
 #[async_trait::async_trait]
@@ -6115,7 +6145,9 @@ impl MigrationJournalRepository for GatedJournal {
         header: MigrationJournalHeader,
         entries: Vec<(cashu::PublicKey, cashu::SecretKey)>,
     ) -> bcr_wallet_persistence::error::Result<()> {
-        self.journal.put(header, entries).await
+        self.journal.put(header, entries).await?;
+        hold(&self.after_put).await;
+        Ok(())
     }
 
     async fn update(
@@ -6123,6 +6155,9 @@ impl MigrationJournalRepository for GatedJournal {
         ys: Vec<cashu::PublicKey>,
         state: MigrationJournalState,
     ) -> bcr_wallet_persistence::error::Result<()> {
+        if state == MigrationJournalState::Swapped {
+            hold(&self.before_swapped).await;
+        }
         self.journal.update(ys, state).await
     }
 
@@ -6130,11 +6165,7 @@ impl MigrationJournalRepository for GatedJournal {
         &self,
     ) -> bcr_wallet_persistence::error::Result<HashMap<cashu::PublicKey, MigrationJournalEntry>>
     {
-        let gate = self.gate.lock().unwrap().take();
-        if let Some((entered, release)) = gate {
-            let _ = entered.send(());
-            let _ = release.await;
-        }
+        hold(&self.on_load).await;
         self.journal.load().await
     }
 
@@ -6154,7 +6185,6 @@ impl MigrationJournalRepository for GatedJournal {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RepoWrite {
     Store(String),
-    Rename(String),
     Delete,
 }
 
@@ -6178,7 +6208,7 @@ pub(crate) struct SwapFixture {
 }
 
 impl SwapFixture {
-    pub(crate) async fn new(substitute_betas: Vec<url::Url>) -> Self {
+    pub(crate) async fn new() -> Self {
         let rabid_url = url::Url::from_str("https://rabid.example").unwrap();
         let substitute_url = url::Url::from_str("https://substitute.example").unwrap();
         let mut ctx = wallet_ctx();
@@ -6260,13 +6290,10 @@ impl SwapFixture {
             .expect_get_mint_keysets()
             .returning(move || Ok(vec![token_info.clone()]));
         substitute.expect_get_clowder_betas().returning(move || {
-            Ok(substitute_betas
-                .iter()
-                .map(|url| ClowderBeta {
-                    url: url.clone(),
-                    clowder_id: test_pub_key(),
-                })
-                .collect())
+            Ok(vec![ClowderBeta {
+                url: url::Url::from_str("https://sub-beta.example").unwrap(),
+                clowder_id: test_pub_key(),
+            }])
         });
         let substitute: Arc<dyn ClowderMintConnector> = Arc::new(substitute);
         let mut beta = MockClowderMintConnector::new();
@@ -6292,13 +6319,12 @@ impl SwapFixture {
             )],
         )
         .await;
-        let journal = Arc::new(GatedJournal {
-            journal: bcr_wallet_persistence::test_utils::tests::in_memory_pocket_db(
+        let journal = GatedJournal::new(Arc::new(
+            bcr_wallet_persistence::test_utils::tests::in_memory_pocket_db(
                 "w-1",
                 CurrencyUnit::Sat,
             ),
-            gate: std::sync::Mutex::new(None),
-        });
+        ));
         {
             let mut w = old.write().await;
             w.journal = journal.clone();
@@ -6315,11 +6341,6 @@ impl SwapFixture {
                 .unwrap()
                 .push(RepoWrite::Store(cfg.name.clone()));
             st.lock().unwrap().push(cfg);
-            Ok(())
-        });
-        let writes = repo_writes.clone();
-        repo.expect_rename().returning(move |_, name| {
-            writes.lock().unwrap().push(RepoWrite::Rename(name));
             Ok(())
         });
         let writes = repo_writes.clone();
@@ -6365,9 +6386,7 @@ impl SwapFixture {
 
     /// Holds the next migration inside its exchange
     pub(crate) fn gate_exchange(&self) -> ExchangeGate {
-        let (entered_tx, entered) = tokio::sync::oneshot::channel();
-        let (release, release_rx) = tokio::sync::oneshot::channel();
-        *self.journal.gate.lock().unwrap() = Some((entered_tx, release_rx));
+        let JournalPause { entered, release } = pause(&self.journal.on_load);
         ExchangeGate {
             entered,
             release,
@@ -6414,72 +6433,6 @@ pub(crate) async fn settle() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 }
 
-type JournalGate = (
-    tokio::sync::oneshot::Sender<()>,
-    tokio::sync::oneshot::Receiver<()>,
-);
-
-/// A journal that can hold a migration after `put` has moved the migratable proofs out of the
-/// pocket, and again just before the exchanged proofs are marked Swapped
-struct PhaseGatedJournal {
-    inner: Arc<bcr_wallet_persistence::redb::pocket::PocketDB>,
-    loads: std::sync::atomic::AtomicUsize,
-    after_put: std::sync::Mutex<Option<JournalGate>>,
-    before_swapped: std::sync::Mutex<Option<JournalGate>>,
-}
-
-async fn hold(gate: &std::sync::Mutex<Option<JournalGate>>) {
-    let gate = gate.lock().unwrap().take();
-    if let Some((entered, release)) = gate {
-        let _ = entered.send(());
-        let _ = release.await;
-    }
-}
-
-#[async_trait::async_trait]
-impl MigrationJournalRepository for PhaseGatedJournal {
-    async fn put(
-        &self,
-        header: MigrationJournalHeader,
-        entries: Vec<(cashu::PublicKey, cashu::SecretKey)>,
-    ) -> bcr_wallet_persistence::error::Result<()> {
-        self.inner.put(header, entries).await
-    }
-
-    async fn update(
-        &self,
-        ys: Vec<cashu::PublicKey>,
-        state: MigrationJournalState,
-    ) -> bcr_wallet_persistence::error::Result<()> {
-        if state == MigrationJournalState::Swapped {
-            hold(&self.before_swapped).await;
-        }
-        self.inner.update(ys, state).await
-    }
-
-    async fn load(
-        &self,
-    ) -> bcr_wallet_persistence::error::Result<HashMap<cashu::PublicKey, MigrationJournalEntry>>
-    {
-        if self.loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
-            hold(&self.after_put).await;
-        }
-        self.inner.load().await
-    }
-
-    async fn rehead(
-        &self,
-        old: MigrationJournalHeader,
-        new: MigrationJournalHeader,
-    ) -> bcr_wallet_persistence::error::Result<()> {
-        self.inner.rehead(old, new).await
-    }
-
-    async fn prune_swapped(&self) -> bcr_wallet_persistence::error::Result<()> {
-        self.inner.prune_swapped().await
-    }
-}
-
 /// A migration paused at a journal gate: `entered` fires when it arrives, `release` lets it go on
 pub(crate) struct JournalPause {
     pub(crate) entered: tokio::sync::oneshot::Receiver<()>,
@@ -6489,7 +6442,7 @@ pub(crate) struct JournalPause {
 /// A rabid wallet `w-1` holding real alpha proofs (64 + 32 + 4 sat) in a real pocket and journal, whose substitute exchanges and swaps them for real
 pub(crate) struct RealProofs {
     pub(crate) purse: Arc<crate::purse::Purse<Wallet>>,
-    journal: Arc<PhaseGatedJournal>,
+    journal: Arc<GatedJournal>,
 }
 
 impl RealProofs {
@@ -6627,12 +6580,7 @@ impl RealProofs {
             )],
         )
         .await;
-        let journal = Arc::new(PhaseGatedJournal {
-            inner: pdb,
-            loads: std::sync::atomic::AtomicUsize::new(0),
-            after_put: std::sync::Mutex::new(None),
-            before_swapped: std::sync::Mutex::new(None),
-        });
+        let journal = GatedJournal::new(pdb);
         {
             let mut w = wlt.write().await;
             w.journal = journal.clone();
@@ -6651,19 +6599,12 @@ impl RealProofs {
 
     /// Holds the next migration once its proofs are in the journal and none is exchanged yet
     pub(crate) fn pause_after_proofs_are_journaled(&self) -> JournalPause {
-        Self::pause(&self.journal.after_put)
+        pause(&self.journal.after_put)
     }
 
     /// Holds the next migration after the substitute's proofs are in the pocket and before the
     /// journal marks the exchanged proofs Swapped
     pub(crate) fn pause_before_proofs_are_marked_swapped(&self) -> JournalPause {
-        Self::pause(&self.journal.before_swapped)
-    }
-
-    fn pause(slot: &std::sync::Mutex<Option<JournalGate>>) -> JournalPause {
-        let (entered_tx, entered) = tokio::sync::oneshot::channel();
-        let (release, release_rx) = tokio::sync::oneshot::channel();
-        *slot.lock().unwrap() = Some((entered_tx, release_rx));
-        JournalPause { entered, release }
+        pause(&self.journal.before_swapped)
     }
 }

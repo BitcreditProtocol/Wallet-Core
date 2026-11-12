@@ -24,9 +24,8 @@ pub struct Purse<Wlt> {
     pub swap_guards: std::sync::Mutex<HashMap<String, Arc<SwapGuard>>>,
 }
 
-/// A migration holds the write side of `lock`, every call that moves proofs or writes wallet
-/// state its read side. While a migration runs, `migrating` holds the balance the wallet had
-/// when it started, which is what a read answers: the pocket is mid-exchange and has no balance.
+/// A migration holds the write side of `lock`, a call that moves proofs or writes wallet state
+/// its read side. `migrating` is the balance reads answer while the pocket is mid-exchange.
 #[derive(Default)]
 pub struct SwapGuard {
     lock: Arc<RwLock<()>>,
@@ -202,8 +201,8 @@ impl<Wlt> Purse<Wlt>
 where
     Wlt: WalletApi + 'static,
 {
-    /// The balance of the wallet: the one recorded when a migration of it started while it runs,
-    /// otherwise what the current instance reads, read again if a migration overlapped the read
+    /// The balance recorded when a migration started while it runs, otherwise what the current
+    /// instance reads, read again if a migration overlapped the read
     pub async fn wallet_balance(&self, id: &str) -> Option<Result<WalletBalance>> {
         let guard = self.swap_guard(id);
         loop {
@@ -213,11 +212,7 @@ where
             }
             let wallet = self.get_wallet(id).await?;
             let read = wallet.read().await.balance().await;
-            let (after, recorded) = guard.recorded();
-            if let Some(balance) = recorded {
-                return Some(Ok(balance));
-            }
-            if after == generation {
+            if guard.recorded().0 == generation {
                 return Some(read);
             }
         }
@@ -822,10 +817,6 @@ mod tests {
         ));
     }
 
-    fn substitute_betas() -> Vec<url::Url> {
-        vec![url::Url::from_str("https://sub-beta.example").unwrap()]
-    }
-
     async fn total(wlt: &RwLock<Wallet>) -> Amount {
         wlt.read().await.balance().await.unwrap().total
     }
@@ -842,7 +833,7 @@ mod tests {
 
     #[tokio::test]
     async fn migrate_rabid_wallet_keeps_total_proof_value_during_concurrent_receive() {
-        let mut f = SwapFixture::new(substitute_betas()).await;
+        let mut f = SwapFixture::new().await;
         let (gate, migration) = spawn_migration(&f).await;
 
         f.channel.publish(contact_payment(20, &f.substitute_url));
@@ -899,7 +890,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_migration_resumes_the_old_listener_with_the_payment_that_waited() {
-        let mut f = SwapFixture::new(substitute_betas()).await;
+        let mut f = SwapFixture::new().await;
         let (gate, migration) = spawn_migration(&f).await;
         f.channel.publish(contact_payment(20, &f.rabid_url));
         settle().await;
@@ -925,7 +916,7 @@ mod tests {
 
     #[tokio::test]
     async fn migrate_rabid_wallets_twice_concurrently_runs_the_exchange_once() {
-        let f = SwapFixture::new(substitute_betas()).await;
+        let f = SwapFixture::new().await;
         let (gate, first) = spawn_migration(&f).await;
         let purse = f.purse.clone();
         let second = tokio::spawn(async move { purse.migrate_rabid_wallets().await });
@@ -940,7 +931,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_during_migration_does_not_resurrect_the_wallet() {
-        let f = SwapFixture::new(substitute_betas()).await;
+        let f = SwapFixture::new().await;
         let (gate, migration) = spawn_migration(&f).await;
         let purse = f.purse.clone();
         let delete = tokio::spawn(async move { purse.delete_wallet("w-1").await });
