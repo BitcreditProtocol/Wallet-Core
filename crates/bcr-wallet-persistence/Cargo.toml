@@ -28,5 +28,6 @@ url = {workspace = true }
 
 [dev-dependencies]
 bcr-common = {workspace = true, features = ["test-utils"]}
+mockall = {workspace = true}
 tokio = {workspace = true}
 
