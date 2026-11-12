@@ -679,22 +679,14 @@ impl WalletApi for super::Wallet {
             "check pending melt commitments for {} entries",
             commitments.len()
         );
-        let paid: HashSet<Uuid> = self
-            .tx_repo
-            .list_txs()
-            .await?
-            .into_iter()
-            .filter(|tx| tx.btc_tx_id.is_some())
-            .filter_map(|tx| tx.quote_id)
-            .collect();
         for (quote_id, expiry) in commitments {
-            if expiry.saturating_sub(now_ts) > PROTEST_WINDOW_SECS {
+            if expiry < now_ts {
+                if let Err(e) = self.debit.forget_melt_commitment(quote_id).await {
+                    tracing::warn!("forgetting expired melt commitment {quote_id} failed: {e}");
+                }
                 continue;
             }
-            if paid.contains(&quote_id) {
-                if let Err(e) = self.debit.forget_melt_commitment(quote_id).await {
-                    tracing::warn!("forgetting paid melt commitment {quote_id} failed: {e}");
-                }
+            if expiry - now_ts > PROTEST_WINDOW_SECS {
                 continue;
             }
             match self.protest_melt(quote_id).await {
