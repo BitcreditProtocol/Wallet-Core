@@ -30,24 +30,41 @@ pub(super) fn migration_0008_mint_melt_envelope(
     tracing::info!("Migrating mint and melt tables..");
     migrate_table(txn, &namespace.melt_table, |bytes| {
         let legacy: LegacyMeltEntry = ciborium::from_reader(bytes)?;
-        encode_melt_entry(&legacy.into(), &namespace.keys)
+        encode_melt_entry(&legacy.into(), &namespace.keys).map(Some)
     })?;
     migrate_table(txn, &namespace.mint_table, |bytes| {
         let legacy: LegacyMintEntry = ciborium::from_reader(bytes)?;
-        encode_mint_entry(&legacy.try_into()?, &namespace.keys)
+        convertible(legacy.try_into(), |e| encode_mint_entry(&e, &namespace.keys))
     })?;
     migrate_table(txn, &namespace.melt_commitment_table, |bytes| {
         let legacy: LegacyMeltCommitmentEntry = ciborium::from_reader(bytes)?;
-        encode_melt_commitment_entry(&legacy.try_into()?, &namespace.keys)
+        convertible(legacy.try_into(), |e| {
+            encode_melt_commitment_entry(&e, &namespace.keys)
+        })
     })?;
     tracing::info!("Migrated mint and melt tables.");
     Ok(())
 }
 
+fn convertible<T>(
+    entry: Result<T>,
+    encode: impl FnOnce(T) -> Result<Vec<u8>>,
+) -> Result<Option<Vec<u8>>> {
+    match entry {
+        Ok(entry) => encode(entry).map(Some),
+        Err(e) => {
+            tracing::warn!("Dropping legacy row with an invalid secret: {e}");
+            Ok(None)
+        }
+    }
+}
+
+/// A row that does not decode is kept as is; a decoded row whose secret is invalid (`None`)
+/// is removed, so no legacy plaintext secret survives the migration.
 fn migrate_table(
     txn: &redb::WriteTransaction,
     table_name: &str,
-    convert: impl Fn(&[u8]) -> Result<Vec<u8>>,
+    convert: impl Fn(&[u8]) -> Result<Option<Vec<u8>>>,
 ) -> Result<()> {
     let table_def: TableDefinition<&[u8], Vec<u8>> = TableDefinition::new(table_name);
     let mut table = match txn.open_table(table_def) {
@@ -56,7 +73,7 @@ fn migrate_table(
         Err(e) => return Err(e.into()),
     };
 
-    let mut migrated: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut migrated: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
     for item in table.iter()? {
         let (k, v) = item?;
         match convert(v.value().as_slice()) {
@@ -65,7 +82,10 @@ fn migrate_table(
         }
     }
     for (key, value) in migrated {
-        table.insert(key.as_slice(), value)?;
+        match value {
+            Some(value) => table.insert(key.as_slice(), value)?,
+            None => table.remove(key.as_slice())?,
+        };
     }
     Ok(())
 }
@@ -446,6 +466,30 @@ mod tests {
             .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn migration_0008_drops_decoded_row_with_invalid_secret_length() {
+        let db = test_database();
+        let keys = test_keypair();
+        let table = MintMeltDB::melt_commitment_table_name(WALLET_ID, &CurrencyUnit::Sat);
+        let id = Uuid::new_v4();
+        let bad_secret = [0x37u8; 5];
+        insert_legacy(
+            &db,
+            &table,
+            id.as_bytes(),
+            &LegacyMeltCommitmentEntry {
+                quote_id: id,
+                expiry: 77,
+                commitment: test_signature(),
+                ephemeral_secret: bad_secret.to_vec(),
+                body_content: "bWVsdA==".to_string(),
+            },
+        );
+        let namespace = collect_wallet_namespace(WALLET_ID.to_string(), CurrencyUnit::Sat, keys);
+        migrate_wallet(db.clone(), namespace).await.unwrap();
+        assert!(raw_values(&db, &table).is_empty());
     }
 
     #[tokio::test]
