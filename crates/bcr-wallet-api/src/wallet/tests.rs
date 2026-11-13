@@ -5965,6 +5965,10 @@ async fn finish_migration_retries_the_swap_of_an_exchanged_held_input() {
         MigrationJournalState::Exchanged(_)
     ));
     assert_eq!(t.received(), Amount::ZERO);
+    assert_eq!(
+        wlt.read().await.balance().await.unwrap().total,
+        Amount::from(4)
+    );
     wlt.read().await.finish_migration().await.unwrap();
     assert_eq!(t.received(), Amount::from(4));
     assert!(t.pdb.load().await.unwrap().is_empty());

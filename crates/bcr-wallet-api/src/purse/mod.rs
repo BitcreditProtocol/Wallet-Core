@@ -291,23 +291,18 @@ where
         let substitute_url = {
             let wlt = wlt.read().await;
             tracing::info!("Checking if alpha is rabid..");
-            if !wlt.is_wallet_mint_rabid().await? {
-                if wlt.has_migration_entries().await? {
-                    tracing::info!(
-                        "Finishing a migrated wallet whose config or journal was not saved"
-                    );
-                    self.repo.store(wlt.config()?).await?;
-                    wlt.finish_migration().await?;
-                } else {
-                    tracing::info!("Alpha is not rabid - nothing to migrate.");
-                }
+            if wlt.is_wallet_mint_rabid().await? {
+                tracing::warn!("Alpha is rabid - finding substitute");
+                let Some(substitute_url) = wlt.mint_substitute().await? else {
+                    return Ok(None);
+                };
+                Some(substitute_url)
+            } else if wlt.has_migration_entries().await? {
+                None
+            } else {
+                tracing::info!("Alpha is not rabid - nothing to migrate.");
                 return Ok(None);
             }
-            tracing::warn!("Alpha is rabid - finding substitute");
-            let Some(substitute_url) = wlt.mint_substitute().await? else {
-                return Ok(None);
-            };
-            substitute_url
         };
         let swap_guard = self.swap_guard(wallet_id);
         let swapping = Arc::new(swap_guard.lock.clone().write_owned().await);
@@ -316,6 +311,13 @@ where
             tracing::info!("Wallet {wallet_id} was migrated or deleted meanwhile");
             return Ok(None);
         }
+        let Some(substitute_url) = substitute_url else {
+            tracing::info!("Finishing a migrated wallet whose config or journal was not saved");
+            let wlt = wlt.read().await;
+            self.repo.store(wlt.config()?).await?;
+            wlt.finish_migration().await?;
+            return Ok(None);
+        };
         let paused = PausedListener::pause(wlt, &swapping).await;
         let recorded = match wlt.read().await.balance().await {
             Ok(balance) => Some(swap_guard.record(balance)),
@@ -914,6 +916,26 @@ mod tests {
         assert_eq!(first.await.unwrap().unwrap()["w-1"], f.substitute_url);
         assert!(second.await.unwrap().unwrap().is_empty());
         assert_eq!(f.stored().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unfinished_migration_of_a_deleted_wallet_does_not_store_its_config() {
+        let mut db = MockPurseRepository::new();
+        db.expect_store().never();
+        let purse = Arc::new(purse(Box::new(db)));
+        let mut wlt = migrated_wallet("wlt-1");
+        wlt.expect_name().returning(|| "wlt-1".to_owned());
+        insert_wallet(&purse, wlt).await;
+
+        let held = purse.hold_wallet("wlt-1").await.unwrap();
+        let migrating = purse.clone();
+        let migration = tokio::spawn(async move { migrating.migrate_rabid_wallets().await });
+        settle().await;
+        assert!(!migration.is_finished());
+        purse.wallets.write().await.remove("wlt-1");
+        drop(held);
+
+        assert!(migration.await.unwrap().unwrap().is_empty());
     }
 
     #[tokio::test]

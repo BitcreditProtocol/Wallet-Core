@@ -912,27 +912,33 @@ impl Wallet {
                         MigrationJournalState::Pending | MigrationJournalState::Exchanged(_)
                     )
             })
-            .map(|(_, e)| &e.proof)
+            .map(|(_, e)| e)
             .collect();
-        match self
-            .balance_with(journaled.iter().copied(), &self.mint_keyset_infos)
-            .await
-        {
+        match self.balance_with(&journaled, &self.mint_keyset_infos).await {
             Ok(balance) => Ok(balance),
             Err(_) => {
                 let keysets_info = self.get_wallet_mint_keyset_infos().await?;
-                self.balance_with(journaled.iter().copied(), &keysets_info)
-                    .await
+                self.balance_with(&journaled, &keysets_info).await
             }
         }
     }
 
-    async fn balance_with<'p>(
+    async fn balance_with(
         &self,
-        journaled: impl Iterator<Item = &'p cashu::nuts::nut00::Proof> + Clone,
+        journaled: &[&MigrationJournalEntry],
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
     ) -> Result<WalletBalance> {
-        let journaled = crate::pocket::balance_of(journaled, keysets_info)?;
+        let known = |proof: &Proof| keysets_info.contains_key(&proof.keyset_id.into());
+        let proofs: Vec<&Proof> = journaled
+            .iter()
+            .flat_map(|e| match &e.state {
+                MigrationJournalState::Exchanged(exchanged) if exchanged.iter().all(known) => {
+                    exchanged.iter().collect()
+                }
+                _ => vec![&e.proof],
+            })
+            .collect();
+        let journaled = crate::pocket::balance_of(proofs.iter().copied(), keysets_info)?;
         let balance = self.debit.balance(keysets_info).await?;
         let debit = add_amounts(balance.debit, journaled.debit)?;
         let credit = add_amounts(balance.credit, journaled.credit)?;
