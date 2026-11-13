@@ -902,7 +902,6 @@ fn collect_keyset_infos_from_proofs<'it, 'a>(
     Ok(infos)
 }
 
-/// Debit holds a proof whose keyset has no final expiry or one before today; credit the rest
 pub(crate) fn balance_of<'p>(
     proofs: impl Iterator<Item = &'p cdk00::Proof> + Clone,
     keysets_info: &HashMap<ecash::Id, KeySetInfo>,
