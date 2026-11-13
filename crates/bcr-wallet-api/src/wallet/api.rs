@@ -963,9 +963,7 @@ impl WalletApi for super::Wallet {
         let beta_clients: BTreeMap<secp256k1::PublicKey, Arc<dyn ClowderMintConnector>> = cfg
             .betas
             .iter()
-            .filter_map(|beta| {
-                Some((beta.clowder_id?, (self.client_factory)(beta.url.clone())))
-            })
+            .filter_map(|beta| Some((beta.clowder_id?, (self.client_factory)(beta.url.clone()))))
             .collect();
         let beta_provider =
             RandomBetaProvider::new(beta_clients.values().cloned().collect(), cfg.clowder_id)?;
