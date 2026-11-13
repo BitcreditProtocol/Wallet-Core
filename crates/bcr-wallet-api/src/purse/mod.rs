@@ -293,10 +293,10 @@ where
             tracing::info!("Checking if alpha is rabid..");
             if wlt.is_wallet_mint_rabid().await? {
                 tracing::warn!("Alpha is rabid - finding substitute");
-                let Some(substitute_url) = wlt.mint_substitute().await? else {
+                let Some(substitute) = wlt.mint_substitute().await? else {
                     return Ok(None);
                 };
-                Some(substitute_url)
+                Some(substitute.mint)
             } else if wlt.has_migration_entries().await? {
                 None
             } else {
@@ -643,6 +643,7 @@ mod tests {
             network: wlt_cfg().network,
             default_mint_url: wlt_cfg().mint,
             nostr_relays: vec![],
+            betas: vec![],
         });
         wlt.expect_config().times(1).returning(|| Ok(wlt_cfg()));
         wlt.expect_delete().times(1).returning(|| Ok(()));
@@ -694,6 +695,14 @@ mod tests {
         url::Url::from_str("https://substitute.example.com").unwrap()
     }
 
+    fn substitute_response() -> bcr_common::wire::clowder::ConnectedMintResponse {
+        bcr_common::wire::clowder::ConnectedMintResponse {
+            mint: substitute_url(),
+            clowder: url::Url::from_str("https://clowder.example.com").unwrap(),
+            node_id: test_pub_key(),
+        }
+    }
+
     fn test_balance() -> WalletBalance {
         WalletBalance {
             debit: Amount::from(100),
@@ -732,7 +741,7 @@ mod tests {
         wlt.expect_balance().returning(|| Ok(test_balance()));
         wlt.expect_is_wallet_mint_rabid().returning(|| Ok(true));
         wlt.expect_mint_substitute()
-            .returning(|| Ok(Some(substitute_url())));
+            .returning(|| Ok(Some(substitute_response())));
         wlt.expect_exchange_to_substitute().returning(move |mint| {
             Ok(WalletConfig {
                 wallet_id: id.to_owned(),

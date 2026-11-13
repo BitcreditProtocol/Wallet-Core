@@ -9,6 +9,7 @@
 * Amounts supplied by a mint that overflow or underflow (`wallet_check_pending_mints`, `wallet_balance`, melts and sends) return an error instead of panicking
 * `wallet_restore` matches outputs by blinded message instead of position, skips unexpected outputs and check states instead of aborting, and stores a proof the mint returns no state for as pending
 * `wallet_migrate_rabid` (`purse_migrate_rabid`) no longer write-locks the rabid wallet: it swaps in a wallet rebuilt on the substitute; calls that move proofs wait for it, reads such as `wallet_balance` do not
+* Wallet betas are stored and found by clowder node id instead of mint url (breaking DB change: `StoredWallet` V2, migration 0006), so a beta that moves keeps its identity and the rabid, offline and substitute quorums count each beta once; `WalletApi::mint_substitute` returns the voted `ConnectedMintResponse` and the CLI `info` command prints each beta's clowder id
 
 # 0.9.15
 

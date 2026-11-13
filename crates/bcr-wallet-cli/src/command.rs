@@ -72,6 +72,16 @@ pub async fn cmd_info(app_state: &AppState) -> Result<(String, Vec<WalletOut>)> 
         res.push_str(&format!("Wallet ID: {id}\n"));
         res.push_str(&format!("Mint URL: {}\n", info.default_mint_url));
         res.push_str(&format!("Network: {}\n", info.network));
+        res.push_str(&format!("Betas ({}):", info.betas.len()));
+        push_break(&mut res);
+        for beta in info.betas.iter() {
+            res.push_str(&format!(
+                "\t\tUrl: {} \t Clowder Id: {}",
+                beta.url,
+                beta.clowder_id.map(|id| id.to_string()).unwrap_or_default(),
+            ));
+            push_break(&mut res);
+        }
         res.push_str(&format!("Debit Balance: {} {}\n", balance.debit, unit));
         res.push_str(&format!("Credit Balance: {} {}\n", balance.credit, unit));
         res.push_str(&format!("Total Balance: {} {}\n", balance.total, unit));
