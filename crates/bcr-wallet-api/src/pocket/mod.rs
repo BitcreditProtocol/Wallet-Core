@@ -275,7 +275,6 @@ pub(crate) fn exchange_key(seed: &Seed, proofs: &[cdk00::Proof]) -> Result<cdk01
 }
 
 ///////////////////////////////////////////// Counters
-/// Counters a swap of these inputs reserved for one keyset's outputs
 type AttemptKey = (Vec<cdk01::PublicKey>, ecash::Id, Amount, String);
 
 struct Attempt {
@@ -301,8 +300,6 @@ impl<'a> Counters<'a> {
         }
     }
 
-    /// A retry of a swap of the same inputs, after its commitment failed without a definite
-    /// answer, reuses the counters of the failed attempt instead of reserving new ones.
     pub(crate) fn for_inputs(
         db: &'a dyn PocketRepository,
         in_flight: &InFlight,
@@ -384,21 +381,18 @@ impl<'a> Counters<'a> {
         }
     }
 
-    /// The commitment is stored, so its counters are held by it and a retry resumes it.
-    fn settle(&self) {
-        self.forget_attempt();
-    }
-
     fn reserved(&self) -> Vec<(ecash::Id, u32, u32)> {
         self.reserved.clone()
     }
 
-    /// The mint may still sign these counters, so they are never released or reused.
+    pub(crate) async fn mark_sent(&self) -> Result<()> {
+        Ok(self.db.mark_reservations_sent(self.reserved()).await?)
+    }
+
     pub(crate) async fn keep(&self) -> Result<()> {
         Ok(self.db.clear_reservations(self.reserved()).await?)
     }
 
-    /// Gives the ranges back once: a repeat would roll back a later reservation of the same start.
     async fn release(&self) {
         self.forget_attempt();
         if self
@@ -566,7 +560,7 @@ pub(crate) async fn committed_swap(
         counters.release().await;
     }
     let (inputs, commitment_sig) = committed?;
-    counters.settle();
+    counters.forget_attempt();
     if db.is_none() {
         counters.keep().await?;
     }

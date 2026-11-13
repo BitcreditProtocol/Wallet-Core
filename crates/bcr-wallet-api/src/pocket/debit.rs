@@ -1309,6 +1309,7 @@ impl DebitPocketApi for Pocket {
         };
 
         // Request mint quote
+        counters.mark_sent().await?;
         let response = match client.post_mint_quote_onchain(request).await {
             Ok(response) => response,
             Err(e) => {
@@ -3406,6 +3407,9 @@ mod tests {
             .times(1)
             .with(eq(kid), always())
             .returning(|_, _| Ok(0));
+        pdb.expect_mark_reservations_sent()
+            .times(1)
+            .returning(|_| Ok(()));
         pdb.expect_clear_reservations()
             .times(1)
             .returning(|_| Ok(()));
