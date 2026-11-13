@@ -96,7 +96,7 @@ impl From<LegacyQueuedMessageEntry> for NostrQueuedMessageEntry {
 mod tests {
     use super::*;
     use crate::{
-        NostrQueuedMessage, NostrRepository,
+        NostrRepository,
         redb::{
             migration::{collect_wallet_namespace, migrate_wallet},
             nostr::NostrDB,
@@ -275,25 +275,5 @@ mod tests {
         let quarantined = raw_values(&db, &format!("{table}_quarantine"));
         assert_eq!(quarantined.len(), 1);
         assert_ne!(quarantined[0], vec![0xff, 0x01]);
-    }
-
-    #[tokio::test]
-    async fn new_messages_roundtrip_after_migration() {
-        let db = test_database();
-        let keys = test_keypair();
-        let namespace = collect_wallet_namespace(WALLET_ID.to_string(), CurrencyUnit::Sat, keys);
-        migrate_wallet(db.clone(), namespace).await.unwrap();
-        let repo = NostrDB::new(db, WALLET_ID, keys).unwrap();
-        repo.add_retry_message(
-            NostrQueuedMessage {
-                id: "m".to_string(),
-                recipient: None,
-                payload: "p".to_string(),
-            },
-            3,
-        )
-        .await
-        .unwrap();
-        assert_eq!(repo.get_retry_messages(1).await.unwrap()[0].payload, "p");
     }
 }

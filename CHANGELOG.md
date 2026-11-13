@@ -4,12 +4,7 @@
 * Mint calls time out (5 seconds to connect, 30 seconds per request) instead of hanging; a timed-out melt leaves its inputs pending for `wallet_recover_pending_stale_proofs` to settle
 * Amounts supplied by a mint that overflow or underflow (`wallet_check_pending_mints`, `wallet_balance`, melts and sends) return an error instead of panicking
 * `wallet_restore` matches outputs by blinded message instead of position, skips unexpected outputs and check states instead of aborting, and stores a proof the mint returns no state for as pending
-* Breaking DB changes, each ships a migration that runs at DB open:
-    * migration 0006 (nostr): Nostr offsets and queued messages are stored as versioned borsh and queue entries are encrypted, legacy rows are migrated
-    * migration 0007 (payment requests): payment requests are stored as versioned records
-    * migration 0008 (mint/melt): mint and melt records are stored as versioned records
-    * a legacy row that cannot be converted is moved, encrypted, to a `<table>_quarantine` table (migrations 0006 and 0008)
-* The Nostr `EventEnvelope` format is unchanged and keeps its version string `1.0`; an envelope with another version still decodes its header
+* Nostr offsets and queued messages, payment requests and mint, melt and melt commitment records are stored as versioned borsh, encrypted where they hold secrets or message content (breaking DB change: migrations 0006 to 0008); a legacy row that cannot be converted is moved, encrypted, to a `<table>_quarantine` table
 
 # 0.9.15
 

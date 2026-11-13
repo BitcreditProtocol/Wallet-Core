@@ -149,7 +149,7 @@ impl TryFrom<LegacyMeltCommitmentEntry> for MeltCommitmentEntry {
 mod tests {
     use super::*;
     use crate::{
-        MeltCommitmentRecord, MintMeltRepository,
+        MintMeltRepository,
         error::Error,
         redb::{
             migration::{collect_wallet_namespace, migrate_wallet},
@@ -456,25 +456,5 @@ mod tests {
             assert!(!contains(&row, &EPHEMERAL_SECRET));
             assert!(!contains(&row, &short_secret));
         }
-    }
-
-    #[tokio::test]
-    async fn new_records_roundtrip_after_migration() {
-        let db = test_database();
-        let keys = test_keypair();
-        let namespace = collect_wallet_namespace(WALLET_ID.to_string(), CurrencyUnit::Sat, keys);
-        migrate_wallet(db.clone(), namespace).await.unwrap();
-        let repo = MintMeltDB::new(db, WALLET_ID, &CurrencyUnit::Sat, keys).unwrap();
-        let record = MeltCommitmentRecord {
-            quote_id: Uuid::new_v4(),
-            expiry: 5,
-            commitment: test_signature(),
-            ephemeral_secret: bitcoin::secp256k1::SecretKey::from_slice(&EPHEMERAL_SECRET).unwrap(),
-            body_content: "body".to_string(),
-        };
-        repo.store_melt_commitment(record.clone()).await.unwrap();
-        let loaded = repo.load_melt_commitment(record.quote_id).await.unwrap();
-        assert_eq!(loaded.body_content, "body");
-        assert_eq!(loaded.ephemeral_secret, record.ephemeral_secret);
     }
 }

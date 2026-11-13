@@ -199,9 +199,6 @@ pub fn collect_wallet_namespace(
     }
 }
 
-/// Rewrites every row of `table_name` with `convert`. A row that cannot be converted is moved,
-/// encrypted with the wallet key, to `<table_name>_quarantine`, so no legacy plaintext remains
-/// and the wallet still opens.
 fn migrate_table(
     txn: &redb::WriteTransaction,
     table_name: &str,

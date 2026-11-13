@@ -1,7 +1,7 @@
 use crate::{
     error::Result,
     redb::{
-        migration::WalletStorageNamespace,
+        migration::{WalletStorageNamespace, migrate_table},
         payment_request::{
             PaymentRequestEntry, PaymentRequestEntryDirection, PaymentRequestEntryHistoryEntry,
             PaymentRequestEntryOrigin, PaymentRequestEntryState, encode_payment_request,
@@ -12,7 +12,6 @@ use bcr_common::{
     cashu::{Amount, CurrencyUnit},
     core::NodeId,
 };
-use redb::{ReadableTable, TableDefinition};
 use uuid::Uuid;
 
 ///////////////////////////////////////////////////////////////// MIGRATION 0007
@@ -27,27 +26,15 @@ pub(super) fn migration_0007_payment_request_envelope(
     namespace: &WalletStorageNamespace,
 ) -> Result<()> {
     tracing::info!("Migrating payment request table..");
-    let table_def: TableDefinition<&[u8], Vec<u8>> =
-        TableDefinition::new(&namespace.payment_request_table);
-    let mut table = match txn.open_table(table_def) {
-        Ok(table) => table,
-        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
-        Err(e) => return Err(e.into()),
-    };
-
-    let mut migrated: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for item in table.iter()? {
-        let (k, v) = item?;
-        match ciborium::from_reader::<LegacyPaymentRequestEntry, _>(v.value().as_slice()) {
-            Ok(legacy) => {
-                migrated.push((k.value().to_vec(), encode_payment_request(&legacy.into())?))
-            }
-            Err(e) => tracing::warn!("Leaving undecodable legacy payment request: {e}"),
-        }
-    }
-    for (key, value) in migrated {
-        table.insert(key.as_slice(), value)?;
-    }
+    migrate_table(
+        txn,
+        &namespace.payment_request_table,
+        &namespace.keys,
+        |bytes| {
+            let legacy: LegacyPaymentRequestEntry = ciborium::from_reader(bytes)?;
+            encode_payment_request(&legacy.into())
+        },
+    )?;
     tracing::info!("Migrated payment request table.");
     Ok(())
 }
@@ -175,7 +162,7 @@ mod tests {
         PaymentRequest, PaymentRequestActionOrigin, PaymentRequestDirection,
         PaymentRequestHistoryEntry, PaymentRequestState,
     };
-    use redb::{Builder, Database, backends::InMemoryBackend};
+    use redb::{Builder, Database, TableDefinition, backends::InMemoryBackend};
     use std::{str::FromStr, sync::Arc};
 
     const WALLET_ID: &str = "wallet-1";
@@ -392,8 +379,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_0007_on_empty_table_succeeds() {
+    async fn migration_0007_quarantines_an_undecodable_row_and_keeps_the_rest() {
         let db = test_database();
+        let entry = legacy_entry(LegacyState::Pending, LegacyDirection::Incoming, vec![]);
+        insert_legacy(&db, entry.id, &entry);
+        insert_legacy(&db, Uuid::new_v4(), &"not a payment request");
 
         migrate_wallet(db.clone(), namespace()).await.unwrap();
 
@@ -402,7 +392,7 @@ mod tests {
             .list_payment_requests(PaymentRequestDirection::Incoming, &[])
             .await
             .unwrap();
-        assert!(listed.is_empty());
+        assert_eq!(listed, vec![expected(&entry)]);
     }
 
     #[tokio::test]
