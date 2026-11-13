@@ -1,12 +1,17 @@
-use crate::{NostrEventOffset, NostrQueuedMessage, NostrRepository, error::Result};
+use crate::{
+    NostrEventOffset, NostrQueuedMessage, NostrRepository,
+    error::{Error, Result},
+};
 use async_trait::async_trait;
+use bcr_wallet_core::crypto;
+use borsh::{BorshDeserialize, BorshSerialize};
 use nostr::types::Timestamp;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
 use std::sync::Arc;
 use tokio::task::spawn_blocking;
 
 ///////////////////////////////////////////// NostrEventOffsetEntry
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct NostrEventOffsetEntry {
     pub event_id: String,
     pub time: Timestamp,
@@ -34,18 +39,15 @@ impl From<NostrEventOffset> for NostrEventOffsetEntry {
 }
 
 ///////////////////////////////////////////// NostrQueuedMessageEntry
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct NostrQueuedMessageEntry {
     pub id: String,
     pub recipient: Option<String>,
     pub payload: String,
-    #[serde(with = "time::serde::rfc3339")]
     pub created: time::OffsetDateTime,
-    #[serde(with = "time::serde::rfc3339")]
     pub last_try: time::OffsetDateTime,
     pub num_retries: i32,
     pub max_retries: i32,
-    #[serde(with = "time::serde::rfc3339")]
     pub processing_started_at: time::OffsetDateTime,
 }
 
@@ -73,9 +75,116 @@ impl NostrQueuedMessageEntry {
         }
     }
 }
+///////////////////////////////////////////// Stored envelopes
+/// StoredNostrEventOffset is a versioned, borsh-serialized processed event
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) enum StoredNostrEventOffset {
+    V1(StoredNostrEventOffsetPayloadV1),
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredNostrEventOffsetPayloadV1 {
+    event_id: String,
+    time: u64,
+    success: bool,
+}
+
+pub(super) fn encode_event_offset(entry: &NostrEventOffsetEntry) -> Result<Vec<u8>> {
+    borsh::to_vec(&StoredNostrEventOffset::V1(
+        StoredNostrEventOffsetPayloadV1 {
+            event_id: entry.event_id.clone(),
+            time: entry.time.as_secs(),
+            success: entry.success,
+        },
+    ))
+    .map_err(|e| Error::BorshSerialization(e.to_string()))
+}
+
+fn decode_event_offset(bytes: &[u8]) -> Result<NostrEventOffsetEntry> {
+    let StoredNostrEventOffset::V1(payload) =
+        borsh::from_slice(bytes).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+    Ok(NostrEventOffsetEntry {
+        event_id: payload.event_id,
+        time: Timestamp::from(payload.time),
+        success: payload.success,
+    })
+}
+
+/// StoredNostrQueuedMessage is a versioned, encrypted, borsh-serialized queued message
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) enum StoredNostrQueuedMessage {
+    V1(EncryptedNostrQueuedMessagePayloadV1),
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct EncryptedNostrQueuedMessagePayloadV1 {
+    ciphertext: Vec<u8>,
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+struct StoredNostrQueuedMessagePayloadV1 {
+    id: String,
+    recipient: Option<String>,
+    payload: String,
+    created_nanos: i128,
+    last_try_nanos: i128,
+    num_retries: i32,
+    max_retries: i32,
+    processing_started_at_nanos: i128,
+}
+
+pub(super) fn encode_queued_message(
+    entry: &NostrQueuedMessageEntry,
+    keys: &bitcoin::secp256k1::Keypair,
+) -> Result<Vec<u8>> {
+    let payload = StoredNostrQueuedMessagePayloadV1 {
+        id: entry.id.clone(),
+        recipient: entry.recipient.clone(),
+        payload: entry.payload.clone(),
+        created_nanos: entry.created.unix_timestamp_nanos(),
+        last_try_nanos: entry.last_try.unix_timestamp_nanos(),
+        num_retries: entry.num_retries,
+        max_retries: entry.max_retries,
+        processing_started_at_nanos: entry.processing_started_at.unix_timestamp_nanos(),
+    };
+    let encoded = borsh::to_vec(&payload).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+    let ciphertext = crypto::encrypt_ecies(&encoded, &keys.public_key())?;
+    borsh::to_vec(&StoredNostrQueuedMessage::V1(
+        EncryptedNostrQueuedMessagePayloadV1 { ciphertext },
+    ))
+    .map_err(|e| Error::BorshSerialization(e.to_string()))
+}
+
+fn decode_queued_message(
+    bytes: &[u8],
+    keys: &bitcoin::secp256k1::Keypair,
+) -> Result<NostrQueuedMessageEntry> {
+    let decode_err = |e: std::io::Error| Error::BorshSerialization(e.to_string());
+    let time_err = |e| Error::Custom(format!("invalid queued message timestamp: {e}"));
+    let StoredNostrQueuedMessage::V1(encrypted) = borsh::from_slice(bytes).map_err(decode_err)?;
+    let decrypted = crypto::decrypt_ecies(&encrypted.ciphertext, &keys.secret_key())?;
+    let p: StoredNostrQueuedMessagePayloadV1 = borsh::from_slice(&decrypted).map_err(decode_err)?;
+    Ok(NostrQueuedMessageEntry {
+        id: p.id,
+        recipient: p.recipient,
+        payload: p.payload,
+        created: time::OffsetDateTime::from_unix_timestamp_nanos(p.created_nanos)
+            .map_err(time_err)?,
+        last_try: time::OffsetDateTime::from_unix_timestamp_nanos(p.last_try_nanos)
+            .map_err(time_err)?,
+        num_retries: p.num_retries,
+        max_retries: p.max_retries,
+        processing_started_at: time::OffsetDateTime::from_unix_timestamp_nanos(
+            p.processing_started_at_nanos,
+        )
+        .map_err(time_err)?,
+    })
+}
+
 ///////////////////////////////////////////// NostrDB
 pub struct NostrDB {
     db: Arc<Database>,
+    keys: bitcoin::secp256k1::Keypair,
     last_offset_table: TableDefinition<'static, &'static [u8], u64>,
     offset_entry_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
@@ -90,7 +199,23 @@ impl NostrDB {
     const CURRENT_OFFSET_UNIQUE_ID: &'static str = "current_offset";
     const NOSTR_QUEUE_PROCESSING_TIMEOUT_SECS: i64 = 60;
 
-    pub fn new(db: Arc<Database>, wallet_id: &str) -> Result<Self> {
+    pub(super) fn offset_entry_table_name(wallet_id: &str) -> String {
+        format!("{wallet_id}_{}", Self::OFFSET_ENTRY_DB_NAME)
+    }
+
+    pub(super) fn queued_message_table_name(wallet_id: &str) -> String {
+        format!("{wallet_id}_{}", Self::QUEUED_MESSAGE_DB_NAME)
+    }
+
+    pub(super) fn dead_letter_table_name(wallet_id: &str) -> String {
+        format!("{wallet_id}_{}", Self::DEAD_LETTER_DB_NAME)
+    }
+
+    pub fn new(
+        db: Arc<Database>,
+        wallet_id: &str,
+        keys: bitcoin::secp256k1::Keypair,
+    ) -> Result<Self> {
         // Leak once to get static string, because of dynamically generated table names
         let offset_entry_name: &'static str =
             Box::leak(format!("{wallet_id}_{}", Self::OFFSET_ENTRY_DB_NAME).into_boxed_str());
@@ -111,6 +236,7 @@ impl NostrDB {
 
         Ok(Self {
             db,
+            keys,
             offset_entry_table,
             last_offset_table,
             queued_message_table,
@@ -150,8 +276,7 @@ impl NostrDB {
                 let entry = table.get(event_id.as_bytes())?;
                 match entry {
                     Some(e) => {
-                        let _entry: NostrEventOffsetEntry =
-                            ciborium::from_reader(e.value().as_slice())?;
+                        decode_event_offset(e.value().as_slice())?;
                         Ok(true)
                     }
                     None => Ok(false),
@@ -174,9 +299,7 @@ impl NostrDB {
         {
             let mut table = write_txn.open_table(offset_entry_table)?;
 
-            let mut serialized = Vec::new();
-            ciborium::into_writer(&entry, &mut serialized)?;
-            table.insert(id.as_bytes(), serialized)?;
+            table.insert(id.as_bytes(), encode_event_offset(&entry)?)?;
         }
 
         {
@@ -197,6 +320,7 @@ impl NostrDB {
     fn add_retry_message_sync(
         db: Arc<Database>,
         queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        keys: bitcoin::secp256k1::Keypair,
         entry: NostrQueuedMessageEntry,
     ) -> Result<()> {
         let id = entry.id.clone();
@@ -205,9 +329,7 @@ impl NostrDB {
         {
             let mut table = write_txn.open_table(queued_message_table)?;
 
-            let mut serialized = Vec::new();
-            ciborium::into_writer(&entry, &mut serialized)?;
-            table.insert(id.as_bytes(), serialized)?;
+            table.insert(id.as_bytes(), encode_queued_message(&entry, &keys)?)?;
         }
 
         write_txn.commit()?;
@@ -217,6 +339,7 @@ impl NostrDB {
     fn get_retry_messages_sync(
         db: Arc<Database>,
         queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        keys: bitcoin::secp256k1::Keypair,
         limit: u64,
     ) -> Result<Vec<NostrQueuedMessageEntry>> {
         let now = time::OffsetDateTime::now_utc();
@@ -228,7 +351,9 @@ impl NostrDB {
             let mut table = write_txn.open_table(queued_message_table)?;
             let mut res = Vec::new();
             for (_, v) in table.range::<&[u8]>(..)?.flatten() {
-                let entry: NostrQueuedMessageEntry = ciborium::from_reader(v.value().as_slice())?;
+                let Ok(entry) = decode_queued_message(v.value().as_slice(), &keys) else {
+                    continue;
+                };
                 if entry.processing_started_at < retry_before {
                     res.push(entry);
                 }
@@ -240,9 +365,10 @@ impl NostrDB {
             // set processing_started_at to avoid retrying before the backoff time
             for to_update in res.iter_mut() {
                 to_update.processing_started_at = time::OffsetDateTime::now_utc();
-                let mut serialized = Vec::new();
-                ciborium::into_writer(&to_update, &mut serialized)?;
-                table.insert(to_update.id.as_bytes(), serialized)?;
+                table.insert(
+                    to_update.id.as_bytes(),
+                    encode_queued_message(to_update, &keys)?,
+                )?;
             }
 
             res
@@ -257,6 +383,7 @@ impl NostrDB {
         db: Arc<Database>,
         queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         dead_letter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        keys: bitcoin::secp256k1::Keypair,
         id: String,
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
@@ -266,8 +393,7 @@ impl NostrDB {
             let old_value = table.get(id.as_bytes())?.map(|v| v.value());
 
             if let Some(old_value) = old_value {
-                let mut entry: NostrQueuedMessageEntry =
-                    ciborium::from_reader(old_value.as_slice())?;
+                let mut entry = decode_queued_message(old_value.as_slice(), &keys)?;
 
                 entry.num_retries += 1;
                 if entry.num_retries >= entry.max_retries {
@@ -277,17 +403,13 @@ impl NostrDB {
                     // add to dead letter table for book keeping
                     let mut table = write_txn.open_table(dead_letter_table)?;
 
-                    let mut serialized = Vec::new();
-                    ciborium::into_writer(&entry, &mut serialized)?;
-                    table.insert(id.as_bytes(), serialized)?;
+                    table.insert(id.as_bytes(), encode_queued_message(&entry, &keys)?)?;
                 } else {
                     entry.last_try = time::OffsetDateTime::now_utc();
                     entry.processing_started_at =
                         time::OffsetDateTime::from_unix_timestamp(0).expect("valid");
 
-                    let mut serialized = Vec::new();
-                    ciborium::into_writer(&entry, &mut serialized)?;
-                    table.insert(id.as_bytes(), serialized)?;
+                    table.insert(id.as_bytes(), encode_queued_message(&entry, &keys)?)?;
                 }
             }
         }
@@ -395,10 +517,12 @@ impl NostrRepository for NostrDB {
     async fn add_retry_message(&self, message: NostrQueuedMessage, max_retries: i32) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.queued_message_table;
+        let keys = self.keys;
         let res = spawn_blocking(move || {
             Self::add_retry_message_sync(
                 db_clone,
                 table,
+                keys,
                 NostrQueuedMessageEntry::from(message, max_retries),
             )
         })
@@ -409,8 +533,10 @@ impl NostrRepository for NostrDB {
     async fn get_retry_messages(&self, limit: u64) -> Result<Vec<NostrQueuedMessage>> {
         let db_clone = self.db.clone();
         let table = self.queued_message_table;
+        let keys = self.keys;
         let res =
-            spawn_blocking(move || Self::get_retry_messages_sync(db_clone, table, limit)).await??;
+            spawn_blocking(move || Self::get_retry_messages_sync(db_clone, table, keys, limit))
+                .await??;
         Ok(res.into_iter().map(|entry| entry.into()).collect())
     }
 
@@ -418,9 +544,10 @@ impl NostrRepository for NostrDB {
         let db_clone = self.db.clone();
         let table = self.queued_message_table;
         let dead_letter_table = self.dead_letter_table;
+        let keys = self.keys;
         let id_clone = id.to_owned();
         let res = spawn_blocking(move || {
-            Self::fail_retry_sync(db_clone, table, dead_letter_table, id_clone)
+            Self::fail_retry_sync(db_clone, table, dead_letter_table, keys, id_clone)
         })
         .await??;
         Ok(res)
@@ -441,6 +568,10 @@ mod tests {
     use super::*;
     use redb::{Builder, backends::InMemoryBackend};
 
+    fn test_keys() -> bitcoin::secp256k1::Keypair {
+        bitcoin::secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng())
+    }
+
     fn get_db(wallet_id: &str) -> NostrDB {
         let in_mem = InMemoryBackend::new();
         let db = Arc::new(
@@ -449,7 +580,32 @@ mod tests {
                 .expect("can create in-memory redb"),
         );
 
-        NostrDB::new(db, wallet_id).expect("can create NostrDB")
+        NostrDB::new(db, wallet_id, test_keys()).expect("can create NostrDB")
+    }
+
+    #[tokio::test]
+    async fn corrupt_queue_row_does_not_hide_valid_messages() {
+        let repo = get_db("w");
+        repo.add_retry_message(
+            NostrQueuedMessage {
+                id: "good".to_string(),
+                recipient: None,
+                payload: "p".to_string(),
+            },
+            3,
+        )
+        .await
+        .unwrap();
+        let txn = repo.db.begin_write().unwrap();
+        {
+            let mut t = txn.open_table(repo.queued_message_table).unwrap();
+            t.insert(b"zzz-bad".as_slice(), vec![0xff, 0x01]).unwrap();
+        }
+        txn.commit().unwrap();
+
+        let msgs = repo.get_retry_messages(10).await.unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].id, "good");
     }
 
     fn offset(event_id: &str, time: u64, success: bool) -> NostrEventOffset {
@@ -557,8 +713,8 @@ mod tests {
                 .expect("can create in-memory redb"),
         );
 
-        let repo_a = NostrDB::new(db.clone(), "wallet-a").expect("can create repo a");
-        let repo_b = NostrDB::new(db.clone(), "wallet-b").expect("can create repo b");
+        let repo_a = NostrDB::new(db.clone(), "wallet-a", test_keys()).expect("can create repo a");
+        let repo_b = NostrDB::new(db.clone(), "wallet-b", test_keys()).expect("can create repo b");
         repo_a
             .add_event(offset("event-1", 100, true))
             .await
@@ -604,7 +760,7 @@ mod tests {
             .get(id.as_bytes())
             .expect("can read queued message")
             .map(|value| {
-                ciborium::from_reader(value.value().as_slice())
+                decode_queued_message(value.value().as_slice(), &repo.keys)
                     .expect("can deserialize queued message")
             })
     }
@@ -619,7 +775,7 @@ mod tests {
             .get(id.as_bytes())
             .expect("can read dead letter message")
             .map(|value| {
-                ciborium::from_reader(value.value().as_slice())
+                decode_queued_message(value.value().as_slice(), &repo.keys)
                     .expect("can deserialize dead letter message")
             })
     }

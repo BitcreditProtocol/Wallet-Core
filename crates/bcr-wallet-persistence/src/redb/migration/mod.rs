@@ -1,6 +1,9 @@
 use crate::{
     error::{Error, Result},
-    redb::{pocket::PocketDB, transaction::TransactionDB},
+    redb::{
+        mintmelt::MintMeltDB, nostr::NostrDB, payment_request::PaymentRequestDB, pocket::PocketDB,
+        transaction::TransactionDB,
+    },
 };
 use bcr_common::cashu::CurrencyUnit;
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -12,6 +15,9 @@ mod migration_0002;
 mod migration_0003;
 mod migration_0004;
 mod migration_0005;
+mod migration_0006;
+mod migration_0007;
+mod migration_0008;
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct AppliedMigration {
@@ -109,6 +115,42 @@ fn migrate_wallet_sync(db: Arc<Database>, namespace: WalletStorageNamespace) -> 
         tracing::info!("Applied Migration 0005 for wallet {}", &namespace.wallet_id);
     }
 
+    let migration_0006_id_for_wallet =
+        migration_0006::migration_name_for_wallet(&namespace.wallet_id);
+    if !applied.contains(&migration_0006_id_for_wallet) {
+        tracing::info!(
+            "Applying Migration 0006 for wallet {}",
+            &namespace.wallet_id
+        );
+        migration_0006::migration_0006_nostr_envelope(&write_txn, &namespace)?;
+        mark_migration_applied(&write_txn, &migration_0006_id_for_wallet)?;
+        tracing::info!("Applied Migration 0006 for wallet {}", &namespace.wallet_id);
+    }
+
+    let migration_0007_id_for_wallet =
+        migration_0007::migration_name_for_wallet(&namespace.wallet_id);
+    if !applied.contains(&migration_0007_id_for_wallet) {
+        tracing::info!(
+            "Applying Migration 0007 for wallet {}",
+            &namespace.wallet_id
+        );
+        migration_0007::migration_0007_payment_request_envelope(&write_txn, &namespace)?;
+        mark_migration_applied(&write_txn, &migration_0007_id_for_wallet)?;
+        tracing::info!("Applied Migration 0007 for wallet {}", &namespace.wallet_id);
+    }
+
+    let migration_0008_id_for_wallet =
+        migration_0008::migration_name_for_wallet(&namespace.wallet_id);
+    if !applied.contains(&migration_0008_id_for_wallet) {
+        tracing::info!(
+            "Applying Migration 0008 for wallet {}",
+            &namespace.wallet_id
+        );
+        migration_0008::migration_0008_mint_melt_envelope(&write_txn, &namespace)?;
+        mark_migration_applied(&write_txn, &migration_0008_id_for_wallet)?;
+        tracing::info!("Applied Migration 0008 for wallet {}", &namespace.wallet_id);
+    }
+
     write_txn.commit()?;
     tracing::info!(
         "Finished DB migrations for wallet {}.",
@@ -125,6 +167,13 @@ pub struct WalletStorageNamespace {
     counter_table: String,
     commitment_table: String,
     transaction_table: String,
+    offset_entry_table: String,
+    queued_message_table: String,
+    dead_letter_table: String,
+    payment_request_table: String,
+    melt_table: String,
+    mint_table: String,
+    melt_commitment_table: String,
     keys: bitcoin::secp256k1::Keypair,
 }
 
@@ -139,8 +188,61 @@ pub fn collect_wallet_namespace(
         counter_table: PocketDB::counter_table_name(&wallet_id, &unit),
         commitment_table: PocketDB::commitment_table_name(&wallet_id, &unit),
         transaction_table: TransactionDB::transaction_table_name(&wallet_id),
+        offset_entry_table: NostrDB::offset_entry_table_name(&wallet_id),
+        queued_message_table: NostrDB::queued_message_table_name(&wallet_id),
+        dead_letter_table: NostrDB::dead_letter_table_name(&wallet_id),
+        payment_request_table: PaymentRequestDB::payment_requests_table_name(&wallet_id),
+        melt_table: MintMeltDB::melt_table_name(&wallet_id, &unit),
+        mint_table: MintMeltDB::mint_table_name(&wallet_id, &unit),
+        melt_commitment_table: MintMeltDB::melt_commitment_table_name(&wallet_id, &unit),
         keys,
     }
+}
+
+fn migrate_table(
+    txn: &redb::WriteTransaction,
+    table_name: &str,
+    keys: &bitcoin::secp256k1::Keypair,
+    convert: impl Fn(&[u8]) -> Result<Vec<u8>>,
+) -> Result<()> {
+    let table_def: TableDefinition<&[u8], Vec<u8>> = TableDefinition::new(table_name);
+    let mut table = match txn.open_table(table_def) {
+        Ok(table) => table,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut converted: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut quarantined: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for item in table.iter()? {
+        let (k, v) = item?;
+        let key = k.value().to_vec();
+        match convert(v.value().as_slice()) {
+            Ok(value) => converted.push((key, value)),
+            Err(e) => {
+                tracing::warn!("Quarantining unconvertible legacy row in {table_name}: {e}");
+                let sealed = bcr_wallet_core::crypto::encrypt_ecies(
+                    v.value().as_slice(),
+                    &keys.public_key(),
+                )?;
+                quarantined.push((key, sealed));
+            }
+        }
+    }
+    for (key, value) in converted {
+        table.insert(key.as_slice(), value)?;
+    }
+    if !quarantined.is_empty() {
+        let quarantine_name = format!("{table_name}_quarantine");
+        let quarantine_def: TableDefinition<&[u8], Vec<u8>> =
+            TableDefinition::new(&quarantine_name);
+        let mut quarantine = txn.open_table(quarantine_def)?;
+        for (key, sealed) in quarantined {
+            table.remove(key.as_slice())?;
+            quarantine.insert(key.as_slice(), sealed)?;
+        }
+    }
+    Ok(())
 }
 
 fn load_applied_migrations(
