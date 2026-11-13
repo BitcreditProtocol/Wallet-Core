@@ -132,7 +132,7 @@ impl AppState {
                     w_cfg.betas = betas
                         .into_iter()
                         .filter(|b| b.clowder_id != w_cfg.clowder_id)
-                        .map(|b| b.url)
+                        .map(Into::into)
                         .collect();
                 }
                 Err(e) => {
@@ -141,11 +141,18 @@ impl AppState {
                         &w_cfg
                             .betas
                             .iter()
-                            .map(|b| b.to_string())
+                            .map(|b| b.url.to_string())
                             .collect::<Vec<String>>()
                     );
                 }
             };
+
+            let mint_timeouts = self.cfg.mint_timeouts;
+            w_cfg.betas =
+                wallet::util::identify_betas(w_cfg.clowder_id, w_cfg.betas, &move |url| {
+                    Arc::new(HttpClientExt::new(url, mint_timeouts))
+                })
+                .await;
 
             let network = w_cfg.network;
             let wallet = build_wallet(
@@ -1382,7 +1389,7 @@ async fn create_new_wallet(
         .await?
         .into_iter()
         .filter(|b| b.clowder_id != clowder_id)
-        .map(|b| b.url)
+        .map(Into::into)
         .collect();
     // Attempt to find debit unit in the given keysets
     let currencies = keyset_infos
@@ -1457,14 +1464,20 @@ async fn build_wallet(
     let nostr_transport = nostr::Transport::new(nostr_cl, nostr_repo.clone());
 
     // building the debit pocket
-    let mut beta_clients = BTreeMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
-    for beta in w_cfg.betas.clone() {
-        let beta_client = HttpClientExt::new(beta.clone(), mint_timeouts);
-        beta_clients.insert(beta, Arc::new(beta_client));
+    let mut beta_clients =
+        BTreeMap::<bitcoin::secp256k1::PublicKey, Arc<dyn ClowderMintConnector>>::new();
+    let mut provider_clients = Vec::<Arc<dyn ClowderMintConnector>>::new();
+    for beta in &w_cfg.betas {
+        let beta_client: Arc<dyn ClowderMintConnector> =
+            Arc::new(HttpClientExt::new(beta.url.clone(), mint_timeouts));
+        provider_clients.push(beta_client.clone());
+        if let Some(clowder_id) = beta.clowder_id {
+            beta_clients.insert(clowder_id, beta_client);
+        }
     }
 
     let beta_provider = Arc::new(pocket::RandomBetaProvider::new(
-        beta_clients.values().cloned().collect(),
+        provider_clients,
         w_cfg.clowder_id,
     )?);
 
@@ -1495,6 +1508,7 @@ async fn build_wallet(
         w_cfg.wallet_id,
         w_cfg.pub_key,
         w_cfg.clowder_id,
+        w_cfg.betas,
         beta_clients,
         Arc::new(move |url| Arc::new(external::mint::HttpClientExt::new(url, mint_timeouts))),
         swap_expiry,

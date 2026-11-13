@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::external::mint::ClientFactory;
 use crate::{
     ClowderMintConnector,
     error::{Error, Result},
@@ -19,13 +20,64 @@ use bcr_common::{
         keys::ProofFingerprint,
     },
 };
-use bcr_wallet_core::types::Transaction;
+use bcr_wallet_core::types::{Transaction, WalletBeta};
 use bitcoin::{
     hashes::{Hash, sha256::Hash as Sha256},
     secp256k1,
 };
 
 //////////////////////////////////// utils
+pub async fn identify_betas(
+    own_id: secp256k1::PublicKey,
+    mut betas: Vec<WalletBeta>,
+    client_factory: &ClientFactory,
+) -> Vec<WalletBeta> {
+    let answers = futures::future::join_all(
+        betas
+            .iter()
+            .enumerate()
+            .filter(|(_, beta)| beta.clowder_id.is_none())
+            .map(|(index, beta)| async move {
+                let id = client_factory(beta.url.clone()).get_clowder_id().await;
+                (index, id)
+            }),
+    )
+    .await;
+    let mut held: HashSet<secp256k1::PublicKey> =
+        betas.iter().filter_map(|beta| beta.clowder_id).collect();
+    held.insert(own_id);
+    let mut identified_urls: HashSet<url::Url> = betas
+        .iter()
+        .filter(|beta| beta.clowder_id.is_some())
+        .map(|beta| beta.url.clone())
+        .collect();
+    let mut duplicates = HashSet::new();
+    for (index, answer) in answers {
+        let url = betas[index].url.clone();
+        match answer {
+            Ok(_) if identified_urls.contains(&url) => {
+                tracing::warn!("Dropping beta {url}: its url belongs to an identified beta");
+                duplicates.insert(index);
+            }
+            Ok(id) if held.insert(id) => {
+                identified_urls.insert(url);
+                betas[index].clowder_id = Some(id)
+            }
+            Ok(id) => {
+                tracing::warn!("Dropping beta {url}: node id {id} is already listed");
+                duplicates.insert(index);
+            }
+            Err(e) => tracing::warn!("Could not fetch clowder id of beta {url}: {e}"),
+        }
+    }
+    betas
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| !duplicates.contains(index))
+        .map(|(_, beta)| beta)
+        .collect()
+}
+
 pub fn proofs_to_fingerprints(
     proofs: Vec<Proof>,
 ) -> Result<(Vec<ProofFingerprint>, Vec<cashu::secret::Secret>)> {

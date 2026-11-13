@@ -31,12 +31,13 @@ use bcr_wallet_core::{
         MeltEstimation, PaymentRequest, PaymentRequestActionOrigin, PaymentRequestDirection,
         PaymentRequestState, PaymentRequestTransition, PaymentRequestTransitionOutcome,
         PaymentResultCallback, PaymentType, Transaction, TransactionFees, TransactionStatus,
+        WalletBeta,
     },
     util::to_mint_url,
 };
 use bcr_wallet_persistence::{MigrationJournalHeader, MigrationJournalState};
 use bcr_wallet_transport::NostrEventChannel;
-use bitcoin::base58;
+use bitcoin::{base58, secp256k1};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use nostr::{event::EventId, types::RelayUrl};
@@ -57,7 +58,6 @@ pub trait WalletApi: SendSync {
     fn node_id(&self) -> NodeId;
     fn id(&self) -> String;
     fn mint_url(&self) -> url::Url;
-    fn betas(&self) -> Vec<url::Url>;
     fn clowder_node_id(&self) -> NodeId;
     async fn estimate_melt(&self, amount: bitcoin::Amount) -> Result<MeltEstimation>;
     async fn prepare_melt(
@@ -78,7 +78,7 @@ pub trait WalletApi: SendSync {
     async fn balance(&self) -> Result<WalletBalance>;
     async fn is_wallet_mint_rabid(&self) -> Result<bool>;
     async fn is_wallet_mint_offline(&self) -> Result<bool>;
-    async fn mint_substitute(&self) -> Result<Option<url::Url>>;
+    async fn mint_substitute(&self) -> Result<Option<wire_clowder::ConnectedMintResponse>>;
     async fn pay(&self, p_id: Uuid, tstamp: u64) -> Result<(Uuid, Option<Token>)>;
     async fn mint(&self, amount: bitcoin::Amount) -> Result<MintSummary>;
     async fn check_pending_mints(&self) -> Result<Vec<Uuid>>;
@@ -208,7 +208,7 @@ impl WalletApi for super::Wallet {
             mint_keyset_infos: self.mint_keyset_infos.clone(),
             clowder_id: self.clowder_id,
             pub_key: self.pub_key,
-            betas: self.betas(),
+            betas: self.betas.clone(),
             nostr_relays: self.nostr_transport.relays().to_owned(),
         })
     }
@@ -220,6 +220,7 @@ impl WalletApi for super::Wallet {
             network: self.network,
             default_mint_url: self.client.mint_url().to_owned(),
             nostr_relays: self.nostr_transport.relays().to_owned(),
+            betas: self.betas.clone(),
         }
     }
 
@@ -742,113 +743,56 @@ impl WalletApi for super::Wallet {
     }
 
     async fn is_wallet_mint_rabid(&self) -> Result<bool> {
-        let betas_count = self.betas().len();
-        let mut futures = FuturesUnordered::new();
-
-        for beta in self.betas() {
-            let beta_client = self
-                .beta_clients
-                .get(&beta)
-                .ok_or(Error::BetaNotFound(beta.to_string()))?;
-
-            futures.push(async move {
-                let status = beta_client.get_alpha_status(self.clowder_id).await?.state;
-                Ok::<bool, Error>(matches!(
-                    status,
-                    wire_clowder::SimpleAlphaState::Rabid(..)
-                        | wire_clowder::SimpleAlphaState::ConfiscatedRabid(..)
-                ))
-            });
-        }
-
-        let mut rabid_count = 0;
-        while let Some(is_rabid) = futures.next().await {
-            if let Ok(true) = is_rabid {
-                rabid_count += 1;
-                if rabid_count > betas_count / 2 {
-                    return Ok(true);
-                }
-            }
-        }
-
-        Ok(rabid_count > betas_count / 2)
+        self.beta_majority(|status| {
+            matches!(
+                status,
+                wire_clowder::SimpleAlphaState::Rabid(..)
+                    | wire_clowder::SimpleAlphaState::ConfiscatedRabid(..)
+            )
+        })
+        .await
     }
 
     async fn is_wallet_mint_offline(&self) -> Result<bool> {
-        let betas_count = self.betas().len();
-        let mut futures = FuturesUnordered::new();
-
-        for beta in self.betas() {
-            let beta_client = self
-                .beta_clients
-                .get(&beta)
-                .ok_or(Error::BetaNotFound(beta.to_string()))?;
-
-            futures.push(async move {
-                let status = beta_client.get_alpha_status(self.clowder_id).await?.state;
-                Ok::<bool, Error>(matches!(
-                    status,
-                    wire_clowder::SimpleAlphaState::Offline(..)
-                ))
-            });
-        }
-
-        let mut offline_count = 0;
-        while let Some(is_offline) = futures.next().await {
-            if let Ok(true) = is_offline {
-                offline_count += 1;
-                if offline_count > betas_count / 2 {
-                    return Ok(true);
-                }
-            }
-        }
-
-        Ok(offline_count > betas_count / 2)
+        self.beta_majority(|status| matches!(status, wire_clowder::SimpleAlphaState::Offline(..)))
+            .await
     }
 
-    async fn mint_substitute(&self) -> Result<Option<url::Url>> {
+    async fn mint_substitute(&self) -> Result<Option<wire_clowder::ConnectedMintResponse>> {
         let mint_id = self.clowder_id;
-        let betas_count = self.betas().len();
-        let threshold = betas_count / 2;
+        let voters = self.beta_voters()?;
+        let threshold = voters.len() / 2;
         let mut futures = FuturesUnordered::new();
 
-        for beta in self.betas() {
-            let beta_client = self
-                .beta_clients
-                .get(&beta)
-                .ok_or(Error::BetaNotFound(beta.to_string()))?;
-
+        for beta_client in voters {
             futures.push(async move {
-                let mint = beta_client.get_alpha_substitute(mint_id).await?.mint;
-                Ok::<url::Url, Error>(mint)
+                Ok::<_, Error>(beta_client.get_alpha_substitute(mint_id).await?)
             });
         }
 
-        let mut substitute_counts = HashMap::<url::Url, usize>::new();
+        let mut substitute_counts = HashMap::<(secp256k1::PublicKey, url::Url), usize>::new();
 
         let mut last_err = None;
         while let Some(vote) = futures.next().await {
-            let mint = match vote {
-                Ok(mint) => mint,
+            let substitute = match vote {
+                Ok(substitute) => substitute,
                 Err(e) => {
                     tracing::warn!("Beta could not name a substitute: {e}");
                     last_err = Some(e);
                     continue;
                 }
             };
-            let count = substitute_counts.entry(mint.clone()).or_default();
+            let count = substitute_counts
+                .entry((substitute.node_id, substitute.mint.clone()))
+                .or_default();
             *count += 1;
 
             if *count > threshold {
-                return Ok(Some(mint));
+                return Ok(Some(substitute));
             }
         }
 
         last_err.map_or(Ok(None), Err)
-    }
-
-    fn betas(&self) -> Vec<url::Url> {
-        self.beta_clients.keys().cloned().collect()
     }
 
     fn clowder_node_id(&self) -> NodeId {
@@ -971,12 +915,12 @@ impl WalletApi for super::Wallet {
 
         let keysets_info = util::keyset_infos(substitute.as_ref()).await?;
         let clowder_id = substitute.get_clowder_id().await?;
-        let betas: Vec<url::Url> = substitute
+        let betas: Vec<WalletBeta> = substitute
             .get_clowder_betas()
             .await?
             .into_iter()
             .filter(|beta| beta.clowder_id != clowder_id)
-            .map(|beta| beta.url)
+            .map(WalletBeta::from)
             .collect();
 
         if !exchanged_proofs.is_empty() {
@@ -984,7 +928,7 @@ impl WalletApi for super::Wallet {
             let beta_provider = RandomBetaProvider::new(
                 betas
                     .iter()
-                    .map(|beta| (self.client_factory)(beta.clone()))
+                    .map(|beta| (self.client_factory)(beta.url.clone()))
                     .collect(),
                 clowder_id,
             )?;
@@ -1016,10 +960,10 @@ impl WalletApi for super::Wallet {
     }
 
     async fn rebuild(&self, cfg: WalletConfig) -> Result<Arc<RwLock<Self>>> {
-        let beta_clients: BTreeMap<url::Url, Arc<dyn ClowderMintConnector>> = cfg
+        let beta_clients: BTreeMap<secp256k1::PublicKey, Arc<dyn ClowderMintConnector>> = cfg
             .betas
-            .into_iter()
-            .map(|beta| (beta.clone(), (self.client_factory)(beta)))
+            .iter()
+            .filter_map(|beta| Some((beta.clowder_id?, (self.client_factory)(beta.url.clone()))))
             .collect();
         let beta_provider =
             RandomBetaProvider::new(beta_clients.values().cloned().collect(), cfg.clowder_id)?;
@@ -1036,6 +980,7 @@ impl WalletApi for super::Wallet {
             cfg.wallet_id,
             cfg.pub_key,
             cfg.clowder_id,
+            cfg.betas,
             beta_clients,
             self.client_factory.clone(),
             self.swap_expiry,
@@ -1170,12 +1115,9 @@ impl WalletApi for super::Wallet {
             return Err(Error::InvalidCurrencyUnit(unit.to_string()));
         }
         if let Some(substitute) = self.mint_substitute().await? {
-            tracing::info!("Substitute found: {}", substitute.to_string());
+            tracing::info!("Substitute found: {}", substitute.mint);
             // Create substitute client
-            let substitute_client = self
-                .beta_clients
-                .get(&substitute)
-                .ok_or(Error::BetaNotFound(substitute.to_string()))?;
+            let substitute_client = self.substitute_client(substitute.node_id, &substitute.mint)?;
             let substitute_clowder_id = substitute_client.get_clowder_id().await?;
             let evidence_digest = substitute_client
                 .get_alpha_offline(self.clowder_id)
@@ -1184,20 +1126,16 @@ impl WalletApi for super::Wallet {
                 .ok_or_else(|| Error::Swap("alpha not offline at substitute".into()))?;
 
             // Create beta provider for substitute to do attestation
-            let mut beta_clients = BTreeMap::<url::Url, Arc<dyn ClowderMintConnector>>::new();
+            let beta_clients = substitute_client
+                .as_ref()
+                .get_clowder_betas()
+                .await?
+                .into_iter()
+                .filter(|beta| beta.clowder_id != substitute_clowder_id)
+                .map(|beta| (self.client_factory)(beta.url))
+                .collect();
 
-            for beta in substitute_client.as_ref().get_clowder_betas().await? {
-                if beta.clowder_id == substitute_clowder_id {
-                    continue;
-                }
-                let beta_client = (self.client_factory)(beta.url.clone());
-                beta_clients.insert(beta.url, beta_client);
-            }
-
-            let beta_provider = RandomBetaProvider::new(
-                beta_clients.values().cloned().collect(),
-                substitute_clowder_id,
-            )?;
+            let beta_provider = RandomBetaProvider::new(beta_clients, substitute_clowder_id)?;
 
             // Get keyset infos from substitute
             // Get local proofs
@@ -1276,7 +1214,7 @@ impl WalletApi for super::Wallet {
                 self.debit.unit(),
                 proofs.into_iter().map(|p| p.into()).collect(),
             )
-            .with_mint_url(to_mint_url(&substitute.clone()).to_string());
+            .with_mint_url(to_mint_url(&substitute.mint).to_string());
             if let Some(ref m) = memo {
                 token = token.with_memo(m.to_string());
             }
@@ -1284,7 +1222,7 @@ impl WalletApi for super::Wallet {
             // Create Transaction
             let partial_tx = Transaction {
                 id: Uuid::new_v4(),
-                mint_url: to_mint_url(&substitute),
+                mint_url: to_mint_url(&substitute.mint),
                 fees,
                 direction: TransactionDirection::Outgoing,
                 memo,
