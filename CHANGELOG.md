@@ -1,3 +1,7 @@
+# 0.9.17
+
+* Add support for dotted compileSdkVersion values in cargokit, so e.g. android-33.5 also works
+
 # 0.9.16
 
 * `wallet_protest_mint`, `wallet_protest_swap` and `wallet_protest_melt` no longer start the rabid migration when the answer is `Rabid`; `run_jobs` and `purse_migrate_rabid` still do
