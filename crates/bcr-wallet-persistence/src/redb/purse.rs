@@ -9,7 +9,7 @@ use bcr_common::wire::borsh::{
 use bcr_common::{cashu::CurrencyUnit, ecash};
 use bcr_wallet_core::{
     borsh::{deserialize_mint_keyset_infos, serialize_mint_keyset_infos},
-    types::WalletConfig,
+    types::{WalletBeta, WalletConfig},
 };
 use bitcoin::secp256k1;
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -22,6 +22,134 @@ use tokio::task::spawn_blocking;
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub(super) enum StoredWallet {
     V1(StoredWalletPayloadV1),
+    V2(StoredWalletPayloadV2),
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredBetaV1 {
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    url: url::Url,
+    #[borsh(
+        serialize_with = "serialize_opt_pub_key",
+        deserialize_with = "deserialize_opt_pub_key"
+    )]
+    clowder_id: Option<secp256k1::PublicKey>,
+}
+
+fn serialize_opt_pub_key(
+    key: &Option<secp256k1::PublicKey>,
+    writer: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    BorshSerialize::serialize(&key.map(|k| k.to_string()), writer)
+}
+
+fn deserialize_opt_pub_key(
+    reader: &mut impl std::io::Read,
+) -> std::io::Result<Option<secp256k1::PublicKey>> {
+    let stringified: Option<String> = BorshDeserialize::deserialize_reader(reader)?;
+    stringified
+        .map(|s| {
+            s.parse()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+        })
+        .transpose()
+}
+
+impl From<WalletBeta> for StoredBetaV1 {
+    fn from(beta: WalletBeta) -> Self {
+        Self {
+            url: beta.url,
+            clowder_id: beta.clowder_id,
+        }
+    }
+}
+
+impl From<StoredBetaV1> for WalletBeta {
+    fn from(beta: StoredBetaV1) -> Self {
+        Self {
+            url: beta.url,
+            clowder_id: beta.clowder_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredWalletPayloadV2 {
+    wallet_id: String,
+    name: String,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    network: bitcoin::Network,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    mint: url::Url,
+    #[borsh(
+        serialize_with = "serialize_mint_keyset_infos",
+        deserialize_with = "deserialize_mint_keyset_infos"
+    )]
+    mint_keyset_infos: HashMap<ecash::Id, ecash::KeySetInfo>,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    clowder_id: secp256k1::PublicKey,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub_key: secp256k1::PublicKey,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    debit: CurrencyUnit,
+    betas: Vec<StoredBetaV1>,
+    #[borsh(
+        serialize_with = "serialize_vec_of_strs",
+        deserialize_with = "deserialize_vec_of_strs"
+    )]
+    nostr_relays: Vec<RelayUrl>,
+}
+
+impl std::convert::From<WalletConfig> for StoredWalletPayloadV2 {
+    fn from(wallet: WalletConfig) -> Self {
+        Self {
+            wallet_id: wallet.wallet_id,
+            name: wallet.name,
+            network: wallet.network,
+            mint: wallet.mint,
+            mint_keyset_infos: wallet.mint_keyset_infos,
+            clowder_id: wallet.clowder_id,
+            pub_key: wallet.pub_key,
+            debit: wallet.debit,
+            betas: wallet.betas.into_iter().map(Into::into).collect(),
+            nostr_relays: wallet.nostr_relays,
+        }
+    }
+}
+
+impl std::convert::From<StoredWalletPayloadV2> for WalletConfig {
+    fn from(wallet: StoredWalletPayloadV2) -> Self {
+        Self {
+            wallet_id: wallet.wallet_id,
+            name: wallet.name,
+            network: wallet.network,
+            mint: wallet.mint,
+            mint_keyset_infos: wallet.mint_keyset_infos,
+            clowder_id: wallet.clowder_id,
+            pub_key: wallet.pub_key,
+            debit: wallet.debit,
+            betas: wallet.betas.into_iter().map(Into::into).collect(),
+            nostr_relays: wallet.nostr_relays,
+        }
+    }
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
@@ -81,7 +209,7 @@ impl std::convert::From<WalletConfig> for StoredWalletPayloadV1 {
             clowder_id: wallet.clowder_id,
             pub_key: wallet.pub_key,
             debit: wallet.debit,
-            betas: wallet.betas,
+            betas: wallet.betas.into_iter().map(|b| b.url).collect(),
             nostr_relays: wallet.nostr_relays,
         }
     }
@@ -98,7 +226,14 @@ impl std::convert::From<StoredWalletPayloadV1> for WalletConfig {
             clowder_id: wallet.clowder_id,
             pub_key: wallet.pub_key,
             debit: wallet.debit,
-            betas: wallet.betas,
+            betas: wallet
+                .betas
+                .into_iter()
+                .map(|url| WalletBeta {
+                    url,
+                    clowder_id: None,
+                })
+                .collect(),
             nostr_relays: wallet.nostr_relays,
         }
     }
@@ -109,9 +244,15 @@ pub(super) fn to_stored_wallet_v1(wallet: WalletConfig) -> Result<StoredWallet> 
     Ok(StoredWallet::V1(payload))
 }
 
-pub(super) fn from_stored_wallet_v1(wallet: StoredWallet) -> Result<WalletConfig> {
-    let StoredWallet::V1(payload) = wallet;
-    Ok(payload.into())
+pub(super) fn to_stored_wallet(wallet: WalletConfig) -> StoredWallet {
+    StoredWallet::V2(wallet.into())
+}
+
+pub(super) fn from_stored_wallet(wallet: StoredWallet) -> WalletConfig {
+    match wallet {
+        StoredWallet::V1(payload) => payload.into(),
+        StoredWallet::V2(payload) => payload.into(),
+    }
 }
 
 ///////////////////////////////////////////// PurseDB
@@ -127,7 +268,7 @@ impl PurseDB {
 
     fn store_sync(db: Arc<Database>, wallet: WalletConfig) -> Result<()> {
         let id = wallet.wallet_id.clone();
-        let entry = to_stored_wallet_v1(wallet)?;
+        let entry = to_stored_wallet(wallet);
         let write_txn = db.begin_write()?;
 
         {
@@ -152,7 +293,7 @@ impl PurseDB {
                     Some(e) => {
                         let deserialized: StoredWallet = borsh::from_slice(e.value().as_slice())
                             .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                        let wallet = from_stored_wallet_v1(deserialized)?;
+                        let wallet = from_stored_wallet(deserialized);
                         Ok(Some(wallet))
                     }
                     None => Ok(None),
@@ -173,11 +314,11 @@ impl PurseDB {
             };
             let deserialized: StoredWallet = borsh::from_slice(old_value.as_slice())
                 .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-            let StoredWallet::V1(mut entry) = deserialized;
+            let mut wallet = from_stored_wallet(deserialized);
 
-            entry.name = new_name;
+            wallet.name = new_name;
 
-            let serialized = borsh::to_vec(&StoredWallet::V1(entry))
+            let serialized = borsh::to_vec(&to_stored_wallet(wallet))
                 .map_err(|e| Error::BorshSerialization(e.to_string()))?;
             table.insert(wallet_id.as_bytes(), serialized)?;
         }
@@ -207,7 +348,7 @@ impl PurseDB {
                 for (_, v) in table.range::<&[u8]>(..)?.flatten() {
                     let deserialized: StoredWallet = borsh::from_slice(v.value().as_slice())
                         .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                    let wallet = from_stored_wallet_v1(deserialized)?;
+                    let wallet = from_stored_wallet(deserialized);
                     res.push(wallet.wallet_id);
                 }
                 Ok(res)
