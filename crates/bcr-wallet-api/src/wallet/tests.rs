@@ -5975,6 +5975,36 @@ async fn finish_migration_retries_the_swap_of_an_exchanged_held_input() {
 }
 
 #[tokio::test]
+async fn balance_read_while_a_held_input_is_marked_swapped_counts_it_once() {
+    let t = MigrationCtx::new(&[], &[4]).await;
+    let wlt = t.wallet(vec![], 1, false).await;
+    let wlt = t.migrated(&wlt).await;
+    let mut tx_repo = MockTransactionRepository::new();
+    tx_repo.expect_list_txs().returning(|| Ok(vec![]));
+    let journal = GatedJournal::new(t.pdb.clone());
+    {
+        let mut w = wlt.write().await;
+        w.tx_repo = Arc::new(tx_repo);
+        w.journal = journal.clone();
+    }
+    assert!(wlt.read().await.finish_migration().await.is_err());
+
+    let swap = pause(&journal.before_swapped);
+    let finishing = wlt.clone();
+    let finish = tokio::spawn(async move { finishing.read().await.finish_migration().await });
+    swap.entered.await.unwrap();
+    let load = pause(&journal.on_load);
+    let reading = wlt.clone();
+    let balance = tokio::spawn(async move { reading.read().await.balance().await });
+    load.entered.await.unwrap();
+    swap.release.send(()).unwrap();
+    finish.await.unwrap().unwrap();
+    load.release.send(()).unwrap();
+
+    assert_eq!(balance.await.unwrap().unwrap().total, Amount::from(4));
+}
+
+#[tokio::test]
 async fn swap_exchanged_lost_response_already_restored_counts_as_swapped() {
     let (info, keyset) = core_tests::generate_random_ecash_keyset();
     let proofs = core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(8)]);
@@ -6165,8 +6195,9 @@ impl MigrationJournalRepository for GatedJournal {
         &self,
     ) -> bcr_wallet_persistence::error::Result<HashMap<cashu::PublicKey, MigrationJournalEntry>>
     {
+        let loaded = self.journal.load().await;
         hold(&self.on_load).await;
-        self.journal.load().await
+        loaded
     }
 
     async fn rehead(

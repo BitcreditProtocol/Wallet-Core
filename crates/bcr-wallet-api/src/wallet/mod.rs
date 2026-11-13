@@ -274,7 +274,7 @@ impl Wallet {
                         let received_evt = match evt {
                             Ok(e) => e,
                             Err(broadcast::error::RecvError::Lagged(_)) => {
-                                tracing::warn!("listen_nostr channel lagged behind");
+                                tracing::warn!("listen_nostr channel lagged behind on {wallet_network}");
                                 continue;
                             },
                             Err(broadcast::error::RecvError::Closed) => {
@@ -901,8 +901,8 @@ impl Wallet {
     }
 
     pub async fn balance(&self) -> Result<WalletBalance> {
-        let journal = self.journal.load().await?;
         let swapped_in = self.swapped_in.lock().unwrap().clone();
+        let journal = self.journal.load().await?;
         let journaled: Vec<_> = journal
             .iter()
             .filter(|(y, e)| {
