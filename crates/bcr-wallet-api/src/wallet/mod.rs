@@ -44,7 +44,7 @@ use bcr_wallet_persistence::{
     ContactStoreApi, MigrationJournalEntry, MigrationJournalHeader, MigrationJournalRepository,
     MigrationJournalState, NostrRepository, PaymentRequestStoreApi, TransactionRepository,
 };
-use bcr_wallet_transport::{ConsumerApi, NostrEventChannel, TransportApi};
+use bcr_wallet_transport::{ConsumerApi, NostrEventChannel, NostrWalletEvent, TransportApi};
 use bitcoin::{
     base58,
     hashes::{Hash, sha256::Hash as Sha256},
@@ -57,30 +57,53 @@ use nostr::{
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, Weak},
     time::Duration,
 };
 use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+pub type NostrReceiver = broadcast::Receiver<NostrWalletEvent>;
+
+pub struct NostrListener {
+    cancel: CancellationToken,
+    task: tokio::task::JoinHandle<NostrReceiver>,
+    channel: NostrEventChannel,
+}
+
+impl NostrListener {
+    pub async fn stop(self) -> NostrReceiver {
+        self.cancel.cancel();
+        match self.task.await {
+            Ok(nostr_receiver) => nostr_receiver,
+            Err(e) => {
+                tracing::error!("Nostr event listener failed: {e}");
+                self.channel.subscribe()
+            }
+        }
+    }
+}
+
 pub struct Wallet {
+    this: Weak<RwLock<Wallet>>,
     network: bitcoin::Network,
     client: Arc<dyn ClowderMintConnector>,
     mint_keyset_infos: HashMap<ecash::Id, KeySetInfo>,
     beta_clients: BTreeMap<url::Url, Arc<dyn ClowderMintConnector>>,
-    tx_repo: Box<dyn TransactionRepository>,
+    tx_repo: Arc<dyn TransactionRepository>,
     contact_repo: Arc<dyn ContactStoreApi>,
-    payment_request_repo: Box<dyn PaymentRequestStoreApi>,
+    payment_request_repo: Arc<dyn PaymentRequestStoreApi>,
     debit: Box<dyn DebitPocketApi>,
     journal: Arc<dyn MigrationJournalRepository>,
+    swapped_in: std::sync::Mutex<HashSet<cashu::PublicKey>>,
     name: String,
     id: String,
     pub_key: secp256k1::PublicKey,
     current_payment: Mutex<Option<PayReference>>,
-    payment_request_paid: Notify,
+    payment_request_paid: Arc<Notify>,
     clowder_id: secp256k1::PublicKey,
-    client_factory: Box<ClientFactory>,
+    client_factory: Arc<ClientFactory>,
     swap_expiry: time::Duration,
     nostr_transport: Arc<dyn TransportApi>,
     nostr_event_channel: NostrEventChannel,
@@ -88,6 +111,7 @@ pub struct Wallet {
     nostr_consumer_running: Arc<Mutex<bool>>,
     nostr_shutdown: CancellationToken,
     nostr_consumer: Arc<dyn ConsumerApi>,
+    nostr_listener: std::sync::Mutex<Option<NostrListener>>,
 }
 
 pub(crate) fn is_authentic_sender(
@@ -103,9 +127,9 @@ impl Wallet {
         network: bitcoin::Network,
         client: Arc<dyn ClowderMintConnector>,
         mint_keyset_infos: HashMap<ecash::Id, KeySetInfo>,
-        tx_repo: Box<dyn TransactionRepository>,
+        tx_repo: Arc<dyn TransactionRepository>,
         contact_repo: Arc<dyn ContactStoreApi>,
-        payment_request_repo: Box<dyn PaymentRequestStoreApi>,
+        payment_request_repo: Arc<dyn PaymentRequestStoreApi>,
         debit: Box<dyn DebitPocketApi>,
         journal: Arc<dyn MigrationJournalRepository>,
         name: String,
@@ -113,7 +137,7 @@ impl Wallet {
         pub_key: secp256k1::PublicKey,
         clowder_id: secp256k1::PublicKey,
         beta_clients: BTreeMap<url::Url, Arc<dyn ClowderMintConnector>>,
-        client_factory: Box<ClientFactory>,
+        client_factory: Arc<ClientFactory>,
         swap_expiry: time::Duration,
         nostr_transport: Arc<dyn TransportApi>,
         nostr_event_channel: NostrEventChannel,
@@ -121,31 +145,36 @@ impl Wallet {
         nostr_consumer: Arc<dyn ConsumerApi>,
     ) -> Arc<RwLock<Self>> {
         let cancel = CancellationToken::new();
-        Arc::new(RwLock::new(Self {
-            network,
-            client,
-            mint_keyset_infos,
-            tx_repo,
-            contact_repo,
-            payment_request_repo,
-            debit,
-            journal,
-            name,
-            id,
-            pub_key,
-            current_payment: Mutex::new(None),
-            payment_request_paid: Notify::new(),
-            beta_clients,
-            clowder_id,
-            client_factory,
-            swap_expiry,
-            nostr_transport,
-            nostr_event_channel,
-            nostr_repo,
-            nostr_consumer_running: Arc::new(Mutex::new(false)),
-            nostr_shutdown: cancel.clone(),
-            nostr_consumer,
-        }))
+        Arc::new_cyclic(|this| {
+            RwLock::new(Self {
+                this: this.clone(),
+                network,
+                client,
+                mint_keyset_infos,
+                tx_repo,
+                contact_repo,
+                payment_request_repo,
+                debit,
+                journal,
+                swapped_in: std::sync::Mutex::new(HashSet::new()),
+                name,
+                id,
+                pub_key,
+                current_payment: Mutex::new(None),
+                payment_request_paid: Arc::new(Notify::new()),
+                beta_clients,
+                clowder_id,
+                client_factory,
+                swap_expiry,
+                nostr_transport,
+                nostr_event_channel,
+                nostr_repo,
+                nostr_consumer_running: Arc::new(Mutex::new(false)),
+                nostr_shutdown: cancel.clone(),
+                nostr_consumer,
+                nostr_listener: std::sync::Mutex::new(None),
+            })
+        })
     }
 
     pub fn nostr_consumer(&self) -> Arc<dyn ConsumerApi> {
@@ -228,27 +257,29 @@ impl Wallet {
         });
     }
 
-    pub async fn start_nostr_event_listener(wallet: Arc<RwLock<Self>>) {
-        // subscribe before events are published to avoid events being lost
-        let mut nostr_receiver = wallet.read().await.nostr_event_channel.subscribe();
-
-        let nostr_consumer = wallet.read().await.nostr_consumer();
-        wallet.read().await.nostr_connect(nostr_consumer).await;
-
-        let wallet_network = wallet.read().await.network();
-        tokio::spawn(async move {
+    fn listen_nostr(&self, mut nostr_receiver: NostrReceiver) {
+        let wallet = self
+            .this
+            .upgrade()
+            .expect("a wallet is only reached through the Arc it was created in");
+        let wallet_network = self.network;
+        let cancel = CancellationToken::new();
+        let cancelled = cancel.clone();
+        let task = tokio::spawn(async move {
             loop {
                 tokio::select! {
+                    biased;
+                    _ = cancelled.cancelled() => return nostr_receiver,
                     evt = nostr_receiver.recv() => {
                         let received_evt = match evt {
                             Ok(e) => e,
                             Err(broadcast::error::RecvError::Lagged(_)) => {
-                                tracing::warn!("start_nostr_event_listener channel lagged behind");
+                                tracing::warn!("listen_nostr channel lagged behind on {wallet_network}");
                                 continue;
                             },
                             Err(broadcast::error::RecvError::Closed) => {
-                                tracing::warn!("start_nostr_event_listener channel closed");
-                                return;
+                                tracing::warn!("listen_nostr channel closed");
+                                return nostr_receiver;
                             },
                         };
                         match received_evt {
@@ -344,6 +375,11 @@ impl Wallet {
                 }
             }
         });
+        *self.nostr_listener.lock().unwrap() = Some(NostrListener {
+            cancel,
+            task,
+            channel: self.nostr_event_channel.clone(),
+        });
     }
 
     async fn settle_outgoing_payment_request(
@@ -419,6 +455,7 @@ impl Wallet {
 
     async fn swap_exchanged(
         &self,
+        debit: &dyn DebitPocketApi,
         substitute: Arc<dyn ClowderMintConnector>,
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
         proofs: Vec<Proof>,
@@ -433,8 +470,7 @@ impl Wallet {
             .map(|(id, info)| ((*id).into(), info.clone()))
             .collect();
         let planned = crate::pocket::sum_amounts(prepare_swap(&proofs, &infos)?.into_values())?;
-        let e = match self
-            .debit
+        let e = match debit
             .receive_proofs(substitute.clone(), keysets_info, proofs, swap_config)
             .await
         {
@@ -450,9 +486,7 @@ impl Wallet {
             if states.len() != expected || states.iter().any(|s| s.state != cashu::State::Spent) {
                 return Ok(false);
             }
-            self.debit
-                .restore_local_proofs(keysets_info, substitute)
-                .await?;
+            debit.restore_local_proofs(keysets_info, substitute).await?;
             Ok::<_, Error>(true)
         }
         .await;
@@ -628,15 +662,29 @@ impl Wallet {
             return Ok(());
         }
         self.swap_exchanged(
+            self.debit.as_ref(),
             self.client.clone(),
             &self.mint_keyset_infos,
             unlocked,
             self.swap_config(),
         )
         .await?;
-        self.journal
-            .update(ys, MigrationJournalState::Swapped)
+        self.mark_swapped_in(ys, MigrationJournalState::Swapped)
             .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn mark_swapped_in(
+        &self,
+        ys: Vec<cashu::PublicKey>,
+        state: MigrationJournalState,
+    ) -> Result<()> {
+        self.swapped_in.lock().unwrap().extend(ys.iter().copied());
+        self.journal.update(ys.clone(), state).await?;
+        let mut swapped_in = self.swapped_in.lock().unwrap();
+        for y in &ys {
+            swapped_in.remove(y);
+        }
         Ok(())
     }
 
@@ -678,6 +726,7 @@ impl Wallet {
             Amount::ZERO
         } else {
             self.swap_exchanged(
+                self.debit.as_ref(),
                 self.client.clone(),
                 keysets_info,
                 unlocked,
@@ -685,8 +734,7 @@ impl Wallet {
             )
             .await?
         };
-        self.journal
-            .update(ys, MigrationJournalState::Reclaimed(amount))
+        self.mark_swapped_in(ys, MigrationJournalState::Reclaimed(amount))
             .await?;
         Ok(amount)
     }
@@ -853,12 +901,51 @@ impl Wallet {
     }
 
     pub async fn balance(&self) -> Result<WalletBalance> {
-        let keysets_info = self.get_wallet_mint_keyset_infos().await?;
-        let balance = self.debit.balance(&keysets_info).await?;
+        let swapped_in = self.swapped_in.lock().unwrap().clone();
+        let journal = self.journal.load().await?;
+        let journaled: Vec<_> = journal
+            .iter()
+            .filter(|(y, e)| {
+                !swapped_in.contains(*y)
+                    && matches!(
+                        e.state,
+                        MigrationJournalState::Pending | MigrationJournalState::Exchanged(_)
+                    )
+            })
+            .map(|(_, e)| e)
+            .collect();
+        match self.balance_with(&journaled, &self.mint_keyset_infos).await {
+            Ok(balance) => Ok(balance),
+            Err(_) => {
+                let keysets_info = self.get_wallet_mint_keyset_infos().await?;
+                self.balance_with(&journaled, &keysets_info).await
+            }
+        }
+    }
+
+    async fn balance_with(
+        &self,
+        journaled: &[&MigrationJournalEntry],
+        keysets_info: &HashMap<ecash::Id, KeySetInfo>,
+    ) -> Result<WalletBalance> {
+        let known = |proof: &Proof| keysets_info.contains_key(&proof.keyset_id.into());
+        let proofs: Vec<&Proof> = journaled
+            .iter()
+            .flat_map(|e| match &e.state {
+                MigrationJournalState::Exchanged(exchanged) if exchanged.iter().all(known) => {
+                    exchanged.iter().collect()
+                }
+                _ => vec![&e.proof],
+            })
+            .collect();
+        let journaled = crate::pocket::balance_of(proofs.iter().copied(), keysets_info)?;
+        let balance = self.debit.balance(keysets_info).await?;
+        let debit = add_amounts(balance.debit, journaled.debit)?;
+        let credit = add_amounts(balance.credit, journaled.credit)?;
         Ok(WalletBalance {
-            debit: balance.debit,
-            credit: balance.credit,
-            total: add_amounts(balance.debit, balance.credit)?,
+            debit,
+            credit,
+            total: add_amounts(debit, credit)?,
         })
     }
 
@@ -2035,4 +2122,4 @@ fn reclaimed_amount(entries: &[(cashu::PublicKey, MigrationJournalEntry)]) -> Op
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
