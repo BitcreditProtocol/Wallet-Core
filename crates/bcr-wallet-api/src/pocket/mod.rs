@@ -199,7 +199,10 @@ enum SendPlan {
 
 ///////////////////////////////////////////// InFlight
 #[derive(Default, Clone)]
-pub(crate) struct InFlight(Arc<Mutex<HashMap<cdk01::PublicKey, usize>>>);
+pub(crate) struct InFlight(
+    Arc<Mutex<HashMap<cdk01::PublicKey, usize>>>,
+    Arc<Mutex<HashMap<AttemptKey, u32>>>,
+);
 
 impl InFlight {
     fn reservation(&self) -> Reservation {
@@ -272,9 +275,19 @@ pub(crate) fn exchange_key(seed: &Seed, proofs: &[cdk00::Proof]) -> Result<cdk01
 }
 
 ///////////////////////////////////////////// Counters
+type AttemptKey = (Vec<cdk01::PublicKey>, ecash::Id, Amount, String);
+
+struct Attempt {
+    ledger: Arc<Mutex<HashMap<AttemptKey, u32>>>,
+    inputs: Vec<cdk01::PublicKey>,
+    held: Vec<AttemptKey>,
+}
+
 pub(crate) struct Counters<'a> {
     db: &'a dyn PocketRepository,
     reserved: Vec<(ecash::Id, u32, u32)>,
+    attempt: Option<Attempt>,
+    released: std::sync::atomic::AtomicBool,
 }
 
 impl<'a> Counters<'a> {
@@ -282,7 +295,29 @@ impl<'a> Counters<'a> {
         Self {
             db,
             reserved: Vec::new(),
+            attempt: None,
+            released: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    pub(crate) fn for_inputs(
+        db: &'a dyn PocketRepository,
+        in_flight: &InFlight,
+        inputs: &[cdk00::Proof],
+    ) -> Result<Self> {
+        let mut inputs = inputs
+            .iter()
+            .map(|proof| proof.y())
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        inputs.sort();
+        Ok(Self {
+            attempt: Some(Attempt {
+                ledger: in_flight.1.clone(),
+                inputs,
+                held: Vec::new(),
+            }),
+            ..Self::new(db)
+        })
     }
 
     async fn premint_from_counter(
@@ -312,7 +347,20 @@ impl<'a> Counters<'a> {
     ) -> Result<cdk00::PreMintSecrets> {
         let fee_and_amounts = bcr_wallet_core::util::to_fee_and_amounts(keyset);
         let n = amount.split_targeted(target, &fee_and_amounts)?.len() as u32;
-        let start = self.db.reserve_counter(kid, n).await?;
+        let start = match self.attempt.as_mut() {
+            Some(attempt) => {
+                let key = (attempt.inputs.clone(), kid, amount, format!("{target:?}"));
+                let known = attempt.ledger.lock().unwrap().get(&key).copied();
+                let start = match known {
+                    Some(start) => start,
+                    None => self.db.reserve_counter(kid, n).await?,
+                };
+                attempt.ledger.lock().unwrap().insert(key.clone(), start);
+                attempt.held.push(key);
+                start
+            }
+            None => self.db.reserve_counter(kid, n).await?,
+        };
         self.reserved.push((kid, start, n));
         Ok(cdk00::PreMintSecrets::from_seed(
             kid.into(),
@@ -324,7 +372,35 @@ impl<'a> Counters<'a> {
         )?)
     }
 
+    fn forget_attempt(&self) {
+        if let Some(attempt) = &self.attempt {
+            let mut ledger = attempt.ledger.lock().unwrap();
+            for key in &attempt.held {
+                ledger.remove(key);
+            }
+        }
+    }
+
+    fn reserved(&self) -> Vec<(ecash::Id, u32, u32)> {
+        self.reserved.clone()
+    }
+
+    pub(crate) async fn mark_sent(&self) -> Result<()> {
+        Ok(self.db.mark_reservations_sent(self.reserved()).await?)
+    }
+
+    pub(crate) async fn keep(&self) -> Result<()> {
+        Ok(self.db.clear_reservations(self.reserved()).await?)
+    }
+
     async fn release(&self) {
+        self.forget_attempt();
+        if self
+            .released
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
         for &(kid, start, n) in &self.reserved {
             if let Err(e) = self.db.release_counter(kid, start, n).await {
                 tracing::warn!("Failed to release counters {start}+{n} of {kid}: {e}");
@@ -397,9 +473,15 @@ pub(crate) async fn commit_swap(
     swap_config: &SwapConfig,
     premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
     attestation: wire_attestation::IssuanceAttestation,
+    reservations: Vec<(ecash::Id, u32, u32)>,
 ) -> Result<(Vec<cdk00::Proof>, bitcoin::secp256k1::schnorr::Signature)> {
     // Remove dleqs from same-mint swaps to not give up a blinding factor
     let inputs = crate::wallet::util::remove_dleq_from_proofs(inputs);
+    if let Some(db) = db
+        && !reservations.is_empty()
+    {
+        db.mark_reservations_sent(reservations.clone()).await?;
+    }
     let commit_result = client
         .post_swap_commitment(
             inputs.clone(),
@@ -416,17 +498,20 @@ pub(crate) async fn commit_swap(
     );
 
     if let Some(db) = db {
-        db.store_commitment(bcr_wallet_persistence::SwapCommitmentRecord {
-            inputs: commit_result.inputs_ys,
-            outputs: commit_result.outputs,
-            expiry: commit_result.expiry,
-            commitment: commitment_sig,
-            ephemeral_secret: commit_result.ephemeral_secret,
-            body_content: commit_result.body_content,
-            wallet_key: commit_result.wallet_key,
-            premints,
-            input_proofs: inputs.clone(),
-        })
+        db.store_commitment(
+            bcr_wallet_persistence::SwapCommitmentRecord {
+                inputs: commit_result.inputs_ys,
+                outputs: commit_result.outputs,
+                expiry: commit_result.expiry,
+                commitment: commitment_sig,
+                ephemeral_secret: commit_result.ephemeral_secret,
+                body_content: commit_result.body_content,
+                wallet_key: commit_result.wallet_key,
+                premints,
+                input_proofs: inputs.clone(),
+            },
+            reservations,
+        )
         .await?;
     }
     Ok((inputs, commitment_sig))
@@ -468,12 +553,17 @@ pub(crate) async fn committed_swap(
         swap_config,
         premints.clone(),
         attestation,
+        counters.reserved(),
     )
     .await;
     if matches!(&committed, Err(e) if e.is_input_rejection()) {
         counters.release().await;
     }
     let (inputs, commitment_sig) = committed?;
+    counters.forget_attempt();
+    if db.is_none() {
+        counters.keep().await?;
+    }
 
     let signatures = client
         .post_swap_committed(inputs, outputs, commitment_sig)
@@ -779,6 +869,7 @@ async fn swap_proofs_to_target(
     client: &Arc<dyn ClowderMintConnector>,
     swap_config: SwapConfig,
     beta: &dyn BetaProvider,
+    in_flight: &InFlight,
 ) -> Result<HashMap<cdk01::PublicKey, cdk00::Proof>> {
     let keysets_info: HashMap<cashu::Id, KeySetInfo> = keysets_info
         .iter()
@@ -792,7 +883,7 @@ async fn swap_proofs_to_target(
     let attestation = beta.attest(&swap_proofs).await?;
 
     // prepare the premints
-    let mut counters = Counters::new(db);
+    let mut counters = Counters::for_inputs(db, in_flight, &swap_proofs)?;
     let mut premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets> = BTreeMap::new();
     let mut remaining_payment = target_amount;
     // collect payments by kid, so we can reconstruct it after the swap
@@ -974,6 +1065,7 @@ async fn send_proofs(
                 client,
                 swap_config,
                 beta,
+                in_flight,
             )
             .await?;
 
@@ -1074,6 +1166,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(premint.secrets(), expected.secrets());
+    }
+
+    #[tokio::test]
+    async fn counters_release_their_ranges_once() {
+        let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = info.id;
+        let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
+        let mut db = MockPocketRepository::new();
+        db.expect_reserve_counter().returning(|_, _| Ok(0));
+        db.expect_release_counter()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        let mut counters = Counters::new(&db);
+        counters
+            .premint_from_counter(
+                &zero_seed(),
+                kid,
+                Amount::from(8),
+                &SplitTarget::None,
+                &keyset,
+            )
+            .await
+            .unwrap();
+        counters.release().await;
+        counters.release().await;
     }
 
     #[test]
@@ -1349,6 +1466,7 @@ mod tests {
             &arc_client,
             test_swap_config(),
             &beta,
+            &InFlight::default(),
         )
         .await
         .unwrap();

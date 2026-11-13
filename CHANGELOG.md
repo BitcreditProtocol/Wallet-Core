@@ -4,6 +4,8 @@
 * Mint calls time out (5 seconds to connect, 30 seconds per request) instead of hanging; a timed-out melt leaves its inputs pending for `wallet_recover_pending_stale_proofs` to settle
 * Amounts supplied by a mint that overflow or underflow (`wallet_check_pending_mints`, `wallet_balance`, melts and sends) return an error instead of panicking
 * `wallet_restore` matches outputs by blinded message instead of position, skips unexpected outputs and check states instead of aborting, and stores a proof the mint returns no state for as pending
+* Seed counter reservations are persisted (pocket DB tables `counter_reservations` and `released_counters`, no migration needed): a failed swap or refused onchain mint quote gives its counters back, a retry of the same inputs reuses them, and a reopened wallet releases reservations whose request was never sent, so failed attempts no longer push restore past its gap limit
+    * `PocketRepository::store_commitment` takes the reservations it covers; `clear_reservations` and `mark_reservations_sent` are added
 
 # 0.9.15
 

@@ -493,6 +493,37 @@ pub(super) struct StoredCounterPayloadV1 {
     pub counter: u32,
 }
 
+/// StoredReleasedRange is a versioned, borsh-serialized counter range released below the counter
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) enum StoredReleasedRange {
+    V1(StoredReleasedRangePayloadV1),
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredReleasedRangePayloadV1 {
+    pub start: u32,
+    pub n: u32,
+}
+
+/// StoredReservation is a versioned, borsh-serialized counter range reserved and not yet
+/// covered by a stored commitment or released
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) enum StoredReservation {
+    V1(StoredReservationPayloadV1),
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredReservationPayloadV1 {
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
+    pub kid: ecash::Id,
+    pub start: u32,
+    pub n: u32,
+    pub sent: bool,
+}
+
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub(super) enum StoredJournalEntry {
     V1(EncryptedJournalPayloadV1),
@@ -632,6 +663,8 @@ pub struct PocketDB {
     foreign_mint_proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     exchange_record_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     migration_journal_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    released_counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    reservation_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     keys: bitcoin::secp256k1::Keypair,
 }
 
@@ -642,6 +675,8 @@ impl PocketDB {
     const COMMITMENT_BASE_DB_NAME: &'static str = "commitments";
     const EXCHANGE_RECORD_BASE_DB_NAME: &'static str = "exchange_records";
     const MIGRATION_JOURNAL_BASE_DB_NAME: &'static str = "migration_journal";
+    const RELEASED_COUNTER_BASE_DB_NAME: &'static str = "released_counters";
+    const RESERVATION_BASE_DB_NAME: &'static str = "counter_reservations";
 
     pub fn proof_table_name(wallet_id: &str, unit: &CurrencyUnit) -> String {
         format!("{wallet_id}_{unit}_{}", Self::PROOF_BASE_DB_NAME)
@@ -673,6 +708,14 @@ impl PocketDB {
         )
     }
 
+    pub fn released_counter_table_name(wallet_id: &str, unit: &CurrencyUnit) -> String {
+        format!("{wallet_id}_{unit}_{}", Self::RELEASED_COUNTER_BASE_DB_NAME)
+    }
+
+    pub fn reservation_table_name(wallet_id: &str, unit: &CurrencyUnit) -> String {
+        format!("{wallet_id}_{unit}_{}", Self::RESERVATION_BASE_DB_NAME)
+    }
+
     pub fn new(
         db: Arc<Database>,
         wallet_id: &str,
@@ -692,6 +735,11 @@ impl PocketDB {
             Box::leak(Self::exchange_record_table_name(wallet_id, unit).into_boxed_str());
         let migration_journal_name: &'static str =
             Box::leak(Self::migration_journal_table_name(wallet_id, unit).into_boxed_str());
+        let released_counter_name: &'static str =
+            Box::leak(Self::released_counter_table_name(wallet_id, unit).into_boxed_str());
+
+        let reservation_name: &'static str =
+            Box::leak(Self::reservation_table_name(wallet_id, unit).into_boxed_str());
 
         let proof_table = TableDefinition::new(proof_name);
         let counter_table = TableDefinition::new(counter_name);
@@ -699,6 +747,8 @@ impl PocketDB {
         let foreign_mint_proof_table = TableDefinition::new(foreign_mint_proof_name);
         let exchange_record_table = TableDefinition::new(exchange_record_name);
         let migration_journal_table = TableDefinition::new(migration_journal_name);
+        let released_counter_table = TableDefinition::new(released_counter_name);
+        let reservation_table = TableDefinition::new(reservation_name);
 
         Ok(Self {
             db,
@@ -708,6 +758,8 @@ impl PocketDB {
             foreign_mint_proof_table,
             exchange_record_table,
             migration_journal_table,
+            released_counter_table,
+            reservation_table,
             keys,
         })
     }
@@ -929,6 +981,32 @@ impl PocketDB {
         Ok(proofs)
     }
 
+    fn counter_in(
+        table: &impl ReadableTable<&'static [u8], Vec<u8>>,
+        kid: ecash::Id,
+    ) -> Result<u32> {
+        Ok(match table.get(kid.to_bytes().as_slice())? {
+            Some(e) => {
+                let StoredCounter::V1(stored) = borsh::from_slice(&e.value())
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                stored.counter
+            }
+            None => 0,
+        })
+    }
+
+    fn set_counter(
+        table: &mut redb::Table<'_, &'static [u8], Vec<u8>>,
+        kid: ecash::Id,
+        counter: u32,
+    ) -> Result<()> {
+        let entry = StoredCounter::V1(StoredCounterPayloadV1 { kid, counter });
+        let serialized =
+            borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+        table.insert(kid.to_bytes().as_slice(), serialized)?;
+        Ok(())
+    }
+
     fn update_counter_sync(
         db: Arc<Database>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
@@ -938,31 +1016,219 @@ impl PocketDB {
         let write_txn = db.begin_write()?;
         let current = {
             let mut table = write_txn.open_table(counter_table)?;
-            let current = match table.get(kid.to_bytes().as_slice())? {
-                Some(e) => {
-                    let StoredCounter::V1(stored) = borsh::from_slice(&e.value())
-                        .map_err(|e| Error::BorshSerialization(e.to_string()))?;
-                    stored.counter
-                }
-                None => 0,
-            };
-            let entry = StoredCounter::V1(StoredCounterPayloadV1 {
-                kid,
-                counter: next(current)?,
-            });
-            let serialized =
-                borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
-            table.insert(kid.to_bytes().as_slice(), serialized)?;
+            let current = Self::counter_in(&table, kid)?;
+            Self::set_counter(&mut table, kid, next(current)?)?;
             current
         };
         write_txn.commit()?;
         Ok(current)
     }
 
+    fn range_key(kid: ecash::Id, start: u32) -> Vec<u8> {
+        let mut key = kid.to_bytes().to_vec();
+        key.extend_from_slice(&start.to_be_bytes());
+        key
+    }
+
+    fn released_range_ending_at(
+        released: &impl ReadableTable<&'static [u8], Vec<u8>>,
+        kid: ecash::Id,
+        end: u32,
+    ) -> Result<Option<u32>> {
+        let lo = Self::range_key(kid, 0);
+        let hi = Self::range_key(kid, end);
+        let Some(entry) = released.range(lo.as_slice()..hi.as_slice())?.next_back() else {
+            return Ok(None);
+        };
+        let StoredReleasedRange::V1(range) = borsh::from_slice(&entry?.1.value())
+            .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+        Ok((range.start.checked_add(range.n) == Some(end)).then_some(range.start))
+    }
+
+    fn release_in(
+        counters: &mut redb::Table<'_, &'static [u8], Vec<u8>>,
+        released: &mut redb::Table<'_, &'static [u8], Vec<u8>>,
+        reservations: &mut redb::Table<'_, &'static [u8], Vec<u8>>,
+        kid: ecash::Id,
+        start: u32,
+        n: u32,
+    ) -> Result<()> {
+        let held = reservations
+            .remove(Self::range_key(kid, start).as_slice())?
+            .is_some();
+        let Some(end) = start.checked_add(n).filter(|_| held && n > 0) else {
+            return Ok(());
+        };
+        match end.cmp(&Self::counter_in(counters, kid)?) {
+            std::cmp::Ordering::Greater => {}
+            std::cmp::Ordering::Less => {
+                let entry = StoredReleasedRange::V1(StoredReleasedRangePayloadV1 { start, n });
+                let serialized =
+                    borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                released.insert(Self::range_key(kid, start).as_slice(), serialized)?;
+            }
+            std::cmp::Ordering::Equal => {
+                let mut tip = start;
+                while let Some(below) = Self::released_range_ending_at(released, kid, tip)? {
+                    released.remove(Self::range_key(kid, below).as_slice())?;
+                    tip = below;
+                }
+                Self::set_counter(counters, kid, tip)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn release_counter_sync(
+        db: Arc<Database>,
+        counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        released_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        reservation_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        kid: ecash::Id,
+        start: u32,
+        n: u32,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+        {
+            let mut counters = write_txn.open_table(counter_table)?;
+            let mut released = write_txn.open_table(released_table)?;
+            let mut reservations = write_txn.open_table(reservation_table)?;
+            Self::release_in(
+                &mut counters,
+                &mut released,
+                &mut reservations,
+                kid,
+                start,
+                n,
+            )?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    fn reserve_counter_sync(
+        db: Arc<Database>,
+        counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        reservation_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        kid: ecash::Id,
+        n: u32,
+    ) -> Result<u32> {
+        let write_txn = db.begin_write()?;
+        let start = {
+            let mut counters = write_txn.open_table(counter_table)?;
+            let start = Self::counter_in(&counters, kid)?;
+            // TODO (future): how do we handle this? we can switch seeds / switch keyset, but if we hit u32::Max, this fails
+            let end = start.checked_add(n).ok_or(Error::CounterExhausted)?;
+            Self::set_counter(&mut counters, kid, end)?;
+            if n > 0 {
+                let entry = StoredReservation::V1(StoredReservationPayloadV1 {
+                    kid,
+                    start,
+                    n,
+                    sent: false,
+                });
+                let serialized =
+                    borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                let mut reservations = write_txn.open_table(reservation_table)?;
+                reservations.insert(Self::range_key(kid, start).as_slice(), serialized)?;
+            }
+            start
+        };
+        write_txn.commit()?;
+        Ok(start)
+    }
+
+    fn clear_reservations_in(
+        reservations: &mut redb::Table<'_, &'static [u8], Vec<u8>>,
+        ranges: &[(ecash::Id, u32, u32)],
+    ) -> Result<()> {
+        for &(kid, start, _) in ranges {
+            reservations.remove(Self::range_key(kid, start).as_slice())?;
+        }
+        Ok(())
+    }
+
+    fn clear_reservations_sync(
+        db: Arc<Database>,
+        reservation_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        ranges: &[(ecash::Id, u32, u32)],
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+        {
+            let mut reservations = write_txn.open_table(reservation_table)?;
+            Self::clear_reservations_in(&mut reservations, ranges)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    fn mark_reservations_sent_sync(
+        db: Arc<Database>,
+        reservation_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        ranges: &[(ecash::Id, u32, u32)],
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+        {
+            let mut reservations = write_txn.open_table(reservation_table)?;
+            for &(kid, start, _) in ranges {
+                let key = Self::range_key(kid, start);
+                let Some(entry) = reservations.get(key.as_slice())?.map(|e| e.value()) else {
+                    continue;
+                };
+                let StoredReservation::V1(mut held) = borsh::from_slice(&entry)
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                held.sent = true;
+                let serialized = borsh::to_vec(&StoredReservation::V1(held))
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                reservations.insert(key.as_slice(), serialized)?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub(super) fn release_leftover_reservations(&self) -> Result<()> {
+        let (counter_table, released_table, reservation_table) = (
+            self.counter_table,
+            self.released_counter_table,
+            self.reservation_table,
+        );
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut counters = write_txn.open_table(counter_table)?;
+            let mut released = write_txn.open_table(released_table)?;
+            let mut reservations = write_txn.open_table(reservation_table)?;
+            let mut leftovers = Vec::new();
+            for entry in reservations.iter()? {
+                let StoredReservation::V1(r) = borsh::from_slice(&entry?.1.value())
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                leftovers.push(r);
+            }
+            for r in leftovers {
+                if r.sent {
+                    Self::clear_reservations_in(&mut reservations, &[(r.kid, r.start, r.n)])?;
+                    continue;
+                }
+                Self::release_in(
+                    &mut counters,
+                    &mut released,
+                    &mut reservations,
+                    r.kid,
+                    r.start,
+                    r.n,
+                )?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
     fn store_commitment_sync(
         db: Arc<Database>,
         commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        reservation_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         record: crate::SwapCommitmentRecord,
+        reservations: &[(ecash::Id, u32, u32)],
         keys: bitcoin::secp256k1::Keypair,
     ) -> Result<()> {
         let commitment = record.commitment;
@@ -975,6 +1241,8 @@ impl PocketDB {
                 borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
 
             table.insert(commitment.serialize().as_slice(), serialized)?;
+            let mut held = write_txn.open_table(reservation_table)?;
+            Self::clear_reservations_in(&mut held, reservations)?;
         }
 
         write_txn.commit()?;
@@ -1187,10 +1455,16 @@ impl PocketDB {
         foreign_mint_proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         exchange_record_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         migration_journal_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        released_counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        reservation_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
 
         {
+            if write_txn.open_table(reservation_table).is_ok() {
+                write_txn.delete_table(reservation_table)?;
+            }
+
             if write_txn.open_table(proof_table).is_ok() {
                 write_txn.delete_table(proof_table)?;
             }
@@ -1213,6 +1487,10 @@ impl PocketDB {
 
             if write_txn.open_table(migration_journal_table).is_ok() {
                 write_txn.delete_table(migration_journal_table)?;
+            }
+
+            if write_txn.open_table(released_counter_table).is_ok() {
+                write_txn.delete_table(released_counter_table)?;
             }
         }
 
@@ -1402,14 +1680,10 @@ impl PocketRepository for PocketDB {
 
     async fn reserve_counter(&self, kid: ecash::Id, n: u32) -> Result<u32> {
         let db_clone = self.db.clone();
-        let table = self.counter_table;
+        let counter_table = self.counter_table;
+        let reservation_table = self.reservation_table;
         spawn_blocking(move || {
-            Self::update_counter_sync(db_clone, table, kid, |counter| {
-                counter
-                    .checked_add(n)
-                    // TODO (future): how do we handle this? we can switch seeds / switch keyset, but if we hit u32::Max, this fails
-                    .ok_or(Error::CounterExhausted)
-            })
+            Self::reserve_counter_sync(db_clone, counter_table, reservation_table, kid, n)
         })
         .await?
     }
@@ -1426,25 +1700,55 @@ impl PocketRepository for PocketDB {
 
     async fn release_counter(&self, kid: ecash::Id, start: u32, n: u32) -> Result<()> {
         let db_clone = self.db.clone();
-        let table = self.counter_table;
+        let counter_table = self.counter_table;
+        let released_table = self.released_counter_table;
+        let reservation_table = self.reservation_table;
         spawn_blocking(move || {
-            Self::update_counter_sync(db_clone, table, kid, |counter| {
-                Ok(if start.checked_add(n) == Some(counter) {
-                    start
-                } else {
-                    counter
-                })
-            })
+            Self::release_counter_sync(
+                db_clone,
+                counter_table,
+                released_table,
+                reservation_table,
+                kid,
+                start,
+                n,
+            )
         })
-        .await??;
-        Ok(())
+        .await?
     }
 
-    async fn store_commitment(&self, record: crate::SwapCommitmentRecord) -> Result<()> {
+    async fn clear_reservations(&self, ranges: Vec<(ecash::Id, u32, u32)>) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.reservation_table;
+        spawn_blocking(move || Self::clear_reservations_sync(db_clone, table, &ranges)).await?
+    }
+
+    async fn mark_reservations_sent(&self, ranges: Vec<(ecash::Id, u32, u32)>) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.reservation_table;
+        spawn_blocking(move || Self::mark_reservations_sent_sync(db_clone, table, &ranges)).await?
+    }
+
+    async fn store_commitment(
+        &self,
+        record: crate::SwapCommitmentRecord,
+        reservations: Vec<(ecash::Id, u32, u32)>,
+    ) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.commitment_table;
+        let reservation_table = self.reservation_table;
         let keys = self.keys;
-        spawn_blocking(move || Self::store_commitment_sync(db_clone, table, record, keys)).await?
+        spawn_blocking(move || {
+            Self::store_commitment_sync(
+                db_clone,
+                table,
+                reservation_table,
+                record,
+                &reservations,
+                keys,
+            )
+        })
+        .await?
     }
 
     async fn load_commitment(
@@ -1479,6 +1783,8 @@ impl PocketRepository for PocketDB {
         let foreign_mint_proof_table = self.foreign_mint_proof_table;
         let exchange_record_table = self.exchange_record_table;
         let migration_journal_table = self.migration_journal_table;
+        let released_counter_table = self.released_counter_table;
+        let reservation_table = self.reservation_table;
         spawn_blocking(move || {
             Self::delete_repo(
                 db_clone,
@@ -1488,6 +1794,8 @@ impl PocketRepository for PocketDB {
                 foreign_mint_proof_table,
                 exchange_record_table,
                 migration_journal_table,
+                released_counter_table,
+                reservation_table,
             )
         })
         .await?
@@ -1996,18 +2304,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_release_counter_rolls_back_only_the_latest_reservation() {
+    async fn release_counter_collapses_interleaved_reservations() {
+        let orders = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+        for order in orders {
+            let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+            let kid = core_tests::generate_random_ecash_keyset().0.id;
+            let sizes = [3, 2, 4];
+            let mut ranges = Vec::new();
+            for n in sizes {
+                ranges.push((repo.reserve_counter(kid, n).await.unwrap(), n));
+            }
+            for i in order {
+                repo.release_counter(kid, ranges[i].0, ranges[i].1)
+                    .await
+                    .unwrap();
+                repo.release_counter(kid, ranges[i].0, ranges[i].1)
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 0, "{order:?}");
+        }
+
         let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
         let kid = core_tests::generate_random_ecash_keyset().0.id;
-
-        let first = repo.reserve_counter(kid, 3).await.unwrap();
-        let second = repo.reserve_counter(kid, 2).await.unwrap();
-        repo.release_counter(kid, first, 3).await.unwrap();
-        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 5);
-
-        repo.release_counter(kid, second, 2).await.unwrap();
-        repo.release_counter(kid, second, 2).await.unwrap();
-        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), second);
+        let a = repo.reserve_counter(kid, 3).await.unwrap();
+        let b = repo.reserve_counter(kid, 2).await.unwrap();
+        repo.reserve_counter(kid, 4).await.unwrap();
+        repo.release_counter(kid, b, 2).await.unwrap();
+        repo.release_counter(kid, b, 2).await.unwrap();
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 9);
+        repo.release_counter(kid, a, 3).await.unwrap();
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 9);
     }
 
     #[tokio::test]
@@ -2052,17 +2386,20 @@ mod tests {
         let wallet_key =
             cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(&ephemeral_keypair));
 
-        repo.store_commitment(crate::SwapCommitmentRecord {
-            inputs: vec![],
-            outputs: vec![],
-            expiry: 1000u64,
-            commitment: sig,
-            ephemeral_secret,
-            body_content: "test_content".to_string(),
-            wallet_key,
-            premints: HashMap::new(),
-            input_proofs: vec![],
-        })
+        repo.store_commitment(
+            crate::SwapCommitmentRecord {
+                inputs: vec![],
+                outputs: vec![],
+                expiry: 1000u64,
+                commitment: sig,
+                ephemeral_secret,
+                body_content: "test_content".to_string(),
+                wallet_key,
+                premints: HashMap::new(),
+                input_proofs: vec![],
+            },
+            vec![],
+        )
         .await
         .expect("store_commitment works");
 
@@ -2397,5 +2734,123 @@ mod tests {
         }
         assert_eq!(after[&y1].state, MigrationJournalState::Held);
         assert_eq!(after[&y3], before[&y3]);
+    }
+
+    fn reopenable_db() -> (Arc<Database>, bitcoin::secp256k1::Keypair) {
+        let db = Arc::new(
+            redb::Builder::new()
+                .create_with_backend(redb::backends::InMemoryBackend::new())
+                .expect("can create in-memory redb"),
+        );
+        let keys = secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng());
+        (db, keys)
+    }
+
+    fn open(db: &Arc<Database>, keys: bitcoin::secp256k1::Keypair) -> PocketDB {
+        let repo = PocketDB::new(db.clone(), &wallet_id(), &CurrencyUnit::Sat, keys).unwrap();
+        repo.release_leftover_reservations().unwrap();
+        repo
+    }
+
+    fn commitment_record() -> crate::SwapCommitmentRecord {
+        let sig = cashu::SecretKey::generate().sign(&[0u8; 32]).unwrap();
+        let ephemeral_keypair =
+            secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng());
+        crate::SwapCommitmentRecord {
+            inputs: vec![],
+            outputs: vec![],
+            expiry: 1000u64,
+            commitment: sig,
+            ephemeral_secret: secp256k1::SecretKey::from_keypair(&ephemeral_keypair),
+            body_content: String::new(),
+            wallet_key: cashu::PublicKey::from(secp256k1::PublicKey::from_keypair(
+                &ephemeral_keypair,
+            )),
+            premints: HashMap::new(),
+            input_proofs: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn crash_before_commitment_releases_reservation() {
+        let (db, keys) = reopenable_db();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = mintkeyset.id;
+        let repo = open(&db, keys);
+        assert_eq!(repo.reserve_counter(kid, 3).await.unwrap(), 0);
+        assert_eq!(repo.reserve_counter(kid, 2).await.unwrap(), 3);
+        repo.release_counter(kid, 0, 3).await.unwrap();
+        drop(repo);
+
+        let repo = open(&db, keys);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 0);
+        assert_eq!(repo.reserve_counter(kid, 1).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn stored_commitment_keeps_counters_after_reopen() {
+        let (db, keys) = reopenable_db();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = mintkeyset.id;
+        let repo = open(&db, keys);
+        let committed = repo.reserve_counter(kid, 3).await.unwrap();
+        repo.reserve_counter(kid, 2).await.unwrap();
+        repo.store_commitment(commitment_record(), vec![(kid, committed, 3)])
+            .await
+            .unwrap();
+        drop(repo);
+
+        let repo = open(&db, keys);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn cleared_reservations_survive_reopen() {
+        let (db, keys) = reopenable_db();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = mintkeyset.id;
+        let repo = open(&db, keys);
+        let start = repo.reserve_counter(kid, 2).await.unwrap();
+        repo.clear_reservations(vec![(kid, start, 2)])
+            .await
+            .unwrap();
+        drop(repo);
+
+        let repo = open(&db, keys);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn reopen_keeps_counters_of_a_reservation_whose_commitment_was_sent() {
+        let (db, keys) = reopenable_db();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = mintkeyset.id;
+        let repo = open(&db, keys);
+        assert_eq!(repo.reserve_counter(kid, 2).await.unwrap(), 0);
+        assert_eq!(repo.reserve_counter(kid, 1).await.unwrap(), 2);
+        repo.mark_reservations_sent(vec![(kid, 2, 1)])
+            .await
+            .unwrap();
+        drop(repo);
+
+        let repo = open(&db, keys);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 3);
+        drop(repo);
+        let repo = open(&db, keys);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn sent_reservation_is_still_released_on_a_definite_rejection() {
+        let (db, keys) = reopenable_db();
+        let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
+        let kid = mintkeyset.id;
+        let repo = open(&db, keys);
+        assert_eq!(repo.reserve_counter(kid, 2).await.unwrap(), 0);
+        repo.mark_reservations_sent(vec![(kid, 0, 2)])
+            .await
+            .unwrap();
+        repo.release_counter(kid, 0, 2).await.unwrap();
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 0);
     }
 }
