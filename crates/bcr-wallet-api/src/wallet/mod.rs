@@ -57,7 +57,7 @@ use nostr::{
     types::RelayUrl,
 };
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -91,8 +91,7 @@ pub struct Wallet {
     network: bitcoin::Network,
     client: Arc<dyn ClowderMintConnector>,
     mint_keyset_infos: HashMap<ecash::Id, KeySetInfo>,
-    betas: Vec<WalletBeta>,
-    beta_clients: BTreeMap<secp256k1::PublicKey, Arc<dyn ClowderMintConnector>>,
+    betas: Vec<(WalletBeta, Arc<dyn ClowderMintConnector>)>,
     tx_repo: Arc<dyn TransactionRepository>,
     contact_repo: Arc<dyn ContactStoreApi>,
     payment_request_repo: Arc<dyn PaymentRequestStoreApi>,
@@ -138,8 +137,7 @@ impl Wallet {
         id: String,
         pub_key: secp256k1::PublicKey,
         clowder_id: secp256k1::PublicKey,
-        betas: Vec<WalletBeta>,
-        beta_clients: BTreeMap<secp256k1::PublicKey, Arc<dyn ClowderMintConnector>>,
+        betas: Vec<(WalletBeta, Arc<dyn ClowderMintConnector>)>,
         client_factory: Arc<ClientFactory>,
         swap_expiry: time::Duration,
         nostr_transport: Arc<dyn TransportApi>,
@@ -166,7 +164,6 @@ impl Wallet {
                 current_payment: Mutex::new(None),
                 payment_request_paid: Arc::new(Notify::new()),
                 betas,
-                beta_clients,
                 clowder_id,
                 client_factory,
                 swap_expiry,
@@ -881,37 +878,27 @@ impl Wallet {
         }
     }
 
-    fn beta_voters(&self) -> Result<Vec<Arc<dyn ClowderMintConnector>>> {
-        let mut ids = HashSet::new();
-        let mut urls = HashSet::new();
-        let mut voters = Vec::new();
-        for (beta, id) in self
-            .betas
+    fn betas(&self) -> Vec<WalletBeta> {
+        self.betas.iter().map(|(beta, _)| beta.clone()).collect()
+    }
+
+    fn beta_voters(&self) -> Vec<Arc<dyn ClowderMintConnector>> {
+        let mut seen = HashSet::new();
+        self.betas
             .iter()
-            .filter_map(|b| b.clowder_id.map(|id| (b, id)))
-        {
-            urls.insert(&beta.url);
-            if ids.insert(id) {
-                let client = self
-                    .beta_clients
-                    .get(&id)
-                    .ok_or(Error::BetaNotFound(id.to_string()))?;
-                voters.push(client.clone());
-            }
-        }
-        for beta in self.betas.iter().filter(|b| b.clowder_id.is_none()) {
-            if urls.insert(&beta.url) {
-                voters.push((self.client_factory)(beta.url.clone()));
-            }
-        }
-        Ok(voters)
+            .filter(|(beta, _)| match beta.clowder_id {
+                Some(id) => seen.insert((Some(id), None)),
+                None => seen.insert((None, Some(&beta.url))),
+            })
+            .map(|(_, client)| client.clone())
+            .collect()
     }
 
     async fn beta_majority(
         &self,
         is_vote: impl Fn(&wire_clowder::SimpleAlphaState) -> bool,
     ) -> Result<bool> {
-        let voters = self.beta_voters()?;
+        let voters = self.beta_voters();
         let betas_count = voters.len();
         let clowder_id = self.clowder_id;
         let mut futures = FuturesUnordered::new();
@@ -941,13 +928,13 @@ impl Wallet {
         if beta_id == self.clowder_id {
             return Ok(self.client.clone());
         }
-        if let Some(client) = self.beta_clients.get(&beta_id) {
-            return Ok(client.clone());
-        }
         self.betas
             .iter()
-            .any(|b| b.clowder_id.is_none() && &b.url == beta_url)
-            .then(|| (self.client_factory)(beta_url.clone()))
+            .find(|(beta, _)| {
+                beta.clowder_id
+                    .map_or(&beta.url == beta_url, |id| id == beta_id)
+            })
+            .map(|(_, client)| client.clone())
             .ok_or(Error::BetaNotFound(beta_id.to_string()))
     }
 
@@ -1690,7 +1677,7 @@ impl Wallet {
 
     async fn beta_url(&self, node_id: &NodeId) -> Result<url::Url> {
         let network = self.network();
-        if let Some(beta) = self.betas.iter().find(|b| {
+        if let Some((beta, _)) = self.betas.iter().find(|(b, _)| {
             b.clowder_id
                 .is_some_and(|id| NodeId::new(id, network) == *node_id)
         }) {

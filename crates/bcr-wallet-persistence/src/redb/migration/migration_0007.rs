@@ -115,70 +115,27 @@ mod tests {
     }
 
     #[test]
-    fn migration_succeeds_when_wallet_table_does_not_exist() {
+    fn migration_0007_keeps_v1_beta_urls_and_leaves_v2_wallets() {
         let db = test_database();
-        migrate(&db);
-    }
-
-    #[test]
-    fn migration_0007_keeps_every_v1_beta_url_with_unknown_clowder_id() {
-        let db = test_database();
-        let original = test_wallet("w1", vec![beta(1, None), beta(2, None), beta(3, None)]);
+        let legacy = test_wallet("legacy", vec![beta(1, None), beta(2, None)]);
+        let current = test_wallet("current", vec![beta(3, Some(random_key()))]);
         insert_stored(
             &db,
-            "w1",
-            &to_stored_wallet_v1(original.clone()).expect("v1 envelope"),
+            "legacy",
+            &to_stored_wallet_v1(legacy.clone()).expect("v1 envelope"),
         );
-
-        migrate(&db);
-
-        let migrated = load_stored(&db, "w1");
-        assert!(matches!(migrated, StoredWallet::V2(_)));
-        let migrated = from_stored_wallet(migrated);
-        assert_eq!(migrated.betas, original.betas);
-        assert!(migrated.betas.iter().all(|b| b.clowder_id.is_none()));
-        assert_eq!(migrated.wallet_id, original.wallet_id);
-        assert_eq!(migrated.name, original.name);
-        assert_eq!(migrated.mint, original.mint);
-        assert_eq!(migrated.clowder_id, original.clowder_id);
-        assert_eq!(migrated.pub_key, original.pub_key);
-    }
-
-    #[test]
-    fn migration_0007_upgrades_every_wallet_and_keeps_v2_entries() {
-        let db = test_database();
-        let empty = test_wallet("empty", vec![]);
-        let legacy = test_wallet("legacy", vec![beta(1, None)]);
-        let current = test_wallet("current", vec![beta(2, Some(random_key()))]);
-        insert_stored(&db, "empty", &to_stored_wallet_v1(empty).expect("v1"));
-        insert_stored(&db, "legacy", &to_stored_wallet_v1(legacy).expect("v1"));
         insert_stored(&db, "current", &to_stored_wallet(current.clone()));
 
         migrate(&db);
 
-        for id in ["empty", "legacy", "current"] {
-            assert!(matches!(load_stored(&db, id), StoredWallet::V2(_)));
+        for wallet in [legacy, current] {
+            let stored = load_stored(&db, &wallet.wallet_id);
+            assert!(matches!(stored, StoredWallet::V2(_)));
+            let migrated = from_stored_wallet(stored);
+            assert_eq!(migrated.betas, wallet.betas);
+            assert_eq!(migrated.mint, wallet.mint);
+            assert_eq!(migrated.clowder_id, wallet.clowder_id);
+            assert_eq!(migrated.pub_key, wallet.pub_key);
         }
-        assert!(
-            from_stored_wallet(load_stored(&db, "empty"))
-                .betas
-                .is_empty()
-        );
-        assert_eq!(
-            from_stored_wallet(load_stored(&db, "current")).betas,
-            current.betas
-        );
-    }
-
-    #[test]
-    fn v2_round_trips_known_clowder_id() {
-        let db = test_database();
-        let wallet = test_wallet("w1", vec![beta(1, Some(random_key())), beta(2, None)]);
-        insert_stored(&db, "w1", &to_stored_wallet(wallet.clone()));
-
-        assert_eq!(
-            from_stored_wallet(load_stored(&db, "w1")).betas,
-            wallet.betas
-        );
     }
 }

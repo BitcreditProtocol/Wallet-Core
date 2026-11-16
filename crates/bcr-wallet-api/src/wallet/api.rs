@@ -42,7 +42,7 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use nostr::{event::EventId, types::RelayUrl};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     sync::Arc,
 };
 use tokio::sync::RwLock;
@@ -208,7 +208,7 @@ impl WalletApi for super::Wallet {
             mint_keyset_infos: self.mint_keyset_infos.clone(),
             clowder_id: self.clowder_id,
             pub_key: self.pub_key,
-            betas: self.betas.clone(),
+            betas: self.betas(),
             nostr_relays: self.nostr_transport.relays().to_owned(),
         })
     }
@@ -220,7 +220,7 @@ impl WalletApi for super::Wallet {
             network: self.network,
             default_mint_url: self.client.mint_url().to_owned(),
             nostr_relays: self.nostr_transport.relays().to_owned(),
-            betas: self.betas.clone(),
+            betas: self.betas(),
         }
     }
 
@@ -760,7 +760,7 @@ impl WalletApi for super::Wallet {
 
     async fn mint_substitute(&self) -> Result<Option<wire_clowder::ConnectedMintResponse>> {
         let mint_id = self.clowder_id;
-        let voters = self.beta_voters()?;
+        let voters = self.beta_voters();
         let threshold = voters.len() / 2;
         let mut futures = FuturesUnordered::new();
 
@@ -960,13 +960,18 @@ impl WalletApi for super::Wallet {
     }
 
     async fn rebuild(&self, cfg: WalletConfig) -> Result<Arc<RwLock<Self>>> {
-        let beta_clients: BTreeMap<secp256k1::PublicKey, Arc<dyn ClowderMintConnector>> = cfg
+        let betas: Vec<(WalletBeta, Arc<dyn ClowderMintConnector>)> = cfg
             .betas
-            .iter()
-            .filter_map(|beta| Some((beta.clowder_id?, (self.client_factory)(beta.url.clone()))))
+            .into_iter()
+            .map(|beta| {
+                let client = (self.client_factory)(beta.url.clone());
+                (beta, client)
+            })
             .collect();
-        let beta_provider =
-            RandomBetaProvider::new(beta_clients.values().cloned().collect(), cfg.clowder_id)?;
+        let beta_provider = RandomBetaProvider::new(
+            betas.iter().map(|(_, client)| client.clone()).collect(),
+            cfg.clowder_id,
+        )?;
         let wallet = Self::new(
             cfg.network,
             (self.client_factory)(cfg.mint),
@@ -980,8 +985,7 @@ impl WalletApi for super::Wallet {
             cfg.wallet_id,
             cfg.pub_key,
             cfg.clowder_id,
-            cfg.betas,
-            beta_clients,
+            betas,
             self.client_factory.clone(),
             self.swap_expiry,
             self.nostr_transport.clone(),

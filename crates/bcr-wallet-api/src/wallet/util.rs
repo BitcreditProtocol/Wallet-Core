@@ -29,52 +29,43 @@ use bitcoin::{
 //////////////////////////////////// utils
 pub async fn identify_betas(
     own_id: secp256k1::PublicKey,
-    mut betas: Vec<WalletBeta>,
+    betas: Vec<WalletBeta>,
     client_factory: &ClientFactory,
 ) -> Vec<WalletBeta> {
-    let answers = futures::future::join_all(
-        betas
-            .iter()
-            .enumerate()
-            .filter(|(_, beta)| beta.clowder_id.is_none())
-            .map(|(index, beta)| async move {
-                let id = client_factory(beta.url.clone()).get_clowder_id().await;
-                (index, id)
-            }),
-    )
+    let answers = futures::future::join_all(betas.iter().map(|beta| async move {
+        if beta.clowder_id.is_some() {
+            return None;
+        }
+        client_factory(beta.url.clone())
+            .get_clowder_id()
+            .await
+            .inspect_err(|e| tracing::warn!("Could not fetch clowder id of beta {}: {e}", beta.url))
+            .ok()
+    }))
     .await;
-    let mut held: HashSet<secp256k1::PublicKey> =
-        betas.iter().filter_map(|beta| beta.clowder_id).collect();
-    held.insert(own_id);
-    let mut identified_urls: HashSet<url::Url> = betas
+    let mut ids: HashSet<secp256k1::PublicKey> = betas
+        .iter()
+        .filter_map(|beta| beta.clowder_id)
+        .chain([own_id])
+        .collect();
+    let mut urls: HashSet<url::Url> = betas
         .iter()
         .filter(|beta| beta.clowder_id.is_some())
         .map(|beta| beta.url.clone())
         .collect();
-    let mut duplicates = HashSet::new();
-    for (index, answer) in answers {
-        let url = betas[index].url.clone();
-        match answer {
-            Ok(_) if identified_urls.contains(&url) => {
-                tracing::warn!("Dropping beta {url}: its url belongs to an identified beta");
-                duplicates.insert(index);
-            }
-            Ok(id) if held.insert(id) => {
-                identified_urls.insert(url);
-                betas[index].clowder_id = Some(id)
-            }
-            Ok(id) => {
-                tracing::warn!("Dropping beta {url}: node id {id} is already listed");
-                duplicates.insert(index);
-            }
-            Err(e) => tracing::warn!("Could not fetch clowder id of beta {url}: {e}"),
-        }
-    }
     betas
         .into_iter()
-        .enumerate()
-        .filter(|(index, _)| !duplicates.contains(index))
-        .map(|(_, beta)| beta)
+        .zip(answers)
+        .filter_map(|(mut beta, answer)| {
+            if beta.clowder_id.is_none() {
+                if !urls.insert(beta.url.clone()) || answer.is_some_and(|id| !ids.insert(id)) {
+                    tracing::warn!("Dropping beta {}: it is already listed", beta.url);
+                    return None;
+                }
+                beta.clowder_id = answer;
+            }
+            Some(beta)
+        })
         .collect()
 }
 

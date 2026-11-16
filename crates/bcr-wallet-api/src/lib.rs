@@ -30,7 +30,7 @@ use bcr_wallet_transport::nostr;
 use error::{Error, Result};
 use std::sync::atomic::Ordering;
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     str::FromStr,
     sync::Arc,
 };
@@ -1464,20 +1464,17 @@ async fn build_wallet(
     let nostr_transport = nostr::Transport::new(nostr_cl, nostr_repo.clone());
 
     // building the debit pocket
-    let mut beta_clients =
-        BTreeMap::<bitcoin::secp256k1::PublicKey, Arc<dyn ClowderMintConnector>>::new();
-    let mut provider_clients = Vec::<Arc<dyn ClowderMintConnector>>::new();
-    for beta in &w_cfg.betas {
-        let beta_client: Arc<dyn ClowderMintConnector> =
-            Arc::new(HttpClientExt::new(beta.url.clone(), mint_timeouts));
-        provider_clients.push(beta_client.clone());
-        if let Some(clowder_id) = beta.clowder_id {
-            beta_clients.insert(clowder_id, beta_client);
-        }
-    }
+    let betas: Vec<(types::WalletBeta, Arc<dyn ClowderMintConnector>)> = w_cfg
+        .betas
+        .into_iter()
+        .map(|beta| {
+            let client = Arc::new(HttpClientExt::new(beta.url.clone(), mint_timeouts));
+            (beta, client as Arc<dyn ClowderMintConnector>)
+        })
+        .collect();
 
     let beta_provider = Arc::new(pocket::RandomBetaProvider::new(
-        provider_clients,
+        betas.iter().map(|(_, client)| client.clone()).collect(),
         w_cfg.clowder_id,
     )?);
 
@@ -1508,8 +1505,7 @@ async fn build_wallet(
         w_cfg.wallet_id,
         w_cfg.pub_key,
         w_cfg.clowder_id,
-        w_cfg.betas,
-        beta_clients,
+        betas,
         Arc::new(move |url| Arc::new(external::mint::HttpClientExt::new(url, mint_timeouts))),
         swap_expiry,
         Arc::new(nostr_transport),

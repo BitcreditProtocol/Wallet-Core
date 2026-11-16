@@ -157,13 +157,13 @@ async fn wallet_with_debit(
         ))
     });
     let beta_url = url::Url::parse("https://beta.test").unwrap();
-    let mut beta_clients: BTreeMap<secp256k1::PublicKey, Arc<dyn ClowderMintConnector>> =
-        BTreeMap::new();
-    beta_clients.insert(test_pub_key(), Arc::new(beta_mock));
-    let betas = vec![WalletBeta {
-        url: beta_url,
-        clowder_id: Some(test_pub_key()),
-    }];
+    let betas: Vec<(WalletBeta, Arc<dyn ClowderMintConnector>)> = vec![(
+        WalletBeta {
+            url: beta_url,
+            clowder_id: Some(test_pub_key()),
+        },
+        Arc::new(beta_mock),
+    )];
 
     Wallet::new(
         bitcoin::Network::Testnet,
@@ -179,7 +179,6 @@ async fn wallet_with_debit(
         test_pub_key(),
         test_pub_key(),
         betas,
-        beta_clients,
         Arc::new(|url| Arc::new(HttpClientExt::new(url, Default::default()))),
         time::Duration::seconds(60),
         Arc::new(ctx.nostr_transport),
@@ -206,31 +205,7 @@ async fn wallet_with_betas(
     w: Arc<RwLock<Wallet>>,
     betas: Vec<(WalletBeta, Arc<dyn ClowderMintConnector>)>,
 ) -> Arc<RwLock<Wallet>> {
-    let mut map = BTreeMap::new();
-    let mut by_url = HashMap::new();
-    let mut stored = Vec::new();
-    for (beta, cl) in betas {
-        match beta.clowder_id {
-            Some(id) => {
-                map.insert(id, cl);
-            }
-            None => {
-                by_url.insert(beta.url.clone(), cl);
-            }
-        }
-        stored.push(beta);
-    }
-    {
-        let mut guard = w.write().await;
-        guard.beta_clients = map;
-        guard.client_factory = Arc::new(move |url| {
-            by_url
-                .get(&url)
-                .cloned()
-                .unwrap_or_else(|| Arc::new(MockClowderMintConnector::new()))
-        });
-        guard.betas = stored;
-    }
+    w.write().await.betas = betas;
     w
 }
 
@@ -906,7 +881,6 @@ async fn test_offline_pay_by_token_errors_if_no_substitute() {
     let wlt = wallet(ctx).await;
     {
         let mut guard = wlt.write().await;
-        guard.beta_clients.clear();
         guard.betas.clear();
     }
 
@@ -6095,11 +6069,13 @@ async fn migrate_failed_swap_restores_unidentified_betas_as_attesters() {
     let wlt = t.wallet(vec![], 1, false).await;
     {
         let mut w = wlt.write().await;
-        w.beta_clients.clear();
-        w.betas = vec![WalletBeta {
-            url: url::Url::from_str("https://unidentified.example").unwrap(),
-            clowder_id: None,
-        }];
+        w.betas = vec![(
+            WalletBeta {
+                url: url::Url::from_str("https://unidentified.example").unwrap(),
+                clowder_id: None,
+            },
+            Arc::new(MockClowderMintConnector::new()),
+        )];
     }
     let err = t.migrate(&wlt).await.unwrap_err();
     assert!(matches!(err, Error::MigrationIncomplete(2)));
@@ -6943,67 +6919,6 @@ fn factory_answering(answers: Vec<(url::Url, Option<secp256k1::PublicKey>)>) -> 
 }
 
 #[tokio::test]
-async fn unidentified_beta_takes_clowder_id_from_its_own_mint() {
-    let answering = url::Url::from_str("https://beta-a.example").unwrap();
-    let silent = url::Url::from_str("https://beta-b.example").unwrap();
-    let factory = factory_answering(vec![
-        (answering.clone(), Some(beta_id(7))),
-        (silent.clone(), None),
-    ]);
-
-    let betas = util::identify_betas(
-        test_pub_key(),
-        vec![beta_without_id(&answering), beta_without_id(&silent)],
-        factory.as_ref(),
-    )
-    .await;
-
-    assert_eq!(
-        betas,
-        vec![test_beta(&answering, 7), beta_without_id(&silent)]
-    );
-}
-
-#[tokio::test]
-async fn beta_reporting_wallet_mint_id_is_dropped() {
-    let alpha_id = test_pub_key();
-    let beta = url::Url::from_str("https://beta-a.example").unwrap();
-    let factory = factory_answering(vec![(beta.clone(), Some(alpha_id))]);
-
-    let betas =
-        util::identify_betas(alpha_id, vec![beta_without_id(&beta)], factory.as_ref()).await;
-
-    assert!(betas.is_empty());
-}
-
-#[tokio::test]
-async fn beta_reporting_a_held_clowder_id_is_dropped() {
-    let holder = url::Url::from_str("https://beta-a.example").unwrap();
-    let impostor = url::Url::from_str("https://beta-b.example").unwrap();
-    let twin = url::Url::from_str("https://beta-c.example").unwrap();
-    let late_twin = url::Url::from_str("https://beta-d.example").unwrap();
-    let factory = factory_answering(vec![
-        (impostor.clone(), Some(beta_id(1))),
-        (twin.clone(), Some(beta_id(9))),
-        (late_twin.clone(), Some(beta_id(9))),
-    ]);
-
-    let betas = util::identify_betas(
-        test_pub_key(),
-        vec![
-            test_beta(&holder, 1),
-            beta_without_id(&impostor),
-            beta_without_id(&twin),
-            beta_without_id(&late_twin),
-        ],
-        factory.as_ref(),
-    )
-    .await;
-
-    assert_eq!(betas, vec![test_beta(&holder, 1), test_beta(&twin, 9)]);
-}
-
-#[tokio::test]
 async fn token_without_mint_url_resolves_stored_beta_by_node_id() {
     let mut ctx = wallet_ctx();
     ctx.client.expect_get_clowder_betas().times(0);
@@ -7029,63 +6944,49 @@ async fn token_without_mint_url_resolves_stored_beta_by_node_id() {
 }
 
 #[tokio::test]
-async fn token_without_mint_url_falls_back_to_live_betas() {
-    let mut ctx = wallet_ctx();
-    let live_url = url::Url::from_str("https://live-beta.example").unwrap();
-    let returned = live_url.clone();
-    ctx.client
-        .expect_get_clowder_betas()
-        .times(1)
-        .returning(move || {
-            Ok(vec![ClowderBeta {
-                url: returned.clone(),
-                clowder_id: beta_id(4),
-            }])
-        });
-    let wlt = wallet(ctx).await;
+async fn identify_betas_lists_each_node_and_url_once() {
+    let url = |s: &str| url::Url::from_str(s).unwrap();
+    let (holder, answering, silent) = (
+        url("https://a.example"),
+        url("https://b.example"),
+        url("https://c.example"),
+    );
+    let (impostor, twin, alpha) = (
+        url("https://d.example"),
+        url("https://e.example"),
+        url("https://f.example"),
+    );
+    let factory = factory_answering(vec![
+        (holder.clone(), Some(beta_id(8))),
+        (answering.clone(), Some(beta_id(7))),
+        (silent.clone(), None),
+        (impostor.clone(), Some(beta_id(1))),
+        (twin.clone(), Some(beta_id(7))),
+        (alpha.clone(), Some(test_pub_key())),
+    ]);
 
-    let url = wlt
-        .read()
-        .await
-        .beta_url(&NodeId::new(beta_id(4), bitcoin::Network::Testnet))
-        .await
-        .unwrap();
-
-    assert_eq!(url, live_url);
-}
-
-#[tokio::test]
-async fn unidentified_duplicate_of_an_identified_url_is_dropped() {
-    let shared = url::Url::from_str("https://beta-a.example").unwrap();
-    let other = url::Url::from_str("https://beta-b.example").unwrap();
-    let factory = factory_answering(vec![(shared.clone(), Some(beta_id(7)))]);
     let betas = util::identify_betas(
         test_pub_key(),
         vec![
-            test_beta(&shared, 5),
-            beta_without_id(&shared),
-            test_beta(&other, 2),
+            test_beta(&holder, 1),
+            beta_without_id(&holder),
+            beta_without_id(&answering),
+            beta_without_id(&silent),
+            beta_without_id(&silent),
+            beta_without_id(&impostor),
+            beta_without_id(&twin),
+            beta_without_id(&alpha),
         ],
         factory.as_ref(),
     )
     .await;
-    assert_eq!(betas, vec![test_beta(&shared, 5), test_beta(&other, 2)]);
-}
 
-#[tokio::test]
-async fn unidentified_betas_still_vote_rabid_by_url() {
-    let wlt = wallet(wallet_ctx()).await;
-    let rabid = || status_beta(wire_clowder::SimpleAlphaState::Rabid("rabid".to_string()));
-    let mk = |s: &str| (beta_without_id(&url::Url::from_str(s).unwrap()), rabid());
-    let wlt = wallet_with_betas(
-        wlt,
+    assert_eq!(
+        betas,
         vec![
-            mk("https://b1.example"),
-            mk("https://b2.example"),
-            mk("https://b3.example"),
-        ],
-    )
-    .await;
-
-    assert!(wlt.read().await.is_wallet_mint_rabid().await.unwrap());
+            test_beta(&holder, 1),
+            test_beta(&answering, 7),
+            beta_without_id(&silent),
+        ]
+    );
 }
