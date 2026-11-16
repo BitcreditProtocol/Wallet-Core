@@ -20,7 +20,7 @@ use bcr_wallet_core::{
     SendSync,
     types::{Seed, SendSummary},
 };
-use bcr_wallet_persistence::{PocketRepository, SwapCommitmentRecord};
+use bcr_wallet_persistence::{CounterReservation, PocketRepository, SwapCommitmentRecord};
 use rand::seq::{IndexedRandom, SliceRandom};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -200,7 +200,7 @@ enum SendPlan {
 #[derive(Default, Clone)]
 pub(crate) struct InFlight(
     Arc<Mutex<HashMap<cdk01::PublicKey, usize>>>,
-    Arc<Mutex<HashMap<AttemptKey, u32>>>,
+    Arc<Mutex<HashMap<AttemptKey, CounterReservation>>>,
 );
 
 impl InFlight {
@@ -278,14 +278,14 @@ pub(crate) fn exchange_key(seed: &Seed, proofs: &[cdk00::Proof]) -> Result<cdk01
 type AttemptKey = (Vec<cdk01::PublicKey>, ecash::Id, Amount, String);
 
 struct Attempt {
-    ledger: Arc<Mutex<HashMap<AttemptKey, u32>>>,
+    ledger: Arc<Mutex<HashMap<AttemptKey, CounterReservation>>>,
     inputs: Vec<cdk01::PublicKey>,
     held: Vec<AttemptKey>,
 }
 
 pub(crate) struct Counters<'a> {
     db: &'a dyn PocketRepository,
-    reserved: Vec<(ecash::Id, u32, u32)>,
+    reserved: Vec<CounterReservation>,
     attempt: Option<Attempt>,
     released: std::sync::atomic::AtomicBool,
 }
@@ -349,24 +349,28 @@ impl<'a> Counters<'a> {
     ) -> Result<cdk00::PreMintSecrets> {
         let fee_and_amounts = bcr_wallet_core::util::to_fee_and_amounts(keyset);
         let n = amount.split_targeted(target, &fee_and_amounts)?.len() as u32;
-        let start = match self.attempt.as_mut() {
+        let reservation = match self.attempt.as_mut() {
             Some(attempt) => {
                 let key = (attempt.inputs.clone(), kid, amount, format!("{target:?}"));
                 let known = attempt.ledger.lock().unwrap().get(&key).copied();
-                let start = match known {
-                    Some(start) => start,
+                let reservation = match known {
+                    Some(reservation) => reservation,
                     None => self.db.reserve_counter(kid, n).await?,
                 };
-                attempt.ledger.lock().unwrap().insert(key.clone(), start);
+                attempt
+                    .ledger
+                    .lock()
+                    .unwrap()
+                    .insert(key.clone(), reservation);
                 attempt.held.push(key);
-                start
+                reservation
             }
             None => self.db.reserve_counter(kid, n).await?,
         };
-        self.reserved.push((kid, start, n));
+        self.reserved.push(reservation);
         Ok(cdk00::PreMintSecrets::from_seed(
             kid.into(),
-            start,
+            reservation.start,
             seed,
             amount,
             target,
@@ -388,7 +392,7 @@ impl<'a> Counters<'a> {
         self.forget_attempt();
     }
 
-    fn reserved(&self) -> Vec<(ecash::Id, u32, u32)> {
+    fn reserved(&self) -> Vec<CounterReservation> {
         self.reserved.clone()
     }
 
@@ -406,9 +410,14 @@ impl<'a> Counters<'a> {
         {
             return;
         }
-        for &(kid, start, n) in &self.reserved {
-            if let Err(e) = self.db.release_counter(kid, start, n).await {
-                tracing::warn!("Failed to release counters {start}+{n} of {kid}: {e}");
+        for &r in &self.reserved {
+            if let Err(e) = self.db.release_counter(r).await {
+                tracing::warn!(
+                    "Failed to release counters {}+{} of {}: {e}",
+                    r.start,
+                    r.n,
+                    r.kid
+                );
             }
         }
     }
@@ -478,7 +487,7 @@ pub(crate) async fn commit_swap(
     swap_config: &SwapConfig,
     premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
     attestation: wire_attestation::IssuanceAttestation,
-    reservations: Vec<(ecash::Id, u32, u32)>,
+    reservations: Vec<CounterReservation>,
 ) -> Result<(Vec<cdk00::Proof>, bitcoin::secp256k1::schnorr::Signature)> {
     // Remove dleqs from same-mint swaps to not give up a blinding factor
     let inputs = crate::wallet::util::remove_dleq_from_proofs(inputs);
@@ -1151,7 +1160,10 @@ pub(crate) fn sum_amounts(amounts: impl IntoIterator<Item = Amount>) -> Result<A
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{external::mint::MockClowderMintConnector, pocket::test_utils::tests::test_kinfos};
+    use crate::{
+        external::mint::MockClowderMintConnector,
+        pocket::test_utils::tests::{granted, test_kinfos},
+    };
     use bcr_common::{cashu::Proof, core::signature, core_tests};
     use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
     use mockall::predicate::*;
@@ -1180,7 +1192,7 @@ mod tests {
         db.expect_reserve_counter()
             .times(1)
             .with(eq(kid), eq(1))
-            .returning(|_, _| Ok(3));
+            .returning(granted(3));
 
         let premint = Counters::new(&db)
             .premint_from_counter(&zero_seed(), kid, amount, &SplitTarget::None, &keyset)
@@ -1204,10 +1216,8 @@ mod tests {
         let kid = info.id;
         let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
         let mut db = MockPocketRepository::new();
-        db.expect_reserve_counter().returning(|_, _| Ok(0));
-        db.expect_release_counter()
-            .times(1)
-            .returning(|_, _, _| Ok(()));
+        db.expect_reserve_counter().returning(granted(0));
+        db.expect_release_counter().times(1).returning(|_| Ok(()));
         let mut counters = Counters::new(&db);
         counters
             .premint_from_counter(
@@ -1465,7 +1475,7 @@ mod tests {
             .expect_reserve_counter()
             .times(1)
             .with(eq(keyset.id), eq(5))
-            .returning(|_, _| Ok(0));
+            .returning(granted(0));
         let cloned_keyset = keyset.clone();
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
         mockclient
@@ -1622,7 +1632,7 @@ mod tests {
         mockdb
             .expect_reserve_counter()
             .times(1)
-            .returning(|_, _| Ok(0));
+            .returning(granted(0));
 
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
 
@@ -1731,7 +1741,7 @@ mod tests {
         mockdb
             .expect_reserve_counter()
             .times(1)
-            .returning(|_, _| Ok(0));
+            .returning(granted(0));
 
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
 
@@ -1826,7 +1836,7 @@ mod tests {
         mockdb
             .expect_reserve_counter()
             .times(1)
-            .returning(|_, _| Ok(0));
+            .returning(granted(0));
 
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
 
@@ -1920,7 +1930,7 @@ mod tests {
         mockdb
             .expect_reserve_counter()
             .times(2)
-            .returning(|_, _| Ok(0));
+            .returning(granted(0));
 
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
 

@@ -1708,7 +1708,8 @@ mod tests {
     use mockall::predicate::*;
 
     use crate::pocket::test_utils::tests::{
-        setup_attestation_mock, setup_commitment_mocks, test_beta_provider, test_swap_config,
+        granted, setup_attestation_mock, setup_commitment_mocks, test_beta_provider,
+        test_swap_config,
     };
 
     fn pocket(pdb: Arc<dyn PocketRepository>, mdb: Arc<dyn MintMeltRepository>) -> super::Pocket {
@@ -1927,7 +1928,7 @@ mod tests {
         pdb.expect_reserve_counter()
             .times(1)
             .with(eq(kid), eq(2))
-            .returning(|_, _| Ok(0));
+            .returning(granted(0));
         setup_commitment_mocks(&mut connector, &mut pdb);
         connector
             .expect_post_swap_committed()
@@ -2040,8 +2041,8 @@ mod tests {
         let commitments = Arc::new(Mutex::new(Vec::new()));
         let stored = Arc::new(Mutex::new(Vec::<cdk00::Proof>::new()));
         let mut pdb = MockPocketRepository::new();
-        pdb.expect_reserve_counter().returning(|_, _| Ok(0));
-        pdb.expect_release_counter().returning(|_, _, _| Ok(()));
+        pdb.expect_reserve_counter().returning(granted(0));
+        pdb.expect_release_counter().returning(|_| Ok(()));
         let records = commitments.clone();
         pdb.expect_mark_reservations_sent().returning(|_| Ok(()));
         pdb.expect_store_commitment()
@@ -2196,7 +2197,7 @@ mod tests {
                 .receive_proofs(Arc::new(connector), &k_infos, proofs, test_swap_config())
                 .await
                 .expect_err("commitment fails");
-            let tip = pdb.reserve_counter(kid, 0).await.unwrap();
+            let tip = pdb.reserve_counter(kid, 0).await.unwrap().start;
             assert_eq!(tip == 0, released, "tip {tip}");
         }
     }
@@ -2302,13 +2303,13 @@ mod tests {
                 .await
                 .expect_err("the commitment times out");
         }
-        assert_eq!(pdb.reserve_counter(kid, 0).await.unwrap(), 2);
+        assert_eq!(pdb.reserve_counter(kid, 0).await.unwrap().start, 2);
         let (cashed, _) = pocket
             .receive_proofs(connector, &k_infos, proofs, test_swap_config())
             .await
             .unwrap();
         assert_eq!(cashed, Amount::from(24u64));
-        assert_eq!(pdb.reserve_counter(kid, 0).await.unwrap(), 2);
+        assert_eq!(pdb.reserve_counter(kid, 0).await.unwrap().start, 2);
     }
 
     #[tokio::test]
@@ -2362,10 +2363,8 @@ mod tests {
         let (info, keyset) = core_tests::generate_random_ecash_keyset();
         let k_infos = test_kinfos(info);
         let mut pdb = MockPocketRepository::new();
-        pdb.expect_reserve_counter().returning(|_, _| Ok(0));
-        pdb.expect_release_counter()
-            .times(1)
-            .returning(|_, _, _| Ok(()));
+        pdb.expect_reserve_counter().returning(granted(0));
+        pdb.expect_release_counter().times(1).returning(|_| Ok(()));
         pdb.expect_list_commitments().returning(|| {
             Err(bcr_wallet_persistence::error::Error::BorshSerialization(
                 "simulated lookup failure".to_string(),
@@ -2671,7 +2670,7 @@ mod tests {
         pdb.expect_reserve_counter()
             .times(1)
             .with(eq(kid), eq(2))
-            .returning(|_, _| Ok(0));
+            .returning(granted(0));
         setup_commitment_mocks(&mut connector, &mut pdb);
         connector
             .expect_post_swap_committed()
@@ -2740,7 +2739,7 @@ mod tests {
         pdb.expect_reserve_counter()
             .times(1)
             .with(eq(kid), eq(1))
-            .returning(|_, _| Ok(0));
+            .returning(granted(0));
         let proofs_clone_mark = proofs.clone();
         pdb.expect_mark_pending_as_spent()
             .times(1)
@@ -3388,7 +3387,7 @@ mod tests {
         pdb.expect_reserve_counter()
             .times(1)
             .with(eq(kid), always())
-            .returning(|_, _| Ok(0));
+            .returning(granted(0));
         pdb.expect_clear_reservations()
             .times(1)
             .returning(|_| Ok(()));
@@ -3507,7 +3506,7 @@ mod tests {
                 .mint_onchain(amount, &k_infos, Arc::new(connector))
                 .await
                 .expect_err("quote fails");
-            assert_eq!(pdb.reserve_counter(kid, 0).await.unwrap(), tip);
+            assert_eq!(pdb.reserve_counter(kid, 0).await.unwrap().start, tip);
             drop(pdb);
         }
     }
@@ -3559,7 +3558,7 @@ mod tests {
             .mint_onchain(amount, &k_infos, Arc::new(connector))
             .await
             .expect("mint onchain works");
-        assert_eq!(pdb.reserve_counter(kid, 0).await.unwrap(), 2);
+        assert_eq!(pdb.reserve_counter(kid, 0).await.unwrap().start, 2);
     }
 
     #[tokio::test]
@@ -4719,7 +4718,7 @@ mod tests {
         let substitute_clowder_id = secp256k1::PublicKey::from_keypair(&substitute_keypair);
         let mdb = MockMintMeltRepository::new();
         let mut pdb = MockPocketRepository::new();
-        pdb.expect_reserve_counter().returning(|_, _| Ok(0));
+        pdb.expect_reserve_counter().returning(granted(0));
         pdb.expect_clear_reservations()
             .times(1)
             .returning(|_| Ok(()));

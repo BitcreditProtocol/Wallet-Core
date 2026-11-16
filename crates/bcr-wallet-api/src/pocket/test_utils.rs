@@ -14,7 +14,21 @@ pub mod tests {
 
     use bcr_common::cashu::{self, Amount, CurrencyUnit};
     use bcr_common::ecash::{self, KeySetInfo, MintKeySetInfo};
+    use bcr_wallet_persistence::CounterReservation;
     use bitcoin::secp256k1;
+
+    pub fn granted(
+        start: u32,
+    ) -> impl FnMut(ecash::Id, u32) -> bcr_wallet_persistence::Result<CounterReservation> {
+        move |kid, n| {
+            Ok(CounterReservation {
+                kid,
+                start,
+                n,
+                id: 0,
+            })
+        }
+    }
 
     pub fn test_kinfos(info: MintKeySetInfo) -> HashMap<ecash::Id, KeySetInfo> {
         let mut map = HashMap::new();

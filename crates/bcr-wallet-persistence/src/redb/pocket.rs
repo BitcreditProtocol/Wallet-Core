@@ -1,6 +1,6 @@
 use crate::{
-    ExchangeRecord, MigrationJournalEntry, MigrationJournalHeader, MigrationJournalRepository,
-    MigrationJournalState, PocketRepository, SwapCommitmentRecord,
+    CounterReservation, ExchangeRecord, MigrationJournalEntry, MigrationJournalHeader,
+    MigrationJournalRepository, MigrationJournalState, PocketRepository, SwapCommitmentRecord,
     error::{Error, Result},
 };
 use async_trait::async_trait;
@@ -521,6 +521,7 @@ pub(super) struct StoredReservationPayloadV1 {
     pub kid: ecash::Id,
     pub start: u32,
     pub n: u32,
+    pub id: u128,
     pub sent: bool,
 }
 
@@ -1045,17 +1046,32 @@ impl PocketDB {
         Ok((range.start.checked_add(range.n) == Some(end)).then_some(range.start))
     }
 
+    fn take_reservation(
+        reservations: &mut redb::Table<'_, &'static [u8], Vec<u8>>,
+        kid: ecash::Id,
+        start: u32,
+        id: Option<u128>,
+    ) -> Result<bool> {
+        let key = Self::released_key(kid, start);
+        let Some(entry) = reservations.get(key.as_slice())?.map(|e| e.value()) else {
+            return Ok(false);
+        };
+        let StoredReservation::V1(held) =
+            borsh::from_slice(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+        if id.is_some_and(|id| id != held.id) {
+            return Ok(false);
+        }
+        reservations.remove(key.as_slice())?;
+        Ok(true)
+    }
+
     fn release_in(
         counters: &mut redb::Table<'_, &'static [u8], Vec<u8>>,
         released: &mut redb::Table<'_, &'static [u8], Vec<u8>>,
         reservations: &mut redb::Table<'_, &'static [u8], Vec<u8>>,
-        kid: ecash::Id,
-        start: u32,
-        n: u32,
+        CounterReservation { kid, start, n, id }: CounterReservation,
     ) -> Result<()> {
-        let held = reservations
-            .remove(Self::released_key(kid, start).as_slice())?
-            .is_some();
+        let held = Self::take_reservation(reservations, kid, start, Some(id))?;
         let Some(end) = start.checked_add(n).filter(|_| held && n > 0) else {
             return Ok(());
         };
@@ -1084,23 +1100,14 @@ impl PocketDB {
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         released_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         reservation_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        kid: ecash::Id,
-        start: u32,
-        n: u32,
+        reservation: CounterReservation,
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
         {
             let mut counters = write_txn.open_table(counter_table)?;
             let mut released = write_txn.open_table(released_table)?;
             let mut reservations = write_txn.open_table(reservation_table)?;
-            Self::release_in(
-                &mut counters,
-                &mut released,
-                &mut reservations,
-                kid,
-                start,
-                n,
-            )?;
+            Self::release_in(&mut counters, &mut released, &mut reservations, reservation)?;
         }
         write_txn.commit()?;
         Ok(())
@@ -1112,8 +1119,9 @@ impl PocketDB {
         reservation_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         kid: ecash::Id,
         n: u32,
-    ) -> Result<u32> {
+    ) -> Result<CounterReservation> {
         let write_txn = db.begin_write()?;
+        let id = uuid::Uuid::new_v4().as_u128();
         let start = {
             let mut counters = write_txn.open_table(counter_table)?;
             let start = Self::counter_in(&counters, kid)?;
@@ -1125,6 +1133,7 @@ impl PocketDB {
                     kid,
                     start,
                     n,
+                    id,
                     sent: false,
                 });
                 let serialized =
@@ -1135,15 +1144,15 @@ impl PocketDB {
             start
         };
         write_txn.commit()?;
-        Ok(start)
+        Ok(CounterReservation { kid, start, n, id })
     }
 
     fn clear_reservations_in(
         reservations: &mut redb::Table<'_, &'static [u8], Vec<u8>>,
-        ranges: &[(ecash::Id, u32, u32)],
+        ranges: &[CounterReservation],
     ) -> Result<()> {
-        for &(kid, start, _) in ranges {
-            reservations.remove(Self::released_key(kid, start).as_slice())?;
+        for r in ranges {
+            Self::take_reservation(reservations, r.kid, r.start, Some(r.id))?;
         }
         Ok(())
     }
@@ -1151,7 +1160,7 @@ impl PocketDB {
     fn clear_reservations_sync(
         db: Arc<Database>,
         reservation_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        ranges: &[(ecash::Id, u32, u32)],
+        ranges: &[CounterReservation],
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
         {
@@ -1165,18 +1174,21 @@ impl PocketDB {
     fn mark_reservations_sent_sync(
         db: Arc<Database>,
         reservation_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        ranges: &[(ecash::Id, u32, u32)],
+        ranges: &[CounterReservation],
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
         {
             let mut reservations = write_txn.open_table(reservation_table)?;
-            for &(kid, start, _) in ranges {
-                let key = Self::released_key(kid, start);
+            for r in ranges {
+                let key = Self::released_key(r.kid, r.start);
                 let Some(entry) = reservations.get(key.as_slice())?.map(|e| e.value()) else {
                     continue;
                 };
                 let StoredReservation::V1(mut held) = borsh::from_slice(&entry)
                     .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                if held.id != r.id {
+                    continue;
+                }
                 held.sent = true;
                 let serialized = borsh::to_vec(&StoredReservation::V1(held))
                     .map_err(|e| Error::BorshSerialization(e.to_string()))?;
@@ -1209,17 +1221,16 @@ impl PocketDB {
             }
             for r in leftovers {
                 if r.sent {
-                    Self::clear_reservations_in(&mut reservations, &[(r.kid, r.start, r.n)])?;
+                    Self::take_reservation(&mut reservations, r.kid, r.start, None)?;
                     continue;
                 }
-                Self::release_in(
-                    &mut counters,
-                    &mut released,
-                    &mut reservations,
-                    r.kid,
-                    r.start,
-                    r.n,
-                )?;
+                let reservation = CounterReservation {
+                    kid: r.kid,
+                    start: r.start,
+                    n: r.n,
+                    id: r.id,
+                };
+                Self::release_in(&mut counters, &mut released, &mut reservations, reservation)?;
             }
         }
         write_txn.commit()?;
@@ -1231,7 +1242,7 @@ impl PocketDB {
         commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         reservation_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         record: crate::SwapCommitmentRecord,
-        reservations: &[(ecash::Id, u32, u32)],
+        reservations: &[CounterReservation],
         keys: bitcoin::secp256k1::Keypair,
     ) -> Result<()> {
         let commitment = record.commitment;
@@ -1681,7 +1692,7 @@ impl PocketRepository for PocketDB {
         Ok(proofs.remove(0))
     }
 
-    async fn reserve_counter(&self, kid: ecash::Id, n: u32) -> Result<u32> {
+    async fn reserve_counter(&self, kid: ecash::Id, n: u32) -> Result<CounterReservation> {
         let db_clone = self.db.clone();
         let counter_table = self.counter_table;
         let reservation_table = self.reservation_table;
@@ -1701,7 +1712,7 @@ impl PocketRepository for PocketDB {
         Ok(())
     }
 
-    async fn release_counter(&self, kid: ecash::Id, start: u32, n: u32) -> Result<()> {
+    async fn release_counter(&self, reservation: CounterReservation) -> Result<()> {
         let db_clone = self.db.clone();
         let counter_table = self.counter_table;
         let released_table = self.released_counter_table;
@@ -1712,21 +1723,19 @@ impl PocketRepository for PocketDB {
                 counter_table,
                 released_table,
                 reservation_table,
-                kid,
-                start,
-                n,
+                reservation,
             )
         })
         .await?
     }
 
-    async fn clear_reservations(&self, ranges: Vec<(ecash::Id, u32, u32)>) -> Result<()> {
+    async fn clear_reservations(&self, ranges: Vec<CounterReservation>) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.reservation_table;
         spawn_blocking(move || Self::clear_reservations_sync(db_clone, table, &ranges)).await?
     }
 
-    async fn mark_reservations_sent(&self, ranges: Vec<(ecash::Id, u32, u32)>) -> Result<()> {
+    async fn mark_reservations_sent(&self, ranges: Vec<CounterReservation>) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.reservation_table;
         spawn_blocking(move || Self::mark_reservations_sent_sync(db_clone, table, &ranges)).await?
@@ -1735,7 +1744,7 @@ impl PocketRepository for PocketDB {
     async fn store_commitment(
         &self,
         record: crate::SwapCommitmentRecord,
-        reservations: Vec<(ecash::Id, u32, u32)>,
+        reservations: Vec<CounterReservation>,
     ) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.commitment_table;
@@ -2240,15 +2249,24 @@ mod tests {
         let kid = mintkeyset.id;
 
         assert_eq!(
-            repo.reserve_counter(kid, 3).await.expect("reserve works"),
+            repo.reserve_counter(kid, 3)
+                .await
+                .expect("reserve works")
+                .start,
             0
         );
         assert_eq!(
-            repo.reserve_counter(kid, 2).await.expect("reserve works"),
+            repo.reserve_counter(kid, 2)
+                .await
+                .expect("reserve works")
+                .start,
             3
         );
         assert_eq!(
-            repo.reserve_counter(kid, 0).await.expect("reserve works"),
+            repo.reserve_counter(kid, 0)
+                .await
+                .expect("reserve works")
+                .start,
             5
         );
     }
@@ -2277,7 +2295,10 @@ mod tests {
         let expected: Vec<u32> = (0..TASKS).map(|i| i * PER_TASK).collect();
         assert_eq!(starts, expected);
         assert_eq!(
-            repo.reserve_counter(kid, 0).await.expect("reserve works"),
+            repo.reserve_counter(kid, 0)
+                .await
+                .expect("reserve works")
+                .start,
             TASKS * PER_TASK
         );
     }
@@ -2293,7 +2314,10 @@ mod tests {
             .await
             .expect("advance works");
         assert_eq!(
-            repo.reserve_counter(kid, 0).await.expect("reserve works"),
+            repo.reserve_counter(kid, 0)
+                .await
+                .expect("reserve works")
+                .start,
             50
         );
 
@@ -2301,7 +2325,10 @@ mod tests {
             .await
             .expect("advance works");
         assert_eq!(
-            repo.reserve_counter(kid, 0).await.expect("reserve works"),
+            repo.reserve_counter(kid, 0)
+                .await
+                .expect("reserve works")
+                .start,
             100
         );
     }
@@ -2322,7 +2349,7 @@ mod tests {
             let sizes = [3, 2, 4];
             let mut ranges = Vec::new();
             for n in sizes {
-                ranges.push((repo.reserve_counter(kid, n).await.unwrap(), n));
+                ranges.push((repo.reserve_counter(kid, n).await.unwrap().start, n));
             }
             for i in order {
                 repo.release_counter(kid, ranges[i].0, ranges[i].1)
@@ -2332,7 +2359,11 @@ mod tests {
                     .await
                     .unwrap();
             }
-            assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 0, "{order:?}");
+            assert_eq!(
+                repo.reserve_counter(kid, 0).await.unwrap().start,
+                0,
+                "{order:?}"
+            );
         }
 
         let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
@@ -2342,9 +2373,9 @@ mod tests {
         repo.reserve_counter(kid, 4).await.unwrap();
         repo.release_counter(kid, b, 2).await.unwrap();
         repo.release_counter(kid, b, 2).await.unwrap();
-        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 9);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap().start, 9);
         repo.release_counter(kid, a, 3).await.unwrap();
-        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 9);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap().start, 9);
     }
 
     #[tokio::test]
@@ -2780,14 +2811,14 @@ mod tests {
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = mintkeyset.id;
         let repo = open(&db, keys);
-        assert_eq!(repo.reserve_counter(kid, 3).await.unwrap(), 0);
-        assert_eq!(repo.reserve_counter(kid, 2).await.unwrap(), 3);
+        assert_eq!(repo.reserve_counter(kid, 3).await.unwrap().start, 0);
+        assert_eq!(repo.reserve_counter(kid, 2).await.unwrap().start, 3);
         repo.release_counter(kid, 0, 3).await.unwrap();
         drop(repo);
 
         let repo = open(&db, keys);
-        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 0);
-        assert_eq!(repo.reserve_counter(kid, 1).await.unwrap(), 0);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap().start, 0);
+        assert_eq!(repo.reserve_counter(kid, 1).await.unwrap().start, 0);
     }
 
     #[tokio::test]
@@ -2804,7 +2835,7 @@ mod tests {
         drop(repo);
 
         let repo = open(&db, keys);
-        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 3);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap().start, 3);
     }
 
     #[tokio::test]
@@ -2820,7 +2851,7 @@ mod tests {
         drop(repo);
 
         let repo = open(&db, keys);
-        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 2);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap().start, 2);
     }
 
     #[tokio::test]
@@ -2832,24 +2863,24 @@ mod tests {
         let sig = record.commitment;
 
         let p = open(&db, keys);
-        assert_eq!(p.reserve_counter(k, 3).await.unwrap(), 0);
+        assert_eq!(p.reserve_counter(k, 3).await.unwrap().start, 0);
         p.store_commitment(record, vec![(k, 0, 3)]).await.unwrap();
-        assert_eq!(p.reserve_counter(k, 2).await.unwrap(), 3);
+        assert_eq!(p.reserve_counter(k, 2).await.unwrap().start, 3);
         drop(p);
 
         let p = open(&db, keys);
         assert!(p.load_commitment(sig).await.is_ok());
-        assert_eq!(p.reserve_counter(k, 2).await.unwrap(), 3);
+        assert_eq!(p.reserve_counter(k, 2).await.unwrap().start, 3);
         p.clear_reservations(vec![(k, 3, 2)]).await.unwrap();
         drop(p);
 
         let p = open(&db, keys);
-        assert_eq!(p.reserve_counter(k, 1).await.unwrap(), 5);
-        assert_eq!(p.reserve_counter(k, 4).await.unwrap(), 6);
+        assert_eq!(p.reserve_counter(k, 1).await.unwrap().start, 5);
+        assert_eq!(p.reserve_counter(k, 4).await.unwrap().start, 6);
         drop(p);
 
         let p = open(&db, keys);
-        assert_eq!(p.reserve_counter(k, 0).await.unwrap(), 5);
+        assert_eq!(p.reserve_counter(k, 0).await.unwrap().start, 5);
     }
 
     #[tokio::test]
@@ -2858,18 +2889,18 @@ mod tests {
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = mintkeyset.id;
         let repo = open(&db, keys);
-        assert_eq!(repo.reserve_counter(kid, 2).await.unwrap(), 0);
-        assert_eq!(repo.reserve_counter(kid, 1).await.unwrap(), 2);
+        assert_eq!(repo.reserve_counter(kid, 2).await.unwrap().start, 0);
+        assert_eq!(repo.reserve_counter(kid, 1).await.unwrap().start, 2);
         repo.mark_reservations_sent(vec![(kid, 2, 1)])
             .await
             .unwrap();
         drop(repo);
 
         let repo = open(&db, keys);
-        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 3);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap().start, 3);
         drop(repo);
         let repo = open(&db, keys);
-        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 3);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap().start, 3);
     }
 
     #[tokio::test]
@@ -2878,11 +2909,11 @@ mod tests {
         let (_, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = mintkeyset.id;
         let repo = open(&db, keys);
-        assert_eq!(repo.reserve_counter(kid, 2).await.unwrap(), 0);
+        assert_eq!(repo.reserve_counter(kid, 2).await.unwrap().start, 0);
         repo.mark_reservations_sent(vec![(kid, 0, 2)])
             .await
             .unwrap();
         repo.release_counter(kid, 0, 2).await.unwrap();
-        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap(), 0);
+        assert_eq!(repo.reserve_counter(kid, 0).await.unwrap().start, 0);
     }
 }
