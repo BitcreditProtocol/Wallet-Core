@@ -274,7 +274,7 @@ impl WalletApi for super::Wallet {
             ptype: WalletPaymentType::OnChain,
             memo: description,
         };
-        *self.current_payment.lock().await = Some(pref);
+        self.current_payments.insert(pref.request_id, pref);
         Ok(summary)
     }
 
@@ -327,19 +327,10 @@ impl WalletApi for super::Wallet {
     }
 
     async fn pay(&self, p_id: Uuid, now: u64) -> Result<(Uuid, Option<Token>)> {
-        let p_ref = self.current_payment.lock().await.take();
-        let Some(p_ref) = p_ref else {
-            tracing::error!("wallet: No current payment reference found");
+        let Some(p_ref) = self.current_payments.take(p_id) else {
+            tracing::error!("wallet: No prepared payment found for {p_id}");
             return Err(Error::NoPrepareRef(p_id));
         };
-        if p_ref.request_id != p_id {
-            tracing::error!(
-                "wallet: Payment reference ID mismatch: expected {}, got {}",
-                p_ref.request_id,
-                p_id
-            );
-            return Err(Error::NoPrepareRef(p_id));
-        }
         let infos = self.get_wallet_mint_keyset_infos().await?;
         let PayReference {
             request_id,
@@ -1105,7 +1096,7 @@ impl WalletApi for super::Wallet {
             ptype: WalletPaymentType::Token,
             memo: description,
         };
-        *self.current_payment.lock().await = Some(pref);
+        self.current_payments.insert(pref.request_id, pref);
         Ok(summary)
     }
 

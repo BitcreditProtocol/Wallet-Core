@@ -8,7 +8,7 @@ use crate::{
     ClowderMintConnector,
     error::{Error, Result},
     external::mint::ClientFactory,
-    pocket::{RestoreSummary, add_amounts, debit::DebitPocketApi},
+    pocket::{Prepared, RestoreSummary, add_amounts, debit::DebitPocketApi},
     types::PaymentSummary,
     wallet::{
         api::WalletApi,
@@ -100,7 +100,7 @@ pub struct Wallet {
     name: String,
     id: String,
     pub_key: secp256k1::PublicKey,
-    current_payment: Mutex<Option<PayReference>>,
+    current_payments: Prepared<PayReference>,
     payment_request_paid: Arc<Notify>,
     clowder_id: secp256k1::PublicKey,
     client_factory: Arc<ClientFactory>,
@@ -160,7 +160,7 @@ impl Wallet {
                 name,
                 id,
                 pub_key,
-                current_payment: Mutex::new(None),
+                current_payments: Prepared::default(),
                 payment_request_paid: Arc::new(Notify::new()),
                 beta_clients,
                 clowder_id,
@@ -2109,7 +2109,7 @@ impl Wallet {
             },
             memo,
         };
-        *self.current_payment.lock().await = Some(pref);
+        self.current_payments.insert(pref.request_id, pref);
         Ok(summary)
     }
 }

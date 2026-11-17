@@ -1,6 +1,7 @@
 # 0.9.17
 
 * Add support for dotted compileSdkVersion values in cargokit, so e.g. android-33.5 also works
+* Preparing a send, melt or payment no longer replaces an earlier prepared one: each is kept by its request id (up to 16 per kind, the oldest is dropped) until it is paid, so `wallet_pay` works for any prepared payment in any order
 
 # 0.9.16
 
