@@ -110,8 +110,7 @@ fn migrate_wallet_sync(db: Arc<Database>, namespace: WalletStorageNamespace) -> 
         tracing::info!("Applied Migration 0005 for wallet {}", &namespace.wallet_id);
     }
 
-    let migration_0006_id_for_wallet =
-        migration_0006::migration_name_for_wallet(&namespace.wallet_id);
+    let migration_0006_id_for_wallet = migration_0006::migration_name_for_wallet(&namespace);
     if !applied.contains(&migration_0006_id_for_wallet) {
         tracing::info!(
             "Applying Migration 0006 for wallet {}",

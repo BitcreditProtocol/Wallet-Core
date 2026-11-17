@@ -10,8 +10,11 @@ use redb::{ReadableTable, TableDefinition};
 ///////////////////////////////////////////////////////////////// MIGRATION 0006
 const MIGRATION_0006_PROOF_INDEX: &str = "0006_proof_index";
 
-pub(super) fn migration_name_for_wallet(wallet_id: &str) -> String {
-    format!("{}_{}", MIGRATION_0006_PROOF_INDEX, wallet_id)
+pub(super) fn migration_name_for_wallet(namespace: &WalletStorageNamespace) -> String {
+    format!(
+        "{}_{}",
+        MIGRATION_0006_PROOF_INDEX, namespace.proof_index_table
+    )
 }
 
 pub(super) fn migration_0006_proof_index(
@@ -144,5 +147,41 @@ mod tests {
 
         migrate(&db, &namespace);
         assert_eq!(index_keys(&db, &index_name), expected);
+    }
+
+    #[tokio::test]
+    async fn proof_index_backfilled_for_every_unit_of_a_wallet() {
+        let db = Arc::new(
+            Builder::new()
+                .create_with_backend(InMemoryBackend::new())
+                .expect("db"),
+        );
+        let keys =
+            bitcoin::secp256k1::Keypair::new_global(&mut bitcoin::secp256k1::rand::thread_rng());
+        let wid = wallet_id();
+        let units = [CurrencyUnit::Sat, CurrencyUnit::Msat];
+        for unit in &units {
+            let repo = PocketDB::new(db.clone(), &wid, unit, keys).expect("repo");
+            repo.store_new(proof()).await.unwrap();
+            drop_index(&db, &PocketDB::proof_index_table_name(&wid, unit));
+        }
+        let txn = db.begin_write().expect("write");
+        for name in [
+            crate::redb::migration::migration_0001::migration_name_for_wallet(&wid),
+            crate::redb::migration::migration_0003::migration_name_for_wallet(&wid),
+            crate::redb::migration::migration_0004::migration_name_for_wallet(&wid),
+            crate::redb::migration::migration_0005::migration_name_for_wallet(&wid),
+        ] {
+            crate::redb::migration::mark_migration_applied(&txn, &name).expect("mark");
+        }
+        txn.commit().expect("commit");
+        for unit in &units {
+            let namespace = collect_wallet_namespace(wid.clone(), unit.clone(), keys);
+            crate::redb::migration::migrate_wallet_sync(db.clone(), namespace).expect("migrate");
+        }
+        for unit in &units {
+            let name = PocketDB::proof_index_table_name(&wid, unit);
+            assert_eq!(index_keys(&db, &name).len(), 1, "unit {unit}");
+        }
     }
 }
