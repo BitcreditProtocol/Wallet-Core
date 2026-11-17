@@ -490,7 +490,12 @@ impl Pocket {
         target_amount: Amount,
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
     ) -> Result<(SendSummary, SendReference)> {
-        let unspent_proofs = self.pdb.list_unspent().await?;
+        let mut unspent_proofs = self.pdb.list_unspent().await?;
+        for ys in self.prepared_sends.collect(|r| r.plan.inputs().to_vec()) {
+            for y in ys {
+                unspent_proofs.remove(&y);
+            }
+        }
         let mut proofs: Vec<(&cdk01::PublicKey, &Proof)> = unspent_proofs.iter().collect();
         // sort by amount as required by `prepare_payment`, ties spend the earliest expiring keyset first
         proofs.sort_by_key(|(y, proof)| {
@@ -4326,7 +4331,7 @@ mod tests {
         let k_infos = test_kinfos(info);
         let proofs = core_tests::generate_random_ecash_proofs(
             &keyset,
-            &[Amount::from(4), Amount::from(8), Amount::from(16)],
+            &[Amount::from(4), Amount::from(4), Amount::from(16)],
         );
         let by_y: HashMap<_, _> = proofs
             .iter()
@@ -4350,7 +4355,7 @@ mod tests {
             .await
             .unwrap();
         let second = pocket
-            .prepare_send(Amount::from(12), &k_infos)
+            .prepare_send(Amount::from(4), &k_infos)
             .await
             .unwrap();
         assert_ne!(first.request_id, second.request_id);
@@ -4697,6 +4702,43 @@ mod tests {
                     .total_amount()
                     .unwrap(),
             Amount::from(24u64)
+        );
+    }
+
+    #[tokio::test]
+    async fn prepared_sends_never_share_proofs() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(4), Amount::from(4), Amount::from(16)],
+        );
+        let pdb = in_memory_pdb();
+        for p in proofs {
+            pdb.store_new(p).await.unwrap();
+        }
+        let pocket = pocket(pdb.clone(), Arc::new(MockMintMeltRepository::new()));
+        let a = pocket
+            .prepare_send(Amount::from(4), &k_infos)
+            .await
+            .unwrap();
+        let b = pocket
+            .prepare_send(Amount::from(4), &k_infos)
+            .await
+            .unwrap();
+        let client =
+            || -> Arc<dyn ClowderMintConnector> { Arc::new(MockClowderMintConnector::new()) };
+        pocket
+            .send_proofs(a.request_id, &k_infos, client(), test_swap_config())
+            .await
+            .expect("first prepared send payable");
+        let second = pocket
+            .send_proofs(b.request_id, &k_infos, client(), test_swap_config())
+            .await;
+        assert!(
+            second.is_ok(),
+            "second prepared send (wallet holds 4,4,16) not payable after paying the first: {:?}",
+            second.err()
         );
     }
 }

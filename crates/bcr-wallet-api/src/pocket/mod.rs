@@ -195,6 +195,15 @@ enum SendPlan {
     },
 }
 
+impl SendPlan {
+    fn inputs(&self) -> &[cdk01::PublicKey] {
+        match self {
+            SendPlan::Ready { proofs } => proofs,
+            SendPlan::NeedSwap { inputs, .. } => inputs,
+        }
+    }
+}
+
 ///////////////////////////////////////////// Prepared
 /// Most prepared operations of one kind that are held at once
 pub(crate) const MAX_PREPARED: usize = 16;
@@ -222,6 +231,15 @@ impl<T> Prepared<T> {
         let mut held = self.0.lock().unwrap();
         let pos = held.iter().position(|(id, _)| *id == rid)?;
         held.remove(pos).map(|(_, item)| item)
+    }
+
+    pub(crate) fn collect<R>(&self, f: impl Fn(&T) -> R) -> Vec<R> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, item)| f(item))
+            .collect()
     }
 
     #[cfg(test)]

@@ -85,6 +85,31 @@ impl NostrListener {
     }
 }
 
+/// Prepared payments by request id, token sends and onchain melts capped separately like the pocket
+#[derive(Default)]
+pub(crate) struct PreparedPayments {
+    sends: Prepared<PayReference>,
+    melts: Prepared<PayReference>,
+}
+
+impl PreparedPayments {
+    pub(crate) fn insert(&self, rid: Uuid, pref: PayReference) {
+        match pref.ptype {
+            WalletPaymentType::OnChain => self.melts.insert(rid, pref),
+            _ => self.sends.insert(rid, pref),
+        }
+    }
+
+    pub(crate) fn take(&self, rid: Uuid) -> Option<PayReference> {
+        self.sends.take(rid).or_else(|| self.melts.take(rid))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.sends.len() + self.melts.len()
+    }
+}
+
 pub struct Wallet {
     this: Weak<RwLock<Wallet>>,
     network: bitcoin::Network,
@@ -100,7 +125,7 @@ pub struct Wallet {
     name: String,
     id: String,
     pub_key: secp256k1::PublicKey,
-    current_payments: Prepared<PayReference>,
+    current_payments: PreparedPayments,
     payment_request_paid: Arc<Notify>,
     clowder_id: secp256k1::PublicKey,
     client_factory: Arc<ClientFactory>,
@@ -160,7 +185,7 @@ impl Wallet {
                 name,
                 id,
                 pub_key,
-                current_payments: Prepared::default(),
+                current_payments: PreparedPayments::default(),
                 payment_request_paid: Arc::new(Notify::new()),
                 beta_clients,
                 clowder_id,

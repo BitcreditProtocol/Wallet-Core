@@ -6734,3 +6734,37 @@ impl RealProofs {
         pause(&self.journal.before_swapped)
     }
 }
+
+#[tokio::test]
+async fn prepared_payments_cap_is_per_kind() {
+    let wlt = wallet(wallet_ctx()).await;
+    let tokens: Vec<Uuid> = (0..16).map(|_| Uuid::new_v4()).collect();
+    let mk = |pid: Uuid, ptype| PayReference {
+        request_id: pid,
+        unit: CurrencyUnit::Sat,
+        fees: TransactionFees::default(),
+        ptype,
+        memo: None,
+    };
+    for pid in &tokens {
+        wlt.read()
+            .await
+            .current_payments
+            .insert(*pid, mk(*pid, WalletPaymentType::Token));
+    }
+    let melt = Uuid::new_v4();
+    wlt.read()
+        .await
+        .current_payments
+        .insert(melt, mk(melt, WalletPaymentType::OnChain));
+    let mut lost = 0;
+    for p in &tokens {
+        if wlt.read().await.current_payments.take(*p).is_none() {
+            lost += 1;
+        }
+    }
+    assert_eq!(
+        lost, 0,
+        "{lost} of 16 prepared token payments evicted by one melt prepare (cap is per kind)"
+    );
+}
