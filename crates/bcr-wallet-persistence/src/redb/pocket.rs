@@ -624,9 +624,18 @@ fn from_stored_journal_entry_v1(
 }
 
 ///////////////////////////////////////////// PocketDB
+const PROOF_STATES: [cdk07::State; 5] = [
+    cdk07::State::Unspent,
+    cdk07::State::Pending,
+    cdk07::State::PendingSpent,
+    cdk07::State::Reserved,
+    cdk07::State::Spent,
+];
+
 pub struct PocketDB {
     db: Arc<Database>,
     proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    proof_index_table: TableDefinition<'static, &'static [u8], ()>,
     counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     foreign_mint_proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
@@ -637,6 +646,7 @@ pub struct PocketDB {
 
 impl PocketDB {
     const PROOF_BASE_DB_NAME: &'static str = "proofs";
+    const PROOF_INDEX_BASE_DB_NAME: &'static str = "proof_index";
     const FOREIGN_MINT_PROOF_BASE_DB_NAME: &'static str = "foreign_mint_proofs";
     const COUNTER_BASE_DB_NAME: &'static str = "counters";
     const COMMITMENT_BASE_DB_NAME: &'static str = "commitments";
@@ -645,6 +655,39 @@ impl PocketDB {
 
     pub fn proof_table_name(wallet_id: &str, unit: &CurrencyUnit) -> String {
         format!("{wallet_id}_{unit}_{}", Self::PROOF_BASE_DB_NAME)
+    }
+
+    pub fn proof_index_table_name(wallet_id: &str, unit: &CurrencyUnit) -> String {
+        format!("{wallet_id}_{unit}_{}", Self::PROOF_INDEX_BASE_DB_NAME)
+    }
+
+    /// Index key: one state tag byte followed by the proof's y, so one state is a prefix range.
+    pub(super) fn proof_index_key(state: cdk07::State, y: &cdk01::PublicKey) -> Vec<u8> {
+        let tag = match state {
+            cdk07::State::Unspent => 0u8,
+            cdk07::State::Pending => 1,
+            cdk07::State::PendingSpent => 2,
+            cdk07::State::Reserved => 3,
+            cdk07::State::Spent => 4,
+        };
+        let mut key = vec![tag];
+        key.extend_from_slice(&y.to_bytes());
+        key
+    }
+
+    /// Drops every index entry of `y` and, given a state, records the new one.
+    fn set_proof_index(
+        index: &mut redb::Table<'_, &'static [u8], ()>,
+        y: &cdk01::PublicKey,
+        state: Option<cdk07::State>,
+    ) -> Result<()> {
+        for old in PROOF_STATES {
+            index.remove(Self::proof_index_key(old, y).as_slice())?;
+        }
+        if let Some(state) = state {
+            index.insert(Self::proof_index_key(state, y).as_slice(), ())?;
+        }
+        Ok(())
     }
 
     pub fn counter_table_name(wallet_id: &str, unit: &CurrencyUnit) -> String {
@@ -682,6 +725,8 @@ impl PocketDB {
         // Leak once to get static string, because of dynamically generated table names
         let proof_name: &'static str =
             Box::leak(Self::proof_table_name(wallet_id, unit).into_boxed_str());
+        let proof_index_name: &'static str =
+            Box::leak(Self::proof_index_table_name(wallet_id, unit).into_boxed_str());
         let counter_name: &'static str =
             Box::leak(Self::counter_table_name(wallet_id, unit).into_boxed_str());
         let commitment_name: &'static str =
@@ -694,6 +739,7 @@ impl PocketDB {
             Box::leak(Self::migration_journal_table_name(wallet_id, unit).into_boxed_str());
 
         let proof_table = TableDefinition::new(proof_name);
+        let proof_index_table = TableDefinition::new(proof_index_name);
         let counter_table = TableDefinition::new(counter_name);
         let commitment_table = TableDefinition::new(commitment_name);
         let foreign_mint_proof_table = TableDefinition::new(foreign_mint_proof_name);
@@ -703,6 +749,7 @@ impl PocketDB {
         Ok(Self {
             db,
             proof_table,
+            proof_index_table,
             counter_table,
             commitment_table,
             foreign_mint_proof_table,
@@ -715,6 +762,7 @@ impl PocketDB {
     fn store_new_sync(
         db: Arc<Database>,
         proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        index_table: TableDefinition<'static, &'static [u8], ()>,
         keys: bitcoin::secp256k1::Keypair,
         proof: cdk00::Proof,
     ) -> Result<cdk01::PublicKey> {
@@ -729,6 +777,8 @@ impl PocketDB {
                 let serialized =
                     borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
                 table.insert(y.to_bytes().as_slice(), serialized)?;
+                let mut index = write_txn.open_table(index_table)?;
+                Self::set_proof_index(&mut index, &y, Some(cdk07::State::Unspent))?;
             }
         }
 
@@ -739,6 +789,7 @@ impl PocketDB {
     fn store_pendingspent_sync(
         db: Arc<Database>,
         proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        index_table: TableDefinition<'static, &'static [u8], ()>,
         keys: bitcoin::secp256k1::Keypair,
         proof: cdk00::Proof,
     ) -> Result<cdk01::PublicKey> {
@@ -753,6 +804,8 @@ impl PocketDB {
                 borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
 
             table.insert(y.to_bytes().as_slice(), serialized)?;
+            let mut index = write_txn.open_table(index_table)?;
+            Self::set_proof_index(&mut index, &y, Some(cdk07::State::PendingSpent))?;
         }
 
         write_txn.commit()?;
@@ -819,6 +872,7 @@ impl PocketDB {
     fn delete_proof_sync(
         db: Arc<Database>,
         proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        index_table: TableDefinition<'static, &'static [u8], ()>,
         keys: bitcoin::secp256k1::Keypair,
         y: cdk01::PublicKey,
     ) -> Result<Option<(cdk00::Proof, cdk07::State)>> {
@@ -826,6 +880,8 @@ impl PocketDB {
 
         let old = {
             let mut table = write_txn.open_table(proof_table)?;
+            let mut index = write_txn.open_table(index_table)?;
+            Self::set_proof_index(&mut index, &y, None)?;
             match table.remove(y.to_bytes().as_slice())? {
                 Some(old) => {
                     let deserialized: StoredProof = borsh::from_slice(old.value().as_slice())
@@ -895,6 +951,7 @@ impl PocketDB {
     fn update_entry_state_sync(
         db: Arc<Database>,
         proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        index_table: TableDefinition<'static, &'static [u8], ()>,
         keys: bitcoin::secp256k1::Keypair,
         ys: &[cdk01::PublicKey],
         old_state_set: &[cdk07::State],
@@ -904,6 +961,7 @@ impl PocketDB {
         let mut proofs = Vec::with_capacity(ys.len());
         {
             let mut table = write_txn.open_table(proof_table)?;
+            let mut index = write_txn.open_table(index_table)?;
             for y in ys {
                 let Some(old_value) = table.get(y.to_bytes().as_slice())?.map(|v| v.value()) else {
                     return Err(Error::ProofNotFound(*y));
@@ -921,6 +979,7 @@ impl PocketDB {
                     borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
 
                 table.insert(y.to_bytes().as_slice(), serialized)?;
+                Self::set_proof_index(&mut index, y, Some(new_state))?;
                 proofs.push(proof);
             }
         }
@@ -1182,6 +1241,7 @@ impl PocketDB {
     fn delete_repo(
         db: Arc<Database>,
         proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        proof_index_table: TableDefinition<'static, &'static [u8], ()>,
         commitment_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         counter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         foreign_mint_proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
@@ -1193,6 +1253,10 @@ impl PocketDB {
         {
             if write_txn.open_table(proof_table).is_ok() {
                 write_txn.delete_table(proof_table)?;
+            }
+
+            if write_txn.open_table(proof_index_table).is_ok() {
+                write_txn.delete_table(proof_index_table)?;
             }
 
             if write_txn.open_table(commitment_table).is_ok() {
@@ -1226,15 +1290,18 @@ impl PocketRepository for PocketDB {
     async fn store_new(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey> {
         let db_clone = self.db.clone();
         let table = self.proof_table;
+        let index = self.proof_index_table;
         let keys = self.keys;
-        spawn_blocking(move || Self::store_new_sync(db_clone, table, keys, proof)).await?
+        spawn_blocking(move || Self::store_new_sync(db_clone, table, index, keys, proof)).await?
     }
 
     async fn store_pendingspent(&self, proof: cdk00::Proof) -> Result<cdk01::PublicKey> {
         let db_clone = self.db.clone();
         let table = self.proof_table;
+        let index = self.proof_index_table;
         let keys = self.keys;
-        spawn_blocking(move || Self::store_pendingspent_sync(db_clone, table, keys, proof)).await?
+        spawn_blocking(move || Self::store_pendingspent_sync(db_clone, table, index, keys, proof))
+            .await?
     }
 
     async fn load_proof(&self, y: cdk01::PublicKey) -> Result<(cdk00::Proof, cdk07::State)> {
@@ -1268,9 +1335,10 @@ impl PocketRepository for PocketDB {
     ) -> Result<Option<(cdk00::Proof, cdk07::State)>> {
         let db_clone = self.db.clone();
         let table = self.proof_table;
+        let index = self.proof_index_table;
         let keys = self.keys;
-        let res =
-            spawn_blocking(move || Self::delete_proof_sync(db_clone, table, keys, y)).await??;
+        let res = spawn_blocking(move || Self::delete_proof_sync(db_clone, table, index, keys, y))
+            .await??;
         Ok(res)
     }
 
@@ -1350,11 +1418,13 @@ impl PocketRepository for PocketDB {
     async fn mark_as_pendingspent(&self, ys: Vec<cdk01::PublicKey>) -> Result<Vec<cdk00::Proof>> {
         let db_clone = self.db.clone();
         let table = self.proof_table;
+        let index = self.proof_index_table;
         let keys = self.keys;
         spawn_blocking(move || {
             Self::update_entry_state_sync(
                 db_clone,
                 table,
+                index,
                 keys,
                 &ys,
                 &[cdk07::State::Unspent],
@@ -1367,11 +1437,13 @@ impl PocketRepository for PocketDB {
     async fn mark_pending_as_spent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof> {
         let db_clone = self.db.clone();
         let table = self.proof_table;
+        let index = self.proof_index_table;
         let keys = self.keys;
         let mut proofs = spawn_blocking(move || {
             Self::update_entry_state_sync(
                 db_clone,
                 table,
+                index,
                 keys,
                 &[y],
                 &[cdk07::State::Pending, cdk07::State::PendingSpent],
@@ -1385,11 +1457,13 @@ impl PocketRepository for PocketDB {
     async fn revert_pendingspent_to_unspent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof> {
         let db_clone = self.db.clone();
         let table = self.proof_table;
+        let index = self.proof_index_table;
         let keys = self.keys;
         let mut proofs = spawn_blocking(move || {
             Self::update_entry_state_sync(
                 db_clone,
                 table,
+                index,
                 keys,
                 &[y],
                 &[cdk07::State::PendingSpent],
@@ -1474,6 +1548,7 @@ impl PocketRepository for PocketDB {
     async fn delete_repo(&self) -> Result<()> {
         let db_clone = self.db.clone();
         let proof_table = self.proof_table;
+        let proof_index_table = self.proof_index_table;
         let commitment_table = self.commitment_table;
         let counter_table = self.counter_table;
         let foreign_mint_proof_table = self.foreign_mint_proof_table;
@@ -1483,6 +1558,7 @@ impl PocketRepository for PocketDB {
             Self::delete_repo(
                 db_clone,
                 proof_table,
+                proof_index_table,
                 commitment_table,
                 counter_table,
                 foreign_mint_proof_table,
@@ -1558,6 +1634,7 @@ impl PocketDB {
     fn put_journal_sync(
         db: Arc<Database>,
         proof_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        index_table: TableDefinition<'static, &'static [u8], ()>,
         journal_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         keys: bitcoin::secp256k1::Keypair,
         header: MigrationJournalHeader,
@@ -1566,6 +1643,7 @@ impl PocketDB {
         let write_txn = db.begin_write()?;
         {
             let mut proofs = write_txn.open_table(proof_table)?;
+            let mut index = write_txn.open_table(index_table)?;
             let mut journal = write_txn.open_table(journal_table)?;
             for (y, exchange_key) in entries {
                 let key = y.to_bytes();
@@ -1575,6 +1653,7 @@ impl PocketDB {
                 let Some(stored) = proofs.remove(key.as_slice())?.map(|v| v.value()) else {
                     return Err(Error::ProofNotFound(y));
                 };
+                Self::set_proof_index(&mut index, &y, None)?;
                 let deserialized: StoredProof = borsh::from_slice(&stored)
                     .map_err(|e| Error::BorshSerialization(e.to_string()))?;
                 let (proof, proof_state) = from_stored_proof_v1(deserialized, keys)?;
@@ -1702,10 +1781,19 @@ impl MigrationJournalRepository for PocketDB {
     ) -> Result<()> {
         let db_clone = self.db.clone();
         let proof_table = self.proof_table;
+        let index_table = self.proof_index_table;
         let journal_table = self.migration_journal_table;
         let keys = self.keys;
         spawn_blocking(move || {
-            Self::put_journal_sync(db_clone, proof_table, journal_table, keys, header, entries)
+            Self::put_journal_sync(
+                db_clone,
+                proof_table,
+                index_table,
+                journal_table,
+                keys,
+                header,
+                entries,
+            )
         })
         .await?
     }
@@ -2397,5 +2485,113 @@ mod tests {
         }
         assert_eq!(after[&y1].state, MigrationJournalState::Held);
         assert_eq!(after[&y3], before[&y3]);
+    }
+
+    fn proof_index_keys(repo: &PocketDB) -> Vec<Vec<u8>> {
+        let read_txn = repo.db.begin_read().expect("begin read");
+        match read_txn.open_table(repo.proof_index_table) {
+            Ok(table) => table
+                .iter()
+                .expect("iterate index")
+                .map(|row| row.expect("index row").0.value().to_vec())
+                .collect(),
+            Err(TableError::TableDoesNotExist(_)) => vec![],
+            Err(e) => panic!("open index: {e}"),
+        }
+    }
+
+    fn indexed(repo: &PocketDB, state: cdk07::State) -> Vec<cdk01::PublicKey> {
+        proof_index_keys(repo)
+            .into_iter()
+            .filter(|k| k[0] == PocketDB::proof_index_key(state, &test_y())[0])
+            .map(|k| cdk01::PublicKey::from_slice(&k[1..]).expect("y"))
+            .collect()
+    }
+
+    fn test_y() -> cdk01::PublicKey {
+        test_proof().y().expect("y")
+    }
+
+    #[tokio::test]
+    async fn proof_index_matches_scan_after_transitions() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let p2 = test_proof();
+        let y1 = repo.store_new(test_proof()).await.unwrap();
+        let y2 = repo.store_new(p2.clone()).await.unwrap();
+        let y3 = repo.store_pendingspent(test_proof()).await.unwrap();
+        repo.mark_as_pendingspent(vec![y1]).await.unwrap();
+        repo.store_pendingspent(p2.clone()).await.unwrap();
+        repo.mark_pending_as_spent(y3).await.unwrap();
+        repo.delete_proof(y1).await.unwrap();
+        repo.store_new(p2).await.unwrap();
+
+        let mut expected = vec![
+            PocketDB::proof_index_key(cdk07::State::PendingSpent, &y2),
+            PocketDB::proof_index_key(cdk07::State::Spent, &y3),
+        ];
+        expected.sort();
+        assert_eq!(proof_index_keys(&repo), expected);
+        assert!(indexed(&repo, cdk07::State::Unspent).is_empty());
+        assert_eq!(indexed(&repo, cdk07::State::PendingSpent), vec![y2]);
+        assert_eq!(indexed(&repo, cdk07::State::Spent), vec![y3]);
+
+        assert!(repo.list_unspent().await.unwrap().is_empty());
+        assert_eq!(
+            repo.list_pending()
+                .await
+                .unwrap()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![y2]
+        );
+        assert_eq!(
+            repo.list_spent()
+                .await
+                .unwrap()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![y3]
+        );
+
+        repo.revert_pendingspent_to_unspent(y2).await.unwrap();
+        assert_eq!(proof_index_keys(&repo), {
+            let mut e = vec![
+                PocketDB::proof_index_key(cdk07::State::Unspent, &y2),
+                PocketDB::proof_index_key(cdk07::State::Spent, &y3),
+            ];
+            e.sort();
+            e
+        });
+    }
+
+    #[tokio::test]
+    async fn proof_index_dropped_when_proof_moves_to_journal() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        let y1 = repo.store_new(test_proof()).await.unwrap();
+        let y2 = repo.store_new(test_proof()).await.unwrap();
+        let header = MigrationJournalHeader {
+            substitute_url: url::Url::parse("https://sub.example/").expect("valid url"),
+            substitute_clowder_id: crate::test_utils::tests::test_pub_key(),
+            alpha_id: crate::test_utils::tests::test_other_pub_key(),
+            evidence_digest: [0x11; 32],
+        };
+        repo.put(header, vec![(y1, cashu::SecretKey::generate())])
+            .await
+            .unwrap();
+        assert_eq!(
+            proof_index_keys(&repo),
+            vec![PocketDB::proof_index_key(cdk07::State::Unspent, &y2)]
+        );
+    }
+
+    #[tokio::test]
+    async fn proof_index_removed_with_repo() {
+        let repo = get_db(&wallet_id(), CurrencyUnit::Sat);
+        repo.store_new(test_proof()).await.unwrap();
+        assert_eq!(proof_index_keys(&repo).len(), 1);
+        repo.delete_repo().await.unwrap();
+        assert!(proof_index_keys(&repo).is_empty());
     }
 }
