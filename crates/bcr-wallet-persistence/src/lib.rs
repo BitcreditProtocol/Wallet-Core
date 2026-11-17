@@ -23,16 +23,6 @@ use nostr::{types::RelayUrl, types::Timestamp};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-///////////////////////////////////////////// CounterReservation
-/// A reserved counter range; `id` tells this reservation from a later one of the same `(kid, start)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CounterReservation {
-    pub kid: ecash::Id,
-    pub start: u32,
-    pub n: u32,
-    pub id: u128,
-}
-
 ///////////////////////////////////////////// SwapCommitmentRecord
 #[derive(Debug, Clone)]
 pub struct SwapCommitmentRecord {
@@ -107,25 +97,14 @@ pub trait PocketRepository: SendSync {
     async fn mark_pending_as_spent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
     async fn revert_pendingspent_to_unspent(&self, y: cdk01::PublicKey) -> Result<cdk00::Proof>;
 
-    async fn reserve_counter(&self, kid: ecash::Id, n: u32) -> Result<CounterReservation>;
+    async fn reserve_counter(&self, kid: ecash::Id, n: u32) -> Result<u32>;
     async fn advance_counter_to(&self, kid: ecash::Id, at_least: u32) -> Result<()>;
-    /// Gives the range back only while the reservation with this id is still held; a stale or
-    /// unknown reservation is a no-op.
-    async fn release_counter(&self, reservation: CounterReservation) -> Result<()>;
+    async fn release_counter(&self, kid: ecash::Id, start: u32, n: u32) -> Result<()>;
 
-    /// Keeps the reserved ranges a mint may still sign; they are no longer released at open.
-    async fn clear_reservations(&self, ranges: Vec<CounterReservation>) -> Result<()>;
+    async fn mark_reservations_sent(&self, ranges: Vec<(ecash::Id, u32, u32)>) -> Result<()>;
+    async fn clear_reservations(&self, ranges: Vec<(ecash::Id, u32, u32)>) -> Result<()>;
 
-    /// Marks reserved ranges whose commitment request is about to reach the mint, so a reopen
-    /// keeps their counters instead of releasing them.
-    async fn mark_reservations_sent(&self, ranges: Vec<CounterReservation>) -> Result<()>;
-
-    /// Stores the commitment and clears the reservations it covers in one transaction.
-    async fn store_commitment(
-        &self,
-        record: SwapCommitmentRecord,
-        reservations: Vec<CounterReservation>,
-    ) -> Result<()>;
+    async fn store_commitment(&self, record: SwapCommitmentRecord) -> Result<()>;
     async fn load_commitment(
         &self,
         commitment: secp256k1::schnorr::Signature,

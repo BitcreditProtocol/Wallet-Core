@@ -20,7 +20,7 @@ use bcr_wallet_core::{
     SendSync,
     types::{Seed, SendSummary},
 };
-use bcr_wallet_persistence::{CounterReservation, PocketRepository, SwapCommitmentRecord};
+use bcr_wallet_persistence::{PocketRepository, SwapCommitmentRecord};
 use rand::seq::{IndexedRandom, SliceRandom};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -200,7 +200,7 @@ enum SendPlan {
 #[derive(Default, Clone)]
 pub(crate) struct InFlight(
     Arc<Mutex<HashMap<cdk01::PublicKey, usize>>>,
-    Arc<Mutex<HashMap<AttemptKey, CounterReservation>>>,
+    Arc<Mutex<HashMap<AttemptKey, u32>>>,
 );
 
 impl InFlight {
@@ -274,20 +274,18 @@ pub(crate) fn exchange_key(seed: &Seed, proofs: &[cdk00::Proof]) -> Result<cdk01
 }
 
 ///////////////////////////////////////////// Counters
-/// Counters a swap of these inputs reserved for one keyset's outputs
-type AttemptKey = (Vec<cdk01::PublicKey>, ecash::Id, Amount, String);
+type AttemptKey = (Vec<cdk01::PublicKey>, ecash::Id, Amount, SplitTarget);
 
 struct Attempt {
-    ledger: Arc<Mutex<HashMap<AttemptKey, CounterReservation>>>,
+    ledger: Arc<Mutex<HashMap<AttemptKey, u32>>>,
     inputs: Vec<cdk01::PublicKey>,
-    held: Vec<AttemptKey>,
+    held: Vec<(AttemptKey, u32)>,
 }
 
 pub(crate) struct Counters<'a> {
     db: &'a dyn PocketRepository,
-    reserved: Vec<CounterReservation>,
+    reserved: Vec<(ecash::Id, u32, u32)>,
     attempt: Option<Attempt>,
-    released: std::sync::atomic::AtomicBool,
 }
 
 impl<'a> Counters<'a> {
@@ -296,12 +294,9 @@ impl<'a> Counters<'a> {
             db,
             reserved: Vec::new(),
             attempt: None,
-            released: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
-    /// A retry of a swap of the same inputs, after its commitment failed without a definite
-    /// answer, reuses the counters of the failed attempt instead of reserving new ones.
     pub(crate) fn for_inputs(
         db: &'a dyn PocketRepository,
         in_flight: &InFlight,
@@ -349,28 +344,23 @@ impl<'a> Counters<'a> {
     ) -> Result<cdk00::PreMintSecrets> {
         let fee_and_amounts = bcr_wallet_core::util::to_fee_and_amounts(keyset);
         let n = amount.split_targeted(target, &fee_and_amounts)?.len() as u32;
-        let reservation = match self.attempt.as_mut() {
+        let start = match self.attempt.as_mut() {
             Some(attempt) => {
-                let key = (attempt.inputs.clone(), kid, amount, format!("{target:?}"));
-                let known = attempt.ledger.lock().unwrap().get(&key).copied();
-                let reservation = match known {
-                    Some(reservation) => reservation,
+                let key = (attempt.inputs.clone(), kid, amount, target.clone());
+                let known = attempt.ledger.lock().unwrap().remove(&key);
+                let start = match known {
+                    Some(start) => start,
                     None => self.db.reserve_counter(kid, n).await?,
                 };
-                attempt
-                    .ledger
-                    .lock()
-                    .unwrap()
-                    .insert(key.clone(), reservation);
-                attempt.held.push(key);
-                reservation
+                attempt.held.push((key, start));
+                start
             }
             None => self.db.reserve_counter(kid, n).await?,
         };
-        self.reserved.push(reservation);
+        self.reserved.push((kid, start, n));
         Ok(cdk00::PreMintSecrets::from_seed(
             kid.into(),
-            reservation.start,
+            start,
             seed,
             amount,
             target,
@@ -378,46 +368,28 @@ impl<'a> Counters<'a> {
         )?)
     }
 
-    fn forget_attempt(&self) {
+    fn remember(&self) {
         if let Some(attempt) = &self.attempt {
             let mut ledger = attempt.ledger.lock().unwrap();
-            for key in &attempt.held {
-                ledger.remove(key);
-            }
+            ledger.extend(attempt.held.iter().cloned());
         }
     }
 
-    /// The commitment is stored, so its counters are held by it and a retry resumes it.
-    fn settle(&self) {
-        self.forget_attempt();
+    pub(crate) async fn mark_sent(&self) -> Result<()> {
+        Ok(self
+            .db
+            .mark_reservations_sent(self.reserved.clone())
+            .await?)
     }
 
-    fn reserved(&self) -> Vec<CounterReservation> {
-        self.reserved.clone()
-    }
-
-    /// The mint may still sign these counters, so they are never released or reused.
     pub(crate) async fn keep(&self) -> Result<()> {
-        Ok(self.db.clear_reservations(self.reserved()).await?)
+        Ok(self.db.clear_reservations(self.reserved.clone()).await?)
     }
 
-    /// Gives the ranges back once: a repeat would roll back a later reservation of the same start.
-    async fn release(&self) {
-        self.forget_attempt();
-        if self
-            .released
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            return;
-        }
-        for &r in &self.reserved {
-            if let Err(e) = self.db.release_counter(r).await {
-                tracing::warn!(
-                    "Failed to release counters {}+{} of {}: {e}",
-                    r.start,
-                    r.n,
-                    r.kid
-                );
+    async fn release(&mut self) {
+        for (kid, start, n) in std::mem::take(&mut self.reserved) {
+            if let Err(e) = self.db.release_counter(kid, start, n).await {
+                tracing::warn!("Failed to release counters {start}+{n} of {kid}: {e}");
             }
         }
     }
@@ -487,15 +459,9 @@ pub(crate) async fn commit_swap(
     swap_config: &SwapConfig,
     premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
     attestation: wire_attestation::IssuanceAttestation,
-    reservations: Vec<CounterReservation>,
 ) -> Result<(Vec<cdk00::Proof>, bitcoin::secp256k1::schnorr::Signature)> {
     // Remove dleqs from same-mint swaps to not give up a blinding factor
     let inputs = crate::wallet::util::remove_dleq_from_proofs(inputs);
-    if let Some(db) = db
-        && !reservations.is_empty()
-    {
-        db.mark_reservations_sent(reservations.clone()).await?;
-    }
     let commit_result = client
         .post_swap_commitment(
             inputs.clone(),
@@ -512,20 +478,17 @@ pub(crate) async fn commit_swap(
     );
 
     if let Some(db) = db {
-        db.store_commitment(
-            bcr_wallet_persistence::SwapCommitmentRecord {
-                inputs: commit_result.inputs_ys,
-                outputs: commit_result.outputs,
-                expiry: commit_result.expiry,
-                commitment: commitment_sig,
-                ephemeral_secret: commit_result.ephemeral_secret,
-                body_content: commit_result.body_content,
-                wallet_key: commit_result.wallet_key,
-                premints,
-                input_proofs: inputs.clone(),
-            },
-            reservations,
-        )
+        db.store_commitment(bcr_wallet_persistence::SwapCommitmentRecord {
+            inputs: commit_result.inputs_ys,
+            outputs: commit_result.outputs,
+            expiry: commit_result.expiry,
+            commitment: commitment_sig,
+            ephemeral_secret: commit_result.ephemeral_secret,
+            body_content: commit_result.body_content,
+            wallet_key: commit_result.wallet_key,
+            premints,
+            input_proofs: inputs.clone(),
+        })
         .await?;
     }
     Ok((inputs, commitment_sig))
@@ -548,7 +511,7 @@ pub(crate) async fn committed_swap(
     swap_config: &SwapConfig,
     premints: HashMap<ecash::Id, cdk00::PreMintSecrets>,
     attestation: wire_attestation::IssuanceAttestation,
-    counters: &Counters<'_>,
+    counters: &mut Counters<'_>,
 ) -> Result<(SwapSignatures, bitcoin::secp256k1::schnorr::Signature)> {
     if let Some(db) = db {
         let resumed = resume_stored(client, db, &inputs).await;
@@ -559,6 +522,7 @@ pub(crate) async fn committed_swap(
             return Ok(resumed);
         }
     }
+    counters.mark_sent().await?;
     let committed = commit_swap(
         client,
         db,
@@ -567,17 +531,14 @@ pub(crate) async fn committed_swap(
         swap_config,
         premints.clone(),
         attestation,
-        counters.reserved(),
     )
     .await;
-    if matches!(&committed, Err(e) if e.is_input_rejection()) {
-        counters.release().await;
+    match &committed {
+        Ok(_) => counters.keep().await?,
+        Err(e) if e.is_input_rejection() => counters.release().await,
+        Err(_) => counters.remember(),
     }
     let (inputs, commitment_sig) = committed?;
-    counters.settle();
-    if db.is_none() {
-        counters.keep().await?;
-    }
 
     let signatures = client
         .post_swap_committed(inputs, outputs, commitment_sig)
@@ -831,7 +792,7 @@ async fn swap(
     output_unit: CurrencyUnit,
     inputs: Vec<cdk00::Proof>,
     premints: BTreeMap<ecash::Id, cdk00::PreMintSecrets>,
-    counters: &Counters<'_>,
+    counters: &mut Counters<'_>,
     keysets: HashMap<ecash::Id, KeySet>,
     client: Arc<dyn ClowderMintConnector>,
     db: &dyn PocketRepository,
@@ -943,7 +904,7 @@ async fn swap_proofs_to_target(
         &swap_config,
         premints.into_iter().collect(),
         attestation,
-        &counters,
+        &mut counters,
     )
     .await?;
     let mut on_target: HashMap<cdk01::PublicKey, cdk00::Proof> = HashMap::new();
@@ -1160,10 +1121,7 @@ pub(crate) fn sum_amounts(amounts: impl IntoIterator<Item = Amount>) -> Result<A
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        external::mint::MockClowderMintConnector,
-        pocket::test_utils::tests::{granted, test_kinfos},
-    };
+    use crate::{external::mint::MockClowderMintConnector, pocket::test_utils::tests::test_kinfos};
     use bcr_common::{cashu::Proof, core::signature, core_tests};
     use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
     use mockall::predicate::*;
@@ -1192,7 +1150,7 @@ mod tests {
         db.expect_reserve_counter()
             .times(1)
             .with(eq(kid), eq(1))
-            .returning(granted(3));
+            .returning(|_, _| Ok(3));
 
         let premint = Counters::new(&db)
             .premint_from_counter(&zero_seed(), kid, amount, &SplitTarget::None, &keyset)
@@ -1211,26 +1169,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn counters_release_their_ranges_once() {
+    async fn failed_attempt_hands_its_counters_to_one_retry() {
         let (info, mintkeyset) = core_tests::generate_random_ecash_keyset();
         let kid = info.id;
         let keyset = bcr_wallet_core::util::to_keyset(&mintkeyset, None);
-        let mut db = MockPocketRepository::new();
-        db.expect_reserve_counter().returning(granted(0));
-        db.expect_release_counter().times(1).returning(|_| Ok(()));
-        let mut counters = Counters::new(&db);
-        counters
-            .premint_from_counter(
-                &zero_seed(),
-                kid,
-                Amount::from(8),
-                &SplitTarget::None,
-                &keyset,
-            )
-            .await
-            .unwrap();
-        counters.release().await;
-        counters.release().await;
+        let proofs = core_tests::generate_random_ecash_proofs(&mintkeyset, &[Amount::from(8)]);
+        let db = bcr_wallet_persistence::test_utils::tests::in_memory_pocket_db(
+            &bcr_wallet_persistence::test_utils::tests::wallet_id(),
+            CurrencyUnit::Sat,
+        );
+        let in_flight = InFlight::default();
+        let mut starts = Vec::new();
+        for failed in [true, false, false] {
+            let mut counters = Counters::for_inputs(&db, &in_flight, &proofs).unwrap();
+            counters
+                .premint_from_counter(
+                    &zero_seed(),
+                    kid,
+                    Amount::from(8),
+                    &SplitTarget::None,
+                    &keyset,
+                )
+                .await
+                .unwrap();
+            starts.push(counters.reserved[0].1);
+            if failed {
+                counters.remember();
+            }
+        }
+        assert_eq!(starts, [0, 0, 1]);
     }
 
     #[test]
@@ -1475,7 +1442,7 @@ mod tests {
             .expect_reserve_counter()
             .times(1)
             .with(eq(keyset.id), eq(5))
-            .returning(granted(0));
+            .returning(|_, _| Ok(0));
         let cloned_keyset = keyset.clone();
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
         mockclient
@@ -1556,7 +1523,7 @@ mod tests {
             unit,
             inputs,
             premints,
-            &Counters::new(&mockdb),
+            &mut Counters::new(&mockdb),
             keysets,
             arc_client,
             &mockdb,
@@ -1632,7 +1599,7 @@ mod tests {
         mockdb
             .expect_reserve_counter()
             .times(1)
-            .returning(granted(0));
+            .returning(|_, _| Ok(0));
 
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
 
@@ -1741,7 +1708,7 @@ mod tests {
         mockdb
             .expect_reserve_counter()
             .times(1)
-            .returning(granted(0));
+            .returning(|_, _| Ok(0));
 
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
 
@@ -1836,7 +1803,7 @@ mod tests {
         mockdb
             .expect_reserve_counter()
             .times(1)
-            .returning(granted(0));
+            .returning(|_, _| Ok(0));
 
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
 
@@ -1930,7 +1897,7 @@ mod tests {
         mockdb
             .expect_reserve_counter()
             .times(2)
-            .returning(granted(0));
+            .returning(|_, _| Ok(0));
 
         setup_commitment_mocks(&mut mockclient, &mut mockdb);
 

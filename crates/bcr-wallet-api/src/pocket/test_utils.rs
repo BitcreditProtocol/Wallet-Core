@@ -14,22 +14,7 @@ pub mod tests {
 
     use bcr_common::cashu::{self, Amount, CurrencyUnit};
     use bcr_common::ecash::{self, KeySetInfo, MintKeySetInfo};
-    use bcr_wallet_persistence::CounterReservation;
     use bitcoin::secp256k1;
-
-    pub fn granted(
-        start: u32,
-    ) -> impl FnMut(ecash::Id, u32) -> bcr_wallet_persistence::error::Result<CounterReservation>
-    {
-        move |kid, n| {
-            Ok(CounterReservation {
-                kid,
-                start,
-                n,
-                id: 0,
-            })
-        }
-    }
 
     pub fn test_kinfos(info: MintKeySetInfo) -> HashMap<ecash::Id, KeySetInfo> {
         let mut map = HashMap::new();
@@ -99,9 +84,8 @@ pub mod tests {
             .times(1)
             .returning(|_, _, _, _, _| Ok(mock_commitment_result()));
         db.expect_mark_reservations_sent().returning(|_| Ok(()));
-        db.expect_store_commitment()
-            .times(1)
-            .returning(|_, _| Ok(()));
+        db.expect_clear_reservations().returning(|_| Ok(()));
+        db.expect_store_commitment().times(1).returning(|_| Ok(()));
         db.expect_delete_commitment().times(1).returning(|_| Ok(()));
     }
 
