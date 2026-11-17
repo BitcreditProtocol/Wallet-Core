@@ -330,10 +330,8 @@ impl Pocket {
             }
         };
 
-        let mut keysets: HashMap<ecash::Id, KeySet> = HashMap::new();
-        for kid in record.premints.keys() {
-            keysets.insert(*kid, alpha_client.get_mint_keyset(*kid).await?);
-        }
+        let keysets =
+            super::fetch_keysets(alpha_client.as_ref(), record.premints.keys().copied()).await?;
         let locked = super::unblind_by_keyset(&record.premints, signatures, &keysets)?;
         Ok(Some(refund_proofs(record, locked)?))
     }
@@ -398,10 +396,7 @@ impl Pocket {
         if let Some((signatures, premints)) =
             super::resume_commitment(client.as_ref(), record, proofs).await?
         {
-            let mut keysets = HashMap::with_capacity(premints.len());
-            for kid in premints.keys() {
-                keysets.insert(*kid, client.get_mint_keyset(*kid).await?);
-            }
+            let keysets = super::fetch_keysets(client.as_ref(), premints.keys().copied()).await?;
             for proof in super::unblind_by_keyset(&premints, signatures, &keysets)? {
                 self.pdb.store_new(proof).await?;
             }
@@ -449,12 +444,11 @@ impl Pocket {
 
         // collect keysets first as we don't want any failure once the swap request
         // has been made
-        let kids: HashSet<ecash::Id> = swap_proofs.iter().map(|p| p.keyset_id.into()).collect();
-        let mut keysets: HashMap<ecash::Id, KeySet> = HashMap::new();
-        for kid in kids.iter() {
-            let keyset = client.get_mint_keyset(*kid).await?;
-            keysets.insert(*kid, keyset);
-        }
+        let keysets = super::fetch_keysets(
+            client.as_ref(),
+            swap_proofs.iter().map(|p| p.keyset_id.into()),
+        )
+        .await?;
 
         let attestation = self.beta.attest(&swap_proofs).await?;
 

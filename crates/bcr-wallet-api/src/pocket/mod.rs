@@ -667,10 +667,7 @@ pub(crate) async fn post_swap_protest(
         match client.post_protest_swap(request).await? {
             ProtestOutcome::Resolved(signatures) => {
                 let signatures = signatures.into_iter().map(Into::into).collect();
-                let mut keysets = HashMap::new();
-                for kid in premints.keys() {
-                    keysets.insert(*kid, alpha.get_mint_keyset(*kid).await?);
-                }
+                let keysets = fetch_keysets(alpha, premints.keys().copied()).await?;
                 let proofs = unblind_by_keyset(premints, signatures, &keysets)?;
                 Ok(ProtestOutcome::Resolved(proofs))
             }
@@ -679,6 +676,20 @@ pub(crate) async fn post_swap_protest(
         }
     })
     .await
+}
+
+/// Fetches the keysets for `kids` from `client` concurrently, one request per distinct id.
+pub(crate) async fn fetch_keysets(
+    client: &(impl ClowderMintConnector + ?Sized),
+    kids: impl IntoIterator<Item = ecash::Id>,
+) -> Result<HashMap<ecash::Id, KeySet>> {
+    let kids: HashSet<ecash::Id> = kids.into_iter().collect();
+    let fetched = futures::future::try_join_all(
+        kids.into_iter()
+            .map(|kid| async move { Ok::<_, Error>((kid, client.get_mint_keyset(kid).await?)) }),
+    )
+    .await?;
+    Ok(fetched.into_iter().collect())
 }
 
 ///////////////////////////////////////////// unblind_by_keyset
@@ -978,13 +989,11 @@ async fn send_proofs(
             );
 
             let swap_proofs = db.load_proofs(&inputs).await?;
-            let kids: HashSet<ecash::Id> =
-                swap_proofs.values().map(|p| p.keyset_id.into()).collect();
-            let mut keysets: HashMap<ecash::Id, KeySet> = HashMap::new();
-            for kid in kids.iter() {
-                let keyset = client.get_mint_keyset(*kid).await?;
-                keysets.insert(*kid, keyset);
-            }
+            let keysets = fetch_keysets(
+                client.as_ref(),
+                swap_proofs.values().map(|p| p.keyset_id.into()),
+            )
+            .await?;
 
             let swap_proofs = reservation.reserve(db, inputs).await?;
 

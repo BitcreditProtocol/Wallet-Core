@@ -6629,3 +6629,241 @@ impl RealProofs {
         pause(&self.journal.before_swapped)
     }
 }
+
+fn pending_tx(n: u64) -> Transaction {
+    tx_with(
+        n,
+        n,
+        10,
+        TransactionDirection::Outgoing,
+        PaymentType::Token,
+        TransactionStatus::Pending,
+    )
+}
+
+fn proof_states(
+    ys: &[cashu::PublicKey],
+    spent: &HashSet<cashu::PublicKey>,
+) -> Vec<cashu::ProofState> {
+    ys.iter()
+        .map(|y| cashu::ProofState {
+            y: *y,
+            state: if spent.contains(y) {
+                cashu::State::Spent
+            } else {
+                cashu::State::Unspent
+            },
+            witness: None,
+        })
+        .collect()
+}
+
+async fn refresh_txs_with(
+    txs: Vec<Transaction>,
+    spent: HashSet<cashu::PublicKey>,
+    check_state_calls: Arc<std::sync::Mutex<Vec<usize>>>,
+    settled: Arc<std::sync::Mutex<Vec<Uuid>>>,
+) -> usize {
+    let mut ctx = wallet_ctx();
+    ctx.journal.expect_load().returning(|| Ok(HashMap::new()));
+    ctx.tx_repo
+        .expect_list_txs()
+        .returning(move || Ok(txs.clone()));
+    ctx.client.expect_post_check_state().returning(move |req| {
+        check_state_calls.lock().unwrap().push(req.ys.len());
+        Ok(proof_states(&req.ys, &spent))
+    });
+    ctx.tx_repo
+        .expect_update_status()
+        .returning(move |id, status| {
+            assert_eq!(status, TransactionStatus::Settled);
+            settled.lock().unwrap().push(id);
+            Ok(None)
+        });
+    let wlt = wallet(ctx).await;
+    wlt.read().await.refresh_txs().await.unwrap()
+}
+
+#[tokio::test]
+async fn refresh_txs_single_check_state() {
+    let txs: Vec<_> = (0..5).map(pending_tx).collect();
+    let spent = HashSet::from([txs[1].ys[0], txs[3].ys[0]]);
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let settled = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let updated = refresh_txs_with(txs.clone(), spent, calls.clone(), settled.clone()).await;
+    assert_eq!(updated, 2);
+    assert_eq!(*calls.lock().unwrap(), vec![5]);
+    let mut settled = settled.lock().unwrap().clone();
+    settled.sort();
+    let mut expected = vec![txs[1].id, txs[3].id];
+    expected.sort();
+    assert_eq!(settled, expected);
+}
+
+#[tokio::test]
+async fn check_state_chunked() {
+    let txs: Vec<_> = (0..250).map(pending_tx).collect();
+    let spent: HashSet<_> = [0, 99, 100, 249].iter().map(|i| txs[*i].ys[0]).collect();
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let settled = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let updated = refresh_txs_with(txs, spent, calls.clone(), settled.clone()).await;
+    assert_eq!(updated, 4);
+    let mut sizes = calls.lock().unwrap().clone();
+    sizes.sort();
+    assert_eq!(sizes, vec![50, 100, 100]);
+    assert_eq!(settled.lock().unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn check_state_missing_y_unsettled() {
+    let txs: Vec<_> = (0..3).map(pending_tx).collect();
+    let mut ctx = wallet_ctx();
+    ctx.journal.expect_load().returning(|| Ok(HashMap::new()));
+    let listed = txs.clone();
+    ctx.tx_repo
+        .expect_list_txs()
+        .returning(move || Ok(listed.clone()));
+    let spent_y = txs[0].ys[0];
+    ctx.client.expect_post_check_state().returning(move |_| {
+        Ok(vec![cashu::ProofState {
+            y: spent_y,
+            state: cashu::State::Unspent,
+            witness: None,
+        }])
+    });
+    let wlt = wallet(ctx).await;
+    assert_eq!(wlt.read().await.refresh_txs().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn check_state_failure_unsettled() {
+    let txs: Vec<_> = (0..3).map(pending_tx).collect();
+    let mut ctx = wallet_ctx();
+    ctx.journal.expect_load().returning(|| Ok(HashMap::new()));
+    ctx.tx_repo
+        .expect_list_txs()
+        .returning(move || Ok(txs.clone()));
+    ctx.client
+        .expect_post_check_state()
+        .returning(|_| Err(bcr_common::client::mint::Error::Internal("down".into())));
+    let wlt = wallet(ctx).await;
+    assert_eq!(wlt.read().await.refresh_txs().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn refresh_txs_without_candidates_sends_nothing() {
+    let mut done = pending_tx(1);
+    done.status = TransactionStatus::Settled;
+    let mut ctx = wallet_ctx();
+    ctx.journal.expect_load().returning(|| Ok(HashMap::new()));
+    ctx.tx_repo
+        .expect_list_txs()
+        .returning(move || Ok(vec![done.clone()]));
+    let wlt = wallet(ctx).await;
+    assert_eq!(wlt.read().await.refresh_txs().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn betas_queried_concurrently() {
+    const DELAY_MS: u64 = 400;
+    const BETAS: usize = 3;
+
+    async fn delayed_betas(
+        body: impl Fn(usize) -> String + Send + Sync + Clone + 'static,
+    ) -> (
+        Vec<mockito::ServerGuard>,
+        Vec<(url::Url, Arc<dyn ClowderMintConnector>)>,
+    ) {
+        let mut servers = Vec::new();
+        let mut betas = Vec::new();
+        for i in 0..BETAS {
+            let mut server = mockito::Server::new_async().await;
+            let body = body.clone();
+            server
+                .mock("GET", mockito::Matcher::Any)
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body_from_request(move |_| {
+                    std::thread::sleep(std::time::Duration::from_millis(DELAY_MS));
+                    body(i).into_bytes()
+                })
+                .expect_at_least(1)
+                .create_async()
+                .await;
+            let url = url::Url::parse(&server.url()).unwrap();
+            let client: Arc<dyn ClowderMintConnector> =
+                Arc::new(HttpClientExt::new(url.clone(), Default::default()));
+            betas.push((url, client));
+            servers.push(server);
+        }
+        (servers, betas)
+    }
+
+    let online = |_| {
+        serde_json::to_string(&wire_clowder::AlphaStateResponse {
+            state: wire_clowder::SimpleAlphaState::Online(0),
+        })
+        .unwrap()
+    };
+    let distinct_substitutes = |i: usize| {
+        serde_json::to_string(&wire_clowder::ConnectedMintResponse {
+            mint: url::Url::parse(&format!("https://sub{i}.example")).unwrap(),
+            clowder: url::Url::parse("https://clowder.example").unwrap(),
+            node_id: test_pub_key(),
+        })
+        .unwrap()
+    };
+    let sequential = std::time::Duration::from_millis(DELAY_MS * BETAS as u64);
+    let bound = std::time::Duration::from_millis(DELAY_MS * 2);
+
+    let (_s, betas) = delayed_betas(online).await;
+    let wlt = wallet_with_betas(wallet(wallet_ctx()).await, betas).await;
+    let start = std::time::Instant::now();
+    assert!(!wlt.read().await.is_wallet_mint_rabid().await.unwrap());
+    let rabid = start.elapsed();
+
+    let (_s, betas) = delayed_betas(online).await;
+    let wlt = wallet_with_betas(wallet(wallet_ctx()).await, betas).await;
+    let start = std::time::Instant::now();
+    assert!(!wlt.read().await.is_wallet_mint_offline().await.unwrap());
+    let offline = start.elapsed();
+
+    let (_s, betas) = delayed_betas(distinct_substitutes).await;
+    let wlt = wallet_with_betas(wallet(wallet_ctx()).await, betas).await;
+    let start = std::time::Instant::now();
+    assert_eq!(wlt.read().await.mint_substitute().await.unwrap(), None);
+    let substitute = start.elapsed();
+
+    println!(
+        "ORACLE betas={BETAS} delay_ms={DELAY_MS} sequential_ms={} rabid_ms={} offline_ms={} substitute_ms={}",
+        sequential.as_millis(),
+        rabid.as_millis(),
+        offline.as_millis(),
+        substitute.as_millis()
+    );
+    assert!(rabid < bound, "rabid vote took {rabid:?}");
+    assert!(offline < bound, "offline vote took {offline:?}");
+    assert!(substitute < bound, "substitute vote took {substitute:?}");
+}
+
+#[tokio::test]
+async fn balance_makes_no_requests() {
+    let (info, _keyset, proofs) = test_keyset_and_proofs(&[Amount::from(8), Amount::from(16)]);
+    let mut ctx = wallet_ctx();
+    let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let r = requests.clone();
+    ctx.client.expect_get_mint_keysets().returning(move || {
+        r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(bcr_common::client::mint::Error::Internal("offline".into()))
+    });
+    ctx.journal.expect_load().returning(|| Ok(HashMap::new()));
+    ctx.debit
+        .expect_balance()
+        .returning(move |infos| crate::pocket::balance_of(proofs.iter(), infos));
+    let wlt = wallet(ctx).await;
+    wlt.write().await.mint_keyset_infos = HashMap::from([(info.id, info)]);
+
+    let balance = wlt.read().await.balance().await.unwrap();
+    assert_eq!(balance.total, Amount::from(24));
+    assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+}

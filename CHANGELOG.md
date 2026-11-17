@@ -1,6 +1,8 @@
 # 0.9.17
 
 * Add support for dotted compileSdkVersion values in cargokit, so e.g. android-33.5 also works
+* `wallet_refresh_txs` (`Wallet::refresh_txs`) asks the mint for the state of all pending transactions' proofs in one `post_check_state` request (chunks of at most 100) instead of one request per transaction (#164)
+* New keyset cache: a mint client keeps each keyset it fetched, once its keys hash to the requested id, so swaps, sends and restore fetch it once instead of on every call, and the keysets of one operation are fetched concurrently (#164)
 
 # 0.9.16
 

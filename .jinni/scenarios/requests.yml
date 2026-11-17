@@ -1,0 +1,5 @@
+name: refresh_txs makes one check_state request
+steps:
+  - run: curl -sf --max-time 14 http://localhost:3000/
+    expect: "check_state calls"
+    expect_row: "refresh_txs (10 pending of 20) | check_state calls | 1"

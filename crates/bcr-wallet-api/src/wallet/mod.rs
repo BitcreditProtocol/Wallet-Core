@@ -64,6 +64,8 @@ use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+const CHECK_STATE_CHUNK: usize = 100;
+
 pub type NostrReceiver = broadcast::Receiver<NostrWalletEvent>;
 
 pub struct NostrListener {
@@ -989,29 +991,60 @@ impl Wallet {
         Ok(updated)
     }
 
+    /// Settles every refreshable pending transaction with a spent proof, asking the mint for
+    /// the state of all their proofs in chunks of at most `CHECK_STATE_CHUNK`.
     pub async fn refresh_txs(&self) -> Result<usize> {
-        let txs = self.tx_repo.list_txs().await?;
-        let mut updated = 0;
-
-        for tx in txs.iter() {
-            if !tx_can_be_refreshed(tx) {
+        let journal = self.journal.load().await?;
+        let mut candidates = Vec::new();
+        for tx in self.tx_repo.list_txs().await? {
+            if !tx_can_be_refreshed(&tx) || tx.ys.is_empty() {
                 continue;
             }
-
-            let tx_id = tx.id;
-
-            match self.refresh_tx(tx.id).await {
-                Ok(tx_updated) => {
-                    if tx_updated {
-                        updated += 1;
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Error refreshing tx {}: {e}", tx_id);
-                }
-            };
+            let journaled = tx.ys.iter().filter(|y| journal.contains_key(y)).count();
+            if journaled == tx.ys.len() {
+                continue;
+            }
+            if journaled > 0 {
+                tracing::error!("Error refreshing tx {}: partly journaled", tx.id);
+                continue;
+            }
+            candidates.push(tx);
         }
 
+        let ys: Vec<cashu::PublicKey> = candidates
+            .iter()
+            .flat_map(|tx| tx.ys.iter().copied())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let mut spent = HashSet::new();
+        for chunk in ys.chunks(CHECK_STATE_CHUNK) {
+            let request = cashu::CheckStateRequest { ys: chunk.to_vec() };
+            match self.client.post_check_state(request).await {
+                Ok(states) => spent.extend(
+                    states
+                        .into_iter()
+                        .filter(|s| matches!(s.state, cashu::State::Spent))
+                        .map(|s| s.y),
+                ),
+                Err(e) => tracing::error!("Error checking state of {} proofs: {e}", chunk.len()),
+            }
+        }
+
+        let mut updated = 0;
+        for tx in candidates
+            .iter()
+            .filter(|tx| tx.ys.iter().any(|y| spent.contains(y)))
+        {
+            match self
+                .tx_repo
+                .update_status(tx.id, TransactionStatus::Settled)
+                .await
+            {
+                Ok(_) => updated += 1,
+                Err(e) => tracing::error!("Error refreshing tx {}: {e}", tx.id),
+            }
+        }
         Ok(updated)
     }
 
