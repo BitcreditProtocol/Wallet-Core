@@ -19,7 +19,8 @@ pub mod tests {
 
     pub fn granted(
         start: u32,
-    ) -> impl FnMut(ecash::Id, u32) -> bcr_wallet_persistence::Result<CounterReservation> {
+    ) -> impl FnMut(ecash::Id, u32) -> bcr_wallet_persistence::error::Result<CounterReservation>
+    {
         move |kid, n| {
             Ok(CounterReservation {
                 kid,

@@ -1,6 +1,10 @@
 # 0.9.17
 
 * Add support for dotted compileSdkVersion values in cargokit, so e.g. android-33.5 also works
+* Seed counter reservations are persisted when they are reserved and cleared in the transaction that stores the swap commitment (or once an onchain mint quote exists), and the pocket releases any reservation still present when it opens unless its commitment request was already sent to the mint (`PocketRepository::mark_reservations_sent`), in which case its counters stay used, so a crash between reserving counters and storing the commitment leaves no gap (DB change, no migration needed: adds the pocket DB `counter_reservations` table, no stored record layout changes)
+    * `mint_onchain` gives its counters back only when the mint refuses the quote request; a timeout or gateway error keeps them
+    * `PocketRepository::store_commitment` takes the reservations it covers and `PocketRepository::clear_reservations` is added
+    * `PocketRepository::reserve_counter` returns a `CounterReservation` carrying a reservation id, and `release_counter`, `clear_reservations`, `mark_reservations_sent` and `store_commitment` take it, so a stale release of an earlier reservation of the same range is a no-op
 
 # 0.9.16
 
@@ -9,11 +13,6 @@
 * Amounts supplied by a mint that overflow or underflow (`wallet_check_pending_mints`, `wallet_balance`, melts and sends) return an error instead of panicking
 * `wallet_restore` matches outputs by blinded message instead of position, skips unexpected outputs and check states instead of aborting, and stores a proof the mint returns no state for as pending
 * `wallet_migrate_rabid` (`purse_migrate_rabid`) no longer write-locks the rabid wallet: it swaps in a wallet rebuilt on the substitute; calls that move proofs wait for it, reads such as `wallet_balance` do not
-* Seed counter reservations are persisted when they are reserved and cleared in the transaction that stores the swap commitment (or once an onchain mint quote exists), and the pocket releases any reservation still present when it opens, so a crash between reserving counters and storing the commitment leaves no gap (DB change, no migration needed: adds the pocket DB `counter_reservations` table, no stored record layout changes)
-* Seed counter reservations are persisted when they are reserved and cleared in the transaction that stores the swap commitment (or once an onchain mint quote exists), and the pocket releases any reservation still present when it opens unless its commitment request was already sent to the mint (`PocketRepository::mark_reservations_sent`), in which case its counters stay used, so a crash between reserving counters and storing the commitment leaves no gap (DB change, no migration needed: adds the pocket DB `counter_reservations` table, no stored record layout changes)
-    * `mint_onchain` gives its counters back only when the mint refuses the quote request; a timeout or gateway error keeps them
-    * `PocketRepository::store_commitment` takes the reservations it covers and `PocketRepository::clear_reservations` is added
-    * `PocketRepository::reserve_counter` returns a `CounterReservation` carrying a reservation id, and `release_counter`, `clear_reservations`, `mark_reservations_sent` and `store_commitment` take it, so a stale release of an earlier reservation of the same range is a no-op
 
 # 0.9.15
 
