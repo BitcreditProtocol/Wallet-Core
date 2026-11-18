@@ -100,7 +100,8 @@ for iOS (device and simulator, iOS 15+), macOS (13+) and Android (API 24+) to a
 workspace crate's directory (path and content, except `target/` and hidden
 entries other than `.cargo/`), the workspace `Cargo.toml`, `Cargo.lock` and
 `.cargo/config.toml`, `rust-toolchain.toml` and `precompiled_binaries.yaml`.
-Any change there, such as a new migration file, gets new binaries. The hook verifies each download against the
+Any change there, such as a new migration file, gets new binaries. Android
+binaries are linked with NDK 28.2.13676358, Flutter 3.50's default. The hook verifies each download against the
 Ed25519 `public_key` in `precompiled_binaries.yaml`. If no signed binary
 exists for the target, or the app builds for an older platform version, the
 hook builds locally with cargo instead.
