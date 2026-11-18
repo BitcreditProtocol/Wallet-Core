@@ -15,7 +15,8 @@ debit `Pocket`, which talks to the mint over HTTP, `bcr-wallet-persistence` (red
     crates/bcr-wallet-persistence/  # redb repositories; redb/migration/ holds schema migrations
     crates/bcr-wallet-ffi/          # crate `wallet_ffi`; src/api/mod.rs is the hand-written FFI surface
     lib/src/rust/                   # GENERATED Dart bindings; lib/wallet_ffi.dart is the hand-written entry
-    cargokit/                       # vendored, locally patched; android/ ios/ macos/ linux/ windows/ call it
+    hook/                           # Dart build hook: builds the FFI crate or downloads its signed precompiled binary
+    tool/                           # standalone Dart package cd_precompiled.yml runs to publish precompiled binaries
 
 ## Quality Gates
 
@@ -44,7 +45,14 @@ Non-negotiables:
   After changing it, run `flutter_rust_bridge_codegen generate` from the repo root (`flutter_rust_bridge.yaml`)
   and commit the regenerated Rust and Dart with the change, as #338 does. The codegen tool must match
   the exact `flutter_rust_bridge` version pinned in `crates/bcr-wallet-ffi/Cargo.toml` and `pubspec.yaml`;
-  `RustLib.init` checks the embedded codegen version, so bumping FRB means bumping all three (#337).
+  `RustLib.init` checks the embedded codegen version, so bumping FRB means bumping all three (#337),
+  plus `flutter_rust_bridge_hooks` in `pubspec.yaml` and `tool/pubspec.yaml`, which ships with it.
+- **The Rust library is built by a Dart build hook**, not a Flutter plugin (#389). `hook/build.dart`
+  runs in the consuming app's build; `hook/src/precompiled_binaries.dart` downloads and verifies the
+  signed precompiled binary or falls back to cargo via `flutter_rust_bridge_hooks`. Hook code runs
+  with a filtered environment (PATH, HOME, `CARGO_*`, `RUSTUP_*`, Android NDK vars), so settings
+  reach it as `hooks: user_defines: wallet_ffi:` in the app pubspec, not as env vars. Its imports
+  must be regular `dependencies`, mirrored in `tool/pubspec.yaml`.
 - **Persistence is versioned and migrated.** Every stored record is a versioned borsh envelope, some
   encrypted with the wallet key. Changing a `Stored*` struct means a new `migration_000N.rs` in
   `crates/bcr-wallet-persistence/src/redb/migration/`, registered in its `mod.rs`; migrations run at
@@ -63,8 +71,9 @@ Non-negotiables:
 - **Version, CHANGELOG and release.** `[workspace.package] version` in `Cargo.toml` and `version` in
   `pubspec.yaml` are one number; a bump commit changes both and opens a new top section in `CHANGELOG.md`,
   and every user-visible change adds a line there naming the endpoint or type it touches. Pushing a
-  `v*` tag runs `.github/workflows/cd_precompiled.yml`, which builds and signs iOS and Android binaries
-  of `crates/bcr-wallet-ffi` via `cargokit/build_tool`; apps fetch them by crate hash, else build locally.
+  `v*` tag runs `.github/workflows/cd_precompiled.yml`, which builds and signs iOS, macOS and Android
+  binaries of `crates/bcr-wallet-ffi` via `tool/precompile_binaries.dart`; apps fetch them by crate hash,
+  else build locally.
   Bump only once the current version is tagged; until then new entries join its section.
 - **Signals and checks live in one place.** Wake waiters from the code that writes a state instead
   of polling storage on a timer, and validate input once in the layer that owns the rule (sender
@@ -78,12 +87,18 @@ Non-negotiables:
 
 Traps that cost real time. Append when you hit one; prune when the edge is gone.
 
-1. **A `Cargo.lock` inside a member crate is ignored by cargo but not by cargokit** (#318):
-   cargo resolves against the root lock, yet cargokit's crate hash includes any nested lock, so
-   a stray one busts the precompiled-binary cache and misleads Dependabot. Only the root lock counts.
-2. **`cargokit/` carries local patches** (#269: Android 16 KB page-size linker flags in
-   `cargokit/build_tool/lib/src/android_environment.dart`; #337 touched more). Re-syncing from
-   upstream wholesale silently drops them.
+1. **A `Cargo.lock` inside a member crate is ignored by cargo but not by the crate hash** (#318):
+   cargo resolves against the root lock, yet the precompiled-binary crate hash (`CrateHash` in
+   `hook/src/precompiled_binaries.dart`) includes any nested lock, so a stray one busts the
+   precompiled-binary cache and misleads Dependabot. Only the root lock counts.
+2. **Android 16 KB pages come from `native_toolchain_rust` >= 1.1** (#269), which skips the
+   linker flag when `RUSTFLAGS` or a Cargo config sets rustflags. `checkAndroidPageAlignment`
+   fails the build instead of shipping a 4 KB-aligned library; add
+   `-C link-arg=-Wl,-z,max-page-size=16384` to your own rustflags.
+3. **`crates/bcr-wallet-ffi/rust-toolchain.toml` pins an exact Rust version** for the hook.
+   It applies to cargo run inside that directory (rustup installs it with all listed targets),
+   not to workspace commands from the root. It is part of the crate hash: bumping it publishes
+   new precompiled binaries.
 
 ## Hit every surface
 
