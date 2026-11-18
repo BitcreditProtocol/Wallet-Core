@@ -1,6 +1,11 @@
 # Unreleased
 
 * Nostr offsets and queued messages, payment requests and mint, melt and melt commitment records are stored as versioned borsh, encrypted where they hold secrets or message content (breaking DB change: migration 0006; a legacy row that cannot be converted moves, encrypted, to a `<table>_quarantine` table)
+* **Breaking (build):** `wallet_ffi` is built by a Dart build hook (`hook/build.dart`, native assets) instead of cargokit, CocoaPods and the plugin's platform folders, so it supports Swift Package Manager by no longer being an iOS/macOS plugin (#389). No Dart or Rust API changes. Consuming apps must:
+    * use Flutter 3.50.0 or newer and have rustup installed for local builds; the hook installs the Rust version and targets pinned in `crates/bcr-wallet-ffi/rust-toolchain.toml` (Android builds also need NDK r27+)
+    * drop `wallet_ffi` from CocoaPods: `pod install` no longer finds a `wallet_ffi` pod, and an app with no other CocoaPods plugin can delete its `Podfile`, `Podfile.lock` and CocoaPods CI setup
+    * opt into precompiled binaries with `hooks: user_defines: wallet_ffi: use_precompiled_binaries: true` in the app `pubspec.yaml`; `cargokit_options.yaml` and `CARGOKIT_USE_PRECOMPILED_BINARIES` are ignored
+* Precompiled binaries (`cd_precompiled.yml`, built by `tool/precompile_binaries.dart`) are dynamic libraries for iOS 15+, macOS 13+ (new) and Android API 24+ (was 27; `i686-linux-android` dropped, Flutter no longer builds it), still Ed25519-signed under the same key in `precompiled_binaries.yaml`; binaries published for earlier versions are not reused
 
 # 0.9.17
 
