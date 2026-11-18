@@ -87,10 +87,13 @@ Non-negotiables:
 
 Traps that cost real time. Append when you hit one; prune when the edge is gone.
 
-1. **A `Cargo.lock` inside a member crate is ignored by cargo but not by the crate hash** (#318):
-   cargo resolves against the root lock, yet the precompiled-binary crate hash (`CrateHash` in
-   `hook/src/precompiled_binaries.dart`) includes any nested lock, so a stray one busts the
-   precompiled-binary cache and misleads Dependabot. Only the root lock counts.
+1. **The crate hash covers every file in every member crate, used by cargo or not** (#318, #389):
+   `CrateHash` in `hook/src/precompiled_binaries.dart` hashes each file's path and content
+   below each workspace member (skipping `target/` and hidden entries other than `.cargo/`),
+   so files `src/` never names, such as migrations read by a macro, cannot reuse a stale
+   binary. The cost: a stray file, like a nested `Cargo.lock` (cargo ignores it; it also
+   misleads Dependabot) or a local `.db` in a dev checkout, misses the published binaries
+   and builds with cargo instead. Only the root lock counts.
 2. **Android 16 KB pages come from `native_toolchain_rust` >= 1.1** (#269), which skips the
    linker flag when `RUSTFLAGS` or a Cargo config sets rustflags. `checkAndroidPageAlignment`
    fails the build instead of shipping a 4 KB-aligned library; add

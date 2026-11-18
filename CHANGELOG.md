@@ -8,6 +8,8 @@
     * call `RustLib.init()` without `externalLibrary`: on iOS and macOS the library is now an embedded `wallet_ffi.framework` that Flutter does not link into the app, so `ExternalLibrary.process(...)` finds no symbols
     * expect `dart run` in the app (e.g. `build_runner`) to run the hook for the host too; the first run builds the Rust library for the host, later runs reuse it
 * Precompiled binaries (`cd_precompiled.yml`, built by `tool/precompile_binaries.dart`) are dynamic libraries for iOS 15+, macOS 13+ (new) and Android API 24+ (was 27; `i686-linux-android` dropped, Flutter no longer builds it), still Ed25519-signed under the same key in `precompiled_binaries.yaml`; binaries published for earlier versions are not reused
+    * the crate hash now covers every file in each workspace crate's directory (not only `src/`, `Cargo.toml` and `build.rs`) plus `.cargo/config.toml`, so a change such as a new migration file can no longer reuse a binary built without it
+    * a stalled or failing download (timeout, HTTP 429 or 5xx) is retried, then the hook builds with cargo instead of hanging the app build
 
 # 0.9.17
 
