@@ -258,8 +258,10 @@ bool rustupAvailable() {
 /// no such binary, cannot be reached or its signature does not verify; the
 /// caller then builds with cargo.
 ///
-/// Each request is abandoned after [requestTimeout]; timeouts, network
-/// errors, HTTP 429 and 5xx are retried up to [maxAttempts] times.
+/// A request is abandoned when no response headers, or no body data, arrive
+/// for [idleTimeout]; a slow but progressing download is never cut off.
+/// Timeouts, network errors, HTTP 429 and 5xx are retried up to
+/// [maxAttempts] times.
 Future<File?> downloadPrecompiled({
   required PrecompiledBinariesConfig config,
   required String crateHash,
@@ -267,7 +269,7 @@ Future<File?> downloadPrecompiled({
   required String libraryFile,
   required String cacheDir,
   required Logger logger,
-  Duration requestTimeout = const Duration(seconds: 60),
+  Duration idleTimeout = const Duration(seconds: 30),
   int maxAttempts = 3,
 }) async {
   // The file keeps the library's own name: Flutter derives the Android
@@ -283,7 +285,7 @@ Future<File?> downloadPrecompiled({
   );
 
   Future<Uint8List?> get(Uri url) =>
-      _get(url, logger, timeout: requestTimeout, maxAttempts: maxAttempts);
+      _get(url, logger, idleTimeout: idleTimeout, maxAttempts: maxAttempts);
 
   final signature = await get(signatureUrl);
   if (signature == null) {
@@ -309,7 +311,7 @@ Future<File?> downloadPrecompiled({
 Future<Uint8List?> _get(
   Uri url,
   Logger logger, {
-  required Duration timeout,
+  required Duration idleTimeout,
   required int maxAttempts,
 }) async {
   for (var attempt = 1; ; attempt++) {
@@ -317,10 +319,15 @@ Future<Uint8List?> _get(
     // A fresh client per attempt: closing it aborts a stalled request.
     final client = http.Client();
     try {
-      final response = await client.get(url).timeout(timeout);
+      final response = await client
+          .send(http.Request('GET', url))
+          .timeout(idleTimeout);
       final status = response.statusCode;
       if (status == 200) {
-        return response.bodyBytes;
+        // The timeout applies to each gap between chunks, not the total.
+        final body = BytesBuilder(copy: false);
+        await response.stream.timeout(idleTimeout).forEach(body.add);
+        return body.takeBytes();
       }
       if (status == 404) {
         return null;
@@ -331,7 +338,7 @@ Future<Uint8List?> _get(
       }
       failure = 'HTTP $status';
     } on TimeoutException {
-      failure = 'no response within ${timeout.inSeconds}s';
+      failure = 'no data for ${idleTimeout.inSeconds}s';
     } on Exception catch (e) {
       failure = '$e';
     } finally {
@@ -411,18 +418,22 @@ class CrateHash {
   /// its content. UTF-8 text is hashed line by line so that checkouts with
   /// converted line endings agree; other files are hashed as raw bytes.
   String compute() {
-    final root = _hashRoot();
     final output = AccumulatorSink<Digest>();
     final input = sha256.startChunkedConversion(output)
       ..add(utf8.encode('$recipe\n'));
-    for (final file in files()) {
-      final relative = path.posix.joinAll(
-        path.split(path.relative(file.path, from: root)),
-      );
-      input.add(utf8.encode('$relative\u0000${_contentDigest(file)}\n'));
+    for (final (hashed, file) in _entries()) {
+      input.add(utf8.encode('$hashed\u0000${_contentDigest(file)}\n'));
     }
     input.close();
     return hex.encode(output.events.single.bytes.sublist(0, 16));
+  }
+
+  /// [file]'s path relative to [root] with `/` separators, whatever the
+  /// host's [context]. Files are hashed and ordered by it, so a checkout
+  /// hashes the same on Windows as on Linux and macOS.
+  static String hashPath(String file, String root, {path.Context? context}) {
+    final p = context ?? path.context;
+    return p.split(p.relative(file, from: root)).join('/');
   }
 
   static String _contentDigest(File file) {
@@ -442,8 +453,11 @@ class CrateHash {
   String _hashRoot() =>
       _findWorkspaceRoot() ?? path.normalize(path.absolute(manifestDir));
 
-  /// The hashed files, sorted by path.
-  List<File> files() {
+  /// The hashed files, in hashing order.
+  List<File> files() => [for (final (_, file) in _entries()) file];
+
+  /// The hashed files with their [hashPath], sorted by it.
+  List<(String, File)> _entries() {
     final files = <String, File>{};
     void add(File file) =>
         files.putIfAbsent(path.normalize(path.absolute(file.path)), () => file);
@@ -474,10 +488,11 @@ class CrateHash {
     }
     addIfExists(path.join(packageRoot, PrecompiledBinariesConfig.fileName));
 
-    return files.entries
-        .sortedBy((entry) => entry.key)
-        .map((entry) => entry.value)
-        .toList();
+    final root = _hashRoot();
+    return [
+      for (final MapEntry(:key, :value) in files.entries)
+        (hashPath(key, root), value),
+    ]..sort((a, b) => a.$1.compareTo(b.$1));
   }
 
   /// Every file under a member crate's [dir], except build output
