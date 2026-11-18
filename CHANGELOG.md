@@ -6,7 +6,6 @@
     * drop `wallet_ffi` from CocoaPods: `pod install` no longer finds a `wallet_ffi` pod, and an app with no other CocoaPods plugin can delete its `Podfile`, `Podfile.lock` and CocoaPods CI setup
     * opt into precompiled binaries with `hooks: user_defines: wallet_ffi: use_precompiled_binaries: true` in the app `pubspec.yaml`; `cargokit_options.yaml` and `CARGOKIT_USE_PRECOMPILED_BINARIES` are ignored
     * call `RustLib.init()` without `externalLibrary`: on iOS and macOS the library is now an embedded `wallet_ffi.framework` that Flutter does not link into the app, so `ExternalLibrary.process(...)` finds no symbols
-    * expect `dart run` in the app (e.g. `build_runner`) to run the hook for the host too; the first run builds the Rust library for the host, later runs reuse it
 * Precompiled binaries (`cd_precompiled.yml`, built by `tool/precompile_binaries.dart`) are dynamic libraries for iOS 15+, macOS 13+ (new) and Android API 24+ (was 27; `i686-linux-android` dropped, Flutter no longer builds it), still Ed25519-signed under the same key in `precompiled_binaries.yaml`; binaries published for earlier versions are not reused
     * the crate hash now covers every file in each workspace crate's directory (not only `src/`, `Cargo.toml` and `build.rs`) plus `.cargo/config.toml`, so a change such as a new migration file can no longer reuse a binary built without it
     * Android binaries are linked with NDK 28.2.13676358 (Flutter 3.50's default), pinned in `cd_precompiled.yml` instead of the runner's latest NDK
