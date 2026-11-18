@@ -8,6 +8,7 @@
 // Nothing in this file is specific to one repository; hook/build.dart passes
 // the crate path and library name.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -254,7 +255,11 @@ bool rustupAvailable() {
 
 /// Downloads `<urlPrefix><crateHash>/<triple>_<libraryFile>` and its `.sig`
 /// into [cacheDir] and returns the verified file, or null if the release has
-/// no such binary or its signature does not verify.
+/// no such binary, cannot be reached or its signature does not verify; the
+/// caller then builds with cargo.
+///
+/// Each request is abandoned after [requestTimeout]; timeouts, network
+/// errors, HTTP 429 and 5xx are retried up to [maxAttempts] times.
 Future<File?> downloadPrecompiled({
   required PrecompiledBinariesConfig config,
   required String crateHash,
@@ -262,6 +267,8 @@ Future<File?> downloadPrecompiled({
   required String libraryFile,
   required String cacheDir,
   required Logger logger,
+  Duration requestTimeout = const Duration(seconds: 60),
+  int maxAttempts = 3,
 }) async {
   // The file keeps the library's own name: Flutter derives the Android
   // jniLibs entry and the Apple framework name from it.
@@ -275,12 +282,15 @@ Future<File?> downloadPrecompiled({
     base + signatureFileName(rustTriple, libraryFile),
   );
 
-  final signature = await _get(signatureUrl, logger);
+  Future<Uint8List?> get(Uri url) =>
+      _get(url, logger, timeout: requestTimeout, maxAttempts: maxAttempts);
+
+  final signature = await get(signatureUrl);
   if (signature == null) {
     logger.warning('No precompiled binary for crate hash $crateHash');
     return null;
   }
-  final binary = await _get(binaryUrl, logger);
+  final binary = await get(binaryUrl);
   if (binary == null) {
     return null;
   }
@@ -295,25 +305,44 @@ Future<File?> downloadPrecompiled({
   return target;
 }
 
-Future<Uint8List?> _get(Uri url, Logger logger) async {
-  const maxAttempts = 5;
+/// GETs [url]; null on 404 (no binary) or once retries are exhausted.
+Future<Uint8List?> _get(
+  Uri url,
+  Logger logger, {
+  required Duration timeout,
+  required int maxAttempts,
+}) async {
   for (var attempt = 1; ; attempt++) {
+    String failure;
+    // A fresh client per attempt: closing it aborts a stalled request.
+    final client = http.Client();
     try {
-      final response = await http.get(url);
-      if (response.statusCode == 200) {
+      final response = await client.get(url).timeout(timeout);
+      final status = response.statusCode;
+      if (status == 200) {
         return response.bodyBytes;
       }
-      if (response.statusCode != 404) {
-        logger.warning('Downloading $url failed: ${response.statusCode}');
-      }
-      return null;
-    } on Exception catch (e) {
-      if (attempt == maxAttempts) {
-        logger.warning('Downloading $url failed: $e');
+      if (status == 404) {
         return null;
       }
-      await Future<void>.delayed(Duration(seconds: attempt));
+      if (status != 429 && status < 500) {
+        logger.warning('Downloading $url failed: HTTP $status');
+        return null;
+      }
+      failure = 'HTTP $status';
+    } on TimeoutException {
+      failure = 'no response within ${timeout.inSeconds}s';
+    } on Exception catch (e) {
+      failure = '$e';
+    } finally {
+      client.close();
     }
+    if (attempt >= maxAttempts) {
+      logger.warning('Downloading $url failed: $failure; giving up');
+      return null;
+    }
+    logger.info('Downloading $url failed: $failure; retrying');
+    await Future<void>.delayed(Duration(seconds: 1 << (attempt - 1)));
   }
 }
 
@@ -356,10 +385,15 @@ void checkAndroidPageAlignment(File library) {
 
 /// Hash identifying the source a precompiled binary was built from.
 ///
-/// Ported from cargokit's crate_hash.dart, including the local override that
-/// hashes every workspace member: the FFI crate depends on sibling crates, so
-/// hashing only its own directory would reuse stale binaries. It also covers
-/// the files that change how the binary is built.
+/// Any file that can change the compiled library must change the hash: a
+/// stale hash makes apps download a binary built from older sources. So it
+/// covers every file in every workspace member's directory (not only `src/`:
+/// `include_str!`, `sqlx::migrate!` and build scripts read other files), the
+/// workspace `Cargo.toml`/`Cargo.lock` and `.cargo/config.toml`, the FFI
+/// crate's `rust-toolchain.toml`, `precompiled_binaries.yaml` and [recipe].
+/// Hashing too much only costs a cargo build; hashing too little ships stale
+/// code. Started from cargokit's crate_hash.dart and its local override
+/// that hashes all workspace members.
 class CrateHash {
   CrateHash({required this.packageRoot, required this.manifestDir});
 
@@ -372,60 +406,96 @@ class CrateHash {
       'ios=$precompiledIOSVersion;'
       'macos=$precompiledMacOSVersion';
 
-  /// 128-bit hex hash over [files], line by line so that checkouts with
-  /// converted line endings hash the same.
+  /// 128-bit hex hash over [recipe] and, per file in [files], its path
+  /// relative to [_hashRoot] (so a rename or an empty new file counts) and
+  /// its content. UTF-8 text is hashed line by line so that checkouts with
+  /// converted line endings agree; other files are hashed as raw bytes.
   String compute() {
+    final root = _hashRoot();
     final output = AccumulatorSink<Digest>();
-    final input = sha256.startChunkedConversion(output);
-    input.add(utf8.encode(recipe));
+    final input = sha256.startChunkedConversion(output)
+      ..add(utf8.encode('$recipe\n'));
     for (final file in files()) {
-      for (final line in const LineSplitter().convert(
-        file.readAsStringSync(),
-      )) {
-        input.add(utf8.encode(line));
-      }
+      final relative = path.posix.joinAll(
+        path.split(path.relative(file.path, from: root)),
+      );
+      input.add(utf8.encode('$relative\u0000${_contentDigest(file)}\n'));
     }
     input.close();
     return hex.encode(output.events.single.bytes.sublist(0, 16));
   }
 
+  static String _contentDigest(File file) {
+    final bytes = file.readAsBytesSync();
+    String text;
+    try {
+      text = utf8.decode(bytes);
+    } on FormatException {
+      return 'bin:${sha256.convert(bytes)}';
+    }
+    final lines = const LineSplitter().convert(text).join('\n');
+    return 'txt:${sha256.convert(utf8.encode(lines))}';
+  }
+
+  /// Directory the hashed paths are relative to: the workspace root, or the
+  /// crate itself outside a workspace.
+  String _hashRoot() =>
+      _findWorkspaceRoot() ?? path.normalize(path.absolute(manifestDir));
+
   /// The hashed files, sorted by path.
   List<File> files() {
-    final files = <File>[];
-    final packageDirs = <String>{path.normalize(path.absolute(manifestDir))};
+    final files = <String, File>{};
+    void add(File file) =>
+        files.putIfAbsent(path.normalize(path.absolute(file.path)), () => file);
+    void addIfExists(String filePath) {
+      final file = File(filePath);
+      if (file.existsSync()) {
+        add(file);
+      }
+    }
 
+    final packageDirs = <String>{path.normalize(path.absolute(manifestDir))};
     final workspaceRoot = _findWorkspaceRoot();
     if (workspaceRoot != null) {
       packageDirs.addAll(_workspaceMemberDirs(workspaceRoot));
-      _addFile(files, path.join(workspaceRoot, 'Cargo.toml'));
-      _addFile(files, path.join(workspaceRoot, 'Cargo.lock'));
-    }
-
-    for (final packageDir in packageDirs) {
-      final src = Directory(path.join(packageDir, 'src'));
-      if (src.existsSync()) {
-        files.addAll(
-          src.listSync(recursive: true, followLinks: false).whereType<File>(),
-        );
+      for (final name in [
+        'Cargo.toml',
+        'Cargo.lock',
+        'rust-toolchain.toml',
+        'rust-toolchain',
+        path.join('.cargo', 'config.toml'),
+        path.join('.cargo', 'config'),
+      ]) {
+        addIfExists(path.join(workspaceRoot, name));
       }
-      _addFile(files, path.join(packageDir, 'Cargo.toml'));
-      _addFile(files, path.join(packageDir, 'Cargo.lock'));
-      _addFile(files, path.join(packageDir, 'build.rs'));
     }
-    _addFile(files, path.join(manifestDir, 'rust-toolchain.toml'));
-    _addFile(files, path.join(packageRoot, PrecompiledBinariesConfig.fileName));
+    for (final packageDir in packageDirs) {
+      _crateFiles(Directory(packageDir)).forEach(add);
+    }
+    addIfExists(path.join(packageRoot, PrecompiledBinariesConfig.fileName));
 
-    return files
-        .groupListsBy((file) => path.normalize(path.absolute(file.path)))
-        .values
-        .map((group) => group.first)
-        .sortedBy((file) => path.normalize(path.absolute(file.path)));
+    return files.entries
+        .sortedBy((entry) => entry.key)
+        .map((entry) => entry.value)
+        .toList();
   }
 
-  void _addFile(List<File> files, String filePath) {
-    final file = File(filePath);
-    if (file.existsSync()) {
-      files.add(file);
+  /// Every file under a member crate's [dir], except build output
+  /// (`target/`) and hidden entries other than `.cargo/`, which can hold a
+  /// Cargo config. Symlinked files are followed, symlinked directories not.
+  static Iterable<File> _crateFiles(Directory dir) sync* {
+    for (final entity in dir.listSync(followLinks: false)) {
+      final name = path.basename(entity.path);
+      if (name == 'target' || (name.startsWith('.') && name != '.cargo')) {
+        continue;
+      }
+      if (entity is Directory) {
+        yield* _crateFiles(entity);
+      } else if (entity is File) {
+        yield entity;
+      } else if (entity is Link && FileSystemEntity.isFileSync(entity.path)) {
+        yield File(entity.path);
+      }
     }
   }
 
