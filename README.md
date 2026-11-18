@@ -52,15 +52,30 @@ Rust<>Flutter FFI for [Wallet-Core](https://github.com/BitcreditProtocol/Wallet-
 
 ## Prerequisites
 
-* Install Rust
-* Install Flutter
-* `cargo install flutter_rust_bridge_codegen`
+* Install Rust through [rustup](https://rustup.rs). The build hook installs
+  the toolchain and targets pinned in `crates/bcr-wallet-ffi/rust-toolchain.toml`.
+* Install Flutter 3.50.0 or newer
+* `cargo install flutter_rust_bridge_codegen --version 2.13.0` (only to regenerate bindings)
+* For Android builds: an Android NDK, r27 or newer
 
 ## Generate bindings
 
 ```bash
 flutter_rust_bridge_codegen generate
 ```
+
+## How the Rust library is built
+
+`wallet_ffi` is a Dart package with a [build hook](https://dart.dev/tools/hooks)
+(`hook/build.dart`), not a Flutter plugin: it has no `android/`, `ios/`,
+`macos/`, `linux/` or `windows/` folders, no CocoaPods podspec and no Swift
+package. When an app builds, Flutter runs the hook for each target. The hook
+compiles `crates/bcr-wallet-ffi` with cargo (through
+[`flutter_rust_bridge_hooks`](https://pub.dev/packages/flutter_rust_bridge_hooks)
+and `native_toolchain_rust`), or downloads a signed precompiled binary. Flutter
+then bundles the result as a dynamic library. On iOS and macOS it becomes
+`wallet_ffi.framework`, which Flutter signs and embeds. Android 64-bit
+libraries are linked for 16 KB pages, and the hook checks this.
 
 ## Import this package
 
@@ -79,17 +94,32 @@ The `ref` can either be a commit hash, a branch or a tag.
 
 ### Precompiled binaries
 
-This package publishes signed precompiled iOS and Android Rust binaries from
-`.github/workflows/cd_precompiled.yml`. App CI can opt in by adding
-`cargokit_options.yaml` at the Flutter app root:
+`.github/workflows/cd_precompiled.yml` publishes signed precompiled binaries
+for iOS (device and simulator, iOS 15+), macOS (13+) and Android (API 24+) to a
+`precompiled_<crate hash>` release. The crate hash covers the sources of every
+workspace crate, `Cargo.toml`/`Cargo.lock`, `rust-toolchain.toml` and
+`precompiled_binaries.yaml`. The hook verifies each download against the
+Ed25519 `public_key` in `precompiled_binaries.yaml`. If no signed binary
+exists for the target, or the app builds for an older platform version, the
+hook builds locally with cargo instead.
+
+Precompiled binaries are used when the app opts in, or when rustup is not
+installed. To opt in (for example in app CI), add to the app's `pubspec.yaml`:
 
 ```yaml
-use_precompiled_binaries: true
+hooks:
+  user_defines:
+    wallet_ffi:
+      use_precompiled_binaries: true
 ```
 
-Alternatively set `CARGOKIT_USE_PRECOMPILED_BINARIES=true` in the app build
-environment. Cargokit falls back to a local Rust build if a signed binary for
-the current crate hash and target is not available.
+Set it to `false` to always build locally. The old `cargokit_options.yaml` and
+`CARGOKIT_USE_PRECOMPILED_BINARIES` no longer have any effect.
+
+To publish binaries for the current sources, the workflow runs
+`tool/precompile_binaries.dart`, a standalone Dart package. Run
+`dart run precompile_binaries.dart --print-hash` in `tool/` to print the crate
+hash.
 
 Then, in `main.dart`:
 
