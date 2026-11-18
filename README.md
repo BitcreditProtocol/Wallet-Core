@@ -96,9 +96,11 @@ The `ref` can either be a commit hash, a branch or a tag.
 
 `.github/workflows/cd_precompiled.yml` publishes signed precompiled binaries
 for iOS (device and simulator, iOS 15+), macOS (13+) and Android (API 24+) to a
-`precompiled_<crate hash>` release. The crate hash covers the sources of every
-workspace crate, `Cargo.toml`/`Cargo.lock`, `rust-toolchain.toml` and
-`precompiled_binaries.yaml`. The hook verifies each download against the
+`precompiled_<crate hash>` release. The crate hash covers every file in every
+workspace crate's directory (path and content, except `target/` and hidden
+entries other than `.cargo/`), the workspace `Cargo.toml`, `Cargo.lock` and
+`.cargo/config.toml`, `rust-toolchain.toml` and `precompiled_binaries.yaml`.
+Any change there, such as a new migration file, gets new binaries. The hook verifies each download against the
 Ed25519 `public_key` in `precompiled_binaries.yaml`. If no signed binary
 exists for the target, or the app builds for an older platform version, the
 hook builds locally with cargo instead.
