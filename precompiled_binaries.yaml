@@ -1,0 +1,9 @@
+# Signed precompiled binaries of crates/bcr-wallet-ffi, published by
+# .github/workflows/cd_precompiled.yml and downloaded by hook/build.dart.
+
+# Release download URL up to the crate hash.
+url_prefix: https://github.com/BitcreditProtocol/Wallet-Core/releases/download/precompiled_
+
+# Ed25519 key that verifies each binary's .sig; the private half is the
+# PRECOMPILED_BINARIES_SIG_PRIVATE_KEY secret.
+public_key: 65d7c5859d185e114b41b1da4fc71e7d2b7cb8f6e299c465dd641ab2f795716f
