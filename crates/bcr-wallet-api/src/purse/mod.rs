@@ -227,12 +227,10 @@ where
         let wallet_id = wallet.read().await.id();
         self.repo.store(wallet.read().await.config()?).await?;
         let mut wallets = self.wallets.write().await;
-        let replaced = wallets.insert(wallet_id.clone(), wallet).is_some();
+        wallets.insert(wallet_id.clone(), wallet);
         drop(wallets);
-        if !replaced {
-            self.events
-                .emit(&wallet_id, WalletEventKind::WalletsChanged);
-        }
+        self.events
+            .emit(&wallet_id, WalletEventKind::WalletsChanged);
         Ok(wallet_id)
     }
 
@@ -242,8 +240,9 @@ where
         };
         wlt.read().await.delete().await?;
         self.repo.delete(id).await?;
-        self.wallets.write().await.remove(id);
-        self.events.emit(id, WalletEventKind::WalletsChanged);
+        if self.wallets.write().await.remove(id).is_some() {
+            self.events.emit(id, WalletEventKind::WalletsChanged);
+        }
         Ok(())
     }
 

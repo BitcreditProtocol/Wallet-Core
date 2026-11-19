@@ -126,17 +126,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn readding_an_existing_wallet_emits_nothing() {
+    async fn replacing_a_wallet_under_the_same_id_emits() {
         let purse = purse(Box::new(mock_repo()));
         purse
             .add_wallet(Arc::new(RwLock::new(mock_wallet())))
             .await
             .unwrap();
         let mut rx = purse.events.subscribe();
+        let mut replacement = mock_wallet();
+        replacement.checkpoint();
+        replacement.expect_id().returning(|| "wlt-1".to_owned());
+        replacement.expect_config().returning(|| {
+            let mut cfg = wlt_cfg();
+            cfg.name = "renamed-config".to_owned();
+            Ok(cfg)
+        });
         purse
-            .add_wallet(Arc::new(RwLock::new(mock_wallet())))
+            .add_wallet(Arc::new(RwLock::new(replacement)))
             .await
             .unwrap();
+        assert_eq!(drain(&mut rx), vec![wallets_changed("wlt-1")]);
+    }
+
+    #[tokio::test]
+    async fn delete_of_a_wallet_removed_meanwhile_emits_nothing() {
+        let purse = purse(Box::new(mock_repo()));
+        let wallets = purse.wallets.clone();
+        let mut wlt = mock_wallet();
+        wlt.checkpoint();
+        wlt.expect_id().returning(|| "wlt-1".to_owned());
+        wlt.expect_config().returning(|| Ok(wlt_cfg()));
+        wlt.expect_delete().returning(move || {
+            wallets.try_write().unwrap().remove("wlt-1");
+            Ok(())
+        });
+        purse.add_wallet(Arc::new(RwLock::new(wlt))).await.unwrap();
+        let mut rx = purse.events.subscribe();
+        purse.delete_wallet("wlt-1").await.unwrap();
         assert!(drain(&mut rx).is_empty());
     }
 
