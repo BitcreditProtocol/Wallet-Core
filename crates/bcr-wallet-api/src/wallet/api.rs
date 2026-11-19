@@ -390,7 +390,7 @@ impl WalletApi for super::Wallet {
                 let amount = proofs.total_amount()?;
 
                 let partial_tx = Transaction {
-                    id: Uuid::new_v4(),
+                    id: Transaction::derive_id(TransactionDirection::Outgoing, &ys),
                     mint_url: to_mint_url(self.client.mint_url()),
                     fees,
                     direction: TransactionDirection::Outgoing,
@@ -421,7 +421,7 @@ impl WalletApi for super::Wallet {
                 let amount = onchain_sent_amount(proofs.total_amount()?, &fees)?;
 
                 let partial_tx = Transaction {
-                    id: Uuid::new_v4(),
+                    id: Transaction::derive_id(TransactionDirection::Outgoing, &ys),
                     mint_url: to_mint_url(self.client.mint_url()),
                     fees,
                     direction: TransactionDirection::Outgoing,
@@ -457,7 +457,7 @@ impl WalletApi for super::Wallet {
                 let amount = proofs.total_amount()?;
 
                 let partial_tx = Transaction {
-                    id: Uuid::new_v4(),
+                    id: Transaction::derive_id(TransactionDirection::Outgoing, &ys),
                     mint_url: to_mint_url(self.client.mint_url()),
                     fees,
                     direction: TransactionDirection::Outgoing,
@@ -569,7 +569,7 @@ impl WalletApi for super::Wallet {
         if let Some((amount, ref ys)) = result {
             let now = time::OffsetDateTime::now_utc();
             let tx = Transaction {
-                id: Uuid::new_v4(),
+                id: quote_id,
                 mint_url: to_mint_url(self.client.mint_url()),
                 fees: TransactionFees::default(),
                 direction: TransactionDirection::Incoming,
@@ -647,7 +647,7 @@ impl WalletApi for super::Wallet {
             let now = time::OffsetDateTime::now_utc();
 
             let tx = Transaction {
-                id: Uuid::new_v4(),
+                id: Transaction::derive_id(TransactionDirection::Outgoing, ys),
                 mint_url: to_mint_url(self.client.mint_url()),
                 fees: TransactionFees::default(),
                 direction: TransactionDirection::Outgoing,
@@ -1283,7 +1283,7 @@ impl WalletApi for super::Wallet {
 
             // Create Transaction
             let partial_tx = Transaction {
-                id: Uuid::new_v4(),
+                id: Transaction::derive_id(TransactionDirection::Outgoing, &ys),
                 mint_url: to_mint_url(&substitute),
                 fees,
                 direction: TransactionDirection::Outgoing,

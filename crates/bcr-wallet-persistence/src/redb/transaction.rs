@@ -385,7 +385,9 @@ impl TransactionDB {
             let serialized =
                 borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
 
-            table.insert(id.as_bytes().as_slice(), serialized)?;
+            if table.get(id.as_bytes().as_slice())?.is_none() {
+                table.insert(id.as_bytes().as_slice(), serialized)?;
+            }
         }
 
         write_txn.commit()?;
@@ -753,6 +755,26 @@ mod tests {
         let loaded = repo.load_tx(tx_id).await.expect("load_tx works");
 
         assert_eq!(loaded.id, tx.id);
+    }
+
+    #[tokio::test]
+    async fn store_tx_keeps_existing_settled_status() {
+        let repo = get_db(&wallet_id());
+
+        let mut tx = test_tx();
+        tx.status = TransactionStatus::Settled;
+        repo.store_tx(tx.clone()).await.unwrap();
+
+        let mut retry = tx.clone();
+        retry.status = TransactionStatus::Pending;
+        retry.memo = Some("other".to_string());
+        let id = repo.store_tx(retry).await.unwrap();
+
+        assert_eq!(id, tx.id);
+        let loaded = repo.load_tx(id).await.unwrap();
+        assert_eq!(loaded.status, TransactionStatus::Settled);
+        assert_eq!(loaded.memo, tx.memo);
+        assert_eq!(repo.list_txs().await.unwrap().len(), 1);
     }
 
     #[tokio::test]

@@ -43,5 +43,5 @@ tracing = {version = "0.1", features = ["log"]}
 tracing-log = {version = "0.2"}
 tracing-subscriber = {version = "0.3"}
 url = {version = "2.5"}
-uuid = {version = "1", features = ["v4", "serde", "borsh"]}
+uuid = {version = "1", features = ["v4", "v5", "serde", "borsh"]}
 mockito = "1.7"

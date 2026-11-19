@@ -261,6 +261,26 @@ pub struct Transaction {
     pub linked_txs: Vec<TransactionLink>,
 }
 
+const TX_ID_NAMESPACE: Uuid = Uuid::from_u128(0x6b1c_83f4_5f0e_4a4b_9d0c_7a6e_2b43_9c11);
+
+impl Transaction {
+    /// Id derived from direction and the proofs' ys, so a retry resolves to the same transaction.
+    /// Without proofs nothing identifies a retry, so the id is random.
+    pub fn derive_id(direction: TransactionDirection, ys: &[cashu::PublicKey]) -> Uuid {
+        if ys.is_empty() {
+            return Uuid::new_v4();
+        }
+        let mut keys: Vec<[u8; 33]> = ys.iter().map(|y| y.to_bytes()).collect();
+        keys.sort_unstable();
+        let mut name = vec![match direction {
+            TransactionDirection::Incoming => 0u8,
+            TransactionDirection::Outgoing => 1u8,
+        }];
+        keys.iter().for_each(|k| name.extend_from_slice(k));
+        Uuid::new_v5(&TX_ID_NAMESPACE, &name)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct TransactionFees {
     pub swap: cashu::Amount,
@@ -608,6 +628,32 @@ mod tests {
             contact_node_id: None,
             linked_txs: vec![],
         }
+    }
+
+    #[test]
+    fn tx_id_ignores_order_and_separates_direction() {
+        let y = |n: u8| {
+            let sk = secp256k1::SecretKey::from_slice(&[n; 32]).unwrap();
+            cashu::PublicKey::from(sk.public_key(&secp256k1::Secp256k1::new()))
+        };
+        let (a, b) = (y(1), y(2));
+        let out = TransactionDirection::Outgoing;
+        let id = Transaction::derive_id(out, &[a, b]);
+        assert_eq!(id, Transaction::derive_id(out, &[b, a]));
+        assert_ne!(
+            id,
+            Transaction::derive_id(TransactionDirection::Incoming, &[a, b])
+        );
+        assert_ne!(id, Transaction::derive_id(out, &[a]));
+    }
+
+    #[test]
+    fn tx_without_proofs_gets_distinct_ids() {
+        let out = TransactionDirection::Outgoing;
+        assert_ne!(
+            Transaction::derive_id(out, &[]),
+            Transaction::derive_id(out, &[])
+        );
     }
 
     #[test]

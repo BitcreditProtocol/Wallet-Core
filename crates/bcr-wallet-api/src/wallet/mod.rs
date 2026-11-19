@@ -1291,7 +1291,7 @@ impl Wallet {
 
             // Create new, cancelled transaction
             let reclaim_tx = Transaction {
-                id: Uuid::new_v4(),
+                id: Transaction::derive_id(TransactionDirection::Incoming, &tx.ys),
                 mint_url: tx.mint_url.clone(),
                 direction: TransactionDirection::Incoming, // incoming, since we're getting back the funds
                 fees: TransactionFees {
@@ -1443,7 +1443,7 @@ impl Wallet {
             Amount::ZERO
         };
         let tx = Transaction {
-            id: Uuid::new_v4(),
+            id: Transaction::derive_id(TransactionDirection::Incoming, &ys),
             mint_url: to_mint_url(self.client.mint_url()),
             direction: TransactionDirection::Incoming,
             fees: TransactionFees {
