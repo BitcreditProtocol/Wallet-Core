@@ -197,8 +197,12 @@ mod tests {
         assert!(matches!(rx.recv().await, Err(RecvError::Lagged(_))));
         bus.emit("w-1", WalletEventKind::WalletsChanged);
         let mut last = None;
-        while let Ok(ev) = rx.try_recv() {
-            last = Some(ev);
+        loop {
+            match rx.try_recv() {
+                Ok(ev) => last = Some(ev),
+                Err(TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
         }
         assert_eq!(last.unwrap().kind, WalletEventKind::WalletsChanged);
     }
