@@ -126,6 +126,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn readding_an_existing_wallet_emits_nothing() {
+        let purse = purse(Box::new(mock_repo()));
+        purse
+            .add_wallet(Arc::new(RwLock::new(mock_wallet())))
+            .await
+            .unwrap();
+        let mut rx = purse.events.subscribe();
+        purse
+            .add_wallet(Arc::new(RwLock::new(mock_wallet())))
+            .await
+            .unwrap();
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    #[tokio::test]
     async fn unknown_wallet_and_noop_rename_emit_nothing() {
         let purse = purse(Box::new(mock_repo()));
         purse

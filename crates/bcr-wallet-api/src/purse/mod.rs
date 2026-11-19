@@ -227,10 +227,12 @@ where
         let wallet_id = wallet.read().await.id();
         self.repo.store(wallet.read().await.config()?).await?;
         let mut wallets = self.wallets.write().await;
-        wallets.insert(wallet_id.clone(), wallet);
+        let replaced = wallets.insert(wallet_id.clone(), wallet).is_some();
         drop(wallets);
-        self.events
-            .emit(&wallet_id, WalletEventKind::WalletsChanged);
+        if !replaced {
+            self.events
+                .emit(&wallet_id, WalletEventKind::WalletsChanged);
+        }
         Ok(wallet_id)
     }
 
