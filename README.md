@@ -133,6 +133,12 @@ opens `wallet_ffi.framework/wallet_ffi` (iOS, macOS) or `libwallet_ffi.so` /
 `wallet_ffi.dll`. Flutter embeds the framework but does not link it into the
 app, so `ExternalLibrary.process(...)` finds no symbols.
 
+`dart run <script>` in an app, for example `dart run bin/tool.dart`, first runs
+the build hook for the host platform. No Linux or Windows binaries are
+published, so on those hosts it needs rustup and compiles the Rust library,
+which takes minutes the first time. `dart run <package>:<executable>`, such as
+`dart run build_runner`, runs no hook.
+
 Then, in `main.dart`:
 
 ```dart
