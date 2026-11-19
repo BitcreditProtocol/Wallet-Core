@@ -101,6 +101,9 @@ pub trait PocketRepository: SendSync {
     async fn advance_counter_to(&self, kid: ecash::Id, at_least: u32) -> Result<()>;
     async fn release_counter(&self, kid: ecash::Id, start: u32, n: u32) -> Result<()>;
 
+    async fn mark_reservations_sent(&self, ranges: Vec<(ecash::Id, u32, u32)>) -> Result<()>;
+    async fn clear_reservations(&self, ranges: Vec<(ecash::Id, u32, u32)>) -> Result<()>;
+
     async fn store_commitment(&self, record: SwapCommitmentRecord) -> Result<()>;
     async fn load_commitment(
         &self,

@@ -1,6 +1,7 @@
 # 0.9.17
 
 * Add support for dotted compileSdkVersion values in cargokit, so e.g. android-33.5 also works
+* Seed counter reservations are persisted: a refused swap or onchain mint quote gives its counters back, a retry of the same inputs reuses them and a reopened wallet releases those never sent (adds pocket DB tables `counter_reservations` and `released_counters`, no migration needed)
 
 # 0.9.16
 
