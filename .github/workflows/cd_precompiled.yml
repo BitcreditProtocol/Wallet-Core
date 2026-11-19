@@ -5,8 +5,7 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: precompiled-binaries-${{ github.ref }}
@@ -27,6 +26,8 @@ jobs:
     name: Precompile ${{ matrix.platform }}
     timeout-minutes: 60
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       max-parallel: 1
