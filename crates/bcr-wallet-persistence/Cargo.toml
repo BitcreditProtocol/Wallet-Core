@@ -28,5 +28,6 @@ url = {workspace = true }
 
 [dev-dependencies]
 bcr-common = {workspace = true, features = ["test-utils"]}
+bcr-wallet-persistence = {workspace = true, features = ["db-redb", "test-utils"]}
 tokio = {workspace = true}
 
