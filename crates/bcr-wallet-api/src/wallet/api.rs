@@ -1642,3 +1642,31 @@ fn onchain_sent_amount(
             ))
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fees(network: u64, melt: u64) -> TransactionFees {
+        TransactionFees {
+            swap: cashu::Amount::ZERO,
+            network: cashu::Amount::from(network),
+            melt: cashu::Amount::from(melt),
+        }
+    }
+
+    #[test]
+    fn checked_payment_target_melt_sent_amount() {
+        let total = cashu::Amount::from(10);
+        assert!(onchain_sent_amount(total, &fees(6, 5)).is_err());
+        assert!(onchain_sent_amount(total, &fees(11, 0)).is_err());
+        assert_eq!(
+            onchain_sent_amount(total, &fees(6, 4)).unwrap(),
+            cashu::Amount::ZERO
+        );
+        assert_eq!(
+            onchain_sent_amount(total, &fees(3, 2)).unwrap(),
+            cashu::Amount::from(5)
+        );
+    }
+}

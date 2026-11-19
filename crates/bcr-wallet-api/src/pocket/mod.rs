@@ -798,12 +798,11 @@ async fn swap_proofs_to_target(
     let mut payment_targets_by_kid: HashMap<ecash::Id, Amount> = HashMap::new();
 
     for (kid, amount) in swap_plan {
-        let keyset_payment_target = std::cmp::min(amount, remaining_payment);
+        let keyset_payment_target = take_payment_target(amount, &mut remaining_payment)?;
 
         let target = if keyset_payment_target > Amount::ZERO {
             // used for our payment - needs to add up to our payment amount
             payment_targets_by_kid.insert(kid.into(), keyset_payment_target);
-            remaining_payment -= keyset_payment_target;
             SplitTarget::Value(keyset_payment_target)
         } else {
             // change - doesn't matter how we get it
@@ -900,6 +899,20 @@ fn collect_keyset_infos_from_proofs<'it, 'a>(
         infos.insert(kid, info);
     }
     Ok(infos)
+}
+
+/// Takes up to `amount` from `remaining_payment` and returns what was taken.
+pub(crate) fn take_payment_target(
+    amount: Amount,
+    remaining_payment: &mut Amount,
+) -> Result<Amount> {
+    let target = std::cmp::min(amount, *remaining_payment);
+    *remaining_payment = remaining_payment.checked_sub(target).ok_or_else(|| {
+        Error::Swap(format!(
+            "payment target {target} exceeds remaining payment {remaining_payment}"
+        ))
+    })?;
+    Ok(target)
 }
 
 pub(crate) fn balance_of<'p>(
@@ -1057,6 +1070,51 @@ mod tests {
     use bcr_common::{cashu::Proof, core::signature, core_tests};
     use bcr_wallet_persistence::{MockPocketRepository, test_utils::tests::zero_seed};
     use mockall::predicate::*;
+
+    #[test]
+    fn checked_payment_target_takes_the_smaller_amount() {
+        let mut remaining = Amount::from(10);
+        assert_eq!(
+            take_payment_target(Amount::from(4), &mut remaining).unwrap(),
+            Amount::from(4)
+        );
+        assert_eq!(remaining, Amount::from(6));
+        assert_eq!(
+            take_payment_target(Amount::from(8), &mut remaining).unwrap(),
+            Amount::from(6)
+        );
+        assert_eq!(remaining, Amount::ZERO);
+    }
+
+    #[test]
+    fn checked_payment_target_exact_edge_and_zero() {
+        let mut remaining = Amount::from(5);
+        assert_eq!(
+            take_payment_target(Amount::from(5), &mut remaining).unwrap(),
+            Amount::from(5)
+        );
+        assert_eq!(remaining, Amount::ZERO);
+        assert_eq!(
+            take_payment_target(Amount::from(3), &mut remaining).unwrap(),
+            Amount::ZERO
+        );
+        let mut remaining = Amount::from(5);
+        assert_eq!(
+            take_payment_target(Amount::ZERO, &mut remaining).unwrap(),
+            Amount::ZERO
+        );
+        assert_eq!(remaining, Amount::from(5));
+    }
+
+    #[test]
+    fn checked_payment_target_handles_u64_max() {
+        let mut remaining = Amount::from(u64::MAX);
+        assert_eq!(
+            take_payment_target(Amount::from(u64::MAX), &mut remaining).unwrap(),
+            Amount::from(u64::MAX)
+        );
+        assert_eq!(remaining, Amount::ZERO);
+    }
 
     #[test]
     fn exchange_key_is_the_same_for_the_same_proofs_only() {

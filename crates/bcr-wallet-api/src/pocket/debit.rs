@@ -809,12 +809,11 @@ impl super::PocketApi for Pocket {
         let mut payment_targets_by_kid: HashMap<ecash::Id, Amount> = HashMap::new();
 
         for (kid, amount) in swap_plan {
-            let keyset_payment_target = std::cmp::min(amount, remaining_payment);
+            let keyset_payment_target = take_payment_target(amount, &mut remaining_payment)?;
 
             let target = if keyset_payment_target > Amount::ZERO {
                 // used for our payment - needs to add up to our payment amount
                 payment_targets_by_kid.insert(kid.into(), keyset_payment_target);
-                remaining_payment -= keyset_payment_target;
                 SplitTarget::Value(keyset_payment_target)
             } else {
                 // change - doesn't matter how we get it
