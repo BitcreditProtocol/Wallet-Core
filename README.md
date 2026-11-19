@@ -103,8 +103,12 @@ entries other than `.cargo/`), the workspace `Cargo.toml`, `Cargo.lock` and
 Any change there, such as a new migration file, gets new binaries. Android
 binaries are linked with NDK 28.2.13676358, Flutter 3.50's default. The hook verifies each download against the
 Ed25519 `public_key` in `precompiled_binaries.yaml`. If no signed binary
-exists for the target, or the app builds for an older platform version, the
-hook builds locally with cargo instead.
+exists for the target, or an Android app's `minSdk` is below 24 (Flutter
+accepts 23), the hook builds locally with cargo instead.
+
+The library is built for iOS 15 and macOS 13 either way: Flutter passes those
+fixed versions to build hooks, whatever the app declares. Apps must declare at
+least iOS 15 and macOS 13 as deployment targets.
 
 Precompiled binaries are used when the app opts in, or when rustup is not
 installed. To opt in (for example in app CI), add to the app's `pubspec.yaml`:
