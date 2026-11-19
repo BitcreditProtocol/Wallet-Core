@@ -95,9 +95,12 @@ Traps that cost real time. Append when you hit one; prune when the edge is gone.
    misleads Dependabot) or a local `.db` in a dev checkout, misses the published binaries
    and builds with cargo instead. Only the root lock counts.
 2. **Android 16 KB pages come from `native_toolchain_rust` >= 1.1** (#269), which skips the
-   linker flag when `RUSTFLAGS` or a Cargo config sets rustflags. `checkAndroidPageAlignment`
-   fails the build instead of shipping a 4 KB-aligned library; add
-   `-C link-arg=-Wl,-z,max-page-size=16384` to your own rustflags.
+   linker flag when rustflags are already set: by a Cargo config (`[build]` or `[target.*]`
+   `rustflags`) or `CARGO_ENCODED_RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS` or
+   `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`. A plain `RUSTFLAGS` never reaches the hook (hooks_runner
+   forwards only `CARGO_*`/`RUSTUP_*` and a few others). `checkAndroidPageAlignment` fails a
+   local build, and makes the hook ignore a downloaded binary, rather than ship a 4 KB-aligned
+   library; add `-C link-arg=-Wl,-z,max-page-size=16384` wherever you set rustflags.
 3. **`crates/bcr-wallet-ffi/rust-toolchain.toml` pins an exact Rust version** for the hook.
    It applies to cargo run inside that directory (rustup installs it with all listed targets),
    not to workspace commands from the root. It is part of the crate hash: bumping it publishes
