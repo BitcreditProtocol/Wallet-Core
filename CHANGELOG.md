@@ -1,6 +1,5 @@
 # 0.9.17
 
-* Swap planning for offline exchange and sends returns `Error::Swap` instead of panicking when a keyset's payment target exceeds the remaining payment
 * Add support for dotted compileSdkVersion values in cargokit, so e.g. android-33.5 also works
 
 # 0.9.16
