@@ -1,3 +1,4 @@
+use crate::events::{EventBus, WalletEventKind};
 use crate::wallet::types::WalletBalance;
 use crate::{
     error::{Error, Result},
@@ -21,6 +22,7 @@ pub struct Purse<Wlt> {
     pub contact_repos: HashMap<bitcoin::Network, Arc<dyn ContactStoreApi>>,
     pub wallets: Arc<RwLock<HashMap<String, Arc<RwLock<Wlt>>>>>,
     pub swap_guards: std::sync::Mutex<HashMap<String, Arc<SwapGuard>>>,
+    pub events: EventBus,
 }
 
 #[derive(Default)]
@@ -136,6 +138,7 @@ impl<Wlt> Purse<Wlt> {
             contact_repos,
             wallets: Arc::new(RwLock::new(HashMap::default())),
             swap_guards: Default::default(),
+            events: EventBus::default(),
         })
     }
 
@@ -225,6 +228,9 @@ where
         self.repo.store(wallet.read().await.config()?).await?;
         let mut wallets = self.wallets.write().await;
         wallets.insert(wallet_id.clone(), wallet);
+        drop(wallets);
+        self.events
+            .emit(&wallet_id, WalletEventKind::WalletsChanged);
         Ok(wallet_id)
     }
 
@@ -235,6 +241,7 @@ where
         wlt.read().await.delete().await?;
         self.repo.delete(id).await?;
         self.wallets.write().await.remove(id);
+        self.events.emit(id, WalletEventKind::WalletsChanged);
         Ok(())
     }
 
@@ -255,6 +262,7 @@ where
 
         self.repo.rename(id, new_name.clone()).await?;
         wlt.write().await.rename(new_name);
+        self.events.emit(id, WalletEventKind::WalletsChanged);
         Ok(())
     }
 
@@ -339,6 +347,7 @@ where
             .write()
             .await
             .insert(wallet_id.to_owned(), rebuilt.clone());
+        self.events.emit(wallet_id, WalletEventKind::WalletsChanged);
         drop(recorded);
         match paused {
             Some(paused) => paused.resume_on(rebuilt.clone()).await,
@@ -549,7 +558,7 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::str::FromStr;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -570,7 +579,7 @@ mod tests {
     use bcr_wallet_core::{types::PaymentType, util::to_mint_url};
     use nostr::event::EventId;
 
-    fn purse(db: Box<dyn PurseRepository>) -> super::Purse<MockWalletApi> {
+    pub(crate) fn purse(db: Box<dyn PurseRepository>) -> super::Purse<MockWalletApi> {
         let mut contact_dbs = HashMap::new();
         contact_dbs.insert(
             bitcoin::Network::Testnet,
@@ -601,10 +610,11 @@ mod tests {
             contact_repos,
             wallets: Arc::new(RwLock::new(HashMap::default())),
             swap_guards: Default::default(),
+            events: EventBus::default(),
         }
     }
 
-    fn wlt_cfg() -> WalletConfig {
+    pub(crate) fn wlt_cfg() -> WalletConfig {
         WalletConfig {
             wallet_id: "wlt-1".to_owned(),
             name: "wallet-1".to_owned(),

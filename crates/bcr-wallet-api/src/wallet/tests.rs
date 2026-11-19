@@ -6388,6 +6388,7 @@ impl SwapFixture {
                 old.clone(),
             )]))),
             swap_guards: Default::default(),
+            events: Default::default(),
         });
         old.read().await.start_nostr_listener(None).await;
         Self {
@@ -6617,6 +6618,7 @@ impl RealProofs {
             contact_repos: HashMap::new(),
             wallets: Arc::new(RwLock::new(HashMap::from([("w-1".to_owned(), wlt)]))),
             swap_guards: Default::default(),
+            events: Default::default(),
         });
         Self { purse, journal }
     }

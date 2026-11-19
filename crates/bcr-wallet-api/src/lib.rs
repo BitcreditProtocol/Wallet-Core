@@ -1,4 +1,5 @@
 use crate::config::{AppStateConfig, CreateWalletConfig};
+pub use crate::events::{WalletEvent, WalletEventKind};
 pub use crate::external::mint::MintTimeouts;
 use crate::external::mint::{ClowderMintConnector, HttpClientExt};
 use crate::wallet::api::WalletApi;
@@ -41,6 +42,7 @@ use uuid::Uuid;
 
 pub mod config;
 pub mod error;
+mod events;
 mod external;
 mod pocket;
 mod purse;
@@ -189,6 +191,12 @@ impl AppState {
 
     fn get_db(&self) -> Arc<Database> {
         self.db.clone()
+    }
+
+    /// Receives a [`WalletEvent`] after every committed change to a wallet's
+    /// balance, transactions, payment requests or to the wallet list.
+    pub fn subscribe_events(&self) -> broadcast::Receiver<WalletEvent> {
+        self.purse.events.subscribe()
     }
 
     //////////////////////////////////////////////////// Purse-Level API methods
