@@ -1,3 +1,7 @@
+# Unreleased
+
+* `wallet_check_pending_melt_commitments` protests every melt commitment inside the protest window, including melts that already returned a txid; a melt commitment is deleted when its protest answers `Resolved` or once it has expired
+
 # 0.9.17
 
 * Add support for dotted compileSdkVersion values in cargokit, so e.g. android-33.5 also works
