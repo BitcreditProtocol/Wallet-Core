@@ -143,6 +143,14 @@ opens `wallet_ffi.framework/wallet_ffi` (iOS, macOS) or `libwallet_ffi.so` /
 `wallet_ffi.dll`. Flutter embeds the framework but does not link it into the
 app, so `ExternalLibrary.process(...)` finds no symbols.
 
+That applies to the app. Under `flutter test` on a desktop host the hook-built
+library is in `build/native_assets/<os>/` (for example
+`build/native_assets/linux/libwallet_ffi.so` or
+`build/native_assets/macos/libwallet_ffi.dylib`), where the default loader
+does not look. Tests that call into Rust must either set
+`FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR` to that directory or pass
+`externalLibrary: ExternalLibrary.open(<path>)` to `RustLib.init`.
+
 `dart run <script>` in an app, for example `dart run bin/tool.dart`, first runs
 the build hook for the host platform. No Linux or Windows binaries are
 published, so on those hosts it needs rustup and compiles the Rust library,
