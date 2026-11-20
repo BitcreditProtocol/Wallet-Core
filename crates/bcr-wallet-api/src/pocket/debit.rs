@@ -32,7 +32,7 @@ use bcr_wallet_persistence::{
 use bitcoin::{hashes::sha256::Hash as Sha256, secp256k1};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 use uuid::Uuid;
 
@@ -166,8 +166,8 @@ pub struct Pocket {
     seed: Seed,
     beta: Arc<dyn super::BetaProvider>,
 
-    current_send: Mutex<Option<SendReference>>,
-    current_melt: Mutex<Option<MeltReference>>,
+    prepared_sends: super::Prepared<SendReference>,
+    prepared_melts: super::Prepared<MeltReference>,
     in_flight: InFlight,
 }
 
@@ -214,8 +214,8 @@ impl Pocket {
             mdb,
             seed,
             beta,
-            current_send: Mutex::new(None),
-            current_melt: Mutex::new(None),
+            prepared_sends: Default::default(),
+            prepared_melts: Default::default(),
             in_flight: InFlight::default(),
         }
     }
@@ -490,7 +490,12 @@ impl Pocket {
         target_amount: Amount,
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
     ) -> Result<(SendSummary, SendReference)> {
-        let unspent_proofs = self.pdb.list_unspent().await?;
+        let mut unspent_proofs = self.pdb.list_unspent().await?;
+        for ys in self.prepared_sends.collect(|r| r.plan.inputs().to_vec()) {
+            for y in ys {
+                unspent_proofs.remove(&y);
+            }
+        }
         let mut proofs: Vec<(&cdk01::PublicKey, &Proof)> = unspent_proofs.iter().collect();
         // sort by amount as required by `prepare_payment`, ties spend the earliest expiring keyset first
         proofs.sort_by_key(|(y, proof)| {
@@ -520,7 +525,6 @@ impl Pocket {
                 pocket_summary.unit = self.unit.clone();
 
                 let send_ref = SendReference {
-                    rid: pocket_summary.request_id,
                     target_amount,
                     plan: SendPlan::Ready {
                         proofs: inputs
@@ -547,7 +551,6 @@ impl Pocket {
                     return Err(Error::InvalidSplitTarget);
                 };
                 let send_ref = SendReference {
-                    rid: pocket_summary.request_id,
                     target_amount,
                     plan: SendPlan::NeedSwap {
                         inputs: inputs
@@ -683,7 +686,7 @@ impl super::PocketApi for Pocket {
         keysets_info: &HashMap<ecash::Id, KeySetInfo>,
     ) -> Result<SendSummary> {
         let (summary, send_ref) = self.compute_send_costs(target, keysets_info).await?;
-        *self.current_send.lock().unwrap() = Some(send_ref);
+        self.prepared_sends.insert(summary.request_id, send_ref);
         Ok(summary)
     }
 
@@ -694,16 +697,10 @@ impl super::PocketApi for Pocket {
         client: Arc<dyn ClowderMintConnector>,
         swap_config: SwapConfig,
     ) -> Result<(HashMap<cdk01::PublicKey, cdk00::Proof>, super::Reservation)> {
-        let send_ref = {
-            let mut locked = self.current_send.lock().unwrap();
-            if locked.is_none() {
-                return Err(Error::NoPrepareRef(rid));
-            }
-            if locked.as_ref().unwrap().rid != rid {
-                return Err(Error::NoPrepareRef(rid));
-            }
-            locked.take().unwrap()
-        };
+        let send_ref = self
+            .prepared_sends
+            .take(rid)
+            .ok_or(Error::NoPrepareRef(rid))?;
         send_proofs(
             send_ref.plan,
             keysets_info,
@@ -758,16 +755,10 @@ impl super::PocketApi for Pocket {
         HashMap<cdk01::PublicKey, cdk00::Proof>,
         super::Reservation,
     )> {
-        let send_ref = {
-            let mut locked = self.current_send.lock().unwrap();
-            if locked.is_none() {
-                return Err(Error::NoPrepareRef(rid));
-            }
-            if locked.as_ref().unwrap().rid != rid {
-                return Err(Error::NoPrepareRef(rid));
-            }
-            locked.take().unwrap()
-        };
+        let send_ref = self
+            .prepared_sends
+            .take(rid)
+            .ok_or(Error::NoPrepareRef(rid))?;
         return_proofs_to_send_for_offline_payment(send_ref.plan, self.pdb.as_ref(), &self.in_flight)
             .await
     }
@@ -1208,7 +1199,7 @@ impl DebitPocketApi for Pocket {
             quote_id,
             reservation,
         };
-        self.current_melt.lock().unwrap().replace(melt_ref);
+        self.prepared_melts.insert(melt_ref.rid, melt_ref);
         Ok(summary)
     }
 
@@ -1222,11 +1213,10 @@ impl DebitPocketApi for Pocket {
         HashMap<cdk01::PublicKey, cdk00::Proof>,
         super::Reservation,
     )> {
-        let melt_ref = self.current_melt.lock().unwrap().take();
-        let melt_ref = melt_ref.ok_or(Error::NoPrepareRef(rid))?;
-        if melt_ref.rid != rid {
-            return Err(Error::NoPrepareRef(rid));
-        }
+        let melt_ref = self
+            .prepared_melts
+            .take(rid)
+            .ok_or(Error::NoPrepareRef(rid))?;
 
         let record = self.mdb.load_melt_commitment(melt_ref.quote_id).await?;
         let body: wire_melt::MeltQuoteOnchainResponseBody =
@@ -1675,6 +1665,7 @@ impl DebitPocketApi for Pocket {
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
+    use std::sync::Mutex;
 
     use super::*;
     use crate::{
@@ -2802,7 +2793,7 @@ mod tests {
             quote_id,
             reservation: Default::default(),
         };
-        pocket.current_melt.lock().unwrap().replace(melt_ref);
+        pocket.prepared_melts.insert(rid, melt_ref);
 
         let res = pocket
             .pay_onchain_melt(rid, Arc::new(connector))
@@ -3913,7 +3904,6 @@ mod tests {
 
         assert_eq!(summary.amount, target);
         assert_eq!(summary.unit, CurrencyUnit::Sat);
-        assert_eq!(send_ref.rid, summary.request_id);
         assert_eq!(send_ref.target_amount, target);
 
         match send_ref.plan {
@@ -3959,7 +3949,6 @@ mod tests {
 
         assert_eq!(summary.amount, target);
         assert_eq!(summary.unit, CurrencyUnit::Sat);
-        assert_eq!(send_ref.rid, summary.request_id);
         assert_eq!(send_ref.target_amount, target);
 
         match send_ref.plan {
@@ -4007,7 +3996,6 @@ mod tests {
 
         assert_eq!(summary.amount, target);
         assert_eq!(summary.unit, CurrencyUnit::Sat);
-        assert_eq!(send_ref.rid, summary.request_id);
         assert_eq!(send_ref.target_amount, target);
 
         match send_ref.plan {
@@ -4331,10 +4319,188 @@ mod tests {
         assert_eq!(summary.fees.melt, Amount::from(melt_fee));
         assert_eq!(summary.fees.swap, Amount::ZERO);
 
-        let current_melt = pocket.current_melt.lock().unwrap();
-        let melt_ref = current_melt.as_ref().unwrap();
+        let melt_ref = pocket.prepared_melts.take(summary.request_id).unwrap();
         assert_eq!(melt_ref.rid, summary.request_id);
         assert_eq!(melt_ref.quote_id, quote_id);
+    }
+
+    #[tokio::test]
+    async fn prepared_sends_are_independent() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(4), Amount::from(4), Amount::from(16)],
+        );
+        let by_y: HashMap<_, _> = proofs
+            .iter()
+            .cloned()
+            .map(|p| (p.y().unwrap(), p))
+            .collect();
+
+        let mut pdb = MockPocketRepository::new();
+        let unspent = by_y.clone();
+        pdb.expect_list_unspent()
+            .times(2)
+            .returning(move || Ok(unspent.clone()));
+        let pending = by_y.clone();
+        pdb.expect_mark_as_pendingspent()
+            .times(2)
+            .returning(move |ys| Ok(ys.iter().map(|y| pending[y].clone()).collect()));
+
+        let pocket = pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()));
+        let first = pocket
+            .prepare_send(Amount::from(4), &k_infos)
+            .await
+            .unwrap();
+        let second = pocket
+            .prepare_send(Amount::from(4), &k_infos)
+            .await
+            .unwrap();
+        assert_ne!(first.request_id, second.request_id);
+
+        let client =
+            || -> Arc<dyn ClowderMintConnector> { Arc::new(MockClowderMintConnector::new()) };
+        pocket
+            .send_proofs(first.request_id, &k_infos, client(), test_swap_config())
+            .await
+            .expect("first prepared send is still payable");
+        pocket
+            .send_proofs(second.request_id, &k_infos, client(), test_swap_config())
+            .await
+            .expect("second prepared send is payable");
+        let again = pocket
+            .send_proofs(first.request_id, &k_infos, client(), test_swap_config())
+            .await;
+        assert!(matches!(again, Err(Error::NoPrepareRef(id)) if id == first.request_id));
+    }
+
+    #[tokio::test]
+    async fn prepared_send_wrong_id_keeps_entries() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let proofs = core_tests::generate_random_ecash_proofs(&keyset, &[Amount::from(4)]);
+        let by_y: HashMap<_, _> = proofs
+            .iter()
+            .cloned()
+            .map(|p| (p.y().unwrap(), p))
+            .collect();
+        let mut pdb = MockPocketRepository::new();
+        pdb.expect_list_unspent()
+            .times(1)
+            .returning(move || Ok(by_y.clone()));
+        let pocket = pocket(Arc::new(pdb), Arc::new(MockMintMeltRepository::new()));
+        let summary = pocket
+            .prepare_send(Amount::from(4), &k_infos)
+            .await
+            .unwrap();
+
+        let client: Arc<dyn ClowderMintConnector> = Arc::new(MockClowderMintConnector::new());
+        let other = Uuid::new_v4();
+        let res = pocket
+            .send_proofs(other, &k_infos, client, test_swap_config())
+            .await;
+        assert!(matches!(res, Err(Error::NoPrepareRef(id)) if id == other));
+        assert!(pocket.prepared_sends.take(summary.request_id).is_some());
+    }
+
+    #[tokio::test]
+    async fn prepared_melts_are_independent() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(4), Amount::from(8), Amount::from(16)],
+        );
+        let by_y: HashMap<_, _> = proofs
+            .iter()
+            .cloned()
+            .map(|p| (p.y().unwrap(), p))
+            .collect();
+        let offered = bitcoin::Amount::from_sat(12);
+
+        let mut pdb = MockPocketRepository::new();
+        let mut connector = MockClowderMintConnector::new();
+
+        let unspent = by_y.clone();
+        pdb.expect_list_unspent()
+            .times(2)
+            .returning(move || Ok(unspent.clone()));
+        let pending = by_y.clone();
+        pdb.expect_mark_as_pendingspent()
+            .times(2)
+            .returning(move |ys| Ok(ys.iter().map(|y| pending[y].clone()).collect()));
+        connector
+            .expect_post_melt_quote_onchain()
+            .times(2)
+            .returning(move |_, _, _, _, _, _, _| {
+                let quote_id = Uuid::new_v4();
+                Ok(MeltQuoteResult {
+                    quote_id,
+                    expiry: 999999,
+                    amount: offered,
+                    commitment: cashu::SecretKey::generate().sign(&[0; 32]).unwrap(),
+                    ephemeral_secret: secp256k1::SecretKey::from_keypair(
+                        &secp256k1::Keypair::new_global(&mut secp256k1::rand::thread_rng()),
+                    ),
+                    body_content: mock_melt_commitment_body(quote_id, offered.to_sat()),
+                })
+            });
+        pdb.expect_load_proofs()
+            .times(2)
+            .returning(|_| Ok(HashMap::new()));
+        connector
+            .expect_post_melt_onchain()
+            .times(2)
+            .returning(|_| {
+                Ok(wire_melt::MeltOnchainResponse {
+                    txid: bitcoin::Txid::all_zeros(),
+                })
+            });
+        let mut mdb = MockMintMeltRepository::new();
+        let records: Arc<Mutex<HashMap<Uuid, bcr_wallet_persistence::MeltCommitmentRecord>>> =
+            Default::default();
+        let sink = records.clone();
+        mdb.expect_store_melt_commitment()
+            .times(2)
+            .returning(move |r| {
+                sink.lock().unwrap().insert(r.quote_id, r);
+                Ok(())
+            });
+        let source = records.clone();
+        mdb.expect_load_melt_commitment()
+            .times(2)
+            .returning(move |q| Ok(source.lock().unwrap().get(&q).cloned().unwrap()));
+
+        let connector: Arc<dyn ClowderMintConnector> = Arc::new(connector);
+        let pocket = pocket(Arc::new(pdb), Arc::new(mdb));
+        let prepare = || {
+            pocket.prepare_onchain_melt(
+                valid_payment_address_testnet().assume_checked().to_string(),
+                12,
+                0,
+                0,
+                &k_infos,
+                connector.clone(),
+                test_swap_config(),
+            )
+        };
+        let first = prepare().await.unwrap();
+        let second = prepare().await.unwrap();
+        assert_ne!(first.request_id, second.request_id);
+
+        pocket
+            .pay_onchain_melt(first.request_id, connector.clone())
+            .await
+            .expect("first prepared melt is still payable");
+        pocket
+            .pay_onchain_melt(second.request_id, connector.clone())
+            .await
+            .expect("second prepared melt is payable");
+        let again = pocket
+            .pay_onchain_melt(first.request_id, connector.clone())
+            .await;
+        assert!(matches!(again, Err(Error::NoPrepareRef(id)) if id == first.request_id));
     }
 
     #[tokio::test]
@@ -4535,6 +4701,43 @@ mod tests {
                     .total_amount()
                     .unwrap(),
             Amount::from(24u64)
+        );
+    }
+
+    #[tokio::test]
+    async fn prepared_sends_never_share_proofs() {
+        let (info, keyset) = core_tests::generate_random_ecash_keyset();
+        let k_infos = test_kinfos(info);
+        let proofs = core_tests::generate_random_ecash_proofs(
+            &keyset,
+            &[Amount::from(4), Amount::from(4), Amount::from(16)],
+        );
+        let pdb = in_memory_pdb();
+        for p in proofs {
+            pdb.store_new(p).await.unwrap();
+        }
+        let pocket = pocket(pdb.clone(), Arc::new(MockMintMeltRepository::new()));
+        let a = pocket
+            .prepare_send(Amount::from(4), &k_infos)
+            .await
+            .unwrap();
+        let b = pocket
+            .prepare_send(Amount::from(4), &k_infos)
+            .await
+            .unwrap();
+        let client =
+            || -> Arc<dyn ClowderMintConnector> { Arc::new(MockClowderMintConnector::new()) };
+        pocket
+            .send_proofs(a.request_id, &k_infos, client(), test_swap_config())
+            .await
+            .expect("first prepared send payable");
+        let second = pocket
+            .send_proofs(b.request_id, &k_infos, client(), test_swap_config())
+            .await;
+        assert!(
+            second.is_ok(),
+            "second prepared send (wallet holds 4,4,16) not payable after paying the first: {:?}",
+            second.err()
         );
     }
 }

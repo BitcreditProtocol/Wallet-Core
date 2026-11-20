@@ -703,13 +703,16 @@ async fn test_pay_token_stores_tx_and_returns_token() {
         .returning(|_tx| Ok(Uuid::new_v4()));
 
     let wlt = wallet(ctx).await;
-    *wlt.read().await.current_payment.lock().await = Some(PayReference {
-        request_id: pid,
-        unit: CurrencyUnit::Sat,
-        fees: TransactionFees::default(),
-        ptype: WalletPaymentType::Token,
-        memo: Some("memo".to_string()),
-    });
+    wlt.read().await.current_payments.insert(
+        pid,
+        PayReference {
+            request_id: pid,
+            unit: CurrencyUnit::Sat,
+            fees: TransactionFees::default(),
+            ptype: WalletPaymentType::Token,
+            memo: Some("memo".to_string()),
+        },
+    );
 
     let (_txid, token) = wlt.read().await.pay(pid, 123).await.unwrap();
 
@@ -739,13 +742,16 @@ async fn test_pay_errors_if_payment_reference_id_mismatch() {
     let prepared_pid = Uuid::new_v4();
     let actual_pid = Uuid::new_v4();
 
-    *wlt.read().await.current_payment.lock().await = Some(PayReference {
-        request_id: prepared_pid,
-        unit: CurrencyUnit::Sat,
-        fees: TransactionFees::default(),
-        ptype: WalletPaymentType::Token,
-        memo: None,
-    });
+    wlt.read().await.current_payments.insert(
+        prepared_pid,
+        PayReference {
+            request_id: prepared_pid,
+            unit: CurrencyUnit::Sat,
+            fees: TransactionFees::default(),
+            ptype: WalletPaymentType::Token,
+            memo: None,
+        },
+    );
 
     let err = wlt.read().await.pay(actual_pid, 123).await.unwrap_err();
 
@@ -807,18 +813,104 @@ async fn test_pay_onchain() {
 
     let wlt = wallet(ctx).await;
 
-    *wlt.read().await.current_payment.lock().await = Some(PayReference {
-        request_id: pid,
-        unit: CurrencyUnit::Sat,
-        fees: TransactionFees::default(),
-        ptype: WalletPaymentType::OnChain,
-        memo: Some("melt memo".to_string()),
-    });
+    wlt.read().await.current_payments.insert(
+        pid,
+        PayReference {
+            request_id: pid,
+            unit: CurrencyUnit::Sat,
+            fees: TransactionFees::default(),
+            ptype: WalletPaymentType::OnChain,
+            memo: Some("melt memo".to_string()),
+        },
+    );
 
     let (res_tx_id, token) = wlt.read().await.pay(pid, 123).await.unwrap();
 
     assert_eq!(res_tx_id, tx_id);
     assert!(token.is_none());
+}
+
+#[tokio::test]
+async fn prepared_payments_pay_in_reverse_order() {
+    let mut ctx = wallet_ctx();
+    let token_pid = Uuid::new_v4();
+    let melt_pid = Uuid::new_v4();
+
+    ctx.client
+        .expect_get_mint_keysets()
+        .times(2)
+        .returning(|| Ok(vec![]));
+    ctx.client
+        .expect_mint_url()
+        .return_const(url::Url::from_str("https://mint.example").unwrap());
+    ctx.debit.expect_unit().returning(|| CurrencyUnit::Sat);
+    ctx.debit
+        .expect_pay_onchain_melt()
+        .times(1)
+        .returning(|_request_id, _client| {
+            Ok((
+                bitcoin::Txid::all_zeros(),
+                Uuid::new_v4(),
+                HashMap::default(),
+                Default::default(),
+            ))
+        });
+    ctx.debit
+        .expect_send_proofs()
+        .times(1)
+        .returning(|_rid, _infos, _client, _safe| Ok(Default::default()));
+    ctx.tx_repo
+        .expect_store_tx()
+        .times(2)
+        .returning(|_tx| Ok(Uuid::new_v4()));
+
+    let wlt = wallet(ctx).await;
+    for (pid, ptype) in [
+        (token_pid, WalletPaymentType::Token),
+        (melt_pid, WalletPaymentType::OnChain),
+    ] {
+        wlt.read().await.current_payments.insert(
+            pid,
+            PayReference {
+                request_id: pid,
+                unit: CurrencyUnit::Sat,
+                fees: TransactionFees::default(),
+                ptype,
+                memo: None,
+            },
+        );
+    }
+
+    let (_, token) = wlt.read().await.pay(token_pid, 123).await.unwrap();
+    assert!(token.is_some());
+    let (_, token) = wlt.read().await.pay(melt_pid, 123).await.unwrap();
+    assert!(token.is_none());
+
+    let err = wlt.read().await.pay(token_pid, 123).await.unwrap_err();
+    assert!(matches!(err, Error::NoPrepareRef(id) if id == token_pid));
+}
+
+#[tokio::test]
+async fn prepared_payments_unknown_id_keeps_entries() {
+    let ctx = wallet_ctx();
+    let wlt = wallet(ctx).await;
+    let pid = Uuid::new_v4();
+    wlt.read().await.current_payments.insert(
+        pid,
+        PayReference {
+            request_id: pid,
+            unit: CurrencyUnit::Sat,
+            fees: TransactionFees::default(),
+            ptype: WalletPaymentType::Token,
+            memo: None,
+        },
+    );
+
+    let other = Uuid::new_v4();
+    let err = wlt.read().await.pay(other, 123).await.unwrap_err();
+
+    assert!(matches!(err, Error::NoPrepareRef(id) if id == other));
+    assert_eq!(wlt.read().await.current_payments.len(), 1);
 }
 
 #[tokio::test]
@@ -939,16 +1031,19 @@ async fn test_pay_contact() {
 
     let wlt = wallet(ctx).await;
 
-    *wlt.read().await.current_payment.lock().await = Some(PayReference {
-        request_id: pid,
-        unit: CurrencyUnit::Sat,
-        fees: TransactionFees::default(),
-        ptype: WalletPaymentType::PaymentRequest {
-            node_id: contact_node_id.clone(),
-            payment_request_id: None,
+    wlt.read().await.current_payments.insert(
+        pid,
+        PayReference {
+            request_id: pid,
+            unit: CurrencyUnit::Sat,
+            fees: TransactionFees::default(),
+            ptype: WalletPaymentType::PaymentRequest {
+                node_id: contact_node_id.clone(),
+                payment_request_id: None,
+            },
+            memo: Some("contact memo".to_string()),
         },
-        memo: Some("contact memo".to_string()),
-    });
+    );
 
     let (res_tx_id, token) = wlt.read().await.pay(pid, 123).await.unwrap();
 
@@ -2044,15 +2139,16 @@ async fn test_prepare_pay_payment_request_succeeds_without_contact() {
 
     let wlt = wallet(ctx).await;
 
-    wlt.read()
+    let summary = wlt
+        .read()
         .await
         .prepare_pay_payment_request(req_id)
         .await
         .unwrap();
 
     let binding = wlt.read().await;
-    let pref_lock = binding.current_payment.lock().await;
-    match &pref_lock.as_ref().unwrap().ptype {
+    let pref = binding.current_payments.take(summary.request_id).unwrap();
+    match &pref.ptype {
         WalletPaymentType::PaymentRequest {
             node_id,
             payment_request_id,
@@ -2121,7 +2217,7 @@ async fn test_prepare_pay_payment_request_errors_if_unit_mismatch() {
     let res = wlt.read().await.prepare_pay_payment_request(req_id).await;
 
     assert!(matches!(res, Err(Error::InvalidCurrencyUnit(..))));
-    assert!(wlt.read().await.current_payment.lock().await.is_none());
+    assert_eq!(wlt.read().await.current_payments.len(), 0);
 }
 
 #[tokio::test]
@@ -2172,8 +2268,7 @@ async fn test_prepare_pay_payment_request_success_sets_contact_payment_reference
     assert_eq!(summary.ptype, PaymentType::PaymentRequest);
 
     let binding = wlt.read().await;
-    let pref_lock = binding.current_payment.lock().await;
-    let p = pref_lock.as_ref().unwrap();
+    let p = binding.current_payments.take(summary.request_id).unwrap();
 
     match &p.ptype {
         WalletPaymentType::PaymentRequest {
@@ -3704,8 +3799,10 @@ async fn test_prepare_pay_shared_payment_request_sets_payment_reference() {
     assert_eq!(summary.ptype, PaymentType::PaymentRequest);
 
     let wallet_guard = wlt.read().await;
-    let payment_guard = wallet_guard.current_payment.lock().await;
-    let payment = payment_guard.as_ref().expect("payment reference is set");
+    let payment = wallet_guard
+        .current_payments
+        .take(summary.request_id)
+        .expect("payment reference is set");
 
     assert_eq!(payment.unit, CurrencyUnit::Sat);
     assert_eq!(payment.memo, Some("shared request memo".to_string()));
@@ -3799,16 +3896,19 @@ async fn test_pay_shared_payment_request() {
 
     let wlt = wallet(ctx).await;
 
-    *wlt.read().await.current_payment.lock().await = Some(PayReference {
-        request_id: pid,
-        unit: CurrencyUnit::Sat,
-        fees: TransactionFees::default(),
-        ptype: WalletPaymentType::PaymentRequest {
-            node_id: receiver_node_id,
-            payment_request_id: Some(req_id),
+    wlt.read().await.current_payments.insert(
+        pid,
+        PayReference {
+            request_id: pid,
+            unit: CurrencyUnit::Sat,
+            fees: TransactionFees::default(),
+            ptype: WalletPaymentType::PaymentRequest {
+                node_id: receiver_node_id,
+                payment_request_id: Some(req_id),
+            },
+            memo: Some("shared request memo".to_string()),
         },
-        memo: Some("shared request memo".to_string()),
-    });
+    );
     let (res_tx_id, token) = wlt.read().await.pay(pid, 123).await.unwrap();
 
     assert_eq!(res_tx_id, tx_id);
@@ -3894,16 +3994,19 @@ async fn test_pay_payment_request_marks_local_request_paid() {
 
     let wlt = wallet(ctx).await;
 
-    *wlt.read().await.current_payment.lock().await = Some(PayReference {
-        request_id: pid,
-        unit: CurrencyUnit::Sat,
-        fees: TransactionFees::default(),
-        ptype: WalletPaymentType::PaymentRequest {
-            node_id: receiver_node_id,
-            payment_request_id: Some(req_id),
+    wlt.read().await.current_payments.insert(
+        pid,
+        PayReference {
+            request_id: pid,
+            unit: CurrencyUnit::Sat,
+            fees: TransactionFees::default(),
+            ptype: WalletPaymentType::PaymentRequest {
+                node_id: receiver_node_id,
+                payment_request_id: Some(req_id),
+            },
+            memo: Some("shared request memo".to_string()),
         },
-        memo: Some("shared request memo".to_string()),
-    });
+    );
     let (res_tx_id, token) = wlt.read().await.pay(pid, 123).await.unwrap();
 
     assert_eq!(res_tx_id, tx_id);
@@ -3948,8 +4051,10 @@ async fn test_prepare_pay_to_node_id() {
     assert_eq!(summary.ptype, PaymentType::Contact);
 
     let wallet_guard = wlt.read().await;
-    let payment_guard = wallet_guard.current_payment.lock().await;
-    let payment = payment_guard.as_ref().expect("payment reference is set");
+    let payment = wallet_guard
+        .current_payments
+        .take(summary.request_id)
+        .expect("payment reference is set");
     assert_eq!(payment.memo, Some("node memo".to_string()));
     match &payment.ptype {
         WalletPaymentType::PaymentRequest {
@@ -3984,7 +4089,7 @@ async fn test_prepare_pay_to_node_id_wrong_network() {
         .await;
 
     assert!(matches!(res, Err(Error::InvalidNetwork(..))));
-    assert!(wlt.read().await.current_payment.lock().await.is_none());
+    assert_eq!(wlt.read().await.current_payments.len(), 0);
 }
 
 #[tokio::test]
@@ -6628,4 +6733,38 @@ impl RealProofs {
     pub(crate) fn pause_before_proofs_are_marked_swapped(&self) -> JournalPause {
         pause(&self.journal.before_swapped)
     }
+}
+
+#[tokio::test]
+async fn prepared_payments_cap_is_per_kind() {
+    let wlt = wallet(wallet_ctx()).await;
+    let tokens: Vec<Uuid> = (0..16).map(|_| Uuid::new_v4()).collect();
+    let mk = |pid: Uuid, ptype| PayReference {
+        request_id: pid,
+        unit: CurrencyUnit::Sat,
+        fees: TransactionFees::default(),
+        ptype,
+        memo: None,
+    };
+    for pid in &tokens {
+        wlt.read()
+            .await
+            .current_payments
+            .insert(*pid, mk(*pid, WalletPaymentType::Token));
+    }
+    let melt = Uuid::new_v4();
+    wlt.read()
+        .await
+        .current_payments
+        .insert(melt, mk(melt, WalletPaymentType::OnChain));
+    let mut lost = 0;
+    for p in &tokens {
+        if wlt.read().await.current_payments.take(*p).is_none() {
+            lost += 1;
+        }
+    }
+    assert_eq!(
+        lost, 0,
+        "{lost} of 16 prepared token payments evicted by one melt prepare (cap is per kind)"
+    );
 }

@@ -22,7 +22,7 @@ use bcr_wallet_core::{
 };
 use bcr_wallet_persistence::{PocketRepository, SwapCommitmentRecord};
 use rand::seq::{IndexedRandom, SliceRandom};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -179,7 +179,6 @@ impl BetaProvider for RandomBetaProvider {
 ///////////////////////////////////////////// SendReference
 #[derive(Debug, Clone)]
 struct SendReference {
-    rid: Uuid,
     target_amount: Amount,
     plan: SendPlan,
 }
@@ -194,6 +193,59 @@ enum SendPlan {
         target: Amount,
         estimated_fee: Amount,
     },
+}
+
+impl SendPlan {
+    fn inputs(&self) -> &[cdk01::PublicKey] {
+        match self {
+            SendPlan::Ready { proofs } => proofs,
+            SendPlan::NeedSwap { inputs, .. } => inputs,
+        }
+    }
+}
+
+///////////////////////////////////////////// Prepared
+/// Most prepared operations of one kind that are held at once
+pub(crate) const MAX_PREPARED: usize = 16;
+
+/// Prepared operations of one kind by request id, the oldest dropped past `MAX_PREPARED`
+pub(crate) struct Prepared<T>(Mutex<VecDeque<(Uuid, T)>>);
+
+impl<T> Default for Prepared<T> {
+    fn default() -> Self {
+        Self(Mutex::new(VecDeque::new()))
+    }
+}
+
+impl<T> Prepared<T> {
+    pub(crate) fn insert(&self, rid: Uuid, item: T) {
+        let mut held = self.0.lock().unwrap();
+        held.retain(|(id, _)| *id != rid);
+        if held.len() >= MAX_PREPARED {
+            held.pop_front();
+        }
+        held.push_back((rid, item));
+    }
+
+    pub(crate) fn take(&self, rid: Uuid) -> Option<T> {
+        let mut held = self.0.lock().unwrap();
+        let pos = held.iter().position(|(id, _)| *id == rid)?;
+        held.remove(pos).map(|(_, item)| item)
+    }
+
+    pub(crate) fn collect<R>(&self, f: impl Fn(&T) -> R) -> Vec<R> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, item)| f(item))
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
 }
 
 ///////////////////////////////////////////// InFlight
@@ -1949,5 +2001,35 @@ mod tests {
                 .unwrap(),
             Amount::from(23)
         );
+    }
+}
+
+#[cfg(test)]
+mod prepared_tests {
+    use super::*;
+
+    #[test]
+    fn prepared_keeps_entries_independent() {
+        let store = Prepared::default();
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        store.insert(a, 1);
+        store.insert(b, 2);
+        assert_eq!(store.take(b), Some(2));
+        assert_eq!(store.take(b), None);
+        assert_eq!(store.take(Uuid::new_v4()), None);
+        assert_eq!(store.take(a), Some(1));
+    }
+
+    #[test]
+    fn prepared_drops_oldest_past_cap() {
+        let store = Prepared::default();
+        let ids: Vec<Uuid> = (0..=MAX_PREPARED).map(|_| Uuid::new_v4()).collect();
+        for (i, id) in ids.iter().enumerate() {
+            store.insert(*id, i);
+        }
+        assert_eq!(store.len(), MAX_PREPARED);
+        assert_eq!(store.take(ids[0]), None);
+        assert_eq!(store.take(ids[1]), Some(1));
+        assert_eq!(store.take(ids[MAX_PREPARED]), Some(MAX_PREPARED));
     }
 }
