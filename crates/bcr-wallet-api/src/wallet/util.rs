@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::external::mint::ClientFactory;
 use crate::{
     ClowderMintConnector,
     error::{Error, Result},
@@ -19,13 +20,55 @@ use bcr_common::{
         keys::ProofFingerprint,
     },
 };
-use bcr_wallet_core::types::Transaction;
+use bcr_wallet_core::types::{Transaction, WalletBeta};
 use bitcoin::{
     hashes::{Hash, sha256::Hash as Sha256},
     secp256k1,
 };
 
 //////////////////////////////////// utils
+pub async fn identify_betas(
+    own_id: secp256k1::PublicKey,
+    betas: Vec<WalletBeta>,
+    client_factory: &ClientFactory,
+) -> Vec<WalletBeta> {
+    let answers = futures::future::join_all(betas.iter().map(|beta| async move {
+        if beta.clowder_id.is_some() {
+            return None;
+        }
+        client_factory(beta.url.clone())
+            .get_clowder_id()
+            .await
+            .inspect_err(|e| tracing::warn!("Could not fetch clowder id of beta {}: {e}", beta.url))
+            .ok()
+    }))
+    .await;
+    let mut ids: HashSet<secp256k1::PublicKey> = betas
+        .iter()
+        .filter_map(|beta| beta.clowder_id)
+        .chain([own_id])
+        .collect();
+    let mut urls: HashSet<url::Url> = betas
+        .iter()
+        .filter(|beta| beta.clowder_id.is_some())
+        .map(|beta| beta.url.clone())
+        .collect();
+    betas
+        .into_iter()
+        .zip(answers)
+        .filter_map(|(mut beta, answer)| {
+            if beta.clowder_id.is_none() {
+                if !urls.insert(beta.url.clone()) || answer.is_some_and(|id| !ids.insert(id)) {
+                    tracing::warn!("Dropping beta {}: it is already listed", beta.url);
+                    return None;
+                }
+                beta.clowder_id = answer;
+            }
+            Some(beta)
+        })
+        .collect()
+}
+
 pub fn proofs_to_fingerprints(
     proofs: Vec<Proof>,
 ) -> Result<(Vec<ProofFingerprint>, Vec<cashu::secret::Secret>)> {

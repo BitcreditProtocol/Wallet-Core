@@ -46,7 +46,7 @@ pub struct WalletConfig {
     pub clowder_id: secp256k1::PublicKey,
     pub debit: CurrencyUnit,
     pub pub_key: secp256k1::PublicKey,
-    pub betas: Vec<url::Url>,
+    pub betas: Vec<WalletBeta>,
     pub nostr_relays: Vec<RelayUrl>,
 }
 
@@ -561,6 +561,21 @@ pub enum ForeignMintProofReason {
     ExchangeRefund {
         alpha_url: url::Url,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WalletBeta {
+    pub url: url::Url,
+    pub clowder_id: Option<secp256k1::PublicKey>,
+}
+
+impl From<ClowderBeta> for WalletBeta {
+    fn from(beta: ClowderBeta) -> Self {
+        Self {
+            url: beta.url,
+            clowder_id: Some(beta.clowder_id),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

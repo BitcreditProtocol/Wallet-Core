@@ -4,7 +4,7 @@ use bcr_common::{
     ecash,
     wire::common as wire_common,
 };
-use bcr_wallet_core::types::TransactionFees;
+use bcr_wallet_core::types::{TransactionFees, WalletBeta};
 use bitcoin::secp256k1;
 use nostr::types::RelayUrl;
 use uuid::Uuid;
@@ -60,4 +60,5 @@ pub struct WalletInfo {
     pub network: bitcoin::Network,
     pub default_mint_url: url::Url,
     pub nostr_relays: Vec<RelayUrl>,
+    pub betas: Vec<WalletBeta>,
 }

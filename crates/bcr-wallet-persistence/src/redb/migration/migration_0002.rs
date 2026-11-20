@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bcr_common::cashu::CurrencyUnit;
 use bcr_common::ecash;
-use bcr_wallet_core::types::WalletConfig;
+use bcr_wallet_core::types::{WalletBeta, WalletConfig};
 use nostr::types::RelayUrl;
 use redb::ReadableTable;
 
@@ -77,7 +77,7 @@ impl std::convert::From<WalletConfig> for WalletEntry {
             clowder_id: wallet.clowder_id,
             pub_key: wallet.pub_key,
             debit: wallet.debit,
-            betas: wallet.betas,
+            betas: wallet.betas.into_iter().map(|b| b.url).collect(),
             nostr_relays: wallet.nostr_relays,
         }
     }
@@ -94,7 +94,14 @@ impl std::convert::From<WalletEntry> for WalletConfig {
             clowder_id: wallet.clowder_id,
             pub_key: wallet.pub_key,
             debit: wallet.debit,
-            betas: wallet.betas,
+            betas: wallet
+                .betas
+                .into_iter()
+                .map(|url| WalletBeta {
+                    url,
+                    clowder_id: None,
+                })
+                .collect(),
             nostr_relays: wallet.nostr_relays,
         }
     }
@@ -103,7 +110,7 @@ impl std::convert::From<WalletEntry> for WalletConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::redb::purse::{StoredWallet, from_stored_wallet_v1};
+    use crate::redb::purse::{StoredWallet, from_stored_wallet};
     use redb::{Builder, Database, ReadableDatabase, backends::InMemoryBackend};
     use std::sync::Arc;
 
@@ -130,7 +137,10 @@ mod tests {
             clowder_id: clowder_keypair.public_key(),
             pub_key: wallet_keypair.public_key(),
             debit: CurrencyUnit::Sat,
-            betas: vec![url::Url::parse("https://beta.example.com").expect("valid beta URL")],
+            betas: vec![WalletBeta {
+                url: url::Url::parse("https://beta.example.com").expect("valid beta URL"),
+                clowder_id: None,
+            }],
             nostr_relays: vec![
                 RelayUrl::parse("wss://relay.example.com").expect("valid relay URL"),
             ],
@@ -168,7 +178,7 @@ mod tests {
             .expect("migrated wallet exists");
         let envelope: StoredWallet = borsh::from_slice(stored.value().as_slice())
             .expect("deserialize stored wallet envelope");
-        from_stored_wallet_v1(envelope).expect("read wallet from V1 envelope")
+        from_stored_wallet(envelope)
     }
 
     #[test]

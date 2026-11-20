@@ -1,10 +1,12 @@
 # Unreleased
 
 * Nostr offsets and queued messages, payment requests and mint, melt and melt commitment records are stored as versioned borsh, encrypted where they hold secrets or message content (breaking DB change: migration 0006; a legacy row that cannot be converted moves, encrypted, to a `<table>_quarantine` table)
+* Wallet betas are stored and found by clowder node id instead of mint url, so the rabid, offline and substitute quorums count each beta once (breaking DB change: `StoredWallet` V2, migration 0007)
 
 # 0.9.17
 
 * Add support for dotted compileSdkVersion values in cargokit, so e.g. android-33.5 also works
+* Wallet betas are stored and found by clowder node id instead of mint url, so the rabid, offline and substitute quorums count each beta once (breaking DB change: `StoredWallet` V2, migration 0006)
 
 # 0.9.16
 

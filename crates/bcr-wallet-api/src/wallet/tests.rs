@@ -19,6 +19,7 @@ use bcr_wallet_core::{
     types::{
         ClowderBeta, ForeignMintProofReason, PaymentRequestDirection, PaymentRequestState,
         PaymentRequestTransitionOutcome, PaymentResultCallback, TimeRange, TransactionFees,
+        WalletBeta,
     },
 };
 use bcr_wallet_persistence::PocketRepository;
@@ -156,8 +157,13 @@ async fn wallet_with_debit(
         ))
     });
     let beta_url = url::Url::parse("https://beta.test").unwrap();
-    let mut beta_clients: BTreeMap<url::Url, Arc<dyn ClowderMintConnector>> = BTreeMap::new();
-    beta_clients.insert(beta_url, Arc::new(beta_mock));
+    let betas: Vec<(WalletBeta, Arc<dyn ClowderMintConnector>)> = vec![(
+        WalletBeta {
+            url: beta_url,
+            clowder_id: Some(test_pub_key()),
+        },
+        Arc::new(beta_mock),
+    )];
 
     Wallet::new(
         bitcoin::Network::Testnet,
@@ -172,7 +178,7 @@ async fn wallet_with_debit(
         "w-1".to_owned(),
         test_pub_key(),
         test_pub_key(),
-        beta_clients,
+        betas,
         Arc::new(|url| Arc::new(HttpClientExt::new(url, Default::default()))),
         time::Duration::seconds(60),
         Arc::new(ctx.nostr_transport),
@@ -183,15 +189,23 @@ async fn wallet_with_debit(
     .await
 }
 
+fn beta_id(n: u8) -> secp256k1::PublicKey {
+    let sk = secp256k1::SecretKey::from_slice(&[n; 32]).expect("valid secret key");
+    secp256k1::PublicKey::from_secret_key(SECP256K1, &sk)
+}
+
+fn test_beta(url: &url::Url, n: u8) -> WalletBeta {
+    WalletBeta {
+        url: url.clone(),
+        clowder_id: Some(beta_id(n)),
+    }
+}
+
 async fn wallet_with_betas(
     w: Arc<RwLock<Wallet>>,
-    betas: Vec<(url::Url, Arc<dyn ClowderMintConnector>)>,
+    betas: Vec<(WalletBeta, Arc<dyn ClowderMintConnector>)>,
 ) -> Arc<RwLock<Wallet>> {
-    let mut map = BTreeMap::new();
-    for (url, cl) in betas {
-        map.insert(url, cl);
-    }
-    w.write().await.beta_clients = map;
+    w.write().await.betas = betas;
     w
 }
 
@@ -518,7 +532,11 @@ async fn test_is_wallet_mint_offline_majority_true() {
 
     wlt = wallet_with_betas(
         wlt,
-        vec![(b1, Arc::new(m1)), (b2, Arc::new(m2)), (b3, Arc::new(m3))],
+        vec![
+            (test_beta(&b1, 1), Arc::new(m1)),
+            (test_beta(&b2, 2), Arc::new(m2)),
+            (test_beta(&b3, 3), Arc::new(m3)),
+        ],
     )
     .await;
 
@@ -548,7 +566,14 @@ async fn test_is_wallet_mint_rabid_majority_false() {
         })
     });
 
-    wlt = wallet_with_betas(wlt, vec![(b1, Arc::new(m1)), (b2, Arc::new(m2))]).await;
+    wlt = wallet_with_betas(
+        wlt,
+        vec![
+            (test_beta(&b1, 1), Arc::new(m1)),
+            (test_beta(&b2, 2), Arc::new(m2)),
+        ],
+    )
+    .await;
 
     let res = wlt.read().await.is_wallet_mint_rabid().await.unwrap();
     assert!(!res);
@@ -576,7 +601,7 @@ async fn test_mint_substitute_returns_some_on_majority_vote() {
             Ok(wire_clowder::ConnectedMintResponse {
                 mint: substitute.clone(),
                 clowder: url::Url::from_str("https://clowder.example").unwrap(),
-                node_id: test_pub_key(),
+                node_id: beta_id(10),
             })
         }
     });
@@ -586,7 +611,7 @@ async fn test_mint_substitute_returns_some_on_majority_vote() {
             Ok(wire_clowder::ConnectedMintResponse {
                 mint: substitute.clone(),
                 clowder: url::Url::from_str("https://clowder.example").unwrap(),
-                node_id: test_pub_key(),
+                node_id: beta_id(10),
             })
         }
     });
@@ -596,19 +621,219 @@ async fn test_mint_substitute_returns_some_on_majority_vote() {
             Ok(wire_clowder::ConnectedMintResponse {
                 mint: other.clone(),
                 clowder: url::Url::from_str("https://clowder.example").unwrap(),
-                node_id: test_pub_key(),
+                node_id: beta_id(11),
             })
         }
     });
 
     wlt = wallet_with_betas(
         wlt,
-        vec![(b1, Arc::new(m1)), (b2, Arc::new(m2)), (b3, Arc::new(m3))],
+        vec![
+            (test_beta(&b1, 1), Arc::new(m1)),
+            (test_beta(&b2, 2), Arc::new(m2)),
+            (test_beta(&b3, 3), Arc::new(m3)),
+        ],
     )
     .await;
 
     let res = wlt.read().await.mint_substitute().await.unwrap();
-    assert_eq!(res, Some(substitute));
+    assert_eq!(res.map(|s| s.mint), Some(substitute));
+}
+
+fn status_beta(state: wire_clowder::SimpleAlphaState) -> Arc<dyn ClowderMintConnector> {
+    let mut m = MockClowderMintConnector::new();
+    m.expect_get_alpha_status().returning(move |_| {
+        Ok(wire_clowder::AlphaStateResponse {
+            state: state.clone(),
+        })
+    });
+    Arc::new(m)
+}
+
+fn substitute_beta(mint: &str, node_id: secp256k1::PublicKey) -> Arc<dyn ClowderMintConnector> {
+    let mint = url::Url::from_str(mint).unwrap();
+    let mut m = MockClowderMintConnector::new();
+    m.expect_get_alpha_substitute().returning(move |_| {
+        Ok(wire_clowder::ConnectedMintResponse {
+            mint: mint.clone(),
+            clowder: url::Url::from_str("https://clowder.example").unwrap(),
+            node_id,
+        })
+    });
+    Arc::new(m)
+}
+
+#[tokio::test]
+async fn rabid_quorum_counts_one_node_id_under_two_urls_once() {
+    let wlt = wallet(wallet_ctx()).await;
+    let rabid = status_beta(wire_clowder::SimpleAlphaState::Rabid("rabid".to_string()));
+    let online = status_beta(wire_clowder::SimpleAlphaState::Online(0));
+    let url = |s: &str| url::Url::from_str(s).unwrap();
+    let wlt = wallet_with_betas(
+        wlt,
+        vec![
+            (test_beta(&url("https://old.example"), 1), rabid.clone()),
+            (test_beta(&url("https://new.example"), 1), rabid),
+            (test_beta(&url("https://other.example"), 2), online),
+        ],
+    )
+    .await;
+
+    assert!(!wlt.read().await.is_wallet_mint_rabid().await.unwrap());
+}
+
+#[tokio::test]
+async fn quorum_keeps_unidentified_beta_in_denominator() {
+    let wlt = wallet(wallet_ctx()).await;
+    let rabid = status_beta(wire_clowder::SimpleAlphaState::Rabid("rabid".to_string()));
+    let unidentified = WalletBeta {
+        url: url::Url::from_str("https://unknown.example").unwrap(),
+        clowder_id: None,
+    };
+    let known = url::Url::from_str("https://known.example").unwrap();
+    let wlt = wallet_with_betas(
+        wlt,
+        vec![
+            (test_beta(&known, 1), rabid),
+            (
+                unidentified,
+                status_beta(wire_clowder::SimpleAlphaState::Online(0)),
+            ),
+        ],
+    )
+    .await;
+
+    assert!(!wlt.read().await.is_wallet_mint_rabid().await.unwrap());
+}
+
+#[tokio::test]
+async fn mint_substitute_needs_a_majority_on_node_id_and_url() {
+    let wlt = wallet(wallet_ctx()).await;
+    let url = |s: &str| url::Url::from_str(s).unwrap();
+    let wlt = wallet_with_betas(
+        wlt,
+        vec![
+            (
+                test_beta(&url("https://b1.example"), 1),
+                substitute_beta("https://sub-a.example", beta_id(10)),
+            ),
+            (
+                test_beta(&url("https://b2.example"), 2),
+                substitute_beta("https://sub-b.example", beta_id(10)),
+            ),
+            (
+                test_beta(&url("https://b3.example"), 3),
+                substitute_beta("https://other.example", beta_id(11)),
+            ),
+        ],
+    )
+    .await;
+
+    assert!(wlt.read().await.mint_substitute().await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn substitute_beta_selected_by_node_id_after_url_change() {
+    let mut ctx = wallet_ctx();
+    ctx.client
+        .expect_mint_url()
+        .return_const(url::Url::from_str("https://wallet-mint.test").unwrap());
+    ctx.client
+        .expect_get_mint_keysets()
+        .returning(|| Ok(vec![]));
+    ctx.client.expect_post_clowder_path().returning(|mint| {
+        Ok(wire_clowder::ConnectedMintsResponse {
+            mints: vec![
+                wire_clowder::ConnectedMintResponse {
+                    mint,
+                    clowder: url::Url::from_str("https://clowder.example").unwrap(),
+                    node_id: beta_id(20),
+                },
+                wire_clowder::ConnectedMintResponse {
+                    mint: url::Url::from_str("https://moved-beta.test").unwrap(),
+                    clowder: url::Url::from_str("https://clowder.example").unwrap(),
+                    node_id: beta_id(1),
+                },
+                wire_clowder::ConnectedMintResponse {
+                    mint: url::Url::from_str("https://wallet-mint.test").unwrap(),
+                    clowder: url::Url::from_str("https://clowder.example").unwrap(),
+                    node_id: test_pub_key(),
+                },
+            ],
+        })
+    });
+    let mut beta = MockClowderMintConnector::new();
+    beta.expect_get_alpha_keysets()
+        .times(1)
+        .withf(|alpha_id| *alpha_id == beta_id(20))
+        .returning(|_| Ok(vec![]));
+    let stored = url::Url::from_str("https://stored-beta.test").unwrap();
+    let wlt = wallet_with_betas(
+        wallet(ctx).await,
+        vec![(test_beta(&stored, 1), Arc::new(beta))],
+    )
+    .await;
+
+    let alpha = url::Url::from_str("https://alpha.test").unwrap();
+    let (path, _) = wlt
+        .read()
+        .await
+        .get_clowder_path_and_keysets_info(alpha)
+        .await
+        .unwrap();
+    assert!(path.is_some());
+}
+
+#[tokio::test]
+async fn unidentified_beta_serves_as_substitute_by_url() {
+    let mut ctx = wallet_ctx();
+    ctx.client
+        .expect_mint_url()
+        .return_const(url::Url::from_str("https://wallet-mint.test").unwrap());
+    ctx.client
+        .expect_get_mint_keysets()
+        .returning(|| Ok(vec![]));
+    ctx.client.expect_post_clowder_path().returning(|mint| {
+        Ok(wire_clowder::ConnectedMintsResponse {
+            mints: vec![
+                wire_clowder::ConnectedMintResponse {
+                    mint,
+                    clowder: url::Url::from_str("https://clowder.example").unwrap(),
+                    node_id: beta_id(20),
+                },
+                wire_clowder::ConnectedMintResponse {
+                    mint: url::Url::from_str("https://moved-beta.test").unwrap(),
+                    clowder: url::Url::from_str("https://clowder.example").unwrap(),
+                    node_id: beta_id(1),
+                },
+                wire_clowder::ConnectedMintResponse {
+                    mint: url::Url::from_str("https://wallet-mint.test").unwrap(),
+                    clowder: url::Url::from_str("https://clowder.example").unwrap(),
+                    node_id: test_pub_key(),
+                },
+            ],
+        })
+    });
+    let mut beta = MockClowderMintConnector::new();
+    beta.expect_get_alpha_keysets()
+        .times(1)
+        .withf(|alpha_id| *alpha_id == beta_id(20))
+        .returning(|_| Ok(vec![]));
+    let stored = url::Url::from_str("https://moved-beta.test").unwrap();
+    let wlt = wallet_with_betas(
+        wallet(ctx).await,
+        vec![(beta_without_id(&stored), Arc::new(beta))],
+    )
+    .await;
+
+    let alpha = url::Url::from_str("https://alpha.test").unwrap();
+    let (path, _) = wlt
+        .read()
+        .await
+        .get_clowder_path_and_keysets_info(alpha)
+        .await
+        .unwrap();
+    assert!(path.is_some());
 }
 
 #[tokio::test]
@@ -635,12 +860,15 @@ async fn test_mint_substitute_majority_survives_a_dead_beta() {
             }
         });
         let url = url::Url::from_str(&format!("https://b{i}.example")).unwrap();
-        betas.push((url, Arc::new(m) as Arc<dyn ClowderMintConnector>));
+        betas.push((
+            test_beta(&url, i as u8 + 1),
+            Arc::new(m) as Arc<dyn ClowderMintConnector>,
+        ));
     }
     let wlt = wallet_with_betas(wlt, betas).await;
 
     let res = wlt.read().await.mint_substitute().await.unwrap();
-    assert_eq!(res, Some(substitute));
+    assert_eq!(res.map(|r| r.mint), Some(substitute));
 }
 
 #[tokio::test]
@@ -651,7 +879,10 @@ async fn test_offline_pay_by_token_errors_if_no_substitute() {
         .times(1)
         .returning(|| CurrencyUnit::Sat);
     let wlt = wallet(ctx).await;
-    wlt.write().await.beta_clients.clear();
+    {
+        let mut guard = wlt.write().await;
+        guard.betas.clear();
+    }
 
     let err = wlt
         .read()
@@ -3381,7 +3612,11 @@ async fn test_online_exchange_success_with_valid_proofs() {
     let mut wlt = wallet(ctx).await;
 
     let arc_alpha_beta = Arc::new(alpha_beta);
-    wlt = wallet_with_betas(wlt, vec![(alpha_beta_url, arc_alpha_beta.clone())]).await;
+    wlt = wallet_with_betas(
+        wlt,
+        vec![(test_beta(&alpha_beta_url, 1), arc_alpha_beta.clone())],
+    )
+    .await;
     wlt.write().await.client_factory = Arc::new(move |url| {
         assert_eq!(
             url,
@@ -4590,7 +4825,17 @@ async fn test_offline_pay_by_token() {
     let substitute_beta: Arc<dyn ClowderMintConnector> = Arc::new(MockClowderMintConnector::new());
 
     let mut wlt = wallet(ctx).await;
-    wlt = wallet_with_betas(wlt, vec![(substitute_url.clone(), substitute_client)]).await;
+    wlt = wallet_with_betas(
+        wlt,
+        vec![(
+            WalletBeta {
+                url: substitute_url.clone(),
+                clowder_id: Some(substitute_clowder_id),
+            },
+            substitute_client,
+        )],
+    )
+    .await;
     let expected_factory_url = substitute_beta_url.clone();
     wlt.write().await.client_factory = Arc::new(move |actual_url| {
         assert_eq!(actual_url, expected_factory_url);
@@ -5819,6 +6064,24 @@ async fn migrate_resumes_a_failed_swap_without_a_second_exchange() {
 }
 
 #[tokio::test]
+async fn migrate_failed_swap_restores_unidentified_betas_as_attesters() {
+    let t = MigrationCtx::new(&[8, 16], &[]).await;
+    let wlt = t.wallet(vec![], 1, false).await;
+    {
+        let mut w = wlt.write().await;
+        w.betas = vec![(
+            WalletBeta {
+                url: url::Url::from_str("https://unidentified.example").unwrap(),
+                clowder_id: None,
+            },
+            Arc::new(MockClowderMintConnector::new()),
+        )];
+    }
+    let err = t.migrate(&wlt).await.unwrap_err();
+    assert!(matches!(err, Error::MigrationIncomplete(2)));
+}
+
+#[tokio::test]
 async fn migrate_resumes_issued_proofs_inside_the_hop_margin() {
     let mut t = MigrationCtx::new(&[8, 16], &[]).await;
     t.lock_secs = 300;
@@ -6343,7 +6606,7 @@ impl SwapFixture {
         let old = wallet_with_betas(
             wallet(ctx).await,
             vec![(
-                url::Url::from_str("https://beta.example").unwrap(),
+                test_beta(&url::Url::from_str("https://beta.example").unwrap(), 1),
                 Arc::new(beta),
             )],
         )
@@ -6599,7 +6862,7 @@ impl RealProofs {
         let wlt = wallet_with_betas(
             wlt,
             vec![(
-                url::Url::from_str("https://beta.example").unwrap(),
+                test_beta(&url::Url::from_str("https://beta.example").unwrap(), 1),
                 Arc::new(beta),
             )],
         )
@@ -6628,4 +6891,102 @@ impl RealProofs {
     pub(crate) fn pause_before_proofs_are_marked_swapped(&self) -> JournalPause {
         pause(&self.journal.before_swapped)
     }
+}
+
+fn unreachable_mint() -> bcr_common::client::mint::Error {
+    bcr_common::client::mint::Error::Internal("unreachable".to_owned())
+}
+
+fn beta_without_id(url: &url::Url) -> WalletBeta {
+    WalletBeta {
+        url: url.clone(),
+        clowder_id: None,
+    }
+}
+
+fn factory_answering(answers: Vec<(url::Url, Option<secp256k1::PublicKey>)>) -> Box<ClientFactory> {
+    Box::new(move |url| {
+        let answer = answers
+            .iter()
+            .find(|(u, _)| *u == url)
+            .and_then(|(_, id)| *id);
+        let mut client = MockClowderMintConnector::new();
+        client
+            .expect_get_clowder_id()
+            .returning(move || answer.ok_or_else(unreachable_mint));
+        Arc::new(client)
+    })
+}
+
+#[tokio::test]
+async fn token_without_mint_url_resolves_stored_beta_by_node_id() {
+    let mut ctx = wallet_ctx();
+    ctx.client.expect_get_clowder_betas().times(0);
+    let beta_url = url::Url::from_str("https://beta-a.example").unwrap();
+    let wlt = wallet(ctx).await;
+    let wlt = wallet_with_betas(
+        wlt,
+        vec![(
+            test_beta(&beta_url, 3),
+            Arc::new(MockClowderMintConnector::new()),
+        )],
+    )
+    .await;
+
+    let url = wlt
+        .read()
+        .await
+        .beta_url(&NodeId::new(beta_id(3), bitcoin::Network::Testnet))
+        .await
+        .unwrap();
+
+    assert_eq!(url, beta_url);
+}
+
+#[tokio::test]
+async fn identify_betas_lists_each_node_and_url_once() {
+    let url = |s: &str| url::Url::from_str(s).unwrap();
+    let (holder, answering, silent) = (
+        url("https://a.example"),
+        url("https://b.example"),
+        url("https://c.example"),
+    );
+    let (impostor, twin, alpha) = (
+        url("https://d.example"),
+        url("https://e.example"),
+        url("https://f.example"),
+    );
+    let factory = factory_answering(vec![
+        (holder.clone(), Some(beta_id(8))),
+        (answering.clone(), Some(beta_id(7))),
+        (silent.clone(), None),
+        (impostor.clone(), Some(beta_id(1))),
+        (twin.clone(), Some(beta_id(7))),
+        (alpha.clone(), Some(test_pub_key())),
+    ]);
+
+    let betas = util::identify_betas(
+        test_pub_key(),
+        vec![
+            test_beta(&holder, 1),
+            beta_without_id(&holder),
+            beta_without_id(&answering),
+            beta_without_id(&silent),
+            beta_without_id(&silent),
+            beta_without_id(&impostor),
+            beta_without_id(&twin),
+            beta_without_id(&alpha),
+        ],
+        factory.as_ref(),
+    )
+    .await;
+
+    assert_eq!(
+        betas,
+        vec![
+            test_beta(&holder, 1),
+            test_beta(&answering, 7),
+            beta_without_id(&silent),
+        ]
+    );
 }

@@ -16,6 +16,7 @@ mod migration_0003;
 mod migration_0004;
 mod migration_0005;
 mod migration_0006;
+mod migration_0007;
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct AppliedMigration {
@@ -43,6 +44,14 @@ fn migrate_purse_sync(db: Arc<Database>) -> Result<()> {
         migration_0002::migration_0002_add_purse_envelope(&write_txn)?;
         mark_migration_applied(&write_txn, &migration_0002_id_for_purse)?;
         tracing::info!("Applied Migration 0002 for purse");
+    }
+
+    let migration_0007_id_for_purse = migration_0007::migration_name_for_purse();
+    if !applied.contains(&migration_0007_id_for_purse) {
+        tracing::info!("Applying Migration 0007 for purse");
+        migration_0007::migration_0007_wallet_beta_clowder_id(&write_txn)?;
+        mark_migration_applied(&write_txn, &migration_0007_id_for_purse)?;
+        tracing::info!("Applied Migration 0007 for purse");
     }
 
     write_txn.commit()?;
