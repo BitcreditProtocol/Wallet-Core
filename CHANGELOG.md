@@ -5,6 +5,7 @@
 # 0.9.17
 
 * Add support for dotted compileSdkVersion values in cargokit, so e.g. android-33.5 also works
+* Send, receive and reclaim transaction ids derive from the direction and the proofs' ys and `store_tx` keeps an existing transaction, so a retry no longer records a duplicate
 
 # 0.9.16
 

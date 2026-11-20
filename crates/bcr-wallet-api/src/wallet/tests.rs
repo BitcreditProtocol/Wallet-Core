@@ -1114,6 +1114,93 @@ async fn test_reclaim_tx_creates_second_linked_tx() {
 }
 
 #[tokio::test]
+async fn retry_same_ys_receive_keeps_tx_id() {
+    let mut ctx = wallet_ctx();
+    let (a, b) = (test_cashu_pubkey(1), test_cashu_pubkey(2));
+
+    ctx.client
+        .expect_get_mint_keysets()
+        .returning(|| Ok(vec![]));
+    ctx.client
+        .expect_mint_url()
+        .return_const(url::Url::from_str("https://mint.example").unwrap());
+    ctx.debit.expect_unit().returning(|| CurrencyUnit::Sat);
+    ctx.debit
+        .expect_receive_proofs()
+        .returning(move |_, _, _, _| Ok((Amount::ZERO, vec![a, b])));
+    ctx.tx_repo.expect_store_tx().times(2).returning(move |tx| {
+        assert_eq!(
+            tx.id,
+            Transaction::derive_id(TransactionDirection::Incoming, &[b, a])
+        );
+        Ok(tx.id)
+    });
+
+    let wlt = wallet(ctx).await;
+    let wlt = wlt.read().await;
+    let mut ids = vec![];
+    for _ in 0..2 {
+        ids.push(
+            wlt.receive_proofs(
+                vec![],
+                CurrencyUnit::Sat,
+                url::Url::from_str("https://mint.example").unwrap(),
+                123,
+                None,
+                PaymentType::Token,
+                TransactionStatus::Settled,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap(),
+        );
+    }
+    assert_eq!(ids[0], ids[1]);
+}
+
+#[tokio::test]
+async fn retry_same_ys_reclaim_id_differs_from_send_id() {
+    let mut ctx = wallet_ctx();
+    ctx.journal.expect_load().returning(|| Ok(HashMap::new()));
+    let (a, b) = (test_cashu_pubkey(1), test_cashu_pubkey(2));
+    let mut tx = reclaimable_tx(Amount::from(10));
+    tx.ys = vec![a, b];
+    tx.id = Transaction::derive_id(TransactionDirection::Outgoing, &tx.ys);
+    let send_id = tx.id;
+
+    ctx.client
+        .expect_get_mint_keysets()
+        .returning(|| Ok(vec![]));
+    ctx.client
+        .expect_post_check_state()
+        .returning(|_| Ok(vec![]));
+    ctx.tx_repo
+        .expect_load_tx()
+        .returning(move |_| Ok(tx.clone()));
+    ctx.tx_repo.expect_store_tx().times(1).returning(move |tx| {
+        assert_ne!(tx.id, send_id);
+        assert_eq!(
+            tx.id,
+            Transaction::derive_id(TransactionDirection::Incoming, &[b, a])
+        );
+        Ok(tx.id)
+    });
+    ctx.debit.expect_unit().returning(|| CurrencyUnit::Sat);
+    ctx.debit
+        .expect_reclaim_proofs()
+        .returning(|_, _, _, _| Ok(Amount::from(7)));
+    ctx.tx_repo
+        .expect_update_status()
+        .returning(|_, _| Ok(None));
+    ctx.tx_repo.expect_link_txs().returning(|_, _, _| Ok(()));
+
+    let wlt = wallet(ctx).await;
+    wlt.read().await.reclaim_tx(send_id).await.unwrap();
+}
+
+#[tokio::test]
 async fn test_list_txs_all_sorts() {
     for sort in [
         TransactionSort::TimeAsc,
