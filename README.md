@@ -123,6 +123,16 @@ hooks:
 Set it to `false` to always build locally. The old `cargokit_options.yaml` and
 `CARGOKIT_USE_PRECOMPILED_BINARIES` no longer have any effect.
 
+The hook runs with a reduced environment: Flutter passes it only an allowlist
+of variables (`PATH`, `HOME`, `TMPDIR`, `CARGO_*`, `RUSTUP_*`, proxy settings
+and a few others), so it cannot reach an SSH agent (`SSH_AUTH_SOCK`). The
+crate's git dependencies are fetched over HTTPS, but if your git config
+rewrites GitHub HTTPS URLs to SSH (`url.<base>.insteadOf`), cargo's fetch
+inside the hook can fail with a `publickey` error. Running `cargo fetch` once
+from a normal shell in this repository (or the package's pub-cache checkout)
+fills cargo's git cache, after which the hook builds. Opting in to precompiled
+binaries avoids the fetch on the platforms that have them.
+
 To publish binaries for the current sources, the workflow runs
 `tool/precompile_binaries.dart`, a standalone Dart package. Run
 `dart run precompile_binaries.dart --print-hash` in `tool/` to print the crate
