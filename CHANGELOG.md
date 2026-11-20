@@ -1,3 +1,7 @@
+# Unreleased
+
+* Nostr offsets and queued messages, payment requests and mint, melt and melt commitment records are stored as versioned borsh, encrypted where they hold secrets or message content (breaking DB change: migration 0006; a legacy row that cannot be converted moves, encrypted, to a `<table>_quarantine` table)
+
 # 0.9.17
 
 * Add support for dotted compileSdkVersion values in cargokit, so e.g. android-33.5 also works

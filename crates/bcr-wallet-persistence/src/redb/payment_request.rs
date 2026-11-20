@@ -6,18 +6,22 @@ use async_trait::async_trait;
 use bcr_common::{
     cashu::{Amount, CurrencyUnit},
     core::NodeId,
+    wire::borsh::{
+        deserialize_cashu_amount, deserialize_from_str, serialize_as_str, serialize_cashu_amount,
+    },
 };
 use bcr_wallet_core::types::{
     PaymentRequest, PaymentRequestActionOrigin, PaymentRequestDirection,
     PaymentRequestHistoryEntry, PaymentRequestState, PaymentRequestTransition,
     PaymentRequestTransitionOutcome,
 };
+use borsh::{BorshDeserialize, BorshSerialize};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
 use std::sync::Arc;
 use tokio::task::spawn_blocking;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
 pub enum PaymentRequestEntryDirection {
     Incoming,
     Outgoing,
@@ -41,7 +45,7 @@ impl From<PaymentRequestEntryDirection> for PaymentRequestDirection {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
 pub enum PaymentRequestEntryState {
     Pending,
     Paid { tx_id: Uuid },
@@ -71,7 +75,7 @@ impl From<PaymentRequestEntryState> for PaymentRequestState {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
 pub enum PaymentRequestEntryOrigin {
     Local,
     Remote { event_id: String },
@@ -99,7 +103,7 @@ impl From<PaymentRequestEntryOrigin> for PaymentRequestActionOrigin {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct PaymentRequestEntryHistoryEntry {
     pub state: PaymentRequestEntryState,
     pub applied: bool,
@@ -135,23 +139,44 @@ impl From<PaymentRequestEntryHistoryEntry> for PaymentRequestHistoryEntry {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct PaymentRequestEntry {
     pub id: Uuid,
-    #[serde(default)]
     pub node_id: Option<NodeId>,
+    #[borsh(
+        serialize_with = "serialize_cashu_amount",
+        deserialize_with = "deserialize_cashu_amount"
+    )]
     pub amount: Amount,
+    #[borsh(
+        serialize_with = "serialize_as_str",
+        deserialize_with = "deserialize_from_str"
+    )]
     pub unit: CurrencyUnit,
     pub description: Option<String>,
     pub deadline: Option<u64>,
     pub created_at: u64,
     pub state: PaymentRequestEntryState,
     pub direction: PaymentRequestEntryDirection,
-    /// Absent in rows written by older versions.
-    #[serde(default)]
     pub history: Vec<PaymentRequestEntryHistoryEntry>,
-    #[serde(default)]
     pub tombstone: bool,
+}
+
+/// StoredPaymentRequest is a versioned, borsh-serialized payment request
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) enum StoredPaymentRequest {
+    V1(PaymentRequestEntry),
+}
+
+pub(super) fn encode_payment_request(entry: &PaymentRequestEntry) -> Result<Vec<u8>> {
+    borsh::to_vec(&StoredPaymentRequest::V1(entry.clone()))
+        .map_err(|e| Error::BorshSerialization(e.to_string()))
+}
+
+fn decode_payment_request(bytes: &[u8]) -> Result<PaymentRequestEntry> {
+    let StoredPaymentRequest::V1(entry) =
+        borsh::from_slice(bytes).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+    Ok(entry)
 }
 
 impl From<PaymentRequest> for PaymentRequestEntry {
@@ -235,10 +260,14 @@ pub struct PaymentRequestDB {
 impl PaymentRequestDB {
     const PAYMENT_REQUESTS_DB_NAME: &'static str = "pending_incoming_payment_requests";
 
+    pub(super) fn payment_requests_table_name(wallet_id: &str) -> String {
+        format!("{wallet_id}_{}", Self::PAYMENT_REQUESTS_DB_NAME)
+    }
+
     pub fn new(db: Arc<Database>, wallet_id: &str) -> Result<Self> {
         // Leak once to get static string, because of dynamically generated table names
         let payment_requests_table_name: &'static str =
-            Box::leak(format!("{wallet_id}_{}", Self::PAYMENT_REQUESTS_DB_NAME).into_boxed_str());
+            Box::leak(Self::payment_requests_table_name(wallet_id).into_boxed_str());
 
         let payment_requests_table = TableDefinition::new(payment_requests_table_name);
 
@@ -263,8 +292,7 @@ impl PaymentRequestDB {
             let to_store = match old_value {
                 None => entry,
                 Some(old_value) => {
-                    let existing: PaymentRequestEntry =
-                        ciborium::from_reader(old_value.as_slice())?;
+                    let existing = decode_payment_request(old_value.as_slice())?;
                     if !existing.tombstone {
                         return Err(Error::PaymentRequestAlreadyExists(id.to_string()));
                     }
@@ -285,9 +313,7 @@ impl PaymentRequestDB {
                 }
             };
 
-            let mut serialized = Vec::new();
-            ciborium::into_writer(&to_store, &mut serialized)?;
-            table.insert(id.as_bytes().as_slice(), serialized)?;
+            table.insert(id.as_bytes().as_slice(), encode_payment_request(&to_store)?)?;
         }
 
         write_txn.commit()?;
@@ -306,8 +332,7 @@ impl PaymentRequestDB {
                 let entry = table.get(id.as_bytes().as_slice())?;
                 match entry {
                     Some(e) => {
-                        let payment_request: PaymentRequestEntry =
-                            ciborium::from_reader(e.value().as_slice())?;
+                        let payment_request = decode_payment_request(e.value().as_slice())?;
                         if payment_request.tombstone {
                             Ok(None)
                         } else {
@@ -335,7 +360,7 @@ impl PaymentRequestDB {
             Ok(table) => {
                 let mut res = Vec::new();
                 for (_, v) in table.range::<&[u8]>(..)?.flatten() {
-                    let entry: PaymentRequestEntry = ciborium::from_reader(v.value().as_slice())?;
+                    let entry = decode_payment_request(v.value().as_slice())?;
                     let state_matches = all_states
                         || states.iter().any(|s| {
                             // match without specifically matching on tx_id
@@ -382,7 +407,7 @@ impl PaymentRequestDB {
             let mut table = write_txn.open_table(payment_requests_table)?;
             let stored = table
                 .get(id.as_bytes().as_slice())?
-                .map(|v| ciborium::from_reader::<PaymentRequestEntry, _>(v.value().as_slice()))
+                .map(|v| decode_payment_request(v.value().as_slice()))
                 .transpose()?;
 
             let mut entry = match (stored, &counterparty) {
@@ -408,9 +433,7 @@ impl PaymentRequestDB {
 
             let result = apply_transition(&mut entry, transition);
             if result != PaymentRequestTransitionOutcome::AlreadyApplied {
-                let mut serialized = Vec::new();
-                ciborium::into_writer(&entry, &mut serialized)?;
-                table.insert(id.as_bytes().as_slice(), serialized)?;
+                table.insert(id.as_bytes().as_slice(), encode_payment_request(&entry)?)?;
             }
             outcome = (!entry.tombstone).then_some(result);
         }
@@ -536,42 +559,6 @@ mod tests {
                 .expect("can create in-memory redb"),
         );
         PaymentRequestDB::new(db, wallet_id).expect("can create PaymentRequestDB")
-    }
-
-    #[test]
-    fn entry_stored_with_a_required_node_id_reads_as_some() {
-        #[derive(serde::Serialize)]
-        struct LegacyEntry {
-            id: Uuid,
-            node_id: NodeId,
-            amount: Amount,
-            unit: CurrencyUnit,
-            description: Option<String>,
-            deadline: Option<u64>,
-            created_at: u64,
-            state: PaymentRequestEntryState,
-            direction: PaymentRequestEntryDirection,
-        }
-        let node_id = NodeId::from_str(NODE_ID_1).unwrap();
-        let mut bytes = Vec::new();
-        ciborium::into_writer(
-            &LegacyEntry {
-                id: Uuid::new_v4(),
-                node_id: node_id.clone(),
-                amount: Amount::from(42u64),
-                unit: CurrencyUnit::Sat,
-                description: None,
-                deadline: None,
-                created_at: 1,
-                state: PaymentRequestEntryState::Pending,
-                direction: PaymentRequestEntryDirection::Incoming,
-            },
-            &mut bytes,
-        )
-        .unwrap();
-
-        let entry: PaymentRequestEntry = ciborium::from_reader(bytes.as_slice()).unwrap();
-        assert_eq!(entry.node_id, Some(node_id));
     }
 
     fn test_payment_request() -> PaymentRequest {
@@ -1154,42 +1141,6 @@ mod tests {
         let loaded = repo.get_payment_request(id).await.unwrap().unwrap();
         assert_eq!(loaded.state, PaymentRequestState::Pending);
         assert!(loaded.history.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_old_cbor_entry_without_history_field_deserializes_with_defaults() {
-        #[derive(serde::Serialize)]
-        struct OldPaymentRequestEntry {
-            id: Uuid,
-            node_id: NodeId,
-            amount: Amount,
-            unit: CurrencyUnit,
-            description: Option<String>,
-            deadline: Option<u64>,
-            created_at: u64,
-            state: PaymentRequestEntryState,
-            direction: PaymentRequestEntryDirection,
-        }
-
-        let old = OldPaymentRequestEntry {
-            id: Uuid::new_v4(),
-            node_id: NodeId::from_str(NODE_ID_1).unwrap(),
-            amount: Amount::from(1u64),
-            unit: CurrencyUnit::Sat,
-            description: None,
-            deadline: None,
-            created_at: 1,
-            state: PaymentRequestEntryState::Pending,
-            direction: PaymentRequestEntryDirection::Incoming,
-        };
-
-        let mut serialized = Vec::new();
-        ciborium::into_writer(&old, &mut serialized).unwrap();
-        let deserialized: PaymentRequestEntry =
-            ciborium::from_reader(serialized.as_slice()).unwrap();
-
-        assert!(deserialized.history.is_empty());
-        assert!(!deserialized.tombstone);
     }
 
     #[tokio::test]
