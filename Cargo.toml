@@ -12,7 +12,9 @@ members = ["crates/bcr-wallet-core", "crates/bcr-wallet-cli", "crates/bcr-wallet
 opt-level = "s"
 lto = true
 codegen-units = 1
-strip = "symbols"
+# Keep function names for crash symbolication. iOS/macOS (Flutter) and Android (AGP)
+# strip the copy they package; Linux desktop bundles ship it with symbols.
+strip = "debuginfo"
 
 [workspace.dependencies]
 async-trait = {version = "0.1"}
