@@ -4611,7 +4611,10 @@ async fn test_offline_pay_by_token() {
     let token_proofs = token
         .proofs(&[substitute_info])
         .expect("returned token contains valid substitute proofs");
-    assert_eq!(token_proofs.total_amount().unwrap(), send_amount);
+    assert_eq!(
+        token_proofs.total_amount().unwrap(),
+        bitcoin::Amount::from_sat(send_amount.to_u64())
+    );
     assert_eq!(token_proofs.len(), 1);
 }
 

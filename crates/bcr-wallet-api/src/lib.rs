@@ -1387,7 +1387,7 @@ async fn create_new_wallet(
     // Attempt to find debit unit in the given keysets
     let currencies = keyset_infos
         .values()
-        .map(|k| k.unit.clone())
+        .map(|k| CurrencyUnit::from(k.unit))
         .collect::<HashSet<_>>();
     if currencies.len() > 1 {
         return Err(Error::Unsupported(

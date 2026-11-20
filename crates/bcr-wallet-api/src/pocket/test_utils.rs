@@ -18,7 +18,7 @@ pub mod tests {
 
     pub fn test_kinfos(info: MintKeySetInfo) -> HashMap<ecash::Id, KeySetInfo> {
         let mut map = HashMap::new();
-        map.insert(info.id, cashu::KeySetInfo::from(info).into());
+        map.insert(info.id, KeySetInfo::from(info));
         map
     }
 
@@ -37,7 +37,7 @@ pub mod tests {
         );
         info.id = set.id.into();
         info.amounts = amounts;
-        (info, set.into())
+        (info, set.try_into().expect("sat keyset"))
     }
 
     pub fn test_swap_config() -> SwapConfig {

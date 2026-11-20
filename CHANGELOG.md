@@ -1,6 +1,7 @@
 # 0.9.17
 
 * Add support for dotted compileSdkVersion values in cargokit, so e.g. android-33.5 also works
+* update to latest bcr-common and adapt to new bcr-common::ecash::CurrencyUnit
 
 # 0.9.16
 
