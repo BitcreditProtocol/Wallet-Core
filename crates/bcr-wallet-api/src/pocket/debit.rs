@@ -345,7 +345,7 @@ impl Pocket {
     ) -> Result<HashMap<ecash::Id, &'a KeySetInfo>> {
         let infos = collect_keyset_infos_from_proofs(inputs.iter(), keysets_info)?;
         for info in infos.values() {
-            if info.unit != self.unit {
+            if cashu::CurrencyUnit::from(info.unit) != self.unit {
                 return Err(Error::InvalidCurrencyUnit(info.unit.clone().to_string()));
             }
             if !info.active {
@@ -1259,7 +1259,11 @@ impl DebitPocketApi for Pocket {
         // find debit keyset
         let active_info = keysets_info
             .values()
-            .filter(|info| info.unit == self.unit && info.active && info.final_expiry.is_none())
+            .filter(|info| {
+                cashu::CurrencyUnit::from(info.unit) == self.unit
+                    && info.active
+                    && info.final_expiry.is_none()
+            })
             .min_by_key(|info| info.id);
         let Some(active_info) = active_info else {
             return Err(Error::NoActiveKeyset);

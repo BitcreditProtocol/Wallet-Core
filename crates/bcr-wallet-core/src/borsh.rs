@@ -58,7 +58,9 @@ pub fn deserialize_mint_keyset_infos(
 
         let keyset_info = ecash::KeySetInfo {
             id,
-            unit,
+            unit: unit
+                .try_into()
+                .map_err(|e| BorshError::new(ErrorKind::InvalidData, e))?,
             active: info.active,
             input_fee_ppk: info.input_fee_ppk,
             final_expiry: info.final_expiry,
@@ -192,7 +194,7 @@ mod tests {
         final_expiry: Option<u64>,
     ) -> ecash::KeySetInfo {
         let id = ecash::Id::from_str(id).expect("valid test keyset ID");
-        let unit = cashu::CurrencyUnit::from_str(unit).expect("valid test currency unit");
+        let unit = ecash::CurrencyUnit::from_str(unit).expect("valid test currency unit");
 
         ecash::KeySetInfo {
             id,
@@ -220,6 +222,34 @@ mod tests {
         assert_eq!(actual.active, expected.active);
         assert_eq!(actual.input_fee_ppk, expected.input_fee_ppk);
         assert_eq!(actual.final_expiry, expected.final_expiry);
+    }
+
+    /// Bytes written by the wallet before `ecash::CurrencyUnit` replaced
+    /// `cashu::CurrencyUnit` in `KeySetInfo`; stored keyset infos must stay readable
+    /// and be written back unchanged.
+    const MINT_KEYSET_INFOS_V1: &[u8] = &[
+        2, 0, 0, 0, 16, 0, 0, 0, 48, 48, 57, 97, 49, 102, 50, 57, 51, 50, 53, 51, 101, 52, 49, 101,
+        3, 0, 0, 0, 115, 97, 116, 1, 100, 0, 0, 0, 0, 0, 0, 0, 1, 0, 179, 63, 113, 0, 0, 0, 0, 16,
+        0, 0, 0, 48, 48, 98, 52, 99, 100, 50, 55, 100, 56, 56, 54, 49, 97, 52, 52, 3, 0, 0, 0, 115,
+        97, 116, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+
+    #[test]
+    fn mint_keyset_infos_layout_is_stable() {
+        let mut infos = HashMap::new();
+        for info in [
+            keyset_info(KEYSET_ID_1, "sat", true, 100, Some(1_900_000_000)),
+            keyset_info(KEYSET_ID_2, "sat", false, 0, None),
+        ] {
+            infos.insert(info.id, info);
+        }
+        assert_eq!(serialize_mint_ks_infos(&infos), MINT_KEYSET_INFOS_V1);
+
+        let decoded = deserialize_mint_ks_infos(MINT_KEYSET_INFOS_V1).expect("stored bytes decode");
+        assert_eq!(decoded.len(), infos.len());
+        for (id, expected) in &infos {
+            assert_keyset_info_eq(&decoded[id], expected);
+        }
     }
 
     #[test]
