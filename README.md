@@ -52,15 +52,30 @@ Rust<>Flutter FFI for [Wallet-Core](https://github.com/BitcreditProtocol/Wallet-
 
 ## Prerequisites
 
-* Install Rust
-* Install Flutter
-* `cargo install flutter_rust_bridge_codegen`
+* Install Rust through [rustup](https://rustup.rs). The build hook installs
+  the toolchain and targets pinned in `crates/bcr-wallet-ffi/rust-toolchain.toml`.
+* Install Flutter 3.50.0 or newer
+* `cargo install flutter_rust_bridge_codegen --version 2.13.0` (only to regenerate bindings)
+* For Android builds: an Android NDK, r27 or newer
 
 ## Generate bindings
 
 ```bash
 flutter_rust_bridge_codegen generate
 ```
+
+## How the Rust library is built
+
+`wallet_ffi` is a Dart package with a [build hook](https://dart.dev/tools/hooks)
+(`hook/build.dart`), not a Flutter plugin: it has no `android/`, `ios/`,
+`macos/`, `linux/` or `windows/` folders, no CocoaPods podspec and no Swift
+package. When an app builds, Flutter runs the hook for each target. The hook
+compiles `crates/bcr-wallet-ffi` with cargo (through
+[`flutter_rust_bridge_hooks`](https://pub.dev/packages/flutter_rust_bridge_hooks)
+and `native_toolchain_rust`), or downloads a signed precompiled binary. Flutter
+then bundles the result as a dynamic library. On iOS and macOS it becomes
+`wallet_ffi.framework`, which Flutter signs and embeds. Android 64-bit
+libraries are linked for 16 KB pages, and the hook checks this.
 
 ## Import this package
 
@@ -79,17 +94,68 @@ The `ref` can either be a commit hash, a branch or a tag.
 
 ### Precompiled binaries
 
-This package publishes signed precompiled iOS and Android Rust binaries from
-`.github/workflows/cd_precompiled.yml`. App CI can opt in by adding
-`cargokit_options.yaml` at the Flutter app root:
+`.github/workflows/cd_precompiled.yml` publishes signed precompiled binaries
+for iOS (device and simulator, iOS 15+), macOS (13+) and Android (API 24+) to a
+`precompiled_<crate hash>` release. The crate hash covers every file in every
+workspace crate's directory (path and content, except `target/` and hidden
+entries other than `.cargo/`), the workspace `Cargo.toml`, `Cargo.lock` and
+`.cargo/config.toml`, `rust-toolchain.toml` and `precompiled_binaries.yaml`.
+Any change there, such as a new migration file, gets new binaries. Android
+binaries are linked with NDK 28.2.13676358, Flutter 3.50's default. The hook verifies each download against the
+Ed25519 `public_key` in `precompiled_binaries.yaml`. If no signed binary
+exists for the target, or an Android app's `minSdk` is below 24 (Flutter
+accepts 23), the hook builds locally with cargo instead.
+
+The library is built for iOS 15 and macOS 13 either way: Flutter passes those
+fixed versions to build hooks, whatever the app declares. Apps must declare at
+least iOS 15 and macOS 13 as deployment targets.
+
+Precompiled binaries are used when the app opts in, or when rustup is not
+installed. To opt in (for example in app CI), add to the app's `pubspec.yaml`:
 
 ```yaml
-use_precompiled_binaries: true
+hooks:
+  user_defines:
+    wallet_ffi:
+      use_precompiled_binaries: true
 ```
 
-Alternatively set `CARGOKIT_USE_PRECOMPILED_BINARIES=true` in the app build
-environment. Cargokit falls back to a local Rust build if a signed binary for
-the current crate hash and target is not available.
+Set it to `false` to always build locally. The old `cargokit_options.yaml` and
+`CARGOKIT_USE_PRECOMPILED_BINARIES` no longer have any effect.
+
+The hook runs with a reduced environment: Flutter passes it only an allowlist
+of variables (`PATH`, `HOME`, `TMPDIR`, `CARGO_*`, `RUSTUP_*`, proxy settings
+and a few others), so it cannot reach an SSH agent (`SSH_AUTH_SOCK`). The
+crate's git dependencies are fetched over HTTPS, but if your git config
+rewrites GitHub HTTPS URLs to SSH (`url.<base>.insteadOf`), cargo's fetch
+inside the hook can fail with a `publickey` error. Running `cargo fetch` once
+from a normal shell in this repository (or the package's pub-cache checkout)
+fills cargo's git cache, after which the hook builds. Opting in to precompiled
+binaries avoids the fetch on the platforms that have them.
+
+To publish binaries for the current sources, the workflow runs
+`tool/precompile_binaries.dart`, a standalone Dart package. Run
+`dart run precompile_binaries.dart --print-hash` in `tool/` to print the crate
+hash.
+
+Call `RustLib.init()` without an `externalLibrary`: flutter_rust_bridge then
+opens `wallet_ffi.framework/wallet_ffi` (iOS, macOS) or `libwallet_ffi.so` /
+`wallet_ffi.dll`. Flutter embeds the framework but does not link it into the
+app, so `ExternalLibrary.process(...)` finds no symbols.
+
+That applies to the app. Under `flutter test` on a desktop host the hook-built
+library is in `build/native_assets/<os>/` (for example
+`build/native_assets/linux/libwallet_ffi.so` or
+`build/native_assets/macos/libwallet_ffi.dylib`), where the default loader
+does not look. Tests that call into Rust must either set
+`FRB_DART_LOAD_EXTERNAL_LIBRARY_NATIVE_LIB_DIR` to that directory or pass
+`externalLibrary: ExternalLibrary.open(<path>)` to `RustLib.init`.
+
+`dart run <script>` in an app, for example `dart run bin/tool.dart`, first runs
+the build hook for the host platform. No Linux or Windows binaries are
+published, so on those hosts it needs rustup and compiles the Rust library,
+which takes minutes the first time. `dart run <package>:<executable>`, such as
+`dart run build_runner`, runs no hook.
 
 Then, in `main.dart`:
 
