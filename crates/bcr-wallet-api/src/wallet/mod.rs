@@ -867,18 +867,23 @@ impl Wallet {
             let intermint_alpha_infos: HashMap<ecash::Id, KeySetInfo> = alpha_keysets
                 .iter()
                 .map(|keyset| {
-                    (
+                    let unit = keyset
+                        .unit
+                        .clone()
+                        .try_into()
+                        .map_err(|_| Error::InvalidCurrencyUnit(keyset.unit.to_string()))?;
+                    Ok((
                         keyset.id.into(),
                         ecash::KeySetInfo {
                             id: keyset.id.into(),
-                            unit: keyset.unit.clone(),
+                            unit,
                             active: true,
                             input_fee_ppk: keyset.input_fee_ppk,
                             final_expiry: keyset.final_expiry,
                         },
-                    )
+                    ))
                 })
-                .collect();
+                .collect::<Result<_>>()?;
             Ok((Some((path, intermint_alpha_infos)), local_keysets_info))
         }
     }
