@@ -72,6 +72,11 @@ enum Commands {
     Status,
     #[command(name = "wait")]
     Wait,
+    #[command(name = "events")]
+    Events {
+        #[arg(long, default_value_t = 60)]
+        seconds: u64,
+    },
     #[command(name = "add_wallet")]
     AddWallet { id: String },
     #[command(name = "delete_wallet")]
@@ -293,6 +298,13 @@ async fn main() -> Result<()> {
                 text("120 seconds".into()),
             )?;
             tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        }
+        Commands::Events { seconds } => {
+            emit(
+                cli.json,
+                &format!("Wallet events for {}", cli.wallet),
+                text(command::cmd_events(&app_state, seconds).await?),
+            )?;
         }
         Commands::Receive { id, token } => {
             emit(

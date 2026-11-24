@@ -7,9 +7,12 @@
 // ignore_for_file: argument_type_not_assignable
 
 import 'api.dart';
+
 import 'dart:async';
 import 'dart:convert';
+
 import 'frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
@@ -36,6 +39,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletPaymentCheckHandle
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWalletPaymentCheckHandle(
+    dynamic raw,
+  );
+
+  @protected
+  FutureOr<void> Function(WalletEventResponse)
+  dco_decode_DartFn_Inputs_wallet_event_response_Output_unit_AnyhowException(
     dynamic raw,
   );
 
@@ -589,6 +598,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletEstimateMeltResponse dco_decode_wallet_estimate_melt_response(
     dynamic raw,
   );
+
+  @protected
+  WalletEventKind dco_decode_wallet_event_kind(dynamic raw);
+
+  @protected
+  WalletEventResponse dco_decode_wallet_event_response(dynamic raw);
 
   @protected
   WalletFfiConfig dco_decode_wallet_ffi_config(dynamic raw);
@@ -1524,6 +1539,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletEventKind sse_decode_wallet_event_kind(SseDeserializer deserializer);
+
+  @protected
+  WalletEventResponse sse_decode_wallet_event_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   WalletFfiConfig sse_decode_wallet_ffi_config(SseDeserializer deserializer);
 
   @protected
@@ -1825,6 +1848,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWalletPaymentCheckHandle(
     WalletPaymentCheckHandle self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_DartFn_Inputs_wallet_event_response_Output_unit_AnyhowException(
+    FutureOr<void> Function(WalletEventResponse) self,
     SseSerializer serializer,
   );
 
@@ -2668,6 +2698,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_estimate_melt_response(
     WalletEstimateMeltResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_event_kind(
+    WalletEventKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_event_response(
+    WalletEventResponse self,
     SseSerializer serializer,
   );
 

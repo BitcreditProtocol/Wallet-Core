@@ -7,6 +7,7 @@ pub mod util;
 use crate::{
     ClowderMintConnector,
     error::{Error, Result},
+    events::{EventBus, WalletEventKind},
     external::mint::ClientFactory,
     pocket::{RestoreSummary, add_amounts, debit::DebitPocketApi},
     types::PaymentSummary,
@@ -112,6 +113,7 @@ pub struct Wallet {
     nostr_shutdown: CancellationToken,
     nostr_consumer: Arc<dyn ConsumerApi>,
     nostr_listener: std::sync::Mutex<Option<NostrListener>>,
+    events: EventBus,
 }
 
 pub(crate) fn is_authentic_sender(
@@ -143,6 +145,7 @@ impl Wallet {
         nostr_event_channel: NostrEventChannel,
         nostr_repo: Arc<dyn NostrRepository>,
         nostr_consumer: Arc<dyn ConsumerApi>,
+        events: EventBus,
     ) -> Arc<RwLock<Self>> {
         let cancel = CancellationToken::new();
         Arc::new_cyclic(|this| {
@@ -173,8 +176,66 @@ impl Wallet {
                 nostr_shutdown: cancel.clone(),
                 nostr_consumer,
                 nostr_listener: std::sync::Mutex::new(None),
+                events,
             })
         })
+    }
+
+    fn emit(&self, kind: WalletEventKind) {
+        self.events.emit(&self.id, kind);
+    }
+
+    async fn store_tx(&self, tx: Transaction) -> Result<Uuid> {
+        let kind = match tx.direction {
+            TransactionDirection::Incoming => WalletEventKind::PaymentReceived,
+            TransactionDirection::Outgoing => WalletEventKind::PaymentSent,
+        };
+        let tx_id = self.tx_repo.store_tx(tx).await?;
+        self.emit(kind(tx_id));
+        self.emit(WalletEventKind::BalanceUpdated);
+        Ok(tx_id)
+    }
+
+    async fn update_status(&self, tx_id: Uuid, status: TransactionStatus) -> Result<()> {
+        let previous = self.tx_repo.update_status(tx_id, status).await?;
+        if previous != Some(status) {
+            self.emit(WalletEventKind::TransactionUpdated(tx_id));
+            self.emit(WalletEventKind::BalanceUpdated);
+        }
+        Ok(())
+    }
+
+    async fn link_txs(
+        &self,
+        tx_id: Uuid,
+        linked_tx_id: Uuid,
+        reason: TransactionLinkReason,
+    ) -> Result<()> {
+        self.tx_repo.link_txs(tx_id, linked_tx_id, reason).await?;
+        self.emit(WalletEventKind::TransactionUpdated(tx_id));
+        self.emit(WalletEventKind::TransactionUpdated(linked_tx_id));
+        Ok(())
+    }
+
+    async fn store_payment_request(&self, req: PaymentRequest) -> Result<()> {
+        let kind = match req.direction {
+            PaymentRequestDirection::Incoming => WalletEventKind::PaymentRequestReceived,
+            PaymentRequestDirection::Outgoing => WalletEventKind::PaymentRequestUpdated,
+        };
+        let id = req.id;
+        self.payment_request_repo.add_payment_request(req).await?;
+        self.emit(kind(id));
+        Ok(())
+    }
+
+    fn emit_payment_request_transition(
+        &self,
+        payment_req_id: Uuid,
+        outcome: PaymentRequestTransitionOutcome,
+    ) {
+        if outcome == PaymentRequestTransitionOutcome::Applied {
+            self.emit(WalletEventKind::PaymentRequestUpdated(payment_req_id));
+        }
     }
 
     pub fn nostr_consumer(&self) -> Arc<dyn ConsumerApi> {
@@ -956,9 +1017,14 @@ impl Wallet {
 
     pub async fn restore_local_proofs(&self) -> Result<RestoreSummary> {
         let keysets_info = self.get_wallet_mint_keyset_infos().await?;
-        self.debit
+        let summary = self
+            .debit
             .restore_local_proofs(&keysets_info, self.client.clone())
-            .await
+            .await?;
+        if summary.restored > 0 {
+            self.emit(WalletEventKind::BalanceUpdated);
+        }
+        Ok(summary)
     }
 
     pub async fn load_tx(&self, tx_id: Uuid) -> Result<Transaction> {
@@ -967,7 +1033,10 @@ impl Wallet {
     }
 
     pub async fn edit_tx_memo(&self, tx_id: Uuid, new_memo: Option<String>) -> Result<()> {
-        let _ = self.tx_repo.update_memo(tx_id, new_memo).await?;
+        let previous = self.tx_repo.update_memo(tx_id, new_memo.clone()).await?;
+        if previous != new_memo {
+            self.emit(WalletEventKind::TransactionUpdated(tx_id));
+        }
         Ok(())
     }
 
@@ -986,8 +1055,7 @@ impl Wallet {
             .iter()
             .any(|s| matches!(s.state, cashu::State::Spent));
         if is_any_spent {
-            self.tx_repo
-                .update_status(tx_id, TransactionStatus::Settled)
+            self.update_status(tx_id, TransactionStatus::Settled)
                 .await?;
             updated = true;
         }
@@ -1282,10 +1350,13 @@ impl Wallet {
             }
         };
 
+        if amount != Amount::ZERO {
+            self.emit(WalletEventKind::BalanceUpdated);
+        }
+
         // If amount is zero - this means the transaction was already claimed - we set the transaction to Settled
         if amount == Amount::ZERO {
-            self.tx_repo
-                .update_status(tx_id, TransactionStatus::Settled)
+            self.update_status(tx_id, TransactionStatus::Settled)
                 .await?;
         } else {
             let fee = if tx.amount > amount {
@@ -1320,13 +1391,11 @@ impl Wallet {
             let reclaim_txid = self.tx_repo.store_tx(reclaim_tx).await?;
 
             // Set the initial transaction to Settled
-            self.tx_repo
-                .update_status(tx_id, TransactionStatus::Settled)
+            self.update_status(tx_id, TransactionStatus::Settled)
                 .await?;
 
             // Link the two transactions with reason Reclaim
-            self.tx_repo
-                .link_txs(tx_id, reclaim_txid, TransactionLinkReason::Reclaim)
+            self.link_txs(tx_id, reclaim_txid, TransactionLinkReason::Reclaim)
                 .await?;
         }
         if let Some(entries) = &journaled {
@@ -1469,7 +1538,7 @@ impl Wallet {
             btc_tx_id: None,
             linked_txs: vec![],
         };
-        let txid = self.tx_repo.store_tx(tx).await?;
+        let txid = self.store_tx(tx).await?;
         Ok(txid)
     }
 
@@ -1749,7 +1818,7 @@ impl Wallet {
             .send_payment_via_nostr(node_id, relays, payload)
             .await?;
         partial_tx.nostr_event_id = Some(event_id);
-        let txid = self.tx_repo.store_tx(partial_tx).await?;
+        let txid = self.store_tx(partial_tx).await?;
         Ok(txid)
     }
 
@@ -1819,9 +1888,7 @@ impl Wallet {
             tombstone: false,
         };
 
-        self.payment_request_repo
-            .add_payment_request(outgoing_payment_request)
-            .await?;
+        self.store_payment_request(outgoing_payment_request).await?;
         Ok(payment_req_id)
     }
 
@@ -1925,6 +1992,7 @@ impl Wallet {
         if outcome != PaymentRequestTransitionOutcome::Applied {
             return Err(Error::PaymentRequestInWrongState(payment_req_id));
         }
+        self.emit_payment_request_transition(payment_req_id, outcome);
         if let Some(node_id) = &req.node_id {
             self.send_payment_request_action(node_id, payload).await;
         }
@@ -2017,7 +2085,11 @@ impl Wallet {
             )
             .await?;
         tracing::info!("Applied remote payment request action for {payment_req_id}: {outcome:?}");
-        Ok(outcome.is_some())
+        let applied = outcome.is_some();
+        if let Some(outcome) = outcome {
+            self.emit_payment_request_transition(payment_req_id, outcome);
+        }
+        Ok(applied)
     }
 
     async fn resolve_relays_for_node(&self, node_id: &NodeId) -> Vec<RelayUrl> {

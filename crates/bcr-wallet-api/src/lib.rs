@@ -1,4 +1,6 @@
 use crate::config::{AppStateConfig, CreateWalletConfig};
+use crate::events::EventBus;
+pub use crate::events::{WalletEvent, WalletEventKind};
 pub use crate::external::mint::MintTimeouts;
 use crate::external::mint::{ClowderMintConnector, HttpClientExt};
 use crate::wallet::api::WalletApi;
@@ -41,6 +43,7 @@ use uuid::Uuid;
 
 pub mod config;
 pub mod error;
+mod events;
 mod external;
 mod pocket;
 mod purse;
@@ -158,6 +161,7 @@ impl AppState {
                 purse.get_contact_repo(network),
                 seed,
                 nostr_cl,
+                purse.events.clone(),
             )
             .await?;
 
@@ -191,6 +195,10 @@ impl AppState {
         self.db.clone()
     }
 
+    pub fn subscribe_events(&self) -> broadcast::Receiver<WalletEvent> {
+        self.purse.events.subscribe()
+    }
+
     //////////////////////////////////////////////////// Purse-Level API methods
     pub async fn purse_wallets_nostr_connected(&self) -> HashMap<String, bool> {
         tracing::debug!("purse_wallets_nostr_connected");
@@ -221,6 +229,7 @@ impl AppState {
             self.cfg.mint_timeouts,
             self.get_db(),
             purse.get_contact_repo(network),
+            purse.events.clone(),
         )
         .await?;
 
@@ -248,6 +257,7 @@ impl AppState {
             self.cfg.mint_timeouts,
             self.get_db(),
             purse.get_contact_repo(network),
+            purse.events.clone(),
         )
         .await?;
         let summary = wallet.read().await.restore_local_proofs().await?;
@@ -1364,6 +1374,7 @@ async fn create_new_wallet(
     mint_timeouts: MintTimeouts,
     db: Arc<Database>,
     contact_repo: Arc<dyn ContactStoreApi>,
+    events: EventBus,
 ) -> Result<Arc<RwLock<wallet::Wallet>>> {
     let seed = seed_from_mnemonic(&cfg.mnemonic);
     let keypair = keypair_from_mnemonic(&cfg.mnemonic);
@@ -1428,6 +1439,7 @@ async fn create_new_wallet(
         contact_repo,
         seed,
         nostr_cl,
+        events,
     )
     .await
 }
@@ -1442,6 +1454,7 @@ async fn build_wallet(
     contactdb: Arc<dyn ContactStoreApi>,
     seed: Seed,
     nostr_cl: Arc<nostr::Client>,
+    events: EventBus,
 ) -> Result<Arc<RwLock<wallet::Wallet>>> {
     // building wallet dbs
     let (tx_repo, debitdb, mintmeltdb, nostrdb, pending_incoming_payment_request_db) =
@@ -1502,6 +1515,7 @@ async fn build_wallet(
         nostr_event_channel,
         nostr_repo,
         Arc::new(nostr_consumer),
+        events,
     )
     .await;
 

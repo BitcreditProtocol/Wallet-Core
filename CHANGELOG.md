@@ -1,6 +1,7 @@
 # Unreleased
 
 * Nostr offsets and queued messages, payment requests and mint, melt and melt commitment records are stored as versioned borsh, encrypted where they hold secrets or message content (breaking DB change: migration 0006; a legacy row that cannot be converted moves, encrypted, to a `<table>_quarantine` table)
+* Add `wallet_subscribe_to_events`, which calls back with a `WalletEventResponse` (`wallet_id`, `WalletEventKind`, optional `id`) after a change to a wallet's balance, transactions, payment requests or the wallet list; `Resync` means events were dropped, so re-fetch everything
 
 # 0.9.17
 

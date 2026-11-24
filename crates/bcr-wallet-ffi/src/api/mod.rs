@@ -1081,6 +1081,33 @@ pub async fn wallet_subscribe_to_payment_requests(
 }
 
 #[frb]
+pub async fn wallet_subscribe_to_events(
+    result_callback: impl Fn(WalletEventResponse) -> DartFnFuture<()> + Send + Sync + 'static,
+) -> Result<WalletPaymentCheckHandle, WalletError> {
+    let app_state = get_app_state().await;
+    let mut receiver = app_state.subscribe_events();
+    let dart_callback = Arc::new(result_callback);
+
+    let cancel_token = CancellationToken::new();
+    let handle = WalletPaymentCheckHandle {
+        cancel_token: cancel_token.clone(),
+    };
+    flutter_rust_bridge::spawn(async move {
+        loop {
+            let event = tokio::select! {
+                _ = cancel_token.cancelled() => break,
+                received = receiver.recv() => match bcr_wallet_api::WalletEvent::from_recv(received) {
+                    Some(event) => event,
+                    None => break,
+                },
+            };
+            let _ = dart_callback(event.into()).await;
+        }
+    });
+    Ok(handle)
+}
+
+#[frb]
 pub async fn wallet_dev_mode_get_detailed_balance(
     req: WalletRequest,
 ) -> Result<WalletDevModeDetailedBalanceResponse, WalletError> {
@@ -1226,6 +1253,51 @@ pub struct AddWalletResponse {
 #[derive(Debug, Clone)]
 pub struct RestoreWalletResponse {
     pub wallet_id: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum WalletEventKind {
+    BalanceUpdated,
+    PaymentReceived,
+    PaymentSent,
+    PaymentRequestReceived,
+    PaymentRequestUpdated,
+    TransactionUpdated,
+    WalletsChanged,
+    Resync,
+}
+
+impl From<bcr_wallet_api::WalletEventKind> for WalletEventKind {
+    fn from(kind: bcr_wallet_api::WalletEventKind) -> Self {
+        use bcr_wallet_api::WalletEventKind as Kind;
+        match kind {
+            Kind::BalanceUpdated => Self::BalanceUpdated,
+            Kind::PaymentReceived(_) => Self::PaymentReceived,
+            Kind::PaymentSent(_) => Self::PaymentSent,
+            Kind::PaymentRequestReceived(_) => Self::PaymentRequestReceived,
+            Kind::PaymentRequestUpdated(_) => Self::PaymentRequestUpdated,
+            Kind::TransactionUpdated(_) => Self::TransactionUpdated,
+            Kind::WalletsChanged => Self::WalletsChanged,
+            Kind::Resync => Self::Resync,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletEventResponse {
+    pub wallet_id: String,
+    pub kind: WalletEventKind,
+    pub id: Option<String>,
+}
+
+impl From<bcr_wallet_api::WalletEvent> for WalletEventResponse {
+    fn from(event: bcr_wallet_api::WalletEvent) -> Self {
+        Self {
+            wallet_id: event.wallet_id,
+            kind: event.kind.into(),
+            id: event.kind.id().map(|id| id.to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

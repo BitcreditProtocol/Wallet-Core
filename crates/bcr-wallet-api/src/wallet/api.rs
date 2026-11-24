@@ -1,6 +1,7 @@
 use crate::{
     ClowderMintConnector,
     error::{Error, Result},
+    events::WalletEventKind,
     pocket::{
         RandomBetaProvider,
         debit::{MeltProtestResult, ProtestResult},
@@ -408,7 +409,7 @@ impl WalletApi for super::Wallet {
                     contact_node_id: None,
                     linked_txs: vec![],
                 };
-                let tx_id = self.tx_repo.store_tx(partial_tx).await?;
+                let tx_id = self.store_tx(partial_tx).await?;
                 Ok((tx_id, Some(token)))
             }
             WalletPaymentType::OnChain => {
@@ -439,7 +440,7 @@ impl WalletApi for super::Wallet {
                     payment_request_id: None,
                     linked_txs: vec![],
                 };
-                let tx_id = self.tx_repo.store_tx(partial_tx).await?;
+                let tx_id = self.store_tx(partial_tx).await?;
                 Ok((tx_id, None))
             }
             WalletPaymentType::PaymentRequest {
@@ -547,7 +548,7 @@ impl WalletApi for super::Wallet {
                 contact_node_id: None,
                 linked_txs: vec![],
             };
-            let tx_id = self.tx_repo.store_tx(tx).await?;
+            let tx_id = self.store_tx(tx).await?;
             res.push(tx_id);
         }
         Ok(res)
@@ -587,7 +588,7 @@ impl WalletApi for super::Wallet {
                 payment_request_id: None,
                 linked_txs: vec![],
             };
-            self.tx_repo.store_tx(tx).await?;
+            self.store_tx(tx).await?;
         }
 
         Ok(WalletProtestResult { status, result })
@@ -623,7 +624,7 @@ impl WalletApi for super::Wallet {
                 payment_request_id: None,
                 linked_txs: vec![],
             };
-            self.tx_repo.store_tx(tx).await?;
+            self.store_tx(tx).await?;
         }
 
         Ok(WalletProtestResult { status, result })
@@ -665,7 +666,7 @@ impl WalletApi for super::Wallet {
                 payment_request_id: None,
                 linked_txs: vec![],
             };
-            self.tx_repo.store_tx(tx).await?;
+            self.store_tx(tx).await?;
         }
 
         Ok(WalletProtestResult { status, result })
@@ -1043,6 +1044,7 @@ impl WalletApi for super::Wallet {
             self.nostr_event_channel.clone(),
             self.nostr_repo.clone(),
             self.nostr_consumer.clone(),
+            self.events.clone(),
         )
         .await;
         {
@@ -1301,7 +1303,7 @@ impl WalletApi for super::Wallet {
                 contact_node_id: None,
                 linked_txs: vec![],
             };
-            let tx_id = self.tx_repo.store_tx(partial_tx).await?;
+            let tx_id = self.store_tx(partial_tx).await?;
             Ok((tx_id, Some(Token::BitcrV5(token))))
         } else {
             Err(Error::NoSubstitute)
@@ -1425,9 +1427,7 @@ impl WalletApi for super::Wallet {
             history: Vec::new(),
             tombstone: false,
         };
-        self.payment_request_repo
-            .add_payment_request(outgoing_payment_request)
-            .await?;
+        self.store_payment_request(outgoing_payment_request).await?;
 
         Ok((payment_req_id, encoded_payload))
     }
@@ -1545,10 +1545,8 @@ impl WalletApi for super::Wallet {
         &self,
         pending_incoming_payment_request: PaymentRequest,
     ) -> Result<()> {
-        self.payment_request_repo
-            .add_payment_request(pending_incoming_payment_request)
-            .await?;
-        Ok(())
+        self.store_payment_request(pending_incoming_payment_request)
+            .await
     }
 
     async fn prepare_pay_payment_request(&self, payment_req_id: Uuid) -> Result<PaymentSummary> {
@@ -1617,6 +1615,7 @@ impl WalletApi for super::Wallet {
         match outcome {
             PaymentRequestTransitionOutcome::Applied => {
                 self.payment_request_paid.notify_waiters();
+                self.emit(WalletEventKind::PaymentRequestUpdated(payment_req_id));
                 Ok(())
             }
             PaymentRequestTransitionOutcome::AlreadyApplied => Ok(()),
