@@ -228,7 +228,7 @@ impl Wallet {
         Ok(())
     }
 
-    fn emit_payment_request_transition(
+    fn emit_payment_request_if_applied(
         &self,
         payment_req_id: Uuid,
         outcome: PaymentRequestTransitionOutcome,
@@ -1992,7 +1992,7 @@ impl Wallet {
         if outcome != PaymentRequestTransitionOutcome::Applied {
             return Err(Error::PaymentRequestInWrongState(payment_req_id));
         }
-        self.emit_payment_request_transition(payment_req_id, outcome);
+        self.emit_payment_request_if_applied(payment_req_id, outcome);
         if let Some(node_id) = &req.node_id {
             self.send_payment_request_action(node_id, payload).await;
         }
@@ -2087,7 +2087,7 @@ impl Wallet {
         tracing::info!("Applied remote payment request action for {payment_req_id}: {outcome:?}");
         let applied = outcome.is_some();
         if let Some(outcome) = outcome {
-            self.emit_payment_request_transition(payment_req_id, outcome);
+            self.emit_payment_request_if_applied(payment_req_id, outcome);
         }
         Ok(applied)
     }
