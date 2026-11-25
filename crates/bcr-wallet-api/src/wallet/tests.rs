@@ -116,6 +116,7 @@ struct MockWalletCtx {
     pub nostr_transport: MockTransport,
     pub nostr_event_channel: NostrEventChannel,
     pub nostr_consumer: MockConsumer,
+    pub events: crate::events::EventBus,
 }
 
 fn wallet_ctx() -> MockWalletCtx {
@@ -131,6 +132,7 @@ fn wallet_ctx() -> MockWalletCtx {
         nostr_transport: MockTransport::new(),
         nostr_event_channel: NostrEventChannel::new(),
         nostr_consumer: MockConsumer::new(),
+        events: Default::default(),
     }
 }
 
@@ -179,6 +181,7 @@ async fn wallet_with_debit(
         ctx.nostr_event_channel,
         Arc::new(ctx.nostr_repo),
         Arc::new(ctx.nostr_consumer),
+        ctx.events,
     )
     .await
 }
@@ -6391,6 +6394,7 @@ impl SwapFixture {
                 old.clone(),
             )]))),
             swap_guards: Default::default(),
+            events: Default::default(),
         });
         old.read().await.start_nostr_listener(None).await;
         Self {
@@ -6620,6 +6624,7 @@ impl RealProofs {
             contact_repos: HashMap::new(),
             wallets: Arc::new(RwLock::new(HashMap::from([("w-1".to_owned(), wlt)]))),
             swap_guards: Default::default(),
+            events: Default::default(),
         });
         Self { purse, journal }
     }
@@ -6631,4 +6636,134 @@ impl RealProofs {
     pub(crate) fn pause_before_proofs_are_marked_swapped(&self) -> JournalPause {
         pause(&self.journal.before_swapped)
     }
+}
+
+fn drain_events(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::WalletEvent>,
+) -> Vec<crate::WalletEventKind> {
+    std::iter::from_fn(|| rx.try_recv().ok())
+        .map(|e| e.kind)
+        .collect()
+}
+
+fn events_receive_ctx() -> MockWalletCtx {
+    let mut ctx = wallet_ctx();
+    ctx.client
+        .expect_get_mint_keysets()
+        .returning(|| Ok(vec![]));
+    ctx.client
+        .expect_mint_url()
+        .return_const(url::Url::from_str("https://mint.example").unwrap());
+    ctx.debit.expect_unit().returning(|| CurrencyUnit::Sat);
+    ctx.debit
+        .expect_receive_proofs()
+        .returning(|_, _, _, _| Ok((Amount::ZERO, vec![test_cashu_pubkey(10)])));
+    ctx
+}
+
+async fn events_receive(wlt: &Arc<RwLock<Wallet>>) -> Result<Uuid> {
+    wlt.read()
+        .await
+        .receive_proofs(
+            vec![],
+            CurrencyUnit::Sat,
+            url::Url::from_str("https://mint.example").unwrap(),
+            123,
+            None,
+            PaymentType::Token,
+            TransactionStatus::Settled,
+            None,
+            None,
+            None,
+        )
+        .await
+}
+
+#[tokio::test]
+async fn events_receive_emits_payment_received_and_balance_updated() {
+    use crate::WalletEventKind::*;
+    let mut ctx = events_receive_ctx();
+    ctx.tx_repo
+        .expect_store_tx()
+        .times(1)
+        .returning(|tx| Ok(tx.id));
+    let mut rx = ctx.events.subscribe();
+    let wlt = wallet(ctx).await;
+
+    let tx_id = events_receive(&wlt).await.unwrap();
+
+    assert_eq!(
+        drain_events(&mut rx),
+        vec![PaymentReceived(tx_id), BalanceUpdated]
+    );
+}
+
+#[tokio::test]
+async fn events_unchanged_refresh_emits_nothing_extra() {
+    use crate::WalletEventKind::*;
+    let mut ctx = wallet_ctx();
+    ctx.journal.expect_load().returning(|| Ok(HashMap::new()));
+    let tx = reclaimable_tx(Amount::from(10));
+    let tx_id = tx.id;
+    ctx.tx_repo
+        .expect_load_tx()
+        .returning(move |_| Ok(tx.clone()));
+    ctx.client.expect_post_check_state().returning(|_| {
+        Ok(vec![cashu::ProofState {
+            y: test_cashu_pubkey(10),
+            state: cashu::State::Spent,
+            witness: None,
+        }])
+    });
+    let mut previous = vec![
+        Some(TransactionStatus::Pending),
+        Some(TransactionStatus::Settled),
+    ]
+    .into_iter();
+    ctx.tx_repo
+        .expect_update_status()
+        .returning(move |_, _| Ok(previous.next().unwrap()));
+    let mut rx = ctx.events.subscribe();
+    let wlt = wallet(ctx).await;
+
+    wlt.read().await.refresh_tx(tx_id).await.unwrap();
+    assert_eq!(
+        drain_events(&mut rx),
+        vec![TransactionUpdated(tx_id), BalanceUpdated]
+    );
+
+    wlt.read().await.refresh_tx(tx_id).await.unwrap();
+    assert!(drain_events(&mut rx).is_empty());
+}
+
+#[tokio::test]
+async fn events_reclaim_of_a_settled_original_still_emits_balance() {
+    let mut ctx = wallet_ctx();
+    ctx.journal.expect_load().returning(|| Ok(HashMap::new()));
+    let tx = reclaimable_tx(Amount::from(10));
+    let tx_id = tx.id;
+    ctx.client
+        .expect_get_mint_keysets()
+        .returning(|| Ok(vec![]));
+    ctx.client
+        .expect_post_check_state()
+        .returning(|_| Ok(vec![]));
+    ctx.tx_repo
+        .expect_load_tx()
+        .returning(move |_| Ok(tx.clone()));
+    ctx.tx_repo.expect_store_tx().returning(|t| Ok(t.id));
+    ctx.debit.expect_unit().returning(|| CurrencyUnit::Sat);
+    ctx.debit
+        .expect_reclaim_proofs()
+        .returning(|_, _, _, _| Ok(Amount::from(7)));
+    ctx.tx_repo
+        .expect_update_status()
+        .returning(|_, _| Ok(Some(TransactionStatus::Settled)));
+    ctx.tx_repo.expect_link_txs().returning(|_, _, _| Ok(()));
+    let mut rx = ctx.events.subscribe();
+    let wlt = wallet(ctx).await;
+
+    wlt.read().await.reclaim_tx(tx_id).await.unwrap();
+
+    assert!(drain_events(&mut rx).contains(&crate::WalletEventKind::BalanceUpdated));
 }

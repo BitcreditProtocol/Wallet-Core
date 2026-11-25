@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1857723457;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1836714199;
 
 // Section: executor
 
@@ -2808,6 +2808,46 @@ fn wire__crate__api__wallet_set_dev_mode_impl(
         },
     )
 }
+fn wire__crate__api__wallet_subscribe_to_events_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "wallet_subscribe_to_events",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_result_callback =
+                decode_DartFn_Inputs_wallet_event_response_Output_unit_AnyhowException(
+                    <flutter_rust_bridge::DartOpaque>::sse_decode(&mut deserializer),
+                );
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::WalletError>(
+                    (move || async move {
+                        let output_ok =
+                            crate::api::wallet_subscribe_to_events(api_result_callback).await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__wallet_subscribe_to_payment_requests_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -2827,6 +2867,41 @@ let api_result_callback = decode_DartFn_Inputs_wallet_pending_payment_request_re
 
 // Section: related_funcs
 
+fn decode_DartFn_Inputs_wallet_event_response_Output_unit_AnyhowException(
+    dart_opaque: flutter_rust_bridge::DartOpaque,
+) -> impl Fn(crate::api::WalletEventResponse) -> flutter_rust_bridge::DartFnFuture<()> {
+    use flutter_rust_bridge::IntoDart;
+
+    async fn body(
+        dart_opaque: flutter_rust_bridge::DartOpaque,
+        arg0: crate::api::WalletEventResponse,
+    ) -> () {
+        let args = vec![arg0.into_into_dart().into_dart()];
+        let message = FLUTTER_RUST_BRIDGE_HANDLER
+            .dart_fn_invoke(dart_opaque, args)
+            .await;
+
+        let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+        let action = deserializer.cursor.read_u8().unwrap();
+        let ans = match action {
+            0 => std::result::Result::Ok(<()>::sse_decode(&mut deserializer)),
+            1 => std::result::Result::Err(
+                <flutter_rust_bridge::for_generated::anyhow::Error>::sse_decode(&mut deserializer),
+            ),
+            _ => unreachable!(),
+        };
+        deserializer.end();
+        let ans = ans.expect("Dart throws exception but Rust side assume it is not failable");
+        ans
+    }
+
+    move |arg0: crate::api::WalletEventResponse| {
+        flutter_rust_bridge::for_generated::convert_into_dart_fn_future(body(
+            dart_opaque.clone(),
+            arg0,
+        ))
+    }
+}
 fn decode_DartFn_Inputs_wallet_maybe_transaction_id_response_Output_unit_AnyhowException(
     dart_opaque: flutter_rust_bridge::DartOpaque,
 ) -> impl Fn(crate::api::WalletMaybeTransactionIdResponse) -> flutter_rust_bridge::DartFnFuture<()>
@@ -4247,6 +4322,38 @@ impl SseDecode for crate::api::WalletEstimateMeltResponse {
     }
 }
 
+impl SseDecode for crate::api::WalletEventKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::WalletEventKind::BalanceUpdated,
+            1 => crate::api::WalletEventKind::PaymentReceived,
+            2 => crate::api::WalletEventKind::PaymentSent,
+            3 => crate::api::WalletEventKind::PaymentRequestReceived,
+            4 => crate::api::WalletEventKind::PaymentRequestUpdated,
+            5 => crate::api::WalletEventKind::TransactionUpdated,
+            6 => crate::api::WalletEventKind::WalletsChanged,
+            7 => crate::api::WalletEventKind::Resync,
+            _ => unreachable!("Invalid variant for WalletEventKind: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::WalletEventResponse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_walletId = <String>::sse_decode(deserializer);
+        let mut var_kind = <crate::api::WalletEventKind>::sse_decode(deserializer);
+        let mut var_id = <Option<String>>::sse_decode(deserializer);
+        return crate::api::WalletEventResponse {
+            wallet_id: var_walletId,
+            kind: var_kind,
+            id: var_id,
+        };
+    }
+}
+
 impl SseDecode for crate::api::WalletFfiConfig {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -5074,7 +5181,8 @@ fn pde_ffi_dispatcher_primary_impl(
         ),
         76 => wire__crate__api__wallet_restore_impl(port, ptr, rust_vec_len, data_len),
         77 => wire__crate__api__wallet_set_dev_mode_impl(port, ptr, rust_vec_len, data_len),
-        78 => wire__crate__api__wallet_subscribe_to_payment_requests_impl(
+        78 => wire__crate__api__wallet_subscribe_to_events_impl(port, ptr, rust_vec_len, data_len),
+        79 => wire__crate__api__wallet_subscribe_to_payment_requests_impl(
             port,
             ptr,
             rust_vec_len,
@@ -6436,6 +6544,52 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletEstimateMeltResponse>
     for crate::api::WalletEstimateMeltResponse
 {
     fn into_into_dart(self) -> crate::api::WalletEstimateMeltResponse {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::WalletEventKind {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::BalanceUpdated => 0.into_dart(),
+            Self::PaymentReceived => 1.into_dart(),
+            Self::PaymentSent => 2.into_dart(),
+            Self::PaymentRequestReceived => 3.into_dart(),
+            Self::PaymentRequestUpdated => 4.into_dart(),
+            Self::TransactionUpdated => 5.into_dart(),
+            Self::WalletsChanged => 6.into_dart(),
+            Self::Resync => 7.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::WalletEventKind {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletEventKind>
+    for crate::api::WalletEventKind
+{
+    fn into_into_dart(self) -> crate::api::WalletEventKind {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::WalletEventResponse {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.wallet_id.into_into_dart().into_dart(),
+            self.kind.into_into_dart().into_dart(),
+            self.id.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::WalletEventResponse
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::WalletEventResponse>
+    for crate::api::WalletEventResponse
+{
+    fn into_into_dart(self) -> crate::api::WalletEventResponse {
         self
     }
 }
@@ -8625,6 +8779,37 @@ impl SseEncode for crate::api::WalletEstimateMeltResponse {
         <Vec<crate::api::WalletEstimateMeltFeeRate>>::sse_encode(self.fee_rates, serializer);
         <u64>::sse_encode(self.melt_fee, serializer);
         <u64>::sse_encode(self.melt_fee_ppk, serializer);
+    }
+}
+
+impl SseEncode for crate::api::WalletEventKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::WalletEventKind::BalanceUpdated => 0,
+                crate::api::WalletEventKind::PaymentReceived => 1,
+                crate::api::WalletEventKind::PaymentSent => 2,
+                crate::api::WalletEventKind::PaymentRequestReceived => 3,
+                crate::api::WalletEventKind::PaymentRequestUpdated => 4,
+                crate::api::WalletEventKind::TransactionUpdated => 5,
+                crate::api::WalletEventKind::WalletsChanged => 6,
+                crate::api::WalletEventKind::Resync => 7,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::WalletEventResponse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.wallet_id, serializer);
+        <crate::api::WalletEventKind>::sse_encode(self.kind, serializer);
+        <Option<String>>::sse_encode(self.id, serializer);
     }
 }
 

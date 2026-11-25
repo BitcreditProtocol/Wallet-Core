@@ -4,11 +4,14 @@
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
 import 'api.dart';
+
 import 'dart:async';
 import 'dart:convert';
+
 import 'frb_generated.dart';
 import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 /// Main entrypoint of the Rust API
@@ -66,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1857723457;
+  int get rustContentHash => 1836714199;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -362,6 +365,10 @@ abstract class RustLibApi extends BaseApi {
 
   Future<SetDevModeResponse> crateApiWalletSetDevMode({
     required SetDevModeRequest req,
+  });
+
+  Future<WalletPaymentCheckHandle> crateApiWalletSubscribeToEvents({
+    required FutureOr<void> Function(WalletEventResponse) resultCallback,
   });
 
   Future<WalletPaymentCheckHandle> crateApiWalletSubscribeToPaymentRequests({
@@ -2862,6 +2869,43 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "wallet_set_dev_mode", argNames: ["req"]);
 
   @override
+  Future<WalletPaymentCheckHandle> crateApiWalletSubscribeToEvents({
+    required FutureOr<void> Function(WalletEventResponse) resultCallback,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_DartFn_Inputs_wallet_event_response_Output_unit_AnyhowException(
+            resultCallback,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 78,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerWalletPaymentCheckHandle,
+          decodeErrorData: sse_decode_wallet_error,
+        ),
+        constMeta: kCrateApiWalletSubscribeToEventsConstMeta,
+        argValues: [resultCallback],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiWalletSubscribeToEventsConstMeta =>
+      const TaskConstMeta(
+        debugName: "wallet_subscribe_to_events",
+        argNames: ["resultCallback"],
+      );
+
+  @override
   Future<WalletPaymentCheckHandle> crateApiWalletSubscribeToPaymentRequests({
     required WalletSubscribeToPaymentRequestsRequest req,
     required FutureOr<void> Function(WalletPendingPaymentRequestResponse)
@@ -2882,7 +2926,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 78,
+            funcId: 79,
             port: port_,
           );
         },
@@ -2903,6 +2947,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         debugName: "wallet_subscribe_to_payment_requests",
         argNames: ["req", "resultCallback"],
       );
+
+  Future<void> Function(int, dynamic)
+  encode_DartFn_Inputs_wallet_event_response_Output_unit_AnyhowException(
+    FutureOr<void> Function(WalletEventResponse) raw,
+  ) {
+    return (callId, rawArg0) async {
+      final arg0 = dco_decode_wallet_event_response(rawArg0);
+
+      Box<void>? rawOutput;
+      Box<AnyhowException>? rawError;
+      try {
+        rawOutput = Box(await raw(arg0));
+      } catch (e, s) {
+        rawError = Box(AnyhowException("$e\n\n$s"));
+      }
+
+      final serializer = SseSerializer(generalizedFrbRustBinding);
+      assert((rawOutput != null) ^ (rawError != null));
+      if (rawOutput != null) {
+        serializer.buffer.putUint8(0);
+        sse_encode_unit(rawOutput.value, serializer);
+      } else {
+        serializer.buffer.putUint8(1);
+        sse_encode_AnyhowException(rawError!.value, serializer);
+      }
+      final output = serializer.intoRaw();
+
+      generalizedFrbRustBinding.dartFnDeliverOutput(
+        callId: callId,
+        ptr: output.ptr,
+        rustVecLen: output.rustVecLen,
+        dataLen: output.dataLen,
+      );
+    };
+  }
 
   Future<void> Function(int, dynamic)
   encode_DartFn_Inputs_wallet_maybe_transaction_id_response_Output_unit_AnyhowException(
@@ -3011,6 +3090,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  FutureOr<void> Function(WalletEventResponse)
+  dco_decode_DartFn_Inputs_wallet_event_response_Output_unit_AnyhowException(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    throw UnimplementedError('');
+  }
+
+  @protected
   FutureOr<void> Function(WalletMaybeTransactionIdResponse)
   dco_decode_DartFn_Inputs_wallet_maybe_transaction_id_response_Output_unit_AnyhowException(
     dynamic raw,
@@ -3038,9 +3126,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Map<String, String> dco_decode_Map_String_String_None(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return Map.fromEntries(
-      dco_decode_list_record_string_string(
-        raw,
-      ).map((e) => MapEntry(e.$1, e.$2)),
+      dco_decode_list_record_string_string(raw)
+          .map((e) => MapEntry(e.$1, e.$2)),
     );
   }
 
@@ -4390,6 +4477,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       feeRates: dco_decode_list_wallet_estimate_melt_fee_rate(arr[1]),
       meltFee: dco_decode_u_64(arr[2]),
       meltFeePpk: dco_decode_u_64(arr[3]),
+    );
+  }
+
+  @protected
+  WalletEventKind dco_decode_wallet_event_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return WalletEventKind.values[raw as int];
+  }
+
+  @protected
+  WalletEventResponse dco_decode_wallet_event_response(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return WalletEventResponse(
+      walletId: dco_decode_String(arr[0]),
+      kind: dco_decode_wallet_event_kind(arr[1]),
+      id: dco_decode_opt_String(arr[2]),
     );
   }
 
@@ -6760,6 +6866,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  WalletEventKind sse_decode_wallet_event_kind(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return WalletEventKind.values[inner];
+  }
+
+  @protected
+  WalletEventResponse sse_decode_wallet_event_response(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_walletId = sse_decode_String(deserializer);
+    var var_kind = sse_decode_wallet_event_kind(deserializer);
+    var var_id = sse_decode_opt_String(deserializer);
+    return WalletEventResponse(
+      walletId: var_walletId,
+      kind: var_kind,
+      id: var_id,
+    );
+  }
+
+  @protected
   WalletFfiConfig sse_decode_wallet_ffi_config(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_dbFolderPath = sse_decode_String(deserializer);
@@ -7479,6 +7607,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as WalletPaymentCheckHandleImpl).frbInternalSseEncode(move: false),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_DartFn_Inputs_wallet_event_response_Output_unit_AnyhowException(
+    FutureOr<void> Function(WalletEventResponse) self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_DartOpaque(
+      encode_DartFn_Inputs_wallet_event_response_Output_unit_AnyhowException(
+        self,
+      ),
       serializer,
     );
   }
@@ -8985,6 +9128,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_wallet_estimate_melt_fee_rate(self.feeRates, serializer);
     sse_encode_u_64(self.meltFee, serializer);
     sse_encode_u_64(self.meltFeePpk, serializer);
+  }
+
+  @protected
+  void sse_encode_wallet_event_kind(
+    WalletEventKind self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_wallet_event_response(
+    WalletEventResponse self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.walletId, serializer);
+    sse_encode_wallet_event_kind(self.kind, serializer);
+    sse_encode_opt_String(self.id, serializer);
   }
 
   @protected

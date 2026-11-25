@@ -947,6 +947,29 @@ fn format_payment_request(target: &str, name: &str, amount: u64) -> String {
     res
 }
 
+pub async fn cmd_events(app_state: &AppState, seconds: u64) -> Result<String> {
+    let mut rx = app_state.subscribe_events();
+    let deadline = tokio::time::sleep(tokio::time::Duration::from_secs(seconds));
+    tokio::pin!(deadline);
+    let mut count = 0usize;
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            ev = rx.recv() => match ev {
+                Ok(ev) => {
+                    count += 1;
+                    println!("event: wallet={} kind={:?}", ev.wallet_id, ev.kind);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    println!("event: lagged, {n} events missed");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            },
+        }
+    }
+    Ok(format!("{count} event(s) received in {seconds}s"))
+}
+
 pub async fn cmd_subscribe_to_prs(app_state: &AppState, _name: &str, id: &str) -> Result<String> {
     let mut res = String::new();
     let cancel_token = CancellationToken::new();
