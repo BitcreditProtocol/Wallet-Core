@@ -1111,6 +1111,28 @@ impl AppState {
         wallet.read().await.handle_push(event_id).await
     }
 
+    // Registers or replaces the wallet's device token at the relay
+    pub async fn wallet_register_push_token(
+        &self,
+        wallet_id: String,
+        request: bcr_wallet_transport::push::DeviceRequest,
+    ) -> Result<()> {
+        tracing::debug!("wallet_register_push_token({wallet_id})");
+        let wallet = self.held_wallet(&wallet_id).await?;
+        wallet.read().await.register_push_token(request).await
+    }
+
+    // Removes the wallet's device token from the relay
+    pub async fn wallet_unregister_push_token(
+        &self,
+        wallet_id: String,
+        request: bcr_wallet_transport::push::DeviceRequest,
+    ) -> Result<()> {
+        tracing::debug!("wallet_unregister_push_token({wallet_id})");
+        let wallet = self.held_wallet(&wallet_id).await?;
+        wallet.read().await.unregister_push_token(request).await
+    }
+
     // Refreshes the state of all pending transactions of the given wallet
     pub async fn wallet_refresh_txs(&self, wallet_id: String) -> Result<usize> {
         tracing::debug!("wallet_refresh_txs({wallet_id})");

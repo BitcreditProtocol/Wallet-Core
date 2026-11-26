@@ -1,4 +1,7 @@
-use crate::error::Result;
+use crate::{
+    error::Result,
+    push::{DeviceMethod, DeviceRequest},
+};
 use ::nostr::{
     event::EventId,
     key::PublicKey,
@@ -45,6 +48,9 @@ pub trait TransportApi: SendSync {
         &self,
         since: Timestamp,
     ) -> Result<Vec<(Timestamp, NostrWalletEvent)>>;
+    /// Sends one request signed with the wallet's Nostr key to the relay's push endpoint.
+    async fn send_device_request(&self, method: DeviceMethod, request: DeviceRequest)
+    -> Result<()>;
 }
 
 #[async_trait]

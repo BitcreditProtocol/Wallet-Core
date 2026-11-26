@@ -1,6 +1,10 @@
 pub mod tests {
     use async_trait::async_trait;
-    use bcr_wallet_transport::{ConsumerApi, NostrWalletEvent, TransportApi, error::Result};
+    use bcr_wallet_transport::{
+        ConsumerApi, NostrWalletEvent, TransportApi,
+        error::Result,
+        push::{DeviceMethod, DeviceRequest},
+    };
     use nostr::{
         event::EventId,
         key::PublicKey,
@@ -31,6 +35,11 @@ pub mod tests {
                 &self,
                 since: Timestamp,
             ) -> Result<Vec<(Timestamp, NostrWalletEvent)>>;
+            async fn send_device_request(
+                &self,
+                method: DeviceMethod,
+                request: DeviceRequest,
+            ) -> Result<()>;
         }
     }
 

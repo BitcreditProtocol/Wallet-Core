@@ -6925,3 +6925,31 @@ async fn handle_push_releases_claim_when_reclaim_fails() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn push_registration_puts_and_deletes_the_device_token() {
+    use bcr_wallet_transport::push::{DeviceMethod, DeviceRequest, Platform};
+
+    let request = DeviceRequest {
+        platform: Platform::Android,
+        token: "fcm-token".to_string(),
+    };
+    let mut ctx = wallet_ctx();
+    let expected = request.clone();
+    ctx.nostr_transport
+        .expect_send_device_request()
+        .withf(move |method, req| *method == DeviceMethod::Put && *req == expected)
+        .times(1)
+        .returning(|_, _| Ok(()));
+    let expected = request.clone();
+    ctx.nostr_transport
+        .expect_send_device_request()
+        .withf(move |method, req| *method == DeviceMethod::Delete && *req == expected)
+        .times(1)
+        .returning(|_, _| Ok(()));
+
+    let wlt = wallet(ctx).await;
+    let wlt = wlt.read().await;
+    wlt.register_push_token(request.clone()).await.unwrap();
+    wlt.unregister_push_token(request).await.unwrap();
+}
