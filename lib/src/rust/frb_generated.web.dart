@@ -111,6 +111,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   GetContactRequest dco_decode_box_autoadd_get_contact_request(dynamic raw);
 
   @protected
+  HandlePushRequest dco_decode_box_autoadd_handle_push_request(dynamic raw);
+
+  @protected
   IsValidTokenRequest dco_decode_box_autoadd_is_valid_token_request(
     dynamic raw,
   );
@@ -167,11 +170,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletGetPaymentRequestRequest
   dco_decode_box_autoadd_wallet_get_payment_request_request(dynamic raw);
-
-  @protected
-  WalletHandlePushRequest dco_decode_box_autoadd_wallet_handle_push_request(
-    dynamic raw,
-  );
 
   @protected
   WalletIdForMnemonicAndNetworkRequest
@@ -338,6 +336,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   GetContactResponse dco_decode_get_contact_response(dynamic raw);
+
+  @protected
+  HandlePushRequest dco_decode_handle_push_request(dynamic raw);
 
   @protected
   int dco_decode_i_32(dynamic raw);
@@ -629,9 +630,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletGetPaymentRequestResponse
   dco_decode_wallet_get_payment_request_response(dynamic raw);
-
-  @protected
-  WalletHandlePushRequest dco_decode_wallet_handle_push_request(dynamic raw);
 
   @protected
   WalletIdForMnemonicAndNetworkRequest
@@ -933,6 +931,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  HandlePushRequest sse_decode_box_autoadd_handle_push_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   IsValidTokenRequest sse_decode_box_autoadd_is_valid_token_request(
     SseDeserializer deserializer,
   );
@@ -1005,11 +1008,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletGetPaymentRequestRequest
   sse_decode_box_autoadd_wallet_get_payment_request_request(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  WalletHandlePushRequest sse_decode_box_autoadd_wallet_handle_push_request(
     SseDeserializer deserializer,
   );
 
@@ -1226,6 +1224,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   GetContactResponse sse_decode_get_contact_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  HandlePushRequest sse_decode_handle_push_request(
     SseDeserializer deserializer,
   );
 
@@ -1589,11 +1592,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   WalletGetPaymentRequestResponse
   sse_decode_wallet_get_payment_request_response(SseDeserializer deserializer);
-
-  @protected
-  WalletHandlePushRequest sse_decode_wallet_handle_push_request(
-    SseDeserializer deserializer,
-  );
 
   @protected
   WalletIdForMnemonicAndNetworkRequest
@@ -1997,6 +1995,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_handle_push_request(
+    HandlePushRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_is_valid_token_request(
     IsValidTokenRequest self,
     SseSerializer serializer,
@@ -2080,12 +2084,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_wallet_get_payment_request_request(
     WalletGetPaymentRequestRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_wallet_handle_push_request(
-    WalletHandlePushRequest self,
     SseSerializer serializer,
   );
 
@@ -2323,6 +2321,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_get_contact_response(
     GetContactResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_handle_push_request(
+    HandlePushRequest self,
     SseSerializer serializer,
   );
 
@@ -2785,12 +2789,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_get_payment_request_response(
     WalletGetPaymentRequestResponse self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_wallet_handle_push_request(
-    WalletHandlePushRequest self,
     SseSerializer serializer,
   );
 

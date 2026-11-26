@@ -326,12 +326,10 @@ pub async fn wallet_delete(req: WalletRequest) -> Result<(), WalletError> {
 }
 
 #[frb]
-pub async fn wallet_handle_push(req: WalletHandlePushRequest) -> Result<(), WalletError> {
-    let event_id = parse_push_event_id(&req.event_id)?;
+pub async fn handle_push(req: HandlePushRequest) -> Result<(), WalletError> {
+    let payload = req.payload()?;
     let app_state = get_app_state().await;
-    app_state
-        .wallet_handle_push(req.wallet_id, event_id)
-        .await?;
+    app_state.handle_push(payload).await?;
     Ok(())
 }
 
@@ -1338,9 +1336,33 @@ pub struct WalletRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct WalletHandlePushRequest {
-    pub wallet_id: String,
+pub struct HandlePushRequest {
     pub event_id: String,
+    pub recipient: String,
+    pub relay_url: String,
+    pub kind: String,
+}
+
+impl HandlePushRequest {
+    fn payload(&self) -> Result<bcr_wallet_transport::push::PushPayload, WalletError> {
+        let invalid = |field: &str, e: String| {
+            WalletError::bad_request(
+                format!("invalid push {field}: {e}"),
+                WalletErrorCode::InvalidEventId,
+            )
+        };
+        Ok(bcr_wallet_transport::push::PushPayload {
+            event_id: nostr::event::EventId::parse(&self.event_id)
+                .map_err(|e| invalid("event id", e.to_string()))?,
+            recipient: nostr::key::PublicKey::parse(&self.recipient)
+                .map_err(|e| invalid("recipient", e.to_string()))?,
+            relay_url: self.relay_url.clone(),
+            kind: self
+                .kind
+                .parse()
+                .map_err(|e: std::num::ParseIntError| invalid("kind", e.to_string()))?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1366,15 +1388,6 @@ impl WalletPushTokenRequest {
             token: self.token.clone(),
         }
     }
-}
-
-fn parse_push_event_id(event_id: &str) -> Result<nostr::event::EventId, WalletError> {
-    nostr::event::EventId::parse(event_id).map_err(|e| {
-        WalletError::bad_request(
-            format!("invalid push event id: {e}"),
-            WalletErrorCode::InvalidEventId,
-        )
-    })
 }
 
 #[derive(Debug, Clone)]
@@ -2685,6 +2698,7 @@ pub enum WalletErrorCode {
     InvalidTransactionId,
     InvalidCursor,
     InvalidEventId,
+    PushedEventNotFound,
     SortMismatch,
     MnemonicNotFound,
     WalletUniqueName,
@@ -2876,6 +2890,9 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::SchnorrSignature(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Database(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Transport(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::PushedEventNotFound(_) => {
+                WalletError::not_found(value.to_string(), WalletErrorCode::PushedEventNotFound)
+            }
             BcrWalletError::Swap(_) => WalletError::internal(value.to_string()),
             BcrWalletError::NoBetas => WalletError::internal(value.to_string()),
             BcrWalletError::NoDevMode => {
@@ -2952,18 +2969,36 @@ mod tests {
     use bcr_wallet_transport::push::Platform;
 
     const EVENT_ID: &str = "6a3b4a0ab5fe1e3f1d6c0f3a0f4e0c2a9d1b8e7f6a5c4b3d2e1f0a9b8c7d6e5f";
+    const RECIPIENT: &str = "17162c921dc4d2518f9a101db33695df1afb56ab82f5ff3e5da6eec3ca5cd917";
 
-    #[test]
-    fn push_event_id_accepts_hex() {
-        let id = parse_push_event_id(EVENT_ID).unwrap();
-        assert_eq!(id.to_hex(), EVENT_ID);
+    fn push_request(event_id: &str, recipient: &str, kind: &str) -> HandlePushRequest {
+        HandlePushRequest {
+            event_id: event_id.into(),
+            recipient: recipient.into(),
+            relay_url: "wss://relay.example.com".into(),
+            kind: kind.into(),
+        }
     }
 
     #[test]
-    fn push_event_id_rejects_garbage_as_bad_request() {
-        let err = parse_push_event_id("not-an-event-id").unwrap_err();
-        assert!(matches!(err.kind, WalletErrorKind::BadRequest));
-        assert!(matches!(err.code, WalletErrorCode::InvalidEventId));
+    fn push_request_accepts_the_relay_data_fields() {
+        let payload = push_request(EVENT_ID, RECIPIENT, "1059").payload().unwrap();
+        assert_eq!(payload.event_id.to_hex(), EVENT_ID);
+        assert_eq!(payload.recipient.to_hex(), RECIPIENT);
+        assert_eq!(payload.kind, 1059);
+    }
+
+    #[test]
+    fn push_request_rejects_garbage_as_bad_request() {
+        for request in [
+            push_request("not-an-event-id", RECIPIENT, "1059"),
+            push_request(EVENT_ID, "not-a-key", "1059"),
+            push_request(EVENT_ID, RECIPIENT, "gift-wrap"),
+        ] {
+            let err = request.payload().unwrap_err();
+            assert!(matches!(err.kind, WalletErrorKind::BadRequest));
+            assert!(matches!(err.code, WalletErrorCode::InvalidEventId));
+        }
     }
 
     #[test]

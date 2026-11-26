@@ -150,6 +150,8 @@ pub enum Error {
     Database(#[from] bcr_wallet_persistence::error::Error),
     #[error("Transport Error: {0}")]
     Transport(#[from] bcr_wallet_transport::error::Error),
+    #[error("Pushed event {0} not found on the wallet's relays")]
+    PushedEventNotFound(nostr::event::EventId),
     #[error("migration incomplete: {0} alpha proofs not migrated yet")]
     MigrationIncomplete(usize),
     #[error("transaction {0} is only partly in the migration journal")]

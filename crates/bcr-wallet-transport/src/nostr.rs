@@ -99,6 +99,10 @@ impl Client {
         self.signer.clone()
     }
 
+    fn push_timeout(&self) -> Duration {
+        self.default_timeout * 10
+    }
+
     async fn update_relays(&self, target_relays: HashSet<RelayUrl>) -> Result<()> {
         let client = &self.client;
 
@@ -124,6 +128,17 @@ impl Client {
         order: Option<SortOrder>,
         relays: Option<Vec<RelayUrl>>,
     ) -> Result<Vec<Event>> {
+        self.fetch_events_within(filter, order, relays, self.default_timeout)
+            .await
+    }
+
+    async fn fetch_events_within(
+        &self,
+        filter: Filter,
+        order: Option<SortOrder>,
+        relays: Option<Vec<RelayUrl>>,
+        timeout: Duration,
+    ) -> Result<Vec<Event>> {
         if let Some(ref r) = relays {
             // refresh relays to match target set
             self.update_relays(r.iter().cloned().collect()).await?;
@@ -144,7 +159,7 @@ impl Client {
             .client()
             .await?
             .fetch_events(target)
-            .timeout(self.default_timeout)
+            .timeout(timeout)
             .await
             .map_err(|e| {
                 tracing::error!("Failed to fetch Nostr events: {e}");
@@ -389,46 +404,30 @@ impl TransportApi for Transport {
         self.client.fetch_relay_list(npub, relays).await
     }
 
-    async fn fetch_wallet_event(
-        &self,
-        event_id: EventId,
-    ) -> Result<Option<(Timestamp, NostrWalletEvent)>> {
-        let filter = Filter::new().id(event_id).kind(Kind::GiftWrap);
-        let events = self.client.fetch_events(filter, None, None).await?;
-        let signer = self.client.signer();
-        for event in events {
-            if event.id != event_id {
-                continue;
-            }
-            return Ok(decode_nip17_direct_message(&event, &signer)
-                .await?
-                .map(|wallet_event| (event.created_at, wallet_event)));
-        }
-        Ok(None)
+    async fn fetch_gift_wraps(&self, ids: Vec<EventId>) -> Result<Vec<Event>> {
+        let filter = Filter::new().ids(ids).kind(Kind::GiftWrap);
+        self.client
+            .fetch_events_within(filter, None, None, self.client.push_timeout())
+            .await
     }
 
-    async fn fetch_wallet_events_since(
-        &self,
-        since: Timestamp,
-    ) -> Result<Vec<(Timestamp, NostrWalletEvent)>> {
+    async fn fetch_gift_wraps_since(&self, since: Timestamp) -> Result<Vec<Event>> {
         let filter = Filter::new()
             .kind(Kind::GiftWrap)
             .pubkey(self.client.signer().public_key())
             .since(since);
-        let events = self
-            .client
-            .fetch_events(filter, Some(SortOrder::Asc), None)
-            .await?;
-        let signer = self.client.signer();
-        let mut decoded = Vec::new();
-        for event in events {
-            match decode_nip17_direct_message(&event, &signer).await {
-                Ok(Some(wallet_event)) => decoded.push((event.created_at, wallet_event)),
-                Ok(None) => {}
-                Err(e) => tracing::warn!("Could not decode gift wrap {}: {e}", event.id),
-            }
-        }
-        Ok(decoded)
+        self.client
+            .fetch_events_within(
+                filter,
+                Some(SortOrder::Asc),
+                None,
+                self.client.push_timeout(),
+            )
+            .await
+    }
+
+    async fn decode_gift_wrap(&self, event: &Event) -> Result<Option<NostrWalletEvent>> {
+        decode_nip17_direct_message(event, &self.client.signer()).await
     }
 
     async fn send_device_request(
@@ -490,7 +489,7 @@ impl Transport {
             .header(reqwest::header::AUTHORIZATION, signed.authorization)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(signed.body)
-            .timeout(self.client.default_timeout * 10)
+            .timeout(self.client.push_timeout())
             .send()
             .await
             .map_err(|e| Error::Network(format!("push registration failed: {e}")))?;

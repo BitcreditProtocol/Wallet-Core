@@ -254,14 +254,22 @@ pub struct NostrEventOffset {
     pub success: bool,
 }
 
-/// Per-event record of a push notification and of the reclaim it triggers. Push and catch-up
-/// both reclaim through `claim_push_event`, so one event id is reclaimed by one of them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PushClaim {
     pub event_id: String,
     pub received_at: Option<Timestamp>,
     pub claimed_at: Option<Timestamp>,
     pub completed_at: Option<Timestamp>,
+    pub owner: Option<Uuid>,
+    pub attempts: u32,
+    pub retry_at: Option<Timestamp>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PushClaimState {
+    Claimed(Uuid),
+    Held,
+    Done,
 }
 
 #[derive(Clone, Debug)]
@@ -276,30 +284,18 @@ pub struct NostrQueuedMessage {
 #[async_trait]
 pub trait NostrRepository: SendSync {
     async fn current_offset(&self) -> Result<Timestamp>;
-    /// Time of the oldest event whose reclaim failed and was not yet retried to the end.
-    async fn failure_floor(&self) -> Result<Option<Timestamp>>;
-    /// Lowers the failure floor to `time` when that is older than the stored one.
-    async fn record_failure_floor(&self, time: Timestamp) -> Result<()>;
-    /// Removes the failure floor only if it still equals `seen`.
-    async fn clear_failure_floor(&self, seen: Timestamp) -> Result<()>;
     async fn is_processed(&self, event_id: &str) -> Result<bool>;
     async fn add_event(&self, data: NostrEventOffset) -> Result<()>;
     async fn add_retry_message(&self, message: NostrQueuedMessage, max_retries: i32) -> Result<()>;
     async fn get_retry_messages(&self, limit: u64) -> Result<Vec<NostrQueuedMessage>>;
     async fn fail_retry(&self, id: &str) -> Result<()>;
     async fn succeed_retry(&self, id: &str) -> Result<()>;
-    /// Records that a push notification for the event arrived; keeps the first receipt time.
     async fn record_push_receipt(&self, event_id: &str) -> Result<()>;
-    /// Atomically claims the event for reclaim. Returns `true` for exactly one caller until the
-    /// claim is released or its lease expires; an event claimed within the lease or completed
-    /// returns `false`.
-    async fn claim_push_event(&self, event_id: &str) -> Result<bool>;
-    /// Restarts the lease of a claim still held, so a reclaim longer than the lease keeps it.
-    async fn renew_push_claim(&self, event_id: &str) -> Result<()>;
-    /// Marks the reclaim of a claimed event as done; the event is never claimed again.
-    async fn complete_push_claim(&self, event_id: &str) -> Result<()>;
-    /// Drops an uncompleted claim so a later push or catch-up can retry the reclaim.
-    async fn release_push_claim(&self, event_id: &str) -> Result<()>;
+    async fn claim_push_event(&self, event_id: &str) -> Result<PushClaimState>;
+    async fn renew_push_claim(&self, event_id: &str, owner: Uuid) -> Result<()>;
+    async fn complete_push_claim(&self, event_id: &str, time: Option<Timestamp>) -> Result<()>;
+    async fn release_push_claim(&self, event_id: &str, owner: Uuid) -> Result<()>;
+    async fn due_push_retries(&self) -> Result<Vec<String>>;
     async fn push_claim(&self, event_id: &str) -> Result<Option<PushClaim>>;
     async fn delete_repo(&self) -> Result<()>;
 }

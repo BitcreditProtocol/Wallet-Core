@@ -6,7 +6,7 @@ pub mod tests {
         push::{DeviceMethod, DeviceRequest},
     };
     use nostr::{
-        event::EventId,
+        event::{Event, EventId},
         key::PublicKey,
         types::{RelayUrl, Timestamp},
     };
@@ -27,14 +27,9 @@ pub mod tests {
                 npub: PublicKey,
                 relays: Vec<RelayUrl>,
             ) -> Result<Vec<RelayUrl>>;
-            async fn fetch_wallet_event(
-                &self,
-                event_id: EventId,
-            ) -> Result<Option<(Timestamp, NostrWalletEvent)>>;
-            async fn fetch_wallet_events_since(
-                &self,
-                since: Timestamp,
-            ) -> Result<Vec<(Timestamp, NostrWalletEvent)>>;
+            async fn fetch_gift_wraps(&self, ids: Vec<EventId>) -> Result<Vec<Event>>;
+            async fn fetch_gift_wraps_since(&self, since: Timestamp) -> Result<Vec<Event>>;
+            async fn decode_gift_wrap(&self, event: &Event) -> Result<Option<NostrWalletEvent>>;
             async fn send_device_request(
                 &self,
                 method: DeviceMethod,

@@ -43,7 +43,8 @@ use bcr_wallet_core::{
 };
 use bcr_wallet_persistence::{
     ContactStoreApi, MigrationJournalEntry, MigrationJournalHeader, MigrationJournalRepository,
-    MigrationJournalState, NostrRepository, PaymentRequestStoreApi, TransactionRepository,
+    MigrationJournalState, NostrRepository, PaymentRequestStoreApi, PushClaimState,
+    TransactionRepository,
 };
 use bcr_wallet_transport::{
     ConsumerApi, NostrEventChannel, NostrWalletEvent, TransportApi,
@@ -68,9 +69,6 @@ use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-/// How far before its newest seen event a catch-up looks: past the two days a gift wrap's
-/// timestamp is randomised by, so an event whose reclaim failed is fetched again while newer
-/// ones were reclaimed
 const PUSH_CLAIM_RENEW_SECS: u64 = 30;
 const CATCH_UP_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
 
@@ -353,7 +351,7 @@ impl Wallet {
                             },
                         };
                         let wallet_guard = wallet.read().await;
-                        let _ = wallet_guard.handle_wallet_event(received_evt).await;
+                        wallet_guard.reclaim_live_event(received_evt).await;
                     }
                 }
             }
@@ -490,7 +488,6 @@ impl Wallet {
         Ok(())
     }
 
-    /// Registers the device token with the relay; a new token for the same platform replaces the old one.
     pub async fn register_push_token(&self, request: DeviceRequest) -> Result<()> {
         Ok(self
             .nostr_transport
@@ -498,7 +495,6 @@ impl Wallet {
             .await?)
     }
 
-    /// Removes the device token from the relay.
     pub async fn unregister_push_token(&self, request: DeviceRequest) -> Result<()> {
         Ok(self
             .nostr_transport
@@ -506,65 +502,81 @@ impl Wallet {
             .await?)
     }
 
-    /// Handles a push notification for a gift wrap: reclaims it once, however many pushes or
-    /// catch-ups name it, then reclaims every event the wallet missed since its last seen one.
     pub async fn handle_push(&self, event_id: EventId) -> Result<()> {
         let id = event_id.to_hex();
         self.nostr_repo.record_push_receipt(&id).await?;
-        if !self.nostr_repo.is_processed(&id).await?
-            && self.nostr_repo.claim_push_event(&id).await?
-        {
-            match self.nostr_transport.fetch_wallet_event(event_id).await {
-                Ok(Some((time, evt))) => {
-                    self.reclaim_claimed(&id, time, evt).await;
-                }
-                Ok(None) => self.nostr_repo.release_push_claim(&id).await?,
-                Err(e) => {
-                    tracing::warn!("Could not fetch pushed event {id}, catching up: {e}");
-                    self.nostr_repo.release_push_claim(&id).await?;
-                }
-            }
-        }
-        self.catch_up_nostr_events().await
-    }
-
-    async fn catch_up_nostr_events(&self) -> Result<()> {
-        let offset = self.nostr_repo.current_offset().await?;
-        let floor = self.nostr_repo.failure_floor().await?;
-        let window_start = offset.as_secs().saturating_sub(CATCH_UP_WINDOW_SECS);
-        let since = nostr::types::Timestamp::from_secs(
-            floor.map_or(window_start, |f| f.as_secs().min(window_start)),
-        );
-        let mut clean = true;
-        for (time, evt) in self
-            .nostr_transport
-            .fetch_wallet_events_since(since)
+        let mut ids: Vec<EventId> = self
+            .nostr_repo
+            .due_push_retries()
             .await?
-        {
-            let id = evt.event_id().to_hex();
-            if self.nostr_repo.is_processed(&id).await? {
-                continue;
-            }
-            if !self.nostr_repo.claim_push_event(&id).await? {
-                clean = false;
-                continue;
-            }
-            clean &= self.reclaim_claimed(&id, time, evt).await;
+            .iter()
+            .filter_map(|retry| EventId::parse(retry).ok())
+            .collect();
+        ids.push(event_id);
+        let named = self
+            .nostr_transport
+            .fetch_gift_wraps(ids)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("Could not fetch pushed event {id}, catching up: {e}");
+                Vec::new()
+            });
+        let offset = self.nostr_repo.current_offset().await?;
+        let since = nostr::types::Timestamp::from_secs(
+            offset.as_secs().saturating_sub(CATCH_UP_WINDOW_SECS),
+        );
+        let missed = self.nostr_transport.fetch_gift_wraps_since(since).await?;
+        let mut found = false;
+        for event in named.iter().chain(&missed) {
+            found |= event.id == event_id;
+            self.reclaim_gift_wrap(event).await?;
         }
-        if let (true, Some(seen)) = (clean, floor) {
-            self.nostr_repo.clear_failure_floor(seen).await?;
+        if !found {
+            let claim = self.nostr_repo.push_claim(&id).await?;
+            if !claim.is_some_and(|c| c.completed_at.is_some()) {
+                return Err(Error::PushedEventNotFound(event_id));
+            }
         }
         Ok(())
+    }
+
+    async fn reclaim_gift_wrap(&self, event: &nostr::event::Event) -> Result<()> {
+        let id = event.id.to_hex();
+        let PushClaimState::Claimed(owner) = self.nostr_repo.claim_push_event(&id).await? else {
+            return Ok(());
+        };
+        match self.nostr_transport.decode_gift_wrap(event).await {
+            Ok(Some(evt)) => {
+                self.reclaim_claimed(&id, owner, Some(event.created_at), evt)
+                    .await
+            }
+            _ => {
+                self.nostr_repo
+                    .complete_push_claim(&id, Some(event.created_at))
+                    .await?
+            }
+        }
+        Ok(())
+    }
+
+    async fn reclaim_live_event(&self, evt: NostrWalletEvent) {
+        let id = evt.event_id().to_hex();
+        match self.nostr_repo.claim_push_event(&id).await {
+            Ok(PushClaimState::Claimed(owner)) => self.reclaim_claimed(&id, owner, None, evt).await,
+            Ok(_) => {}
+            Err(e) => tracing::error!("Could not claim event {id}: {e}"),
+        }
     }
 
     async fn reclaim_claimed(
         &self,
         id: &str,
-        time: nostr::types::Timestamp,
+        owner: Uuid,
+        time: Option<nostr::types::Timestamp>,
         evt: NostrWalletEvent,
-    ) -> bool {
+    ) {
         let renew = || async {
-            if let Err(e) = self.nostr_repo.renew_push_claim(id).await {
+            if let Err(e) = self.nostr_repo.renew_push_claim(id, owner).await {
                 tracing::error!("Could not renew push claim {id}: {e}");
             }
         };
@@ -574,28 +586,16 @@ impl Wallet {
             self.handle_wallet_event(evt),
         )
         .await;
-        if let Err(e) = reclaimed {
-            tracing::warn!("Reclaim of event {id} failed, releasing its claim: {e}");
-            if let Err(e) = self.nostr_repo.record_failure_floor(time).await {
-                tracing::error!("Could not record failed event {id}: {e}");
+        let settled = match reclaimed {
+            Ok(()) => self.nostr_repo.complete_push_claim(id, time).await,
+            Err(e) => {
+                tracing::warn!("Reclaim of event {id} failed, releasing its claim: {e}");
+                self.nostr_repo.release_push_claim(id, owner).await
             }
-            if let Err(e) = self.nostr_repo.release_push_claim(id).await {
-                tracing::error!("Could not release push claim {id}: {e}");
-            }
-            return false;
-        }
-        if let Err(e) = self.nostr_repo.complete_push_claim(id).await {
-            tracing::error!("Could not complete push claim {id}: {e}");
-        }
-        let offset = bcr_wallet_persistence::NostrEventOffset {
-            event_id: id.to_owned(),
-            time,
-            success: true,
         };
-        if let Err(e) = self.nostr_repo.add_event(offset).await {
-            tracing::error!("Could not store event offset {id}: {e}");
+        if let Err(e) = settled {
+            tracing::error!("Could not settle push claim {id}: {e}");
         }
-        true
     }
 
     async fn settle_outgoing_payment_request(
@@ -2353,7 +2353,6 @@ fn reclaimed_amount(entries: &[(cashu::PublicKey, MigrationJournalEntry)]) -> Op
     })
 }
 
-/// Runs `work` and calls `renew` every `period` until it finishes.
 async fn with_renewal<T, F: Future<Output = ()>>(
     period: Duration,
     renew: impl Fn() -> F,

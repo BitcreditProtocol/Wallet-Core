@@ -15,8 +15,6 @@ pub(super) fn migration_name_for_wallet(wallet_id: &str) -> String {
     format!("{}_{}", MIGRATION_0007_PUSH_CLAIMS, wallet_id)
 }
 
-/// Creates the push claim table and records every already processed event as a completed
-/// claim, so catch-up does not reclaim it.
 pub(super) fn migration_0007_push_claims(
     txn: &redb::WriteTransaction,
     namespace: &WalletStorageNamespace,
@@ -45,6 +43,7 @@ pub(super) fn migration_0007_push_claims(
             received_at: None,
             claimed_at: Some(offset.time),
             completed_at: Some(offset.time),
+            ..Default::default()
         };
         table.insert(claim.event_id.as_bytes(), encode_push_claim(&claim)?)?;
     }

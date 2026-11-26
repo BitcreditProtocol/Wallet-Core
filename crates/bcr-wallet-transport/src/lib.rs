@@ -3,7 +3,7 @@ use crate::{
     push::{DeviceMethod, DeviceRequest},
 };
 use ::nostr::{
-    event::EventId,
+    event::{Event, EventId},
     key::PublicKey,
     types::{RelayUrl, Timestamp},
 };
@@ -38,17 +38,9 @@ pub trait TransportApi: SendSync {
         npub: PublicKey,
         relays: Vec<RelayUrl>,
     ) -> Result<Vec<RelayUrl>>;
-    /// Fetches one gift wrap by id from the relays and decodes it; `None` if absent or not a wallet event.
-    async fn fetch_wallet_event(
-        &self,
-        event_id: EventId,
-    ) -> Result<Option<(Timestamp, NostrWalletEvent)>>;
-    /// Fetches the wallet events whose gift wrap is not older than `since`, oldest first.
-    async fn fetch_wallet_events_since(
-        &self,
-        since: Timestamp,
-    ) -> Result<Vec<(Timestamp, NostrWalletEvent)>>;
-    /// Sends one request signed with the wallet's Nostr key to the relay's push endpoint.
+    async fn fetch_gift_wraps(&self, ids: Vec<EventId>) -> Result<Vec<Event>>;
+    async fn fetch_gift_wraps_since(&self, since: Timestamp) -> Result<Vec<Event>>;
+    async fn decode_gift_wrap(&self, event: &Event) -> Result<Option<NostrWalletEvent>>;
     async fn send_device_request(&self, method: DeviceMethod, request: DeviceRequest)
     -> Result<()>;
 }

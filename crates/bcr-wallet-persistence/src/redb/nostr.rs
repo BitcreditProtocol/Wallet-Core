@@ -1,5 +1,5 @@
 use crate::{
-    NostrEventOffset, NostrQueuedMessage, NostrRepository, PushClaim,
+    NostrEventOffset, NostrQueuedMessage, NostrRepository, PushClaim, PushClaimState,
     error::{Error, Result},
 };
 use async_trait::async_trait;
@@ -9,6 +9,7 @@ use nostr::types::Timestamp;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
 use std::sync::Arc;
 use tokio::task::spawn_blocking;
+use uuid::Uuid;
 
 ///////////////////////////////////////////// NostrEventOffsetEntry
 #[derive(Debug, Clone)]
@@ -122,6 +123,9 @@ pub(super) struct StoredPushClaimPayloadV1 {
     received_at: Option<u64>,
     claimed_at: Option<u64>,
     completed_at: Option<u64>,
+    owner: Option<u128>,
+    attempts: u32,
+    retry_at: Option<u64>,
 }
 
 pub(super) fn encode_push_claim(claim: &PushClaim) -> Result<Vec<u8>> {
@@ -130,6 +134,9 @@ pub(super) fn encode_push_claim(claim: &PushClaim) -> Result<Vec<u8>> {
         received_at: claim.received_at.map(|t| t.as_secs()),
         claimed_at: claim.claimed_at.map(|t| t.as_secs()),
         completed_at: claim.completed_at.map(|t| t.as_secs()),
+        owner: claim.owner.map(|o| o.as_u128()),
+        attempts: claim.attempts,
+        retry_at: claim.retry_at.map(|t| t.as_secs()),
     }))
     .map_err(|e| Error::BorshSerialization(e.to_string()))
 }
@@ -142,6 +149,9 @@ fn decode_push_claim(bytes: &[u8]) -> Result<PushClaim> {
         received_at: p.received_at.map(Timestamp::from),
         claimed_at: p.claimed_at.map(Timestamp::from),
         completed_at: p.completed_at.map(Timestamp::from),
+        owner: p.owner.map(Uuid::from_u128),
+        attempts: p.attempts,
+        retry_at: p.retry_at.map(Timestamp::from),
     })
 }
 
@@ -217,9 +227,34 @@ fn decode_queued_message(
 }
 
 ///////////////////////////////////////////// NostrDB
-/// How long a claim blocks others; a run killed before it completes or releases its claim
-/// leaves the event reclaimable once the lease ran out
 const PUSH_CLAIM_LEASE_SECS: u64 = 120;
+const PUSH_RETRY_BASE_SECS: u64 = 60;
+const PUSH_RETRY_MAX_SECS: u64 = 24 * 60 * 60;
+const PUSH_MAX_ATTEMPTS: u32 = 16;
+const PUSH_RETRY_BATCH: usize = 64;
+
+#[derive(Clone, Copy)]
+struct PushTables {
+    claims: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    retries: TableDefinition<'static, &'static [u8], u64>,
+}
+
+fn push_claim_state(claim: &PushClaim, now: u64) -> Option<PushClaimState> {
+    if claim.completed_at.is_some() {
+        return Some(PushClaimState::Done);
+    }
+    let leased = claim
+        .claimed_at
+        .is_some_and(|t| now.saturating_sub(t.as_secs()) < PUSH_CLAIM_LEASE_SECS);
+    let backing_off = claim.retry_at.is_some_and(|t| now < t.as_secs());
+    (leased || backing_off).then_some(PushClaimState::Held)
+}
+
+fn push_retry_delay(attempts: u32) -> u64 {
+    PUSH_RETRY_BASE_SECS
+        .checked_shl(attempts.saturating_sub(1))
+        .map_or(PUSH_RETRY_MAX_SECS, |d| d.min(PUSH_RETRY_MAX_SECS))
+}
 
 pub struct NostrDB {
     db: Arc<Database>,
@@ -228,7 +263,7 @@ pub struct NostrDB {
     offset_entry_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     dead_letter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-    push_claim_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    push_tables: PushTables,
 }
 
 impl NostrDB {
@@ -237,8 +272,8 @@ impl NostrDB {
     const QUEUED_MESSAGE_DB_NAME: &'static str = "queued_message";
     const DEAD_LETTER_DB_NAME: &'static str = "dead_letter";
     const PUSH_CLAIM_DB_NAME: &'static str = "push_claim";
+    const PUSH_RETRY_DB_NAME: &'static str = "push_retry";
     const CURRENT_OFFSET_UNIQUE_ID: &'static str = "current_offset";
-    const FAILURE_FLOOR_UNIQUE_ID: &'static str = "failure_floor";
     const NOSTR_QUEUE_PROCESSING_TIMEOUT_SECS: i64 = 60;
 
     pub(super) fn offset_entry_table_name(wallet_id: &str) -> String {
@@ -277,6 +312,8 @@ impl NostrDB {
 
         let push_claim_name: &'static str =
             Box::leak(Self::push_claim_table_name(wallet_id).into_boxed_str());
+        let push_retry_name: &'static str =
+            Box::leak(format!("{wallet_id}_{}", Self::PUSH_RETRY_DB_NAME).into_boxed_str());
 
         let offset_entry_table = TableDefinition::new(offset_entry_name);
         let last_offset_table = TableDefinition::new(last_offset_name);
@@ -290,48 +327,58 @@ impl NostrDB {
             last_offset_table,
             queued_message_table,
             dead_letter_table,
-            push_claim_table: TableDefinition::new(push_claim_name),
+            push_tables: PushTables {
+                claims: TableDefinition::new(push_claim_name),
+                retries: TableDefinition::new(push_retry_name),
+            },
         })
     }
 
     ///////////////////////////////////////////// Push Claim
-    /// Applies `update` to the event's claim inside one write transaction (redb serializes
-    /// writers), so concurrent callers see each other's result. `update` returns whether to
-    /// persist and the value handed back.
-    fn update_push_claim_sync<T>(
-        db: Arc<Database>,
-        table_def: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    fn update_push_claim(
+        txn: &redb::WriteTransaction,
+        tables: PushTables,
         event_id: &str,
-        update: impl FnOnce(&mut PushClaim) -> (bool, T),
-    ) -> Result<T> {
-        let write_txn = db.begin_write()?;
-        let out = {
-            let mut table = write_txn.open_table(table_def)?;
-            let existing = match table.get(event_id.as_bytes())? {
-                Some(v) => decode_push_claim(v.value().as_slice())?,
-                None => PushClaim {
-                    event_id: event_id.to_owned(),
-                    ..Default::default()
-                },
-            };
-            let mut claim = existing;
-            let (persist, out) = update(&mut claim);
-            if persist {
-                table.insert(event_id.as_bytes(), encode_push_claim(&claim)?)?;
-            }
-            out
+        update: impl FnOnce(&mut PushClaim) -> bool,
+    ) -> Result<PushClaim> {
+        let mut claims = txn.open_table(tables.claims)?;
+        let mut claim = match claims.get(event_id.as_bytes())? {
+            Some(v) => decode_push_claim(v.value().as_slice())?,
+            None => PushClaim {
+                event_id: event_id.to_owned(),
+                ..Default::default()
+            },
         };
+        if update(&mut claim) {
+            claims.insert(event_id.as_bytes(), encode_push_claim(&claim)?)?;
+            let mut retries = txn.open_table(tables.retries)?;
+            match (claim.completed_at, claim.retry_at) {
+                (None, Some(at)) => retries.insert(event_id.as_bytes(), at.as_secs())?,
+                _ => retries.remove(event_id.as_bytes())?,
+            };
+        }
+        Ok(claim)
+    }
+
+    fn update_push_claim_sync(
+        db: Arc<Database>,
+        tables: PushTables,
+        event_id: &str,
+        update: impl FnOnce(&mut PushClaim) -> bool,
+    ) -> Result<PushClaim> {
+        let write_txn = db.begin_write()?;
+        let claim = Self::update_push_claim(&write_txn, tables, event_id, update)?;
         write_txn.commit()?;
-        Ok(out)
+        Ok(claim)
     }
 
     fn get_push_claim_sync(
         db: Arc<Database>,
-        table_def: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        tables: PushTables,
         event_id: &str,
     ) -> Result<Option<PushClaim>> {
         let read_txn = db.begin_read()?;
-        match read_txn.open_table(table_def) {
+        match read_txn.open_table(tables.claims) {
             Ok(table) => table
                 .get(event_id.as_bytes())?
                 .map(|v| decode_push_claim(v.value().as_slice()))
@@ -339,6 +386,80 @@ impl NostrDB {
             Err(TableError::TableDoesNotExist(_)) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    fn claim_push_event_sync(
+        db: Arc<Database>,
+        tables: PushTables,
+        event_id: &str,
+    ) -> Result<PushClaimState> {
+        let now = Timestamp::now();
+        let settled = Self::get_push_claim_sync(db.clone(), tables, event_id)?
+            .and_then(|claim| push_claim_state(&claim, now.as_secs()));
+        if let Some(state) = settled {
+            return Ok(state);
+        }
+        let mut state = PushClaimState::Held;
+        Self::update_push_claim_sync(db, tables, event_id, |c| {
+            if let Some(settled) = push_claim_state(c, now.as_secs()) {
+                state = settled;
+                return false;
+            }
+            let owner = Uuid::new_v4();
+            c.claimed_at = Some(now);
+            c.owner = Some(owner);
+            state = PushClaimState::Claimed(owner);
+            true
+        })?;
+        Ok(state)
+    }
+
+    fn complete_push_claim_sync(
+        db: Arc<Database>,
+        tables: PushTables,
+        offset_entry_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        last_offset_table: TableDefinition<'static, &'static [u8], u64>,
+        event_id: &str,
+        time: Option<Timestamp>,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+        Self::update_push_claim(&write_txn, tables, event_id, |c| {
+            c.completed_at.get_or_insert(Timestamp::now());
+            c.owner = None;
+            c.retry_at = None;
+            true
+        })?;
+        if let Some(time) = time {
+            let entry = NostrEventOffsetEntry {
+                event_id: event_id.to_owned(),
+                time,
+                success: true,
+            };
+            Self::put_event_offset(&write_txn, offset_entry_table, last_offset_table, &entry)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    fn due_push_retries_sync(db: Arc<Database>, tables: PushTables) -> Result<Vec<String>> {
+        let now = Timestamp::now().as_secs();
+        let read_txn = db.begin_read()?;
+        let table = match read_txn.open_table(tables.retries) {
+            Ok(table) => table,
+            Err(TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut due = Vec::new();
+        for row in table.iter()? {
+            let (id, at) = row?;
+            if at.value() <= now {
+                due.push(String::from_utf8_lossy(id.value()).into_owned());
+                if due.len() == PUSH_RETRY_BATCH {
+                    break;
+                }
+            }
+        }
+        Ok(due)
     }
 
     ///////////////////////////////////////////// Event Offset
@@ -357,43 +478,6 @@ impl NostrDB {
                 }
             }
             Err(TableError::TableDoesNotExist(_)) => Ok(Timestamp::zero()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn update_failure_floor_sync(
-        db: Arc<Database>,
-        last_offset_table: TableDefinition<'static, &'static [u8], u64>,
-        update: impl FnOnce(Option<u64>) -> Option<u64>,
-    ) -> Result<()> {
-        let write_txn = db.begin_write()?;
-        {
-            let mut table = write_txn.open_table(last_offset_table)?;
-            let key = Self::FAILURE_FLOOR_UNIQUE_ID.as_bytes();
-            let current = table.get(key)?.map(|v| v.value());
-            match update(current) {
-                Some(next) => {
-                    table.insert(key, next)?;
-                }
-                None => {
-                    table.remove(key)?;
-                }
-            }
-        }
-        write_txn.commit()?;
-        Ok(())
-    }
-
-    fn failure_floor_sync(
-        db: Arc<Database>,
-        last_offset_table: TableDefinition<'static, &'static [u8], u64>,
-    ) -> Result<Option<Timestamp>> {
-        let read_txn = db.begin_read()?;
-        match read_txn.open_table(last_offset_table) {
-            Ok(table) => Ok(table
-                .get(Self::FAILURE_FLOOR_UNIQUE_ID.as_bytes())?
-                .map(|v| Timestamp::from(v.value()))),
-            Err(TableError::TableDoesNotExist(_)) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
@@ -421,23 +505,20 @@ impl NostrDB {
         }
     }
 
-    fn add_event_sync(
-        db: Arc<Database>,
+    fn put_event_offset(
+        txn: &redb::WriteTransaction,
         offset_entry_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         last_offset_table: TableDefinition<'static, &'static [u8], u64>,
-        entry: NostrEventOffsetEntry,
+        entry: &NostrEventOffsetEntry,
     ) -> Result<()> {
-        let id = entry.event_id.clone();
-        let write_txn = db.begin_write()?;
-
         {
-            let mut table = write_txn.open_table(offset_entry_table)?;
+            let mut table = txn.open_table(offset_entry_table)?;
 
-            table.insert(id.as_bytes(), encode_event_offset(&entry)?)?;
+            table.insert(entry.event_id.as_bytes(), encode_event_offset(entry)?)?;
         }
 
         {
-            let mut table = write_txn.open_table(last_offset_table)?;
+            let mut table = txn.open_table(last_offset_table)?;
             let offset = table
                 .get(Self::CURRENT_OFFSET_UNIQUE_ID.as_bytes())?
                 .map(|v| v.value())
@@ -445,7 +526,17 @@ impl NostrDB {
             let next = offset.max(entry.time.as_secs());
             table.insert(Self::CURRENT_OFFSET_UNIQUE_ID.as_bytes(), next)?;
         }
+        Ok(())
+    }
 
+    fn add_event_sync(
+        db: Arc<Database>,
+        offset_entry_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        last_offset_table: TableDefinition<'static, &'static [u8], u64>,
+        entry: NostrEventOffsetEntry,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+        Self::put_event_offset(&write_txn, offset_entry_table, last_offset_table, &entry)?;
         write_txn.commit()?;
         Ok(())
     }
@@ -579,13 +670,17 @@ impl NostrDB {
         last_offset_table: TableDefinition<'static, &'static [u8], u64>,
         queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         dead_letter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
-        push_claim_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        push_tables: PushTables,
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
 
         {
-            if write_txn.open_table(push_claim_table).is_ok() {
-                write_txn.delete_table(push_claim_table)?;
+            if write_txn.open_table(push_tables.claims).is_ok() {
+                write_txn.delete_table(push_tables.claims)?;
+            }
+
+            if write_txn.open_table(push_tables.retries).is_ok() {
+                write_txn.delete_table(push_tables.retries)?;
             }
 
             if write_txn.open_table(offset_entry_table).is_ok() {
@@ -619,39 +714,6 @@ impl NostrRepository for NostrDB {
         Ok(res)
     }
 
-    async fn failure_floor(&self) -> Result<Option<Timestamp>> {
-        let db_clone = self.db.clone();
-        let table = self.last_offset_table;
-        Ok(spawn_blocking(move || Self::failure_floor_sync(db_clone, table)).await??)
-    }
-
-    async fn record_failure_floor(&self, time: Timestamp) -> Result<()> {
-        let db_clone = self.db.clone();
-        let table = self.last_offset_table;
-        let secs = time.as_secs();
-        spawn_blocking(move || {
-            Self::update_failure_floor_sync(db_clone, table, |c| {
-                Some(c.map_or(secs, |c| c.min(secs)))
-            })
-        })
-        .await??;
-        Ok(())
-    }
-
-    async fn clear_failure_floor(&self, seen: Timestamp) -> Result<()> {
-        let db_clone = self.db.clone();
-        let table = self.last_offset_table;
-        let secs = seen.as_secs();
-        spawn_blocking(move || {
-            Self::update_failure_floor_sync(db_clone, table, |c| match c {
-                Some(c) if c == secs => None,
-                other => other,
-            })
-        })
-        .await??;
-        Ok(())
-    }
-
     async fn is_processed(&self, event_id: &str) -> Result<bool> {
         let db_clone = self.db.clone();
         let table = self.offset_entry_table;
@@ -678,7 +740,7 @@ impl NostrRepository for NostrDB {
         let offset_entry_table = self.offset_entry_table;
         let queued_message_table = self.queued_message_table;
         let dead_letter_table = self.dead_letter_table;
-        let push_claim_table = self.push_claim_table;
+        let push_tables = self.push_tables;
         spawn_blocking(move || {
             Self::delete_repo_sync(
                 db_clone,
@@ -686,7 +748,7 @@ impl NostrRepository for NostrDB {
                 last_offset_table,
                 queued_message_table,
                 dead_letter_table,
-                push_claim_table,
+                push_tables,
             )
         })
         .await?
@@ -694,90 +756,109 @@ impl NostrRepository for NostrDB {
 
     async fn record_push_receipt(&self, event_id: &str) -> Result<()> {
         let db = self.db.clone();
-        let table = self.push_claim_table;
+        let tables = self.push_tables;
         let id = event_id.to_owned();
         spawn_blocking(move || {
-            Self::update_push_claim_sync(db, table, &id, |c| {
-                let first = c.received_at.is_none();
-                if first {
-                    c.received_at = Some(Timestamp::now());
-                }
-                (first, ())
-            })
+            let received = Self::get_push_claim_sync(db.clone(), tables, &id)?
+                .is_some_and(|c| c.received_at.is_some());
+            if !received {
+                Self::update_push_claim_sync(db, tables, &id, |c| {
+                    c.received_at.get_or_insert(Timestamp::now());
+                    true
+                })?;
+            }
+            Ok(())
         })
         .await?
     }
 
-    async fn claim_push_event(&self, event_id: &str) -> Result<bool> {
+    async fn claim_push_event(&self, event_id: &str) -> Result<PushClaimState> {
         let db = self.db.clone();
-        let table = self.push_claim_table;
+        let tables = self.push_tables;
         let id = event_id.to_owned();
-        spawn_blocking(move || {
-            Self::update_push_claim_sync(db, table, &id, |c| {
-                let now = Timestamp::now();
-                let leased = c.claimed_at.is_some_and(|t| {
-                    now.as_secs().saturating_sub(t.as_secs()) < PUSH_CLAIM_LEASE_SECS
-                });
-                if leased || c.completed_at.is_some() {
-                    return (false, false);
-                }
-                c.claimed_at = Some(now);
-                (true, true)
-            })
-        })
-        .await?
+        spawn_blocking(move || Self::claim_push_event_sync(db, tables, &id)).await?
     }
 
-    async fn renew_push_claim(&self, event_id: &str) -> Result<()> {
+    async fn renew_push_claim(&self, event_id: &str, owner: Uuid) -> Result<()> {
         let db = self.db.clone();
-        let table = self.push_claim_table;
+        let tables = self.push_tables;
         let id = event_id.to_owned();
         spawn_blocking(move || {
-            Self::update_push_claim_sync(db, table, &id, |c| {
-                let held = c.completed_at.is_none() && c.claimed_at.is_some();
+            Self::update_push_claim_sync(db, tables, &id, |c| {
+                let held = c.completed_at.is_none() && c.owner == Some(owner);
                 if held {
                     c.claimed_at = Some(Timestamp::now());
                 }
-                (held, ())
+                held
             })
+        })
+        .await??;
+        Ok(())
+    }
+
+    async fn complete_push_claim(&self, event_id: &str, time: Option<Timestamp>) -> Result<()> {
+        let db = self.db.clone();
+        let tables = self.push_tables;
+        let offset_entry_table = self.offset_entry_table;
+        let last_offset_table = self.last_offset_table;
+        let id = event_id.to_owned();
+        spawn_blocking(move || {
+            Self::complete_push_claim_sync(
+                db,
+                tables,
+                offset_entry_table,
+                last_offset_table,
+                &id,
+                time,
+            )
         })
         .await?
     }
 
-    async fn complete_push_claim(&self, event_id: &str) -> Result<()> {
+    async fn release_push_claim(&self, event_id: &str, owner: Uuid) -> Result<()> {
         let db = self.db.clone();
-        let table = self.push_claim_table;
+        let tables = self.push_tables;
         let id = event_id.to_owned();
-        spawn_blocking(move || {
-            Self::update_push_claim_sync(db, table, &id, |c| {
-                if c.completed_at.is_none() {
-                    c.completed_at = Some(Timestamp::now());
+        let claim = spawn_blocking(move || {
+            Self::update_push_claim_sync(db, tables, &id, |c| {
+                let held = c.completed_at.is_none() && c.owner == Some(owner);
+                if held {
+                    let now = Timestamp::now();
+                    c.claimed_at = None;
+                    c.owner = None;
+                    c.attempts += 1;
+                    if c.attempts >= PUSH_MAX_ATTEMPTS {
+                        c.completed_at = Some(now);
+                    } else {
+                        c.retry_at = Some(Timestamp::from(
+                            now.as_secs() + push_retry_delay(c.attempts),
+                        ));
+                    }
                 }
-                (true, ())
+                held
             })
         })
-        .await?
+        .await??;
+        if claim.completed_at.is_some() && claim.attempts >= PUSH_MAX_ATTEMPTS {
+            tracing::error!(
+                "Giving up on event {event_id} after {} failed reclaims",
+                claim.attempts
+            );
+        }
+        Ok(())
     }
 
-    async fn release_push_claim(&self, event_id: &str) -> Result<()> {
+    async fn due_push_retries(&self) -> Result<Vec<String>> {
         let db = self.db.clone();
-        let table = self.push_claim_table;
-        let id = event_id.to_owned();
-        spawn_blocking(move || {
-            Self::update_push_claim_sync(db, table, &id, |c| {
-                let release = c.completed_at.is_none() && c.claimed_at.is_some();
-                c.claimed_at = None;
-                (release, ())
-            })
-        })
-        .await?
+        let tables = self.push_tables;
+        spawn_blocking(move || Self::due_push_retries_sync(db, tables)).await?
     }
 
     async fn push_claim(&self, event_id: &str) -> Result<Option<PushClaim>> {
         let db = self.db.clone();
-        let table = self.push_claim_table;
+        let tables = self.push_tables;
         let id = event_id.to_owned();
-        spawn_blocking(move || Self::get_push_claim_sync(db, table, &id)).await?
+        spawn_blocking(move || Self::get_push_claim_sync(db, tables, &id)).await?
     }
 
     async fn add_retry_message(&self, message: NostrQueuedMessage, max_retries: i32) -> Result<()> {
@@ -880,32 +961,6 @@ mod tests {
             time: Timestamp::from(time),
             success,
         }
-    }
-
-    #[tokio::test]
-    async fn test_failure_floor_keeps_oldest_and_clears_only_the_value_seen() {
-        let repo = get_db("wallet-failure-floor");
-        assert_eq!(repo.failure_floor().await.unwrap(), None);
-        repo.record_failure_floor(Timestamp::from(500))
-            .await
-            .unwrap();
-        repo.record_failure_floor(Timestamp::from(0)).await.unwrap();
-        repo.record_failure_floor(Timestamp::from(900))
-            .await
-            .unwrap();
-        assert_eq!(
-            repo.failure_floor().await.unwrap(),
-            Some(Timestamp::from(0))
-        );
-        repo.clear_failure_floor(Timestamp::from(500))
-            .await
-            .unwrap();
-        assert_eq!(
-            repo.failure_floor().await.unwrap(),
-            Some(Timestamp::from(0))
-        );
-        repo.clear_failure_floor(Timestamp::from(0)).await.unwrap();
-        assert_eq!(repo.failure_floor().await.unwrap(), None);
     }
 
     #[tokio::test]
@@ -1033,6 +1088,25 @@ mod tests {
         );
     }
 
+    async fn claim(repo: &NostrDB, id: &str) -> Uuid {
+        match repo.claim_push_event(id).await.unwrap() {
+            PushClaimState::Claimed(owner) => owner,
+            other => panic!("expected a claim, got {other:?}"),
+        }
+    }
+
+    fn rewrite(repo: &NostrDB, id: &str, update: impl FnOnce(&mut PushClaim)) {
+        NostrDB::update_push_claim_sync(repo.db.clone(), repo.push_tables, id, |c| {
+            update(c);
+            true
+        })
+        .unwrap();
+    }
+
+    fn ago(secs: u64) -> Option<Timestamp> {
+        Some(Timestamp::from(Timestamp::now().as_secs() - secs))
+    }
+
     #[tokio::test]
     async fn push_claim_concurrent_claims_have_one_winner() {
         let repo = Arc::new(get_db("wallet-push-claim-race"));
@@ -1045,8 +1119,9 @@ mod tests {
         }
         let mut wins = 0;
         for h in handles {
-            if h.await.expect("task joins") {
-                wins += 1;
+            match h.await.expect("task joins") {
+                PushClaimState::Claimed(_) => wins += 1,
+                state => assert_eq!(state, PushClaimState::Held),
             }
         }
         assert_eq!(wins, 1);
@@ -1056,84 +1131,122 @@ mod tests {
     async fn push_claim_receipt_is_separate_from_completion() {
         let repo = get_db("wallet-push-claim-receipt");
         repo.record_push_receipt("event-1").await.unwrap();
-        let claim = repo.push_claim("event-1").await.unwrap().unwrap();
-        assert!(claim.received_at.is_some());
-        assert!(claim.claimed_at.is_none());
-        assert!(claim.completed_at.is_none());
+        let received = repo.push_claim("event-1").await.unwrap().unwrap();
+        assert!(received.received_at.is_some());
+        assert!(received.claimed_at.is_none());
+        assert!(received.completed_at.is_none());
 
-        assert!(repo.claim_push_event("event-1").await.unwrap());
-        repo.complete_push_claim("event-1").await.unwrap();
-        let claim = repo.push_claim("event-1").await.unwrap().unwrap();
-        assert!(claim.received_at.is_some());
-        assert!(claim.completed_at.is_some());
+        claim(&repo, "event-1").await;
+        repo.record_push_receipt("event-1").await.unwrap();
+        assert_eq!(
+            repo.claim_push_event("event-1").await.unwrap(),
+            PushClaimState::Held
+        );
+        repo.complete_push_claim("event-1", None).await.unwrap();
+        let done = repo.push_claim("event-1").await.unwrap().unwrap();
+        assert_eq!(done.received_at, received.received_at);
+        assert!(done.completed_at.is_some());
     }
 
     #[tokio::test]
-    async fn push_claim_completed_event_cannot_be_claimed_or_released() {
+    async fn push_claim_completed_event_is_never_claimed_again() {
         let repo = get_db("wallet-push-claim-done");
-        assert!(repo.claim_push_event("event-1").await.unwrap());
-        repo.complete_push_claim("event-1").await.unwrap();
-        repo.release_push_claim("event-1").await.unwrap();
-        assert!(!repo.claim_push_event("event-1").await.unwrap());
+        let owner = claim(&repo, "event-1").await;
+        repo.complete_push_claim("event-1", Some(Timestamp::from(700)))
+            .await
+            .unwrap();
+        repo.release_push_claim("event-1", owner).await.unwrap();
+        assert_eq!(
+            repo.claim_push_event("event-1").await.unwrap(),
+            PushClaimState::Done
+        );
+        assert!(repo.is_processed("event-1").await.unwrap());
+        assert_eq!(repo.current_offset().await.unwrap(), Timestamp::from(700));
+        assert!(repo.due_push_retries().await.unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn push_claim_release_allows_retry() {
+    async fn push_claim_release_backs_off_then_allows_retry() {
         let repo = get_db("wallet-push-claim-release");
-        assert!(repo.claim_push_event("event-1").await.unwrap());
-        assert!(!repo.claim_push_event("event-1").await.unwrap());
-        repo.release_push_claim("event-1").await.unwrap();
-        assert!(repo.claim_push_event("event-1").await.unwrap());
+        let owner = claim(&repo, "event-1").await;
+        repo.release_push_claim("event-1", owner).await.unwrap();
+        assert_eq!(
+            repo.claim_push_event("event-1").await.unwrap(),
+            PushClaimState::Held
+        );
+        assert!(repo.due_push_retries().await.unwrap().is_empty());
+
+        rewrite(&repo, "event-1", |c| c.retry_at = ago(1));
+        assert_eq!(repo.due_push_retries().await.unwrap(), vec!["event-1"]);
+        claim(&repo, "event-1").await;
+    }
+
+    #[tokio::test]
+    async fn push_claim_gives_up_after_the_last_attempt() {
+        let repo = get_db("wallet-push-claim-give-up");
+        for attempt in 1..=PUSH_MAX_ATTEMPTS {
+            let owner = claim(&repo, "event-1").await;
+            repo.release_push_claim("event-1", owner).await.unwrap();
+            let released = repo.push_claim("event-1").await.unwrap().unwrap();
+            assert_eq!(released.attempts, attempt);
+            assert_eq!(
+                released.completed_at.is_some(),
+                attempt == PUSH_MAX_ATTEMPTS
+            );
+            rewrite(&repo, "event-1", |c| {
+                c.retry_at = c.retry_at.and(ago(1));
+            });
+        }
+        assert_eq!(
+            repo.claim_push_event("event-1").await.unwrap(),
+            PushClaimState::Done
+        );
+        assert!(repo.due_push_retries().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn push_retry_delay_doubles_up_to_the_cap() {
+        assert_eq!(push_retry_delay(1), PUSH_RETRY_BASE_SECS);
+        assert_eq!(push_retry_delay(2), 2 * PUSH_RETRY_BASE_SECS);
+        assert_eq!(push_retry_delay(PUSH_MAX_ATTEMPTS), PUSH_RETRY_MAX_SECS);
+        assert_eq!(push_retry_delay(u32::MAX), PUSH_RETRY_MAX_SECS);
     }
 
     #[tokio::test]
     async fn push_claim_of_a_dead_run_is_reclaimable_after_the_lease() {
         let repo = get_db("wallet-push-claim-lease");
-        assert!(repo.claim_push_event("event-1").await.unwrap());
-        NostrDB::update_push_claim_sync(repo.db.clone(), repo.push_claim_table, "event-1", |c| {
-            c.claimed_at = Some(Timestamp::from(
-                Timestamp::now().as_secs() - PUSH_CLAIM_LEASE_SECS,
-            ));
-            (true, ())
-        })
-        .unwrap();
-        assert!(repo.claim_push_event("event-1").await.unwrap());
-        assert!(!repo.claim_push_event("event-1").await.unwrap());
+        let dead = claim(&repo, "event-1").await;
+        rewrite(&repo, "event-1", |c| {
+            c.claimed_at = ago(PUSH_CLAIM_LEASE_SECS)
+        });
+        let live = claim(&repo, "event-1").await;
+
+        repo.renew_push_claim("event-1", dead).await.unwrap();
+        repo.release_push_claim("event-1", dead).await.unwrap();
+        let held = repo.push_claim("event-1").await.unwrap().unwrap();
+        assert_eq!(held.owner, Some(live));
+        assert_eq!(held.attempts, 0);
+        assert_eq!(
+            repo.claim_push_event("event-1").await.unwrap(),
+            PushClaimState::Held
+        );
     }
 
     #[tokio::test]
     async fn push_claim_renewal_keeps_a_slow_holder_ahead_of_the_lease() {
         let repo = get_db("wallet-push-claim-renew");
-        assert!(repo.claim_push_event("event-1").await.unwrap());
-        let backdate = |secs: u64| {
-            NostrDB::update_push_claim_sync(
-                repo.db.clone(),
-                repo.push_claim_table,
-                "event-1",
-                |c| {
-                    c.claimed_at = Some(Timestamp::from(Timestamp::now().as_secs() - secs));
-                    (true, ())
-                },
-            )
-            .unwrap()
-        };
-        backdate(PUSH_CLAIM_LEASE_SECS - 10);
-        repo.renew_push_claim("event-1").await.unwrap();
-        backdate(0);
-        repo.renew_push_claim("event-1").await.unwrap();
-        assert!(!repo.claim_push_event("event-1").await.unwrap());
-
-        repo.release_push_claim("event-1").await.unwrap();
-        repo.renew_push_claim("event-1").await.unwrap();
-        assert!(repo.claim_push_event("event-1").await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn push_claim_receipt_after_claim_keeps_claim() {
-        let repo = get_db("wallet-push-claim-order");
-        assert!(repo.claim_push_event("event-1").await.unwrap());
-        repo.record_push_receipt("event-1").await.unwrap();
-        assert!(!repo.claim_push_event("event-1").await.unwrap());
+        let owner = claim(&repo, "event-1").await;
+        rewrite(&repo, "event-1", |c| {
+            c.claimed_at = ago(PUSH_CLAIM_LEASE_SECS - 10)
+        });
+        repo.renew_push_claim("event-1", owner).await.unwrap();
+        rewrite(&repo, "event-1", |c| {
+            c.claimed_at = c.claimed_at.map(|t| Timestamp::from(t.as_secs() - 20))
+        });
+        assert_eq!(
+            repo.claim_push_event("event-1").await.unwrap(),
+            PushClaimState::Held
+        );
     }
 
     // Retry Queue Tests

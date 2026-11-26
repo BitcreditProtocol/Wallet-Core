@@ -5,29 +5,22 @@ use bitcoin::{
 };
 use nostr::{
     event::{EventBuilder, EventId, FinalizeEvent, Kind, Tag},
-    key::Keys,
+    key::{Keys, PublicKey},
     types::{RelayUrl, Timestamp, Url},
 };
 use serde::{Deserialize, Serialize};
 
-/// Path of the relay endpoint that registers and removes push tokens
 pub const PUSH_PATH: &str = "push";
 
-/// What a relay push carries: the stable id of the stored event and where to fetch it
-///
-/// # Example
-/// ```json
-/// {"event_id": "<hex>", "relay_url": "wss://relay.example.com", "kind": 1059}
-/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PushPayload {
     pub event_id: EventId,
+    pub recipient: PublicKey,
     pub relay_url: String,
     #[serde(deserialize_with = "kind_from_number_or_string")]
     pub kind: u16,
 }
 
-/// FCM data maps carry only strings, so the relay's `kind` arrives as `"1059"` there
 fn kind_from_number_or_string<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> std::result::Result<u16, D::Error> {
@@ -43,7 +36,6 @@ fn kind_from_number_or_string<'de, D: serde::Deserializer<'de>>(
     }
 }
 
-/// Platform a push token belongs to; a key holds at most one token per platform
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Platform {
@@ -51,19 +43,12 @@ pub enum Platform {
     Ios,
 }
 
-/// Body of `PUT /push` and `DELETE /push`
-///
-/// # Example
-/// ```json
-/// {"platform": "android", "token": "fcm-registration-token"}
-/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceRequest {
     pub platform: Platform,
     pub token: String,
 }
 
-/// HTTP method of a device registration request
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceMethod {
     Put,
@@ -79,14 +64,12 @@ impl DeviceMethod {
     }
 }
 
-/// Body and `Authorization` header value of one signed device registration request
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedDeviceRequest {
     pub body: String,
     pub authorization: String,
 }
 
-/// The absolute URL a NIP-98 auth event for device registration names in its `u` tag
 pub fn push_url(host_url: &Url) -> Option<Url> {
     if host_url.cannot_be_a_base() {
         return None;
@@ -97,7 +80,6 @@ pub fn push_url(host_url: &Url) -> Option<Url> {
     Some(url)
 }
 
-/// The HTTP origin of the push endpoint served beside a relay: `wss` maps to `https`, `ws` to `http`
 pub fn relay_host_url(relay: &RelayUrl) -> Option<Url> {
     let mut url = Url::parse(relay.as_str()).ok()?;
     let scheme = if url.scheme() == "wss" {
@@ -109,8 +91,6 @@ pub fn relay_host_url(relay: &RelayUrl) -> Option<Url> {
     Some(url)
 }
 
-/// Signs a device registration request as a NIP-98 event (kind 27235) with `keys`; the relay
-/// accepts it for `url` and `method` within 60 seconds of `now`.
 pub fn sign_device_request(
     keys: &Keys,
     host_url: &Url,
@@ -183,7 +163,6 @@ mod tests {
         Signature,
     }
 
-    /// The checks the relay applies to a registration request
     fn relay_checks(
         authorization: &str,
         url: &Url,
@@ -369,8 +348,9 @@ mod tests {
     #[test]
     fn push_contract_payload_round_trips_with_relay_field_names() {
         let json = format!(
-            r#"{{"event_id":"{}","relay_url":"wss://relay.example.com","kind":1059}}"#,
-            "ab".repeat(32)
+            r#"{{"event_id":"{}","recipient":"{}","relay_url":"wss://relay.example.com","kind":1059}}"#,
+            "ab".repeat(32),
+            fixture().pubkey
         );
         let payload: PushPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(payload.kind, 1059);
@@ -380,8 +360,9 @@ mod tests {
     #[test]
     fn push_contract_payload_accepts_string_kind_of_fcm_data() {
         let json = format!(
-            r#"{{"event_id":"{}","relay_url":"wss://relay.example.com","kind":"1059"}}"#,
-            "ab".repeat(32)
+            r#"{{"event_id":"{}","recipient":"{}","relay_url":"wss://relay.example.com","kind":"1059"}}"#,
+            "ab".repeat(32),
+            fixture().pubkey
         );
         assert_eq!(
             serde_json::from_str::<PushPayload>(&json).unwrap().kind,

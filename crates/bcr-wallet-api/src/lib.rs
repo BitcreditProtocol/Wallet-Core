@@ -1100,15 +1100,20 @@ impl AppState {
         Ok(retried)
     }
 
-    // Reclaims the Nostr event a push notification names, then catches up on missed events
-    pub async fn wallet_handle_push(
+    // Reclaims the Nostr event a push notification names in the wallet it was sent to
+    pub async fn handle_push(
         &self,
-        wallet_id: String,
-        event_id: ::nostr::event::EventId,
+        payload: bcr_wallet_transport::push::PushPayload,
     ) -> Result<()> {
-        tracing::debug!("wallet_handle_push({wallet_id}, {event_id})");
-        let wallet = self.held_wallet(&wallet_id).await?;
-        wallet.read().await.handle_push(event_id).await
+        tracing::debug!("handle_push({})", payload.event_id);
+        for wallet_id in self.get_purse().ids().await {
+            let wallet = self.held_wallet(&wallet_id).await?;
+            let wallet = wallet.read().await;
+            if wallet.node_id().equals_npub(&payload.recipient) {
+                return wallet.handle_push(payload.event_id).await;
+            }
+        }
+        Err(Error::WalletNotFound(payload.recipient.to_hex()))
     }
 
     // Registers or replaces the wallet's device token at the relay
