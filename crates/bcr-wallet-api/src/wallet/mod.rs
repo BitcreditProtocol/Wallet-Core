@@ -514,7 +514,9 @@ impl Wallet {
             && self.nostr_repo.claim_push_event(&id).await?
         {
             match self.nostr_transport.fetch_wallet_event(event_id).await {
-                Ok(Some((time, evt))) => self.reclaim_claimed(&id, time, evt).await,
+                Ok(Some((time, evt))) => {
+                    self.reclaim_claimed(&id, time, evt).await;
+                }
                 Ok(None) => self.nostr_repo.release_push_claim(&id).await?,
                 Err(e) => {
                     tracing::warn!("Could not fetch pushed event {id}, catching up: {e}");
@@ -527,21 +529,29 @@ impl Wallet {
 
     async fn catch_up_nostr_events(&self) -> Result<()> {
         let offset = self.nostr_repo.current_offset().await?;
+        let floor = self.nostr_repo.failure_floor().await?;
+        let window_start = offset.as_secs().saturating_sub(CATCH_UP_WINDOW_SECS);
         let since = nostr::types::Timestamp::from_secs(
-            offset.as_secs().saturating_sub(CATCH_UP_WINDOW_SECS),
+            floor.map_or(window_start, |f| f.as_secs().min(window_start)),
         );
+        let mut clean = true;
         for (time, evt) in self
             .nostr_transport
             .fetch_wallet_events_since(since)
             .await?
         {
             let id = evt.event_id().to_hex();
-            if self.nostr_repo.is_processed(&id).await?
-                || !self.nostr_repo.claim_push_event(&id).await?
-            {
+            if self.nostr_repo.is_processed(&id).await? {
                 continue;
             }
-            self.reclaim_claimed(&id, time, evt).await;
+            if !self.nostr_repo.claim_push_event(&id).await? {
+                clean = false;
+                continue;
+            }
+            clean &= self.reclaim_claimed(&id, time, evt).await;
+        }
+        if let (true, Some(seen)) = (clean, floor) {
+            self.nostr_repo.clear_failure_floor(seen).await?;
         }
         Ok(())
     }
@@ -551,13 +561,16 @@ impl Wallet {
         id: &str,
         time: nostr::types::Timestamp,
         evt: NostrWalletEvent,
-    ) {
+    ) -> bool {
         if let Err(e) = self.handle_wallet_event(evt).await {
             tracing::warn!("Reclaim of event {id} failed, releasing its claim: {e}");
+            if let Err(e) = self.nostr_repo.record_failure_floor(time).await {
+                tracing::error!("Could not record failed event {id}: {e}");
+            }
             if let Err(e) = self.nostr_repo.release_push_claim(id).await {
                 tracing::error!("Could not release push claim {id}: {e}");
             }
-            return;
+            return false;
         }
         if let Err(e) = self.nostr_repo.complete_push_claim(id).await {
             tracing::error!("Could not complete push claim {id}: {e}");
@@ -570,6 +583,7 @@ impl Wallet {
         if let Err(e) = self.nostr_repo.add_event(offset).await {
             tracing::error!("Could not store event offset {id}: {e}");
         }
+        true
     }
 
     async fn settle_outgoing_payment_request(

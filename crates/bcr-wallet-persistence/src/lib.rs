@@ -276,6 +276,12 @@ pub struct NostrQueuedMessage {
 #[async_trait]
 pub trait NostrRepository: SendSync {
     async fn current_offset(&self) -> Result<Timestamp>;
+    /// Time of the oldest event whose reclaim failed and was not yet retried to the end.
+    async fn failure_floor(&self) -> Result<Option<Timestamp>>;
+    /// Lowers the failure floor to `time` when that is older than the stored one.
+    async fn record_failure_floor(&self, time: Timestamp) -> Result<()>;
+    /// Removes the failure floor only if it still equals `seen`.
+    async fn clear_failure_floor(&self, seen: Timestamp) -> Result<()>;
     async fn is_processed(&self, event_id: &str) -> Result<bool>;
     async fn add_event(&self, data: NostrEventOffset) -> Result<()>;
     async fn add_retry_message(&self, message: NostrQueuedMessage, max_retries: i32) -> Result<()>;

@@ -6794,6 +6794,7 @@ fn expect_unclaimed_catch_up(
     ctx.nostr_repo
         .expect_current_offset()
         .returning(|| Ok(nostr::types::Timestamp::zero()));
+    ctx.nostr_repo.expect_failure_floor().returning(|| Ok(None));
     ctx.nostr_transport
         .expect_fetch_wallet_events_since()
         .times(1)
@@ -6835,6 +6836,7 @@ async fn handle_push_duplicate_reclaims_once() {
     ctx.nostr_repo
         .expect_current_offset()
         .returning(|| Ok(nostr::types::Timestamp::zero()));
+    ctx.nostr_repo.expect_failure_floor().returning(|| Ok(None));
     let stored = record_stored_payment_requests(&mut ctx);
     let wlt = wallet(ctx).await;
 
@@ -6906,6 +6908,11 @@ async fn handle_push_releases_claim_when_reclaim_fails() {
         .returning(|_| Ok(()));
     ctx.nostr_repo.expect_complete_push_claim().never();
     ctx.nostr_repo.expect_add_event().never();
+    ctx.nostr_repo
+        .expect_record_failure_floor()
+        .withf(move |t| *t == time)
+        .times(1)
+        .returning(|_| Ok(()));
     ctx.nostr_transport
         .expect_fetch_wallet_event()
         .return_once(move |_| Ok(Some((time, event))));
@@ -6980,6 +6987,7 @@ async fn handle_push_catches_up_when_fetching_the_event_fails() {
     ctx.nostr_repo
         .expect_current_offset()
         .returning(|| Ok(nostr::types::Timestamp::zero()));
+    ctx.nostr_repo.expect_failure_floor().returning(|| Ok(None));
     ctx.nostr_transport
         .expect_fetch_wallet_events_since()
         .times(1)
@@ -7003,6 +7011,7 @@ async fn handle_push_catch_up_reaches_back_to_an_old_failed_event() {
     ctx.nostr_repo
         .expect_current_offset()
         .returning(|| Ok(nostr::types::Timestamp::from_secs(1000 + 3 * 86400)));
+    ctx.nostr_repo.expect_failure_floor().returning(|| Ok(None));
     ctx.nostr_transport
         .expect_fetch_wallet_events_since()
         .withf(|since| since.as_secs() <= 1000)
@@ -7013,6 +7022,88 @@ async fn handle_push_catch_up_reaches_back_to_an_old_failed_event() {
     wlt.read()
         .await
         .handle_push(EventId::from_byte_array([9u8; 32]))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn handle_push_catch_up_reaches_a_failed_event_older_than_the_window() {
+    let mut ctx = wallet_ctx();
+    ctx.nostr_repo
+        .expect_record_push_receipt()
+        .returning(|_| Ok(()));
+    ctx.nostr_repo.expect_is_processed().returning(|_| Ok(true));
+    ctx.nostr_repo
+        .expect_current_offset()
+        .returning(|| Ok(nostr::types::Timestamp::from_secs(1_000_000)));
+    ctx.nostr_repo
+        .expect_failure_floor()
+        .returning(|| Ok(Some(nostr::types::Timestamp::zero())));
+    ctx.nostr_repo
+        .expect_clear_failure_floor()
+        .withf(|seen| seen.as_secs() == 0)
+        .times(1)
+        .returning(|_| Ok(()));
+    ctx.nostr_transport
+        .expect_fetch_wallet_events_since()
+        .withf(|since| since.as_secs() == 0)
+        .times(1)
+        .returning(|_| Ok(vec![]));
+    let wlt = wallet(ctx).await;
+
+    wlt.read()
+        .await
+        .handle_push(EventId::from_byte_array([9u8; 32]))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn handle_push_catch_up_keeps_the_failure_floor_while_an_event_still_fails() {
+    let mut ctx = wallet_ctx();
+    let (time, event) = request_event_with_id(Uuid::new_v4(), 4);
+    ctx.nostr_repo
+        .expect_record_push_receipt()
+        .returning(|_| Ok(()));
+    ctx.nostr_repo
+        .expect_is_processed()
+        .returning(|_| Ok(false));
+    ctx.nostr_repo
+        .expect_claim_push_event()
+        .returning(|_| Ok(true));
+    ctx.nostr_repo
+        .expect_release_push_claim()
+        .returning(|_| Ok(()));
+    ctx.nostr_repo
+        .expect_current_offset()
+        .returning(|| Ok(nostr::types::Timestamp::from_secs(1_000_000)));
+    ctx.nostr_repo
+        .expect_failure_floor()
+        .returning(|| Ok(Some(nostr::types::Timestamp::zero())));
+    ctx.nostr_repo
+        .expect_record_failure_floor()
+        .times(1)
+        .returning(|_| Ok(()));
+    ctx.nostr_repo.expect_clear_failure_floor().never();
+    ctx.nostr_transport
+        .expect_fetch_wallet_event()
+        .return_once(|_| Ok(None));
+    ctx.nostr_transport
+        .expect_fetch_wallet_events_since()
+        .times(1)
+        .return_once(move |_| Ok(vec![(time, event)]));
+    ctx.payment_request_repo
+        .expect_add_payment_request()
+        .returning(|_| {
+            Err(bcr_wallet_persistence::error::Error::BorshSerialization(
+                "store failed".into(),
+            ))
+        });
+    let wlt = wallet(ctx).await;
+
+    wlt.read()
+        .await
+        .handle_push(EventId::from_byte_array([4u8; 32]))
         .await
         .unwrap();
 }

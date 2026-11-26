@@ -238,6 +238,7 @@ impl NostrDB {
     const DEAD_LETTER_DB_NAME: &'static str = "dead_letter";
     const PUSH_CLAIM_DB_NAME: &'static str = "push_claim";
     const CURRENT_OFFSET_UNIQUE_ID: &'static str = "current_offset";
+    const FAILURE_FLOOR_UNIQUE_ID: &'static str = "failure_floor";
     const NOSTR_QUEUE_PROCESSING_TIMEOUT_SECS: i64 = 60;
 
     pub(super) fn offset_entry_table_name(wallet_id: &str) -> String {
@@ -356,6 +357,43 @@ impl NostrDB {
                 }
             }
             Err(TableError::TableDoesNotExist(_)) => Ok(Timestamp::zero()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn update_failure_floor_sync(
+        db: Arc<Database>,
+        last_offset_table: TableDefinition<'static, &'static [u8], u64>,
+        update: impl FnOnce(Option<u64>) -> Option<u64>,
+    ) -> Result<()> {
+        let write_txn = db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(last_offset_table)?;
+            let key = Self::FAILURE_FLOOR_UNIQUE_ID.as_bytes();
+            let current = table.get(key)?.map(|v| v.value());
+            match update(current) {
+                Some(next) => {
+                    table.insert(key, next)?;
+                }
+                None => {
+                    table.remove(key)?;
+                }
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    fn failure_floor_sync(
+        db: Arc<Database>,
+        last_offset_table: TableDefinition<'static, &'static [u8], u64>,
+    ) -> Result<Option<Timestamp>> {
+        let read_txn = db.begin_read()?;
+        match read_txn.open_table(last_offset_table) {
+            Ok(table) => Ok(table
+                .get(Self::FAILURE_FLOOR_UNIQUE_ID.as_bytes())?
+                .map(|v| Timestamp::from(v.value()))),
+            Err(TableError::TableDoesNotExist(_)) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
@@ -581,6 +619,39 @@ impl NostrRepository for NostrDB {
         Ok(res)
     }
 
+    async fn failure_floor(&self) -> Result<Option<Timestamp>> {
+        let db_clone = self.db.clone();
+        let table = self.last_offset_table;
+        Ok(spawn_blocking(move || Self::failure_floor_sync(db_clone, table)).await??)
+    }
+
+    async fn record_failure_floor(&self, time: Timestamp) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.last_offset_table;
+        let secs = time.as_secs();
+        spawn_blocking(move || {
+            Self::update_failure_floor_sync(db_clone, table, |c| {
+                Some(c.map_or(secs, |c| c.min(secs)))
+            })
+        })
+        .await??;
+        Ok(())
+    }
+
+    async fn clear_failure_floor(&self, seen: Timestamp) -> Result<()> {
+        let db_clone = self.db.clone();
+        let table = self.last_offset_table;
+        let secs = seen.as_secs();
+        spawn_blocking(move || {
+            Self::update_failure_floor_sync(db_clone, table, |c| match c {
+                Some(c) if c == secs => None,
+                other => other,
+            })
+        })
+        .await??;
+        Ok(())
+    }
+
     async fn is_processed(&self, event_id: &str) -> Result<bool> {
         let db_clone = self.db.clone();
         let table = self.offset_entry_table;
@@ -793,6 +864,32 @@ mod tests {
             time: Timestamp::from(time),
             success,
         }
+    }
+
+    #[tokio::test]
+    async fn test_failure_floor_keeps_oldest_and_clears_only_the_value_seen() {
+        let repo = get_db("wallet-failure-floor");
+        assert_eq!(repo.failure_floor().await.unwrap(), None);
+        repo.record_failure_floor(Timestamp::from(500))
+            .await
+            .unwrap();
+        repo.record_failure_floor(Timestamp::from(0)).await.unwrap();
+        repo.record_failure_floor(Timestamp::from(900))
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.failure_floor().await.unwrap(),
+            Some(Timestamp::from(0))
+        );
+        repo.clear_failure_floor(Timestamp::from(500))
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.failure_floor().await.unwrap(),
+            Some(Timestamp::from(0))
+        );
+        repo.clear_failure_floor(Timestamp::from(0)).await.unwrap();
+        assert_eq!(repo.failure_floor().await.unwrap(), None);
     }
 
     #[tokio::test]
