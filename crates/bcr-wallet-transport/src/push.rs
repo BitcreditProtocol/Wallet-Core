@@ -71,7 +71,9 @@ pub struct SignedDeviceRequest {
 
 /// The absolute URL a NIP-98 auth event for device registration names in its `u` tag
 pub fn push_url(host_url: &Url) -> Option<Url> {
-    host_url.join(PUSH_PATH).ok()
+    let mut url = host_url.clone();
+    url.path_segments_mut().ok()?.pop_if_empty().push(PUSH_PATH);
+    Some(url)
 }
 
 /// Signs a device registration request as a NIP-98 event (kind 27235) with `keys`; the relay
@@ -329,5 +331,19 @@ mod tests {
         let payload: PushPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(payload.kind, 1059);
         assert_eq!(serde_json::to_string(&payload).unwrap(), json);
+    }
+
+    #[test]
+    fn push_contract_url_keeps_host_path() {
+        let host = Url::parse("https://relay.example.com/a").unwrap();
+        let url = push_url(&host).unwrap();
+        assert_eq!(url.as_str(), "https://relay.example.com/a/push");
+        let slashed = Url::parse("https://relay.example.com/a/").unwrap();
+        assert_eq!(push_url(&slashed).unwrap(), url);
+        let root = Url::parse("https://relay.example.com").unwrap();
+        assert_eq!(
+            push_url(&root).unwrap().as_str(),
+            "https://relay.example.com/push"
+        );
     }
 }
