@@ -21,3 +21,6 @@ thiserror.workspace = true
 tokio = {workspace = true}
 tracing.workspace = true
 uuid = {workspace = true}
+
+[dev-dependencies]
+bcr-wallet-persistence = {workspace = true, features = ["test-utils", "db-redb"]}

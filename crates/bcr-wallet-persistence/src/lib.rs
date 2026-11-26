@@ -285,7 +285,8 @@ pub trait NostrRepository: SendSync {
     /// Records that a push notification for the event arrived; keeps the first receipt time.
     async fn record_push_receipt(&self, event_id: &str) -> Result<()>;
     /// Atomically claims the event for reclaim. Returns `true` for exactly one caller until the
-    /// claim is released; an already claimed or completed event returns `false`.
+    /// claim is released or its lease expires; an event claimed within the lease or completed
+    /// returns `false`.
     async fn claim_push_event(&self, event_id: &str) -> Result<bool>;
     /// Marks the reclaim of a claimed event as done; the event is never claimed again.
     async fn complete_push_claim(&self, event_id: &str) -> Result<()>;

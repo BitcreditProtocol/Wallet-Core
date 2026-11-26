@@ -68,7 +68,10 @@ use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-const GIFT_WRAP_TIMESTAMP_TWEAK_SECS: u64 = 2 * 24 * 60 * 60;
+/// How far before its newest seen event a catch-up looks: past the two days a gift wrap's
+/// timestamp is randomised by, so an event whose reclaim failed is fetched again while newer
+/// ones were reclaimed
+const CATCH_UP_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
 
 pub type NostrReceiver = broadcast::Receiver<NostrWalletEvent>;
 
@@ -514,8 +517,8 @@ impl Wallet {
                 Ok(Some((time, evt))) => self.reclaim_claimed(&id, time, evt).await,
                 Ok(None) => self.nostr_repo.release_push_claim(&id).await?,
                 Err(e) => {
+                    tracing::warn!("Could not fetch pushed event {id}, catching up: {e}");
                     self.nostr_repo.release_push_claim(&id).await?;
-                    return Err(e.into());
                 }
             }
         }
@@ -525,9 +528,7 @@ impl Wallet {
     async fn catch_up_nostr_events(&self) -> Result<()> {
         let offset = self.nostr_repo.current_offset().await?;
         let since = nostr::types::Timestamp::from_secs(
-            offset
-                .as_secs()
-                .saturating_sub(GIFT_WRAP_TIMESTAMP_TWEAK_SECS),
+            offset.as_secs().saturating_sub(CATCH_UP_WINDOW_SECS),
         );
         for (time, evt) in self
             .nostr_transport

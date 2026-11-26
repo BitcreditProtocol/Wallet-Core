@@ -23,7 +23,24 @@ pub const PUSH_PATH: &str = "push";
 pub struct PushPayload {
     pub event_id: EventId,
     pub relay_url: String,
+    #[serde(deserialize_with = "kind_from_number_or_string")]
     pub kind: u16,
+}
+
+/// FCM data maps carry only strings, so the relay's `kind` arrives as `"1059"` there
+fn kind_from_number_or_string<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<u16, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Kind {
+        Number(u16),
+        Text(String),
+    }
+    match Kind::deserialize(d)? {
+        Kind::Number(kind) => Ok(kind),
+        Kind::Text(text) => text.parse().map_err(serde::de::Error::custom),
+    }
 }
 
 /// Platform a push token belongs to; a key holds at most one token per platform
@@ -71,8 +88,12 @@ pub struct SignedDeviceRequest {
 
 /// The absolute URL a NIP-98 auth event for device registration names in its `u` tag
 pub fn push_url(host_url: &Url) -> Option<Url> {
+    if host_url.cannot_be_a_base() {
+        return None;
+    }
     let mut url = host_url.clone();
-    url.path_segments_mut().ok()?.pop_if_empty().push(PUSH_PATH);
+    let path = format!("{}/{PUSH_PATH}", url.path().trim_end_matches('/'));
+    url.set_path(&path);
     Some(url)
 }
 
@@ -354,6 +375,26 @@ mod tests {
         let payload: PushPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(payload.kind, 1059);
         assert_eq!(serde_json::to_string(&payload).unwrap(), json);
+    }
+
+    #[test]
+    fn push_contract_payload_accepts_string_kind_of_fcm_data() {
+        let json = format!(
+            r#"{{"event_id":"{}","relay_url":"wss://relay.example.com","kind":"1059"}}"#,
+            "ab".repeat(32)
+        );
+        assert_eq!(
+            serde_json::from_str::<PushPayload>(&json).unwrap().kind,
+            1059
+        );
+    }
+
+    #[test]
+    fn push_contract_url_drops_every_trailing_slash() {
+        for host in ["https://h//", "https://h///", "https://h/a//"] {
+            let url = push_url(&Url::parse(host).unwrap()).unwrap();
+            assert!(!url.path().contains("//"), "{url}");
+        }
     }
 
     #[test]

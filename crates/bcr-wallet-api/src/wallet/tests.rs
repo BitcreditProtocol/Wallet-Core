@@ -6953,3 +6953,66 @@ async fn push_registration_puts_and_deletes_the_device_token() {
     wlt.register_push_token(request.clone()).await.unwrap();
     wlt.unregister_push_token(request).await.unwrap();
 }
+
+#[tokio::test]
+async fn handle_push_catches_up_when_fetching_the_event_fails() {
+    let mut ctx = wallet_ctx();
+    ctx.nostr_repo
+        .expect_record_push_receipt()
+        .returning(|_| Ok(()));
+    ctx.nostr_repo
+        .expect_is_processed()
+        .returning(|_| Ok(false));
+    ctx.nostr_repo
+        .expect_claim_push_event()
+        .returning(|_| Ok(true));
+    ctx.nostr_repo
+        .expect_release_push_claim()
+        .times(1)
+        .returning(|_| Ok(()));
+    ctx.nostr_transport
+        .expect_fetch_wallet_event()
+        .return_once(|_| {
+            Err(bcr_wallet_transport::error::Error::Network(
+                "relay down".into(),
+            ))
+        });
+    ctx.nostr_repo
+        .expect_current_offset()
+        .returning(|| Ok(nostr::types::Timestamp::zero()));
+    ctx.nostr_transport
+        .expect_fetch_wallet_events_since()
+        .times(1)
+        .returning(|_| Ok(vec![]));
+    let wlt = wallet(ctx).await;
+
+    wlt.read()
+        .await
+        .handle_push(EventId::from_byte_array([9u8; 32]))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn handle_push_catch_up_reaches_back_to_an_old_failed_event() {
+    let mut ctx = wallet_ctx();
+    ctx.nostr_repo
+        .expect_record_push_receipt()
+        .returning(|_| Ok(()));
+    ctx.nostr_repo.expect_is_processed().returning(|_| Ok(true));
+    ctx.nostr_repo
+        .expect_current_offset()
+        .returning(|| Ok(nostr::types::Timestamp::from_secs(1000 + 3 * 86400)));
+    ctx.nostr_transport
+        .expect_fetch_wallet_events_since()
+        .withf(|since| since.as_secs() <= 1000)
+        .times(1)
+        .returning(|_| Ok(vec![]));
+    let wlt = wallet(ctx).await;
+
+    wlt.read()
+        .await
+        .handle_push(EventId::from_byte_array([9u8; 32]))
+        .await
+        .unwrap();
+}

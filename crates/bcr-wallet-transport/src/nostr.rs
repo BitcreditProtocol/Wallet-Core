@@ -436,18 +436,48 @@ impl TransportApi for Transport {
         method: DeviceMethod,
         request: DeviceRequest,
     ) -> Result<()> {
-        let relay = self
-            .client
-            .relays
-            .first()
-            .ok_or_else(|| Error::Network("no relay configured".to_string()))?;
+        if self.client.relays.is_empty() {
+            return Err(Error::Network("no relay configured".to_string()));
+        }
+        let results = futures::future::join_all(
+            self.client
+                .relays
+                .iter()
+                .map(|relay| self.send_device_request_to(relay, method, &request)),
+        )
+        .await;
+        let mut accepted = false;
+        let mut last_error = None;
+        for (relay, result) in self.client.relays.iter().zip(results) {
+            match result {
+                Ok(()) => accepted = true,
+                Err(e) => {
+                    tracing::warn!("Push {} at {relay} failed: {e}", method.as_str());
+                    last_error = Some(e);
+                }
+            }
+        }
+        match last_error {
+            Some(e) if !accepted => Err(e),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl Transport {
+    async fn send_device_request_to(
+        &self,
+        relay: &RelayUrl,
+        method: DeviceMethod,
+        request: &DeviceRequest,
+    ) -> Result<()> {
         let host_url = relay_host_url(relay)
             .ok_or_else(|| Error::Network(format!("invalid relay url {relay}")))?;
         let signed = sign_device_request(
             &self.client.signer(),
             &host_url,
             method,
-            &request,
+            request,
             Timestamp::now(),
         )?;
         let url = push_url(&host_url)
@@ -729,12 +759,87 @@ fn valid_time(kind: Kind, created: Timestamp, since: Timestamp) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::push::{DeviceMethod, DeviceRequest, Platform};
     use bcr_common::{
         cashu::{CurrencyUnit, MintUrl},
         core::NodeId,
     };
     use bcr_wallet_core::event::PaymentRequestActionKind;
+    use bcr_wallet_persistence::MockNostrRepository;
     use std::str::FromStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    async fn relay_counting_requests(status: &'static str) -> (RelayUrl, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = RelayUrl::parse(&format!("ws://{}", listener.local_addr().unwrap())).unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 8192];
+                let _ = stream.read(&mut buf).await;
+                counter.fetch_add(1, Ordering::SeqCst);
+                let response = format!("HTTP/1.1 {status}\r\ncontent-length: 0\r\n\r\n");
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        (url, hits)
+    }
+
+    async fn transport(relays: Vec<RelayUrl>) -> Transport {
+        let keys = Keypair::new(
+            &bitcoin::secp256k1::Secp256k1::new(),
+            &mut bitcoin::secp256k1::rand::thread_rng(),
+        );
+        let client = Client::new(&keys, relays).await.unwrap();
+        Transport::new(Arc::new(client), Arc::new(MockNostrRepository::new()))
+    }
+
+    fn device() -> DeviceRequest {
+        DeviceRequest {
+            platform: Platform::Android,
+            token: "token".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn push_registration_reaches_every_relay() {
+        let (first, first_hits) = relay_counting_requests("204 No Content").await;
+        let (second, second_hits) = relay_counting_requests("204 No Content").await;
+        let transport = transport(vec![first, second]).await;
+        transport
+            .send_device_request(DeviceMethod::Put, device())
+            .await
+            .unwrap();
+        assert_eq!(first_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(second_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn push_registration_succeeds_when_one_relay_accepts() {
+        let (rejecting, _) = relay_counting_requests("404 Not Found").await;
+        let (accepting, hits) = relay_counting_requests("204 No Content").await;
+        let transport = transport(vec![rejecting, accepting]).await;
+        transport
+            .send_device_request(DeviceMethod::Put, device())
+            .await
+            .unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        let (rejecting, _) = relay_counting_requests("404 Not Found").await;
+        assert!(
+            self::transport(vec![rejecting])
+                .await
+                .send_device_request(DeviceMethod::Put, device())
+                .await
+                .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn test_nip17_payment_request_action_is_published_with_the_seal_sender() {

@@ -217,6 +217,10 @@ fn decode_queued_message(
 }
 
 ///////////////////////////////////////////// NostrDB
+/// How long a claim blocks others; a run killed before it completes or releases its claim
+/// leaves the event reclaimable once the lease ran out
+const PUSH_CLAIM_LEASE_SECS: u64 = 120;
+
 pub struct NostrDB {
     db: Arc<Database>,
     keys: bitcoin::secp256k1::Keypair,
@@ -639,10 +643,14 @@ impl NostrRepository for NostrDB {
         let id = event_id.to_owned();
         spawn_blocking(move || {
             Self::update_push_claim_sync(db, table, &id, |c| {
-                if c.claimed_at.is_some() || c.completed_at.is_some() {
+                let now = Timestamp::now();
+                let leased = c.claimed_at.is_some_and(|t| {
+                    now.as_secs().saturating_sub(t.as_secs()) < PUSH_CLAIM_LEASE_SECS
+                });
+                if leased || c.completed_at.is_some() {
                     return (false, false);
                 }
-                c.claimed_at = Some(Timestamp::now());
+                c.claimed_at = Some(now);
                 (true, true)
             })
         })
@@ -963,6 +971,21 @@ mod tests {
         assert!(!repo.claim_push_event("event-1").await.unwrap());
         repo.release_push_claim("event-1").await.unwrap();
         assert!(repo.claim_push_event("event-1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn push_claim_of_a_dead_run_is_reclaimable_after_the_lease() {
+        let repo = get_db("wallet-push-claim-lease");
+        assert!(repo.claim_push_event("event-1").await.unwrap());
+        NostrDB::update_push_claim_sync(repo.db.clone(), repo.push_claim_table, "event-1", |c| {
+            c.claimed_at = Some(Timestamp::from(
+                Timestamp::now().as_secs() - PUSH_CLAIM_LEASE_SECS,
+            ));
+            (true, ())
+        })
+        .unwrap();
+        assert!(repo.claim_push_event("event-1").await.unwrap());
+        assert!(!repo.claim_push_event("event-1").await.unwrap());
     }
 
     #[tokio::test]
