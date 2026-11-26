@@ -458,7 +458,7 @@ impl TransportApi for Transport {
             }
         }
         match last_error {
-            Some(e) if !accepted => Err(e),
+            Some(e) if !accepted || method == DeviceMethod::Delete => Err(e),
             _ => Ok(()),
         }
     }
@@ -839,6 +839,18 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn push_unregister_fails_when_one_relay_rejects() {
+        let (accepting, _) = relay_counting_requests("204 No Content").await;
+        let (rejecting, rejected_hits) = relay_counting_requests("404 Not Found").await;
+        let transport = transport(vec![accepting, rejecting]).await;
+        let result = transport
+            .send_device_request(DeviceMethod::Delete, device())
+            .await;
+        assert_eq!(rejected_hits.load(Ordering::SeqCst), 1);
+        assert!(result.is_err());
     }
 
     #[tokio::test]
