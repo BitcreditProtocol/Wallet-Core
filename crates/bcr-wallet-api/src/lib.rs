@@ -1100,6 +1100,17 @@ impl AppState {
         Ok(retried)
     }
 
+    // Reclaims the Nostr event a push notification names, then catches up on missed events
+    pub async fn wallet_handle_push(
+        &self,
+        wallet_id: String,
+        event_id: ::nostr::event::EventId,
+    ) -> Result<()> {
+        tracing::debug!("wallet_handle_push({wallet_id}, {event_id})");
+        let wallet = self.held_wallet(&wallet_id).await?;
+        wallet.read().await.handle_push(event_id).await
+    }
+
     // Refreshes the state of all pending transactions of the given wallet
     pub async fn wallet_refresh_txs(&self, wallet_id: String) -> Result<usize> {
         tracing::debug!("wallet_refresh_txs({wallet_id})");
