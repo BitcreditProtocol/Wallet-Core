@@ -1,5 +1,5 @@
 use crate::{
-    NostrEventOffset, NostrQueuedMessage, NostrRepository,
+    NostrEventOffset, NostrQueuedMessage, NostrRepository, PushClaim,
     error::{Error, Result},
 };
 use async_trait::async_trait;
@@ -100,13 +100,48 @@ pub(super) fn encode_event_offset(entry: &NostrEventOffsetEntry) -> Result<Vec<u
     .map_err(|e| Error::BorshSerialization(e.to_string()))
 }
 
-fn decode_event_offset(bytes: &[u8]) -> Result<NostrEventOffsetEntry> {
+pub(super) fn decode_event_offset(bytes: &[u8]) -> Result<NostrEventOffsetEntry> {
     let StoredNostrEventOffset::V1(payload) =
         borsh::from_slice(bytes).map_err(|e| Error::BorshSerialization(e.to_string()))?;
     Ok(NostrEventOffsetEntry {
         event_id: payload.event_id,
         time: Timestamp::from(payload.time),
         success: payload.success,
+    })
+}
+
+/// StoredPushClaim is a versioned, borsh-serialized push receipt and reclaim state
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) enum StoredPushClaim {
+    V1(StoredPushClaimPayloadV1),
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub(super) struct StoredPushClaimPayloadV1 {
+    event_id: String,
+    received_at: Option<u64>,
+    claimed_at: Option<u64>,
+    completed_at: Option<u64>,
+}
+
+pub(super) fn encode_push_claim(claim: &PushClaim) -> Result<Vec<u8>> {
+    borsh::to_vec(&StoredPushClaim::V1(StoredPushClaimPayloadV1 {
+        event_id: claim.event_id.clone(),
+        received_at: claim.received_at.map(|t| t.as_secs()),
+        claimed_at: claim.claimed_at.map(|t| t.as_secs()),
+        completed_at: claim.completed_at.map(|t| t.as_secs()),
+    }))
+    .map_err(|e| Error::BorshSerialization(e.to_string()))
+}
+
+fn decode_push_claim(bytes: &[u8]) -> Result<PushClaim> {
+    let StoredPushClaim::V1(p) =
+        borsh::from_slice(bytes).map_err(|e| Error::BorshSerialization(e.to_string()))?;
+    Ok(PushClaim {
+        event_id: p.event_id,
+        received_at: p.received_at.map(Timestamp::from),
+        claimed_at: p.claimed_at.map(Timestamp::from),
+        completed_at: p.completed_at.map(Timestamp::from),
     })
 }
 
@@ -189,6 +224,7 @@ pub struct NostrDB {
     offset_entry_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     dead_letter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    push_claim_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
 }
 
 impl NostrDB {
@@ -196,6 +232,7 @@ impl NostrDB {
     const LAST_OFFSET_DB_NAME: &'static str = "last_offset";
     const QUEUED_MESSAGE_DB_NAME: &'static str = "queued_message";
     const DEAD_LETTER_DB_NAME: &'static str = "dead_letter";
+    const PUSH_CLAIM_DB_NAME: &'static str = "push_claim";
     const CURRENT_OFFSET_UNIQUE_ID: &'static str = "current_offset";
     const NOSTR_QUEUE_PROCESSING_TIMEOUT_SECS: i64 = 60;
 
@@ -209,6 +246,10 @@ impl NostrDB {
 
     pub(super) fn dead_letter_table_name(wallet_id: &str) -> String {
         format!("{wallet_id}_{}", Self::DEAD_LETTER_DB_NAME)
+    }
+
+    pub(super) fn push_claim_table_name(wallet_id: &str) -> String {
+        format!("{wallet_id}_{}", Self::PUSH_CLAIM_DB_NAME)
     }
 
     pub fn new(
@@ -229,6 +270,9 @@ impl NostrDB {
         let dead_letter_name: &'static str =
             Box::leak(format!("{wallet_id}_{}", Self::DEAD_LETTER_DB_NAME).into_boxed_str());
 
+        let push_claim_name: &'static str =
+            Box::leak(Self::push_claim_table_name(wallet_id).into_boxed_str());
+
         let offset_entry_table = TableDefinition::new(offset_entry_name);
         let last_offset_table = TableDefinition::new(last_offset_name);
         let queued_message_table = TableDefinition::new(queued_message_name);
@@ -241,7 +285,55 @@ impl NostrDB {
             last_offset_table,
             queued_message_table,
             dead_letter_table,
+            push_claim_table: TableDefinition::new(push_claim_name),
         })
+    }
+
+    ///////////////////////////////////////////// Push Claim
+    /// Applies `update` to the event's claim inside one write transaction (redb serializes
+    /// writers), so concurrent callers see each other's result. `update` returns whether to
+    /// persist and the value handed back.
+    fn update_push_claim_sync<T>(
+        db: Arc<Database>,
+        table_def: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        event_id: &str,
+        update: impl FnOnce(&mut PushClaim) -> (bool, T),
+    ) -> Result<T> {
+        let write_txn = db.begin_write()?;
+        let out = {
+            let mut table = write_txn.open_table(table_def)?;
+            let existing = match table.get(event_id.as_bytes())? {
+                Some(v) => decode_push_claim(v.value().as_slice())?,
+                None => PushClaim {
+                    event_id: event_id.to_owned(),
+                    ..Default::default()
+                },
+            };
+            let mut claim = existing;
+            let (persist, out) = update(&mut claim);
+            if persist {
+                table.insert(event_id.as_bytes(), encode_push_claim(&claim)?)?;
+            }
+            out
+        };
+        write_txn.commit()?;
+        Ok(out)
+    }
+
+    fn get_push_claim_sync(
+        db: Arc<Database>,
+        table_def: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        event_id: &str,
+    ) -> Result<Option<PushClaim>> {
+        let read_txn = db.begin_read()?;
+        match read_txn.open_table(table_def) {
+            Ok(table) => table
+                .get(event_id.as_bytes())?
+                .map(|v| decode_push_claim(v.value().as_slice()))
+                .transpose(),
+            Err(TableError::TableDoesNotExist(_)) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     ///////////////////////////////////////////// Event Offset
@@ -445,10 +537,15 @@ impl NostrDB {
         last_offset_table: TableDefinition<'static, &'static [u8], u64>,
         queued_message_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
         dead_letter_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        push_claim_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
 
         {
+            if write_txn.open_table(push_claim_table).is_ok() {
+                write_txn.delete_table(push_claim_table)?;
+            }
+
             if write_txn.open_table(offset_entry_table).is_ok() {
                 write_txn.delete_table(offset_entry_table)?;
             }
@@ -506,6 +603,7 @@ impl NostrRepository for NostrDB {
         let offset_entry_table = self.offset_entry_table;
         let queued_message_table = self.queued_message_table;
         let dead_letter_table = self.dead_letter_table;
+        let push_claim_table = self.push_claim_table;
         spawn_blocking(move || {
             Self::delete_repo_sync(
                 db_clone,
@@ -513,9 +611,78 @@ impl NostrRepository for NostrDB {
                 last_offset_table,
                 queued_message_table,
                 dead_letter_table,
+                push_claim_table,
             )
         })
         .await?
+    }
+
+    async fn record_push_receipt(&self, event_id: &str) -> Result<()> {
+        let db = self.db.clone();
+        let table = self.push_claim_table;
+        let id = event_id.to_owned();
+        spawn_blocking(move || {
+            Self::update_push_claim_sync(db, table, &id, |c| {
+                let first = c.received_at.is_none();
+                if first {
+                    c.received_at = Some(Timestamp::now());
+                }
+                (first, ())
+            })
+        })
+        .await?
+    }
+
+    async fn claim_push_event(&self, event_id: &str) -> Result<bool> {
+        let db = self.db.clone();
+        let table = self.push_claim_table;
+        let id = event_id.to_owned();
+        spawn_blocking(move || {
+            Self::update_push_claim_sync(db, table, &id, |c| {
+                if c.claimed_at.is_some() || c.completed_at.is_some() {
+                    return (false, false);
+                }
+                c.claimed_at = Some(Timestamp::now());
+                (true, true)
+            })
+        })
+        .await?
+    }
+
+    async fn complete_push_claim(&self, event_id: &str) -> Result<()> {
+        let db = self.db.clone();
+        let table = self.push_claim_table;
+        let id = event_id.to_owned();
+        spawn_blocking(move || {
+            Self::update_push_claim_sync(db, table, &id, |c| {
+                if c.completed_at.is_none() {
+                    c.completed_at = Some(Timestamp::now());
+                }
+                (true, ())
+            })
+        })
+        .await?
+    }
+
+    async fn release_push_claim(&self, event_id: &str) -> Result<()> {
+        let db = self.db.clone();
+        let table = self.push_claim_table;
+        let id = event_id.to_owned();
+        spawn_blocking(move || {
+            Self::update_push_claim_sync(db, table, &id, |c| {
+                let release = c.completed_at.is_none() && c.claimed_at.is_some();
+                c.claimed_at = None;
+                (release, ())
+            })
+        })
+        .await?
+    }
+
+    async fn push_claim(&self, event_id: &str) -> Result<Option<PushClaim>> {
+        let db = self.db.clone();
+        let table = self.push_claim_table;
+        let id = event_id.to_owned();
+        spawn_blocking(move || Self::get_push_claim_sync(db, table, &id)).await?
     }
 
     async fn add_retry_message(&self, message: NostrQueuedMessage, max_retries: i32) -> Result<()> {
@@ -743,6 +910,67 @@ mod tests {
             repo_b.current_offset().await.expect("repo b offset works"),
             Timestamp::zero()
         );
+    }
+
+    #[tokio::test]
+    async fn push_claim_concurrent_claims_have_one_winner() {
+        let repo = Arc::new(get_db("wallet-push-claim-race"));
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let repo = repo.clone();
+            handles.push(tokio::spawn(async move {
+                repo.claim_push_event("event-1").await.expect("claim works")
+            }));
+        }
+        let mut wins = 0;
+        for h in handles {
+            if h.await.expect("task joins") {
+                wins += 1;
+            }
+        }
+        assert_eq!(wins, 1);
+    }
+
+    #[tokio::test]
+    async fn push_claim_receipt_is_separate_from_completion() {
+        let repo = get_db("wallet-push-claim-receipt");
+        repo.record_push_receipt("event-1").await.unwrap();
+        let claim = repo.push_claim("event-1").await.unwrap().unwrap();
+        assert!(claim.received_at.is_some());
+        assert!(claim.claimed_at.is_none());
+        assert!(claim.completed_at.is_none());
+
+        assert!(repo.claim_push_event("event-1").await.unwrap());
+        repo.complete_push_claim("event-1").await.unwrap();
+        let claim = repo.push_claim("event-1").await.unwrap().unwrap();
+        assert!(claim.received_at.is_some());
+        assert!(claim.completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn push_claim_completed_event_cannot_be_claimed_or_released() {
+        let repo = get_db("wallet-push-claim-done");
+        assert!(repo.claim_push_event("event-1").await.unwrap());
+        repo.complete_push_claim("event-1").await.unwrap();
+        repo.release_push_claim("event-1").await.unwrap();
+        assert!(!repo.claim_push_event("event-1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn push_claim_release_allows_retry() {
+        let repo = get_db("wallet-push-claim-release");
+        assert!(repo.claim_push_event("event-1").await.unwrap());
+        assert!(!repo.claim_push_event("event-1").await.unwrap());
+        repo.release_push_claim("event-1").await.unwrap();
+        assert!(repo.claim_push_event("event-1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn push_claim_receipt_after_claim_keeps_claim() {
+        let repo = get_db("wallet-push-claim-order");
+        assert!(repo.claim_push_event("event-1").await.unwrap());
+        repo.record_push_receipt("event-1").await.unwrap();
+        assert!(!repo.claim_push_event("event-1").await.unwrap());
     }
 
     // Retry Queue Tests

@@ -254,6 +254,16 @@ pub struct NostrEventOffset {
     pub success: bool,
 }
 
+/// Per-event record of a push notification and of the reclaim it triggers. Push and catch-up
+/// both reclaim through `claim_push_event`, so one event id is reclaimed by one of them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PushClaim {
+    pub event_id: String,
+    pub received_at: Option<Timestamp>,
+    pub claimed_at: Option<Timestamp>,
+    pub completed_at: Option<Timestamp>,
+}
+
 #[derive(Clone, Debug)]
 pub struct NostrQueuedMessage {
     pub id: String,
@@ -272,6 +282,16 @@ pub trait NostrRepository: SendSync {
     async fn get_retry_messages(&self, limit: u64) -> Result<Vec<NostrQueuedMessage>>;
     async fn fail_retry(&self, id: &str) -> Result<()>;
     async fn succeed_retry(&self, id: &str) -> Result<()>;
+    /// Records that a push notification for the event arrived; keeps the first receipt time.
+    async fn record_push_receipt(&self, event_id: &str) -> Result<()>;
+    /// Atomically claims the event for reclaim. Returns `true` for exactly one caller until the
+    /// claim is released; an already claimed or completed event returns `false`.
+    async fn claim_push_event(&self, event_id: &str) -> Result<bool>;
+    /// Marks the reclaim of a claimed event as done; the event is never claimed again.
+    async fn complete_push_claim(&self, event_id: &str) -> Result<()>;
+    /// Drops an uncompleted claim so a later push or catch-up can retry the reclaim.
+    async fn release_push_claim(&self, event_id: &str) -> Result<()>;
+    async fn push_claim(&self, event_id: &str) -> Result<Option<PushClaim>>;
     async fn delete_repo(&self) -> Result<()>;
 }
 
