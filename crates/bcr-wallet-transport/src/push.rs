@@ -6,7 +6,7 @@ use bitcoin::{
 use nostr::{
     event::{EventBuilder, EventId, FinalizeEvent, Kind, Tag},
     key::Keys,
-    types::{Timestamp, Url},
+    types::{RelayUrl, Timestamp, Url},
 };
 use serde::{Deserialize, Serialize};
 
@@ -73,6 +73,18 @@ pub struct SignedDeviceRequest {
 pub fn push_url(host_url: &Url) -> Option<Url> {
     let mut url = host_url.clone();
     url.path_segments_mut().ok()?.pop_if_empty().push(PUSH_PATH);
+    Some(url)
+}
+
+/// The HTTP origin of the push endpoint served beside a relay: `wss` maps to `https`, `ws` to `http`
+pub fn relay_host_url(relay: &RelayUrl) -> Option<Url> {
+    let mut url = Url::parse(relay.as_str()).ok()?;
+    let scheme = if url.scheme() == "wss" {
+        "https"
+    } else {
+        "http"
+    };
+    url.set_scheme(scheme).ok()?;
     Some(url)
 }
 
@@ -203,6 +215,17 @@ mod tests {
             Timestamp::from_secs(created_at),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn relay_host_url_maps_websocket_to_http_scheme() {
+        let wss = RelayUrl::parse("wss://relay.example.com/prefix").unwrap();
+        let ws = RelayUrl::parse("ws://127.0.0.1:7000").unwrap();
+        assert_eq!(
+            relay_host_url(&wss).unwrap().as_str(),
+            "https://relay.example.com/prefix"
+        );
+        assert_eq!(relay_host_url(&ws).unwrap().scheme(), "http");
     }
 
     #[test]

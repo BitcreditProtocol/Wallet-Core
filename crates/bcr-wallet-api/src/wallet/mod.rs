@@ -45,7 +45,10 @@ use bcr_wallet_persistence::{
     ContactStoreApi, MigrationJournalEntry, MigrationJournalHeader, MigrationJournalRepository,
     MigrationJournalState, NostrRepository, PaymentRequestStoreApi, TransactionRepository,
 };
-use bcr_wallet_transport::{ConsumerApi, NostrEventChannel, NostrWalletEvent, TransportApi};
+use bcr_wallet_transport::{
+    ConsumerApi, NostrEventChannel, NostrWalletEvent, TransportApi,
+    push::{DeviceMethod, DeviceRequest},
+};
 use bitcoin::{
     base58,
     hashes::{Hash, sha256::Hash as Sha256},
@@ -481,6 +484,22 @@ impl Wallet {
             }
         }
         Ok(())
+    }
+
+    /// Registers the device token with the relay; a new token for the same platform replaces the old one.
+    pub async fn register_push_token(&self, request: DeviceRequest) -> Result<()> {
+        Ok(self
+            .nostr_transport
+            .send_device_request(DeviceMethod::Put, request)
+            .await?)
+    }
+
+    /// Removes the device token from the relay.
+    pub async fn unregister_push_token(&self, request: DeviceRequest) -> Result<()> {
+        Ok(self
+            .nostr_transport
+            .send_device_request(DeviceMethod::Delete, request)
+            .await?)
     }
 
     /// Handles a push notification for a gift wrap: reclaims it once, however many pushes or

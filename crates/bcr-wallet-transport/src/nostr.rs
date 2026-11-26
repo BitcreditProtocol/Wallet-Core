@@ -1,6 +1,7 @@
 use crate::{
     ClientApi, ConsumerApi, NostrEventChannel, NostrWalletEvent, SortOrder, TransportApi,
     error::{Error, Result},
+    push::{DeviceMethod, DeviceRequest, push_url, relay_host_url, sign_device_request},
 };
 use async_trait::async_trait;
 use bcr_common::{cashu::nut18 as cdk18, cdk_common::bitcoin::base58};
@@ -428,6 +429,48 @@ impl TransportApi for Transport {
             }
         }
         Ok(decoded)
+    }
+
+    async fn send_device_request(
+        &self,
+        method: DeviceMethod,
+        request: DeviceRequest,
+    ) -> Result<()> {
+        let relay = self
+            .client
+            .relays
+            .first()
+            .ok_or_else(|| Error::Network("no relay configured".to_string()))?;
+        let host_url = relay_host_url(relay)
+            .ok_or_else(|| Error::Network(format!("invalid relay url {relay}")))?;
+        let signed = sign_device_request(
+            &self.client.signer(),
+            &host_url,
+            method,
+            &request,
+            Timestamp::now(),
+        )?;
+        let url = push_url(&host_url)
+            .ok_or_else(|| Error::Network(format!("invalid relay url {relay}")))?;
+        let response = reqwest::Client::new()
+            .request(
+                reqwest::Method::from_bytes(method.as_str().as_bytes()).expect("valid http method"),
+                url,
+            )
+            .header(reqwest::header::AUTHORIZATION, signed.authorization)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(signed.body)
+            .timeout(self.client.default_timeout * 10)
+            .send()
+            .await
+            .map_err(|e| Error::Network(format!("push registration failed: {e}")))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(Error::Network(format!(
+                "push registration rejected with status {status}"
+            )));
+        }
+        Ok(())
     }
 }
 
