@@ -71,6 +71,7 @@ use uuid::Uuid;
 /// How far before its newest seen event a catch-up looks: past the two days a gift wrap's
 /// timestamp is randomised by, so an event whose reclaim failed is fetched again while newer
 /// ones were reclaimed
+const PUSH_CLAIM_RENEW_SECS: u64 = 30;
 const CATCH_UP_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
 
 pub type NostrReceiver = broadcast::Receiver<NostrWalletEvent>;
@@ -562,7 +563,18 @@ impl Wallet {
         time: nostr::types::Timestamp,
         evt: NostrWalletEvent,
     ) -> bool {
-        if let Err(e) = self.handle_wallet_event(evt).await {
+        let renew = || async {
+            if let Err(e) = self.nostr_repo.renew_push_claim(id).await {
+                tracing::error!("Could not renew push claim {id}: {e}");
+            }
+        };
+        let reclaimed = with_renewal(
+            Duration::from_secs(PUSH_CLAIM_RENEW_SECS),
+            renew,
+            self.handle_wallet_event(evt),
+        )
+        .await;
+        if let Err(e) = reclaimed {
             tracing::warn!("Reclaim of event {id} failed, releasing its claim: {e}");
             if let Err(e) = self.nostr_repo.record_failure_floor(time).await {
                 tracing::error!("Could not record failed event {id}: {e}");
@@ -2339,6 +2351,22 @@ fn reclaimed_amount(entries: &[(cashu::PublicKey, MigrationJournalEntry)]) -> Op
         MigrationJournalState::Reclaimed(amount) => Some(amount),
         _ => None,
     })
+}
+
+/// Runs `work` and calls `renew` every `period` until it finishes.
+async fn with_renewal<T, F: Future<Output = ()>>(
+    period: Duration,
+    renew: impl Fn() -> F,
+    work: impl Future<Output = T>,
+) -> T {
+    tokio::pin!(work);
+    let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    loop {
+        tokio::select! {
+            out = &mut work => return out,
+            _ = ticker.tick() => renew().await,
+        }
+    }
 }
 
 #[cfg(test)]

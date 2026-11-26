@@ -728,6 +728,22 @@ impl NostrRepository for NostrDB {
         .await?
     }
 
+    async fn renew_push_claim(&self, event_id: &str) -> Result<()> {
+        let db = self.db.clone();
+        let table = self.push_claim_table;
+        let id = event_id.to_owned();
+        spawn_blocking(move || {
+            Self::update_push_claim_sync(db, table, &id, |c| {
+                let held = c.completed_at.is_none() && c.claimed_at.is_some();
+                if held {
+                    c.claimed_at = Some(Timestamp::now());
+                }
+                (held, ())
+            })
+        })
+        .await?
+    }
+
     async fn complete_push_claim(&self, event_id: &str) -> Result<()> {
         let db = self.db.clone();
         let table = self.push_claim_table;
@@ -1083,6 +1099,33 @@ mod tests {
         .unwrap();
         assert!(repo.claim_push_event("event-1").await.unwrap());
         assert!(!repo.claim_push_event("event-1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn push_claim_renewal_keeps_a_slow_holder_ahead_of_the_lease() {
+        let repo = get_db("wallet-push-claim-renew");
+        assert!(repo.claim_push_event("event-1").await.unwrap());
+        let backdate = |secs: u64| {
+            NostrDB::update_push_claim_sync(
+                repo.db.clone(),
+                repo.push_claim_table,
+                "event-1",
+                |c| {
+                    c.claimed_at = Some(Timestamp::from(Timestamp::now().as_secs() - secs));
+                    (true, ())
+                },
+            )
+            .unwrap()
+        };
+        backdate(PUSH_CLAIM_LEASE_SECS - 10);
+        repo.renew_push_claim("event-1").await.unwrap();
+        backdate(0);
+        repo.renew_push_claim("event-1").await.unwrap();
+        assert!(!repo.claim_push_event("event-1").await.unwrap());
+
+        repo.release_push_claim("event-1").await.unwrap();
+        repo.renew_push_claim("event-1").await.unwrap();
+        assert!(repo.claim_push_event("event-1").await.unwrap());
     }
 
     #[tokio::test]

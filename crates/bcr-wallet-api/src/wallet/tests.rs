@@ -7107,3 +7107,22 @@ async fn handle_push_catch_up_keeps_the_failure_floor_while_an_event_still_fails
         .await
         .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn claim_is_renewed_while_a_slow_reclaim_runs() {
+    let renewals = std::sync::atomic::AtomicUsize::new(0);
+    let out = super::with_renewal(
+        Duration::from_secs(30),
+        || async {
+            renewals.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        },
+        async {
+            tokio::time::sleep(Duration::from_secs(100)).await;
+            7
+        },
+    )
+    .await;
+
+    assert_eq!(out, 7);
+    assert_eq!(renewals.load(std::sync::atomic::Ordering::SeqCst), 3);
+}

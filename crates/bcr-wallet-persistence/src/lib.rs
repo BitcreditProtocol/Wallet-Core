@@ -294,6 +294,8 @@ pub trait NostrRepository: SendSync {
     /// claim is released or its lease expires; an event claimed within the lease or completed
     /// returns `false`.
     async fn claim_push_event(&self, event_id: &str) -> Result<bool>;
+    /// Restarts the lease of a claim still held, so a reclaim longer than the lease keeps it.
+    async fn renew_push_claim(&self, event_id: &str) -> Result<()>;
     /// Marks the reclaim of a claimed event as done; the event is never claimed again.
     async fn complete_push_claim(&self, event_id: &str) -> Result<()>;
     /// Drops an uncompleted claim so a later push or catch-up can retry the reclaim.
