@@ -1,7 +1,11 @@
 pub mod tests {
     use async_trait::async_trait;
-    use bcr_wallet_transport::{ConsumerApi, TransportApi, error::Result};
-    use nostr::{event::EventId, key::PublicKey, types::RelayUrl};
+    use bcr_wallet_transport::{ConsumerApi, NostrWalletEvent, TransportApi, error::Result};
+    use nostr::{
+        event::EventId,
+        key::PublicKey,
+        types::{RelayUrl, Timestamp},
+    };
 
     mockall::mock! {
         pub Transport {}
@@ -19,6 +23,14 @@ pub mod tests {
                 npub: PublicKey,
                 relays: Vec<RelayUrl>,
             ) -> Result<Vec<RelayUrl>>;
+            async fn fetch_wallet_event(
+                &self,
+                event_id: EventId,
+            ) -> Result<Option<(Timestamp, NostrWalletEvent)>>;
+            async fn fetch_wallet_events_since(
+                &self,
+                since: Timestamp,
+            ) -> Result<Vec<(Timestamp, NostrWalletEvent)>>;
         }
     }
 

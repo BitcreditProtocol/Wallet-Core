@@ -1,5 +1,9 @@
 use crate::error::Result;
-use ::nostr::{event::EventId, key::PublicKey, types::RelayUrl};
+use ::nostr::{
+    event::EventId,
+    key::PublicKey,
+    types::{RelayUrl, Timestamp},
+};
 use async_trait::async_trait;
 use bcr_common::cashu::nut18 as cdk18;
 use bcr_wallet_core::{
@@ -31,6 +35,16 @@ pub trait TransportApi: SendSync {
         npub: PublicKey,
         relays: Vec<RelayUrl>,
     ) -> Result<Vec<RelayUrl>>;
+    /// Fetches one gift wrap by id from the relays and decodes it; `None` if absent or not a wallet event.
+    async fn fetch_wallet_event(
+        &self,
+        event_id: EventId,
+    ) -> Result<Option<(Timestamp, NostrWalletEvent)>>;
+    /// Fetches the wallet events whose gift wrap is not older than `since`, oldest first.
+    async fn fetch_wallet_events_since(
+        &self,
+        since: Timestamp,
+    ) -> Result<Vec<(Timestamp, NostrWalletEvent)>>;
 }
 
 #[async_trait]
@@ -65,6 +79,17 @@ pub enum NostrWalletEvent {
         payload: PaymentRequestActionPayload,
         sender: PublicKey,
     },
+}
+
+impl NostrWalletEvent {
+    pub fn event_id(&self) -> EventId {
+        match self {
+            Self::Cdk18Payment { event_id, .. }
+            | Self::ContactPayment { event_id, .. }
+            | Self::ContactPaymentRequest { event_id, .. }
+            | Self::PaymentRequestAction { event_id, .. } => *event_id,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

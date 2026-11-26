@@ -387,6 +387,48 @@ impl TransportApi for Transport {
     ) -> Result<Vec<RelayUrl>> {
         self.client.fetch_relay_list(npub, relays).await
     }
+
+    async fn fetch_wallet_event(
+        &self,
+        event_id: EventId,
+    ) -> Result<Option<(Timestamp, NostrWalletEvent)>> {
+        let filter = Filter::new().id(event_id).kind(Kind::GiftWrap);
+        let events = self.client.fetch_events(filter, None, None).await?;
+        let signer = self.client.signer();
+        for event in events {
+            if event.id != event_id {
+                continue;
+            }
+            return Ok(decode_nip17_direct_message(&event, &signer)
+                .await?
+                .map(|wallet_event| (event.created_at, wallet_event)));
+        }
+        Ok(None)
+    }
+
+    async fn fetch_wallet_events_since(
+        &self,
+        since: Timestamp,
+    ) -> Result<Vec<(Timestamp, NostrWalletEvent)>> {
+        let filter = Filter::new()
+            .kind(Kind::GiftWrap)
+            .pubkey(self.client.signer().public_key())
+            .since(since);
+        let events = self
+            .client
+            .fetch_events(filter, Some(SortOrder::Asc), None)
+            .await?;
+        let signer = self.client.signer();
+        let mut decoded = Vec::new();
+        for event in events {
+            match decode_nip17_direct_message(&event, &signer).await {
+                Ok(Some(wallet_event)) => decoded.push((event.created_at, wallet_event)),
+                Ok(None) => {}
+                Err(e) => tracing::warn!("Could not decode gift wrap {}: {e}", event.id),
+            }
+        }
+        Ok(decoded)
+    }
 }
 
 #[derive(Clone)]
@@ -541,74 +583,79 @@ async fn handle_nip17_direct_message(
     signer: &Keys,
     event_channel: NostrEventChannel,
 ) -> Result<()> {
+    if let Some(wallet_event) = decode_nip17_direct_message(&event, signer).await? {
+        event_channel.publish(wallet_event);
+    }
+    Ok(())
+}
+
+async fn decode_nip17_direct_message(
+    event: &Event,
+    signer: &Keys,
+) -> Result<Option<NostrWalletEvent>> {
     let UnwrappedGift { rumor, sender } =
-        UnwrappedGift::from_gift_wrap_async(signer, &event).await?;
+        UnwrappedGift::from_gift_wrap_async(signer, event).await?;
     let sender_npub = sender.to_bech32();
     let sender_pub_key = sender.to_hex();
-    if rumor.kind == nostr::event::Kind::PrivateDirectMessage {
-        if let Ok(data) = base58::decode(rumor.content.as_str())
-            && let Ok(envelope) = borsh::from_slice::<EventEnvelope>(&data)
-        {
-            tracing::debug!(
-                "Processing event: {} {} from {sender_npub:?} (hex: {sender_pub_key})",
-                envelope.event_type,
-                envelope.version
-            );
-            match envelope.event_type {
-                bcr_wallet_core::event::EventType::ContactPayment => {
-                    if let Ok(payload) = borsh::from_slice::<ContactPaymentPayload>(&envelope.data)
-                    {
-                        event_channel.publish(NostrWalletEvent::ContactPayment {
-                            event_id: event.id,
-                            payload,
-                            sender,
-                        });
-                    }
-                }
-                bcr_wallet_core::event::EventType::ContactPaymentRequest => {
-                    if let Ok(payload) =
-                        borsh::from_slice::<ContactPaymentRequestPayload>(&envelope.data)
-                    {
-                        event_channel.publish(NostrWalletEvent::ContactPaymentRequest {
-                            event_id: event.id,
-                            payload,
-                            sender,
-                        });
-                    }
-                }
-                bcr_wallet_core::event::EventType::PaymentRequestAction => {
-                    if let Ok(payload) =
-                        borsh::from_slice::<PaymentRequestActionPayload>(&envelope.data)
-                    {
-                        event_channel.publish(NostrWalletEvent::PaymentRequestAction {
-                            event_id: event.id,
-                            payload,
-                            sender,
-                        });
-                    }
-                }
-            };
-        } else if let Ok(cdk18_payload) =
-            serde_json::from_str::<cdk18::PaymentRequestPayload>(&rumor.content)
-        {
-            event_channel.publish(NostrWalletEvent::Cdk18Payment {
-                event_id: event.id,
-                payload: cdk18_payload,
-                sender,
-            });
-        } else {
-            tracing::debug!(
-                "Nostr nip 17 message with id: {} wasn't of any type we handle - ignoring",
-                event.id
-            );
-        }
-    } else {
+    if rumor.kind != nostr::event::Kind::PrivateDirectMessage {
         tracing::debug!(
             "Nostr nip 17 message with id: {} is not private direct message - ignoring",
             event.id
         );
+        return Ok(None);
     }
-    Ok(())
+    let event_id = event.id;
+    if let Ok(data) = base58::decode(rumor.content.as_str())
+        && let Ok(envelope) = borsh::from_slice::<EventEnvelope>(&data)
+    {
+        tracing::debug!(
+            "Processing event: {} {} from {sender_npub:?} (hex: {sender_pub_key})",
+            envelope.event_type,
+            envelope.version
+        );
+        let decoded = match envelope.event_type {
+            bcr_wallet_core::event::EventType::ContactPayment => {
+                borsh::from_slice::<ContactPaymentPayload>(&envelope.data)
+                    .ok()
+                    .map(|payload| NostrWalletEvent::ContactPayment {
+                        event_id,
+                        payload,
+                        sender,
+                    })
+            }
+            bcr_wallet_core::event::EventType::ContactPaymentRequest => {
+                borsh::from_slice::<ContactPaymentRequestPayload>(&envelope.data)
+                    .ok()
+                    .map(|payload| NostrWalletEvent::ContactPaymentRequest {
+                        event_id,
+                        payload,
+                        sender,
+                    })
+            }
+            bcr_wallet_core::event::EventType::PaymentRequestAction => {
+                borsh::from_slice::<PaymentRequestActionPayload>(&envelope.data)
+                    .ok()
+                    .map(|payload| NostrWalletEvent::PaymentRequestAction {
+                        event_id,
+                        payload,
+                        sender,
+                    })
+            }
+        };
+        return Ok(decoded);
+    }
+    if let Ok(payload) = serde_json::from_str::<cdk18::PaymentRequestPayload>(&rumor.content) {
+        return Ok(Some(NostrWalletEvent::Cdk18Payment {
+            event_id,
+            payload,
+            sender,
+        }));
+    }
+    tracing::debug!(
+        "Nostr nip 17 message with id: {} wasn't of any type we handle - ignoring",
+        event.id
+    );
+    Ok(None)
 }
 
 async fn should_process(
