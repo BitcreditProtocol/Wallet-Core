@@ -4,6 +4,7 @@
 * Add a per-event push claim (`NostrRepository::claim_push_event`, `record_push_receipt`, `complete_push_claim`, `release_push_claim`) so push and catch-up reclaim each event once, with push receipt stored apart from reclaim completion (breaking DB change: migration 0007 adds a `<wallet>_push_claim` table and records already processed events as completed claims)
 * Add `wallet_subscribe_to_events`, which calls back with a `WalletEventResponse` (`wallet_id`, `WalletEventKind`, optional `id`) after a change to a wallet's balance, transactions, payment requests or the wallet list; `Resync` means events were dropped, so re-fetch everything
 * Add `AppState::wallet_handle_push`, which fetches the Nostr event a push notification names, reclaims it once under the push claim, and catches up on gift wraps missed since the last seen event; `TransportApi` gains `fetch_wallet_event` and `fetch_wallet_events_since`
+* Add `wallet_handle_push` (`WalletHandlePushRequest`), `wallet_register_push_token` and `wallet_unregister_push_token` (`WalletPushTokenRequest`, `PushPlatform`) to the FFI, backed by `AppState::wallet_handle_push`, `wallet_register_push_token` and `wallet_unregister_push_token`; an unparsable event id fails with `WalletErrorCode::InvalidEventId`
 
 # 0.9.17
 

@@ -167,6 +167,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_wallet_get_payment_request_request(dynamic raw);
 
   @protected
+  WalletHandlePushRequest dco_decode_box_autoadd_wallet_handle_push_request(
+    dynamic raw,
+  );
+
+  @protected
   WalletIdForMnemonicAndNetworkRequest
   dco_decode_box_autoadd_wallet_id_for_mnemonic_and_network_request(
     dynamic raw,
@@ -239,6 +244,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletProtestSwapRequest dco_decode_box_autoadd_wallet_protest_swap_request(
+    dynamic raw,
+  );
+
+  @protected
+  WalletPushTokenRequest dco_decode_box_autoadd_wallet_push_token_request(
     dynamic raw,
   );
 
@@ -460,6 +470,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ProtestStatus dco_decode_protest_status(dynamic raw);
 
   @protected
+  PushPlatform dco_decode_push_platform(dynamic raw);
+
+  @protected
   (String, bool) dco_decode_record_string_bool(dynamic raw);
 
   @protected
@@ -616,6 +629,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_wallet_get_payment_request_response(dynamic raw);
 
   @protected
+  WalletHandlePushRequest dco_decode_wallet_handle_push_request(dynamic raw);
+
+  @protected
   WalletIdForMnemonicAndNetworkRequest
   dco_decode_wallet_id_for_mnemonic_and_network_request(dynamic raw);
 
@@ -743,6 +759,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WalletProtestSwapResponse dco_decode_wallet_protest_swap_response(
     dynamic raw,
   );
+
+  @protected
+  WalletPushTokenRequest dco_decode_wallet_push_token_request(dynamic raw);
 
   @protected
   WalletReceiveRequest dco_decode_wallet_receive_request(dynamic raw);
@@ -988,6 +1007,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  WalletHandlePushRequest sse_decode_box_autoadd_wallet_handle_push_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   WalletIdForMnemonicAndNetworkRequest
   sse_decode_box_autoadd_wallet_id_for_mnemonic_and_network_request(
     SseDeserializer deserializer,
@@ -1080,6 +1104,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletProtestSwapRequest sse_decode_box_autoadd_wallet_protest_swap_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletPushTokenRequest sse_decode_box_autoadd_wallet_push_token_request(
     SseDeserializer deserializer,
   );
 
@@ -1367,6 +1396,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ProtestStatus sse_decode_protest_status(SseDeserializer deserializer);
 
   @protected
+  PushPlatform sse_decode_push_platform(SseDeserializer deserializer);
+
+  @protected
   (String, bool) sse_decode_record_string_bool(SseDeserializer deserializer);
 
   @protected
@@ -1557,6 +1589,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   sse_decode_wallet_get_payment_request_response(SseDeserializer deserializer);
 
   @protected
+  WalletHandlePushRequest sse_decode_wallet_handle_push_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   WalletIdForMnemonicAndNetworkRequest
   sse_decode_wallet_id_for_mnemonic_and_network_request(
     SseDeserializer deserializer,
@@ -1718,6 +1755,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WalletProtestSwapResponse sse_decode_wallet_protest_swap_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WalletPushTokenRequest sse_decode_wallet_push_token_request(
     SseDeserializer deserializer,
   );
 
@@ -2040,6 +2082,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_wallet_handle_push_request(
+    WalletHandlePushRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_wallet_id_for_mnemonic_and_network_request(
     WalletIdForMnemonicAndNetworkRequest self,
     SseSerializer serializer,
@@ -2138,6 +2186,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_wallet_protest_swap_request(
     WalletProtestSwapRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_wallet_push_token_request(
+    WalletPushTokenRequest self,
     SseSerializer serializer,
   );
 
@@ -2487,6 +2541,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_protest_status(ProtestStatus self, SseSerializer serializer);
 
   @protected
+  void sse_encode_push_platform(PushPlatform self, SseSerializer serializer);
+
+  @protected
   void sse_encode_record_string_bool(
     (String, bool) self,
     SseSerializer serializer,
@@ -2730,6 +2787,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_wallet_handle_push_request(
+    WalletHandlePushRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_wallet_id_for_mnemonic_and_network_request(
     WalletIdForMnemonicAndNetworkRequest self,
     SseSerializer serializer,
@@ -2918,6 +2981,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_wallet_protest_swap_response(
     WalletProtestSwapResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_wallet_push_token_request(
+    WalletPushTokenRequest self,
     SseSerializer serializer,
   );
 

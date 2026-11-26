@@ -4796,6 +4796,7 @@ dependencies = [
  "bcr-common",
  "bcr-wallet-api",
  "bcr-wallet-core",
+ "bcr-wallet-transport",
  "bip39 3.0.0",
  "bitcoin",
  "env_logger",
