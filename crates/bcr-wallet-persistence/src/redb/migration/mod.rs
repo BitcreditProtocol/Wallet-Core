@@ -16,6 +16,7 @@ mod migration_0003;
 mod migration_0004;
 mod migration_0005;
 mod migration_0006;
+mod migration_0007;
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct AppliedMigration {
@@ -125,6 +126,18 @@ fn migrate_wallet_sync(db: Arc<Database>, namespace: WalletStorageNamespace) -> 
         tracing::info!("Applied Migration 0006 for wallet {}", &namespace.wallet_id);
     }
 
+    let migration_0007_id_for_wallet =
+        migration_0007::migration_name_for_wallet(&namespace.wallet_id);
+    if !applied.contains(&migration_0007_id_for_wallet) {
+        tracing::info!(
+            "Applying Migration 0007 for wallet {}",
+            &namespace.wallet_id
+        );
+        migration_0007::migration_0007_push_claims(&write_txn, &namespace)?;
+        mark_migration_applied(&write_txn, &migration_0007_id_for_wallet)?;
+        tracing::info!("Applied Migration 0007 for wallet {}", &namespace.wallet_id);
+    }
+
     write_txn.commit()?;
     tracing::info!(
         "Finished DB migrations for wallet {}.",
@@ -144,6 +157,7 @@ pub struct WalletStorageNamespace {
     offset_entry_table: String,
     queued_message_table: String,
     dead_letter_table: String,
+    push_claim_table: String,
     payment_request_table: String,
     melt_table: String,
     mint_table: String,
@@ -165,6 +179,7 @@ pub fn collect_wallet_namespace(
         offset_entry_table: NostrDB::offset_entry_table_name(&wallet_id),
         queued_message_table: NostrDB::queued_message_table_name(&wallet_id),
         dead_letter_table: NostrDB::dead_letter_table_name(&wallet_id),
+        push_claim_table: NostrDB::push_claim_table_name(&wallet_id),
         payment_request_table: PaymentRequestDB::payment_requests_table_name(&wallet_id),
         melt_table: MintMeltDB::melt_table_name(&wallet_id, &unit),
         mint_table: MintMeltDB::mint_table_name(&wallet_id, &unit),
