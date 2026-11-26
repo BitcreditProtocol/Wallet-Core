@@ -142,9 +142,18 @@ async fn wallet(mut ctx: MockWalletCtx) -> Arc<RwLock<Wallet>> {
 }
 
 async fn wallet_with_debit(
-    ctx: MockWalletCtx,
+    mut ctx: MockWalletCtx,
     debit: Box<dyn DebitPocketApi>,
 ) -> Arc<RwLock<Wallet>> {
+    ctx.nostr_repo
+        .expect_claim_push_event()
+        .returning(|_| Ok(PushClaimState::Claimed(Uuid::new_v4())));
+    ctx.nostr_repo
+        .expect_complete_push_claim()
+        .returning(|_, _| Ok(()));
+    ctx.nostr_repo
+        .expect_release_push_claim()
+        .returning(|_, _| Ok(()));
     let arc_client: Arc<dyn ClowderMintConnector> = Arc::new(ctx.client);
     let mut beta_mock = crate::external::mint::MockClowderMintConnector::new();
     beta_mock.expect_get_alpha_status().returning(|_| {
@@ -6766,4 +6775,316 @@ async fn events_reclaim_of_a_settled_original_still_emits_balance() {
     wlt.read().await.reclaim_tx(tx_id).await.unwrap();
 
     assert!(drain_events(&mut rx).contains(&crate::WalletEventKind::BalanceUpdated));
+}
+
+fn gift_wrap() -> nostr::event::Event {
+    use nostr::event::FinalizeEvent;
+    nostr::event::EventBuilder::new(nostr::event::Kind::GiftWrap, "")
+        .finalize(&nostr::key::Keys::generate())
+        .unwrap()
+}
+
+fn request_event_with_id(id: Uuid, event: EventId) -> bcr_wallet_transport::NostrWalletEvent {
+    let mut request = contact_payment_request_event(id, node_id(NODE_ID_1).npub());
+    if let bcr_wallet_transport::NostrWalletEvent::ContactPaymentRequest { event_id, .. } =
+        &mut request
+    {
+        *event_id = event;
+    }
+    request
+}
+
+fn expect_decoded_requests(ctx: &mut MockWalletCtx, requests: Vec<(EventId, Uuid)>) {
+    ctx.nostr_transport
+        .expect_decode_gift_wrap()
+        .returning(move |event| {
+            Ok(requests
+                .iter()
+                .find(|(id, _)| *id == event.id)
+                .map(|(id, request)| request_event_with_id(*request, *id)))
+        });
+}
+
+fn expect_claims_once_per_event(ctx: &mut MockWalletCtx) {
+    let done = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    ctx.nostr_repo
+        .expect_claim_push_event()
+        .returning(move |id| {
+            Ok(if done.lock().unwrap().insert(id.to_owned()) {
+                PushClaimState::Claimed(Uuid::new_v4())
+            } else {
+                PushClaimState::Done
+            })
+        });
+}
+
+fn expect_push_fetches(
+    ctx: &mut MockWalletCtx,
+    named: Vec<nostr::event::Event>,
+    missed: Vec<nostr::event::Event>,
+) {
+    ctx.nostr_repo
+        .expect_record_push_receipt()
+        .returning(|_| Ok(()));
+    ctx.nostr_repo
+        .expect_current_offset()
+        .returning(|| Ok(nostr::types::Timestamp::zero()));
+    ctx.nostr_transport
+        .expect_fetch_gift_wraps()
+        .returning(move |_| Ok(named.clone()));
+    ctx.nostr_transport
+        .expect_fetch_gift_wraps_since()
+        .returning(move |_| Ok(missed.clone()));
+}
+
+#[tokio::test]
+async fn handle_push_duplicate_reclaims_once() {
+    let mut ctx = wallet_ctx();
+    let id = Uuid::new_v4();
+    let pushed = gift_wrap();
+    let time = pushed.created_at;
+    ctx.nostr_repo
+        .expect_due_push_retries()
+        .returning(|| Ok(vec![]));
+    expect_push_fetches(&mut ctx, vec![pushed.clone()], vec![pushed.clone()]);
+    expect_claims_once_per_event(&mut ctx);
+    expect_decoded_requests(&mut ctx, vec![(pushed.id, id)]);
+    ctx.nostr_repo
+        .expect_complete_push_claim()
+        .withf(move |_, at| *at == Some(time))
+        .times(1)
+        .returning(|_, _| Ok(()));
+    let mut stored = record_stored_payment_requests(&mut ctx);
+    let wlt = wallet(ctx).await;
+
+    wlt.read().await.handle_push(pushed.id).await.unwrap();
+    wlt.read().await.handle_push(pushed.id).await.unwrap();
+
+    assert_eq!(stored.try_recv().unwrap(), id);
+    assert!(stored.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn handle_push_reclaims_missed_events_and_due_retries() {
+    let mut ctx = wallet_ctx();
+    let (pushed, retried, missed) = (gift_wrap(), gift_wrap(), gift_wrap());
+    let requests: Vec<_> = [&pushed, &retried, &missed]
+        .map(|event| (event.id, Uuid::new_v4()))
+        .to_vec();
+    let due = retried.id;
+    ctx.nostr_repo
+        .expect_due_push_retries()
+        .returning(move || Ok(vec![due.to_hex()]));
+    ctx.nostr_repo
+        .expect_record_push_receipt()
+        .returning(|_| Ok(()));
+    ctx.nostr_repo
+        .expect_current_offset()
+        .returning(|| Ok(nostr::types::Timestamp::from_secs(CATCH_UP_WINDOW_SECS + 5)));
+    let expected = vec![retried.id, pushed.id];
+    let named = vec![pushed.clone(), retried];
+    ctx.nostr_transport
+        .expect_fetch_gift_wraps()
+        .withf(move |ids| *ids == expected)
+        .times(1)
+        .return_once(move |_| Ok(named));
+    ctx.nostr_transport
+        .expect_fetch_gift_wraps_since()
+        .withf(|since| since.as_secs() == 5)
+        .times(1)
+        .return_once(move |_| Ok(vec![missed]));
+    expect_claims_once_per_event(&mut ctx);
+    expect_decoded_requests(&mut ctx, requests.clone());
+    ctx.nostr_repo
+        .expect_complete_push_claim()
+        .times(3)
+        .returning(|_, _| Ok(()));
+    let mut stored = record_stored_payment_requests(&mut ctx);
+    let wlt = wallet(ctx).await;
+
+    wlt.read().await.handle_push(pushed.id).await.unwrap();
+
+    for (_, request) in requests {
+        assert_eq!(stored.try_recv().unwrap(), request);
+    }
+}
+
+#[tokio::test]
+async fn handle_push_releases_the_claim_of_its_owner_when_reclaim_fails() {
+    let mut ctx = wallet_ctx();
+    let pushed = gift_wrap();
+    let owner = Uuid::new_v4();
+    ctx.nostr_repo
+        .expect_due_push_retries()
+        .returning(|| Ok(vec![]));
+    expect_push_fetches(&mut ctx, vec![pushed.clone()], vec![]);
+    ctx.nostr_repo
+        .expect_claim_push_event()
+        .returning(move |_| Ok(PushClaimState::Claimed(owner)));
+    expect_decoded_requests(&mut ctx, vec![(pushed.id, Uuid::new_v4())]);
+    ctx.nostr_repo
+        .expect_release_push_claim()
+        .withf(move |_, released| *released == owner)
+        .times(1)
+        .returning(|_, _| Ok(()));
+    ctx.nostr_repo.expect_complete_push_claim().never();
+    ctx.payment_request_repo
+        .expect_add_payment_request()
+        .returning(|_| {
+            Err(bcr_wallet_persistence::error::Error::BorshSerialization(
+                "store failed".into(),
+            ))
+        });
+    let wlt = wallet(ctx).await;
+
+    wlt.read().await.handle_push(pushed.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn handle_push_completes_a_gift_wrap_it_cannot_decode() {
+    let mut ctx = wallet_ctx();
+    let pushed = gift_wrap();
+    ctx.nostr_repo
+        .expect_due_push_retries()
+        .returning(|| Ok(vec![]));
+    expect_push_fetches(&mut ctx, vec![pushed.clone()], vec![]);
+    expect_claims_once_per_event(&mut ctx);
+    ctx.nostr_transport
+        .expect_decode_gift_wrap()
+        .returning(|_| Err(TransportError::Network("not for this key".into())));
+    ctx.nostr_repo
+        .expect_complete_push_claim()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    ctx.nostr_repo.expect_release_push_claim().never();
+    let wlt = wallet(ctx).await;
+
+    wlt.read().await.handle_push(pushed.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn handle_push_fails_unless_the_pushed_event_is_found_or_already_reclaimed() {
+    for (completed, expect_ok) in [(false, false), (true, true)] {
+        let mut ctx = wallet_ctx();
+        let missed = gift_wrap();
+        let request = Uuid::new_v4();
+        ctx.nostr_repo
+            .expect_due_push_retries()
+            .returning(|| Ok(vec![]));
+        ctx.nostr_repo
+            .expect_record_push_receipt()
+            .returning(|_| Ok(()));
+        ctx.nostr_repo
+            .expect_current_offset()
+            .returning(|| Ok(nostr::types::Timestamp::zero()));
+        ctx.nostr_transport
+            .expect_fetch_gift_wraps()
+            .returning(|_| Err(TransportError::Network("relay down".into())));
+        let caught_up = vec![missed.clone()];
+        ctx.nostr_transport
+            .expect_fetch_gift_wraps_since()
+            .returning(move |_| Ok(caught_up.clone()));
+        expect_claims_once_per_event(&mut ctx);
+        expect_decoded_requests(&mut ctx, vec![(missed.id, request)]);
+        ctx.nostr_repo
+            .expect_complete_push_claim()
+            .times(1)
+            .returning(|_, _| Ok(()));
+        ctx.nostr_repo.expect_push_claim().returning(move |id| {
+            Ok(Some(bcr_wallet_persistence::PushClaim {
+                event_id: id.to_owned(),
+                completed_at: completed.then(nostr::types::Timestamp::now),
+                ..Default::default()
+            }))
+        });
+        let mut stored = record_stored_payment_requests(&mut ctx);
+        let wlt = wallet(ctx).await;
+
+        let pushed = EventId::from_byte_array([4u8; 32]);
+        let result = wlt.read().await.handle_push(pushed).await;
+
+        assert_eq!(result.is_ok(), expect_ok);
+        if !expect_ok {
+            assert!(matches!(result, Err(Error::PushedEventNotFound(id)) if id == pushed));
+        }
+        assert_eq!(stored.try_recv().unwrap(), request);
+    }
+}
+
+#[tokio::test]
+async fn live_listener_and_push_reclaim_one_event_once() {
+    let mut ctx = wallet_ctx();
+    let nostr_event_channel = ctx.nostr_event_channel.clone();
+    let id = Uuid::new_v4();
+    let pushed = gift_wrap();
+    ctx.nostr_repo
+        .expect_due_push_retries()
+        .returning(|| Ok(vec![]));
+    expect_push_fetches(&mut ctx, vec![pushed.clone()], vec![]);
+    expect_claims_once_per_event(&mut ctx);
+    expect_decoded_requests(&mut ctx, vec![(pushed.id, id)]);
+    ctx.nostr_repo
+        .expect_complete_push_claim()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    ctx.nostr_consumer
+        .expect_start()
+        .returning(|| Ok(tokio::task::JoinSet::new()));
+    let mut stored = record_stored_payment_requests(&mut ctx);
+    let wlt = wallet(ctx).await;
+    wlt.read().await.start_nostr_listener(None).await;
+
+    nostr_event_channel.publish(request_event_with_id(id, pushed.id));
+    wlt.read().await.handle_push(pushed.id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert_eq!(stored.try_recv().unwrap(), id);
+    assert!(stored.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn push_registration_puts_and_deletes_the_device_token() {
+    use bcr_wallet_transport::push::{DeviceMethod, DeviceRequest, Platform};
+
+    let request = DeviceRequest {
+        platform: Platform::Android,
+        token: "fcm-token".to_string(),
+    };
+    let mut ctx = wallet_ctx();
+    let expected = request.clone();
+    ctx.nostr_transport
+        .expect_send_device_request()
+        .withf(move |method, req| *method == DeviceMethod::Put && *req == expected)
+        .times(1)
+        .returning(|_, _| Ok(()));
+    let expected = request.clone();
+    ctx.nostr_transport
+        .expect_send_device_request()
+        .withf(move |method, req| *method == DeviceMethod::Delete && *req == expected)
+        .times(1)
+        .returning(|_, _| Ok(()));
+
+    let wlt = wallet(ctx).await;
+    let wlt = wlt.read().await;
+    wlt.register_push_token(request.clone()).await.unwrap();
+    wlt.unregister_push_token(request).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn claim_is_renewed_while_a_slow_reclaim_runs() {
+    let renewals = std::sync::atomic::AtomicUsize::new(0);
+    let out = super::with_renewal(
+        Duration::from_secs(30),
+        || async {
+            renewals.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        },
+        async {
+            tokio::time::sleep(Duration::from_secs(100)).await;
+            7
+        },
+    )
+    .await;
+
+    assert_eq!(out, 7);
+    assert_eq!(renewals.load(std::sync::atomic::Ordering::SeqCst), 3);
 }

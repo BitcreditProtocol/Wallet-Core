@@ -254,6 +254,24 @@ pub struct NostrEventOffset {
     pub success: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PushClaim {
+    pub event_id: String,
+    pub received_at: Option<Timestamp>,
+    pub claimed_at: Option<Timestamp>,
+    pub completed_at: Option<Timestamp>,
+    pub owner: Option<Uuid>,
+    pub attempts: u32,
+    pub retry_at: Option<Timestamp>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PushClaimState {
+    Claimed(Uuid),
+    Held,
+    Done,
+}
+
 #[derive(Clone, Debug)]
 pub struct NostrQueuedMessage {
     pub id: String,
@@ -272,6 +290,13 @@ pub trait NostrRepository: SendSync {
     async fn get_retry_messages(&self, limit: u64) -> Result<Vec<NostrQueuedMessage>>;
     async fn fail_retry(&self, id: &str) -> Result<()>;
     async fn succeed_retry(&self, id: &str) -> Result<()>;
+    async fn record_push_receipt(&self, event_id: &str) -> Result<()>;
+    async fn claim_push_event(&self, event_id: &str) -> Result<PushClaimState>;
+    async fn renew_push_claim(&self, event_id: &str, owner: Uuid) -> Result<()>;
+    async fn complete_push_claim(&self, event_id: &str, time: Option<Timestamp>) -> Result<()>;
+    async fn release_push_claim(&self, event_id: &str, owner: Uuid) -> Result<()>;
+    async fn due_push_retries(&self) -> Result<Vec<String>>;
+    async fn push_claim(&self, event_id: &str) -> Result<Option<PushClaim>>;
     async fn delete_repo(&self) -> Result<()>;
 }
 

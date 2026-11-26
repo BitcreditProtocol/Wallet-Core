@@ -326,6 +326,36 @@ pub async fn wallet_delete(req: WalletRequest) -> Result<(), WalletError> {
 }
 
 #[frb]
+pub async fn handle_push(req: HandlePushRequest) -> Result<(), WalletError> {
+    let payload = req.payload()?;
+    let app_state = get_app_state().await;
+    app_state.handle_push(payload).await?;
+    Ok(())
+}
+
+#[frb]
+pub async fn wallet_register_push_token(req: WalletPushTokenRequest) -> Result<(), WalletError> {
+    let device_request = req.device_request();
+    let wallet_id = req.wallet_id;
+    let app_state = get_app_state().await;
+    app_state
+        .wallet_register_push_token(wallet_id, device_request)
+        .await?;
+    Ok(())
+}
+
+#[frb]
+pub async fn wallet_unregister_push_token(req: WalletPushTokenRequest) -> Result<(), WalletError> {
+    let device_request = req.device_request();
+    let wallet_id = req.wallet_id;
+    let app_state = get_app_state().await;
+    app_state
+        .wallet_unregister_push_token(wallet_id, device_request)
+        .await?;
+    Ok(())
+}
+
+#[frb]
 pub async fn wallet_get_info(req: WalletRequest) -> Result<WalletInfoResponse, WalletError> {
     let app_state = get_app_state().await;
     let info = app_state.wallet_info(req.wallet_id).await?;
@@ -1303,6 +1333,61 @@ impl From<bcr_wallet_api::WalletEvent> for WalletEventResponse {
 #[derive(Debug, Clone)]
 pub struct WalletRequest {
     pub wallet_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct HandlePushRequest {
+    pub event_id: String,
+    pub recipient: String,
+    pub relay_url: String,
+    pub kind: String,
+}
+
+impl HandlePushRequest {
+    fn payload(&self) -> Result<bcr_wallet_transport::push::PushPayload, WalletError> {
+        let invalid = |field: &str, e: String| {
+            WalletError::bad_request(
+                format!("invalid push {field}: {e}"),
+                WalletErrorCode::InvalidEventId,
+            )
+        };
+        Ok(bcr_wallet_transport::push::PushPayload {
+            event_id: nostr::event::EventId::parse(&self.event_id)
+                .map_err(|e| invalid("event id", e.to_string()))?,
+            recipient: nostr::key::PublicKey::parse(&self.recipient)
+                .map_err(|e| invalid("recipient", e.to_string()))?,
+            relay_url: self.relay_url.clone(),
+            kind: self
+                .kind
+                .parse()
+                .map_err(|e: std::num::ParseIntError| invalid("kind", e.to_string()))?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushPlatform {
+    Android,
+    Ios,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletPushTokenRequest {
+    pub wallet_id: String,
+    pub platform: PushPlatform,
+    pub token: String,
+}
+
+impl WalletPushTokenRequest {
+    fn device_request(&self) -> bcr_wallet_transport::push::DeviceRequest {
+        bcr_wallet_transport::push::DeviceRequest {
+            platform: match self.platform {
+                PushPlatform::Android => bcr_wallet_transport::push::Platform::Android,
+                PushPlatform::Ios => bcr_wallet_transport::push::Platform::Ios,
+            },
+            token: self.token.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2612,6 +2697,8 @@ pub enum WalletErrorCode {
     InvalidMnemonic,
     InvalidTransactionId,
     InvalidCursor,
+    InvalidEventId,
+    PushedEventNotFound,
     SortMismatch,
     MnemonicNotFound,
     WalletUniqueName,
@@ -2803,6 +2890,9 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::SchnorrSignature(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Database(_) => WalletError::internal(value.to_string()),
             BcrWalletError::Transport(_) => WalletError::internal(value.to_string()),
+            BcrWalletError::PushedEventNotFound(_) => {
+                WalletError::not_found(value.to_string(), WalletErrorCode::PushedEventNotFound)
+            }
             BcrWalletError::Swap(_) => WalletError::internal(value.to_string()),
             BcrWalletError::NoBetas => WalletError::internal(value.to_string()),
             BcrWalletError::NoDevMode => {
@@ -2869,6 +2959,62 @@ impl From<BcrWalletError> for WalletError {
             BcrWalletError::ContactMustHaveNodeId(_) => {
                 WalletError::bad_request(value.to_string(), WalletErrorCode::ContactMustHaveNodeId)
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bcr_wallet_transport::push::Platform;
+
+    const EVENT_ID: &str = "6a3b4a0ab5fe1e3f1d6c0f3a0f4e0c2a9d1b8e7f6a5c4b3d2e1f0a9b8c7d6e5f";
+    const RECIPIENT: &str = "17162c921dc4d2518f9a101db33695df1afb56ab82f5ff3e5da6eec3ca5cd917";
+
+    fn push_request(event_id: &str, recipient: &str, kind: &str) -> HandlePushRequest {
+        HandlePushRequest {
+            event_id: event_id.into(),
+            recipient: recipient.into(),
+            relay_url: "wss://relay.example.com".into(),
+            kind: kind.into(),
+        }
+    }
+
+    #[test]
+    fn push_request_accepts_the_relay_data_fields() {
+        let payload = push_request(EVENT_ID, RECIPIENT, "1059").payload().unwrap();
+        assert_eq!(payload.event_id.to_hex(), EVENT_ID);
+        assert_eq!(payload.recipient.to_hex(), RECIPIENT);
+        assert_eq!(payload.kind, 1059);
+    }
+
+    #[test]
+    fn push_request_rejects_garbage_as_bad_request() {
+        for request in [
+            push_request("not-an-event-id", RECIPIENT, "1059"),
+            push_request(EVENT_ID, "not-a-key", "1059"),
+            push_request(EVENT_ID, RECIPIENT, "gift-wrap"),
+        ] {
+            let err = request.payload().unwrap_err();
+            assert!(matches!(err.kind, WalletErrorKind::BadRequest));
+            assert!(matches!(err.code, WalletErrorCode::InvalidEventId));
+        }
+    }
+
+    #[test]
+    fn push_token_request_maps_each_platform() {
+        for (platform, expected) in [
+            (PushPlatform::Android, Platform::Android),
+            (PushPlatform::Ios, Platform::Ios),
+        ] {
+            let req = WalletPushTokenRequest {
+                wallet_id: "w".into(),
+                platform,
+                token: "tok".into(),
+            }
+            .device_request();
+            assert_eq!(req.platform, expected);
+            assert_eq!(req.token, "tok");
         }
     }
 }

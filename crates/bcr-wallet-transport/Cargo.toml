@@ -14,8 +14,13 @@ borsh = {workspace = true}
 futures.workspace = true
 nostr = {workspace = true, features = ["nip06", "nip59"]}
 nostr-sdk = {workspace = true}
+reqwest = {workspace = true}
+serde = {workspace = true, features = ["derive"]}
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = {workspace = true}
 tracing.workspace = true
 uuid = {workspace = true}
+
+[dev-dependencies]
+bcr-wallet-persistence = {workspace = true, features = ["test-utils", "db-redb"]}

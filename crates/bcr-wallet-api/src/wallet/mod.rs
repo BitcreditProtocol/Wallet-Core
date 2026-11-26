@@ -43,9 +43,13 @@ use bcr_wallet_core::{
 };
 use bcr_wallet_persistence::{
     ContactStoreApi, MigrationJournalEntry, MigrationJournalHeader, MigrationJournalRepository,
-    MigrationJournalState, NostrRepository, PaymentRequestStoreApi, TransactionRepository,
+    MigrationJournalState, NostrRepository, PaymentRequestStoreApi, PushClaimState,
+    TransactionRepository,
 };
-use bcr_wallet_transport::{ConsumerApi, NostrEventChannel, NostrWalletEvent, TransportApi};
+use bcr_wallet_transport::{
+    ConsumerApi, NostrEventChannel, NostrWalletEvent, TransportApi,
+    push::{DeviceMethod, DeviceRequest},
+};
 use bitcoin::{
     base58,
     hashes::{Hash, sha256::Hash as Sha256},
@@ -64,6 +68,9 @@ use std::{
 use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+const PUSH_CLAIM_RENEW_SECS: u64 = 30;
+const CATCH_UP_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
 
 pub type NostrReceiver = broadcast::Receiver<NostrWalletEvent>;
 
@@ -343,95 +350,8 @@ impl Wallet {
                                 return nostr_receiver;
                             },
                         };
-                        match received_evt {
-                            bcr_wallet_transport::NostrWalletEvent::ContactPaymentRequest { sender, payload, event_id } => {
-                                if !is_authentic_sender(&payload.sender, &sender, wallet_network) {
-                                    tracing::warn!("Rejected incoming Contact payment request: claimed sender {} is not on this network or not the authenticated Nostr sender {sender}", payload.sender);
-                                    continue;
-                                }
-                                let pending_incoming_payment_request: PaymentRequest = payload.into();
-                                let payment_request_id = pending_incoming_payment_request.id;
-                                let wallet_guard = wallet.read().await;
-                                match <Self as api::WalletApi>::add_payment_request(&*wallet_guard, pending_incoming_payment_request).await {
-                                    Ok(_) => {
-                                        tracing::info!("Received contact payment request {payment_request_id} from {sender}, event_id: {event_id}");
-                                    },
-                                    Err(e) => {
-                                        tracing::error!("Could not store payment request {payment_request_id}: {e}");
-                                    }
-                                };
-                            },
-                            bcr_wallet_transport::NostrWalletEvent::PaymentRequestAction { payload, event_id, sender } => {
-                                let payment_request_id = payload.payment_request_id;
-                                let wallet_guard = wallet.read().await;
-                                if let Err(e) = wallet_guard.apply_remote_payment_request_action(payload, event_id, sender).await {
-                                    tracing::error!("Could not apply payment request action for {payment_request_id}: {e}");
-                                }
-                            },
-                            bcr_wallet_transport::NostrWalletEvent::Cdk18Payment { payload, event_id, .. } => {
-                                let amount = payload.proofs.total_amount().unwrap_or(Amount::ZERO);
-                                let wallet_guard = wallet.read().await;
-                                match <Self as api::WalletApi>::receive_proofs(
-                                    &*wallet_guard,
-                                    payload.proofs,
-                                    payload.unit,
-                                    from_mint_url(&payload.mint),
-                                    time::OffsetDateTime::now_utc().unix_timestamp() as u64,
-                                    payload.memo,
-                                    PaymentType::PaymentRequest,
-                                    TransactionStatus::Settled,
-                                    None,
-                                    None,
-                                    Some(event_id),
-                                ).await {
-                                    Ok(tx_id) => {
-                                        tracing::info!("Received legacy Cdk18 payment for {amount} with Transaction ID: {tx_id}")
-                                    },
-                                    Err(e) => {
-                                        tracing::error!("Error processing legacy Cdk18 payment for {amount}: {e}")
-                                    }
-                                };
-                            },
-                            bcr_wallet_transport::NostrWalletEvent::ContactPayment { payload, event_id, sender } => {
-                                if !is_authentic_sender(&payload.sender, &sender, wallet_network) {
-                                    tracing::warn!("Rejected incoming Contact payment: claimed sender {} is not on this network or not the authenticated Nostr sender {sender}", payload.sender);
-                                    continue;
-                                }
-
-                                let amount = payload.proofs.total_amount().unwrap_or(Amount::ZERO);
-                                let unit = payload.unit.clone();
-                                let wallet_guard = wallet.read().await;
-                                match <Self as api::WalletApi>::receive_proofs(
-                                    &*wallet_guard,
-                                    payload.proofs,
-                                    payload.unit,
-                                    from_mint_url(&payload.mint),
-                                    time::OffsetDateTime::now_utc().unix_timestamp() as u64,
-                                    payload.memo,
-                                    if payload.payment_request_id.is_some() {
-                                        PaymentType::PaymentRequest
-                                    } else {
-                                        PaymentType::Contact
-                                    },
-                                    TransactionStatus::Settled,
-                                    payload.payment_request_id,
-                                    Some(payload.sender.clone()),
-                                    Some(event_id)
-                                ).await {
-                                    Ok(tx_id) => {
-                                        if let Some(p_req_id) = payload.payment_request_id {
-                                            wallet_guard.settle_outgoing_payment_request(p_req_id, tx_id, amount, &unit, &payload.sender, event_id).await;
-                                        }
-                                        tracing::info!("Received Contact Payment from {} for {} with Transaction ID: {}",
-                                            payload.sender, amount, tx_id)
-                                    },
-                                    Err(e) => {
-                                        tracing::error!("Error processing Contact Payment from {} for {}: {e}",
-                                            payload.sender, amount)
-                                    }
-                                };
-                            },
-                        };
+                        let wallet_guard = wallet.read().await;
+                        wallet_guard.reclaim_live_event(received_evt).await;
                     }
                 }
             }
@@ -441,6 +361,241 @@ impl Wallet {
             task,
             channel: self.nostr_event_channel.clone(),
         });
+    }
+
+    async fn handle_wallet_event(&self, evt: NostrWalletEvent) -> Result<()> {
+        match evt {
+            NostrWalletEvent::ContactPaymentRequest {
+                sender,
+                payload,
+                event_id,
+            } => {
+                if !is_authentic_sender(&payload.sender, &sender, self.network) {
+                    tracing::warn!(
+                        "Rejected incoming Contact payment request: claimed sender {} is not on this network or not the authenticated Nostr sender {sender}",
+                        payload.sender
+                    );
+                    return Ok(());
+                }
+                let pending_incoming_payment_request: PaymentRequest = payload.into();
+                let payment_request_id = pending_incoming_payment_request.id;
+                <Self as api::WalletApi>::add_payment_request(
+                    self,
+                    pending_incoming_payment_request,
+                )
+                .await
+                .inspect_err(|e| {
+                    tracing::error!("Could not store payment request {payment_request_id}: {e}")
+                })?;
+                tracing::info!(
+                    "Received contact payment request {payment_request_id} from {sender}, event_id: {event_id}"
+                );
+            }
+            NostrWalletEvent::PaymentRequestAction {
+                payload,
+                event_id,
+                sender,
+            } => {
+                let payment_request_id = payload.payment_request_id;
+                self.apply_remote_payment_request_action(payload, event_id, sender)
+                    .await
+                    .inspect_err(|e| {
+                        tracing::error!(
+                            "Could not apply payment request action for {payment_request_id}: {e}"
+                        )
+                    })?;
+            }
+            NostrWalletEvent::Cdk18Payment {
+                payload, event_id, ..
+            } => {
+                let amount = payload.proofs.total_amount().unwrap_or(Amount::ZERO);
+                let tx_id = <Self as api::WalletApi>::receive_proofs(
+                    self,
+                    payload.proofs,
+                    payload.unit,
+                    from_mint_url(&payload.mint),
+                    time::OffsetDateTime::now_utc().unix_timestamp() as u64,
+                    payload.memo,
+                    PaymentType::PaymentRequest,
+                    TransactionStatus::Settled,
+                    None,
+                    None,
+                    Some(event_id),
+                )
+                .await
+                .inspect_err(|e| {
+                    tracing::error!("Error processing legacy Cdk18 payment for {amount}: {e}")
+                })?;
+                tracing::info!(
+                    "Received legacy Cdk18 payment for {amount} with Transaction ID: {tx_id}"
+                );
+            }
+            NostrWalletEvent::ContactPayment {
+                payload,
+                event_id,
+                sender,
+            } => {
+                if !is_authentic_sender(&payload.sender, &sender, self.network) {
+                    tracing::warn!(
+                        "Rejected incoming Contact payment: claimed sender {} is not on this network or not the authenticated Nostr sender {sender}",
+                        payload.sender
+                    );
+                    return Ok(());
+                }
+                let amount = payload.proofs.total_amount().unwrap_or(Amount::ZERO);
+                let unit = payload.unit.clone();
+                let tx_id = <Self as api::WalletApi>::receive_proofs(
+                    self,
+                    payload.proofs,
+                    payload.unit,
+                    from_mint_url(&payload.mint),
+                    time::OffsetDateTime::now_utc().unix_timestamp() as u64,
+                    payload.memo,
+                    if payload.payment_request_id.is_some() {
+                        PaymentType::PaymentRequest
+                    } else {
+                        PaymentType::Contact
+                    },
+                    TransactionStatus::Settled,
+                    payload.payment_request_id,
+                    Some(payload.sender.clone()),
+                    Some(event_id),
+                )
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(
+                        "Error processing Contact Payment from {} for {amount}: {e}",
+                        payload.sender
+                    )
+                })?;
+                if let Some(p_req_id) = payload.payment_request_id {
+                    self.settle_outgoing_payment_request(
+                        p_req_id,
+                        tx_id,
+                        amount,
+                        &unit,
+                        &payload.sender,
+                        event_id,
+                    )
+                    .await;
+                }
+                tracing::info!(
+                    "Received Contact Payment from {} for {amount} with Transaction ID: {tx_id}",
+                    payload.sender
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn register_push_token(&self, request: DeviceRequest) -> Result<()> {
+        Ok(self
+            .nostr_transport
+            .send_device_request(DeviceMethod::Put, request)
+            .await?)
+    }
+
+    pub async fn unregister_push_token(&self, request: DeviceRequest) -> Result<()> {
+        Ok(self
+            .nostr_transport
+            .send_device_request(DeviceMethod::Delete, request)
+            .await?)
+    }
+
+    pub async fn handle_push(&self, event_id: EventId) -> Result<()> {
+        let id = event_id.to_hex();
+        self.nostr_repo.record_push_receipt(&id).await?;
+        let mut ids: Vec<EventId> = self
+            .nostr_repo
+            .due_push_retries()
+            .await?
+            .iter()
+            .filter_map(|retry| EventId::parse(retry).ok())
+            .collect();
+        ids.push(event_id);
+        let named = self
+            .nostr_transport
+            .fetch_gift_wraps(ids)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("Could not fetch pushed event {id}, catching up: {e}");
+                Vec::new()
+            });
+        let offset = self.nostr_repo.current_offset().await?;
+        let since = nostr::types::Timestamp::from_secs(
+            offset.as_secs().saturating_sub(CATCH_UP_WINDOW_SECS),
+        );
+        let missed = self.nostr_transport.fetch_gift_wraps_since(since).await?;
+        let mut found = false;
+        for event in named.iter().chain(&missed) {
+            found |= event.id == event_id;
+            self.reclaim_gift_wrap(event).await?;
+        }
+        if !found {
+            let claim = self.nostr_repo.push_claim(&id).await?;
+            if !claim.is_some_and(|c| c.completed_at.is_some()) {
+                return Err(Error::PushedEventNotFound(event_id));
+            }
+        }
+        Ok(())
+    }
+
+    async fn reclaim_gift_wrap(&self, event: &nostr::event::Event) -> Result<()> {
+        let id = event.id.to_hex();
+        let PushClaimState::Claimed(owner) = self.nostr_repo.claim_push_event(&id).await? else {
+            return Ok(());
+        };
+        match self.nostr_transport.decode_gift_wrap(event).await {
+            Ok(Some(evt)) => {
+                self.reclaim_claimed(&id, owner, Some(event.created_at), evt)
+                    .await
+            }
+            _ => {
+                self.nostr_repo
+                    .complete_push_claim(&id, Some(event.created_at))
+                    .await?
+            }
+        }
+        Ok(())
+    }
+
+    async fn reclaim_live_event(&self, evt: NostrWalletEvent) {
+        let id = evt.event_id().to_hex();
+        match self.nostr_repo.claim_push_event(&id).await {
+            Ok(PushClaimState::Claimed(owner)) => self.reclaim_claimed(&id, owner, None, evt).await,
+            Ok(_) => {}
+            Err(e) => tracing::error!("Could not claim event {id}: {e}"),
+        }
+    }
+
+    async fn reclaim_claimed(
+        &self,
+        id: &str,
+        owner: Uuid,
+        time: Option<nostr::types::Timestamp>,
+        evt: NostrWalletEvent,
+    ) {
+        let renew = || async {
+            if let Err(e) = self.nostr_repo.renew_push_claim(id, owner).await {
+                tracing::error!("Could not renew push claim {id}: {e}");
+            }
+        };
+        let reclaimed = with_renewal(
+            Duration::from_secs(PUSH_CLAIM_RENEW_SECS),
+            renew,
+            self.handle_wallet_event(evt),
+        )
+        .await;
+        let settled = match reclaimed {
+            Ok(()) => self.nostr_repo.complete_push_claim(id, time).await,
+            Err(e) => {
+                tracing::warn!("Reclaim of event {id} failed, releasing its claim: {e}");
+                self.nostr_repo.release_push_claim(id, owner).await
+            }
+        };
+        if let Err(e) = settled {
+            tracing::error!("Could not settle push claim {id}: {e}");
+        }
     }
 
     async fn settle_outgoing_payment_request(
@@ -2196,6 +2351,21 @@ fn reclaimed_amount(entries: &[(cashu::PublicKey, MigrationJournalEntry)]) -> Op
         MigrationJournalState::Reclaimed(amount) => Some(amount),
         _ => None,
     })
+}
+
+async fn with_renewal<T, F: Future<Output = ()>>(
+    period: Duration,
+    renew: impl Fn() -> F,
+    work: impl Future<Output = T>,
+) -> T {
+    tokio::pin!(work);
+    let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    loop {
+        tokio::select! {
+            out = &mut work => return out,
+            _ = ticker.tick() => renew().await,
+        }
+    }
 }
 
 #[cfg(test)]

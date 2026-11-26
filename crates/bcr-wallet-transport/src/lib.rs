@@ -1,5 +1,12 @@
-use crate::error::Result;
-use ::nostr::{event::EventId, key::PublicKey, types::RelayUrl};
+use crate::{
+    error::Result,
+    push::{DeviceMethod, DeviceRequest},
+};
+use ::nostr::{
+    event::{Event, EventId},
+    key::PublicKey,
+    types::{RelayUrl, Timestamp},
+};
 use async_trait::async_trait;
 use bcr_common::cashu::nut18 as cdk18;
 use bcr_wallet_core::{
@@ -10,6 +17,7 @@ use tokio::sync::broadcast;
 
 pub mod error;
 pub mod nostr;
+pub mod push;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SortOrder {
@@ -30,6 +38,11 @@ pub trait TransportApi: SendSync {
         npub: PublicKey,
         relays: Vec<RelayUrl>,
     ) -> Result<Vec<RelayUrl>>;
+    async fn fetch_gift_wraps(&self, ids: Vec<EventId>) -> Result<Vec<Event>>;
+    async fn fetch_gift_wraps_since(&self, since: Timestamp) -> Result<Vec<Event>>;
+    async fn decode_gift_wrap(&self, event: &Event) -> Result<Option<NostrWalletEvent>>;
+    async fn send_device_request(&self, method: DeviceMethod, request: DeviceRequest)
+    -> Result<()>;
 }
 
 #[async_trait]
@@ -64,6 +77,17 @@ pub enum NostrWalletEvent {
         payload: PaymentRequestActionPayload,
         sender: PublicKey,
     },
+}
+
+impl NostrWalletEvent {
+    pub fn event_id(&self) -> EventId {
+        match self {
+            Self::Cdk18Payment { event_id, .. }
+            | Self::ContactPayment { event_id, .. }
+            | Self::ContactPaymentRequest { event_id, .. }
+            | Self::PaymentRequestAction { event_id, .. } => *event_id,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

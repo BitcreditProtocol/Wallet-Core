@@ -10,6 +10,7 @@ crate-type = ["cdylib", "staticlib"]
 [dependencies]
 bcr-wallet-api = {workspace = true}
 bcr-wallet-core = {workspace = true}
+bcr-wallet-transport = {workspace = true}
 bip39 = {workspace = true}
 bitcoin = {workspace = true}
 bcr-common = {workspace = true}
