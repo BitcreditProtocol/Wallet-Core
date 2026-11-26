@@ -1,0 +1,67 @@
+{
+  "description": "NIP-98 signed PUT and DELETE /push requests; verify with now as the current time. The secret key is a test key and signs nothing else.",
+  "host_url": "https://relay.example.com",
+  "now": 1767225600,
+  "pubkey": "17162c921dc4d2518f9a101db33695df1afb56ab82f5ff3e5da6eec3ca5cd917",
+  "requests": [
+    {
+      "authorization": "Nostr eyJpZCI6IjBiNDA1ODE4MDNkNGIwMjA0ZDM3NDU4OTM4MDMwMTczYzAxMDY5ZjU4ZjkwOTZlNjhhNzM0ZDMxNzc0N2Y0ZmQiLCJwdWJrZXkiOiIxNzE2MmM5MjFkYzRkMjUxOGY5YTEwMWRiMzM2OTVkZjFhZmI1NmFiODJmNWZmM2U1ZGE2ZWVjM2NhNWNkOTE3IiwiY3JlYXRlZF9hdCI6MTc2NzIyNTYwMCwia2luZCI6MjcyMzUsInRhZ3MiOltbInUiLCJodHRwczovL3JlbGF5LmV4YW1wbGUuY29tL3B1c2giXSxbIm1ldGhvZCIsIlBVVCJdLFsicGF5bG9hZCIsImNmMDJhYzc2MmE0ZmM0ZjZlNzU0MTJmNDdkZGE0ZDFmZDQxZWNlOTQ4Zjk2YmM4NTE1ZmNmYTQxMTNkZWYxZmMiXV0sImNvbnRlbnQiOiIiLCJzaWciOiIzMjNjMTUwMGIwMzcyNmVhMTIwZDE4NGNiY2E5NzRjOTgwMTdiYTEzNzE1ZmYyODMzYzY4ZWMxNGI5ZTFiZDA5ODgxZTg4YjI5NTdiNTkwOWEwNGU5OWM3NzJiNzk1NjMyMzg3MjY2NjVmYThkYzJkY2M4ODRhNDA2ZmMwOThiNSJ9",
+      "body": "{\"platform\":\"android\",\"token\":\"fixture-fcm-registration-token\"}",
+      "event": {
+        "content": "",
+        "created_at": 1767225600,
+        "id": "0b40581803d4b0204d37458938030173c01069f58f9096e68a734d317747f4fd",
+        "kind": 27235,
+        "pubkey": "17162c921dc4d2518f9a101db33695df1afb56ab82f5ff3e5da6eec3ca5cd917",
+        "sig": "323c1500b03726ea120d184cbca974c98017ba13715ff2833c68ec14b9e1bd09881e88b2957b5909a04e99c772b79563238726665fa8dc2dcc884a406fc098b5",
+        "tags": [
+          [
+            "u",
+            "https://relay.example.com/push"
+          ],
+          [
+            "method",
+            "PUT"
+          ],
+          [
+            "payload",
+            "cf02ac762a4fc4f6e75412f47dda4d1fd41ece948f96bc8515fcfa4113def1fc"
+          ]
+        ]
+      },
+      "method": "PUT",
+      "payload": "cf02ac762a4fc4f6e75412f47dda4d1fd41ece948f96bc8515fcfa4113def1fc",
+      "url": "https://relay.example.com/push"
+    },
+    {
+      "authorization": "Nostr eyJpZCI6IjA1ODYyMjA0YjYzZTg0NDAwNTI2YjY3MTQ5YjgzNWRhYzMxMjc0MmEwMWU3OWYxMjIxM2JlNWU2YjVhMTMyY2QiLCJwdWJrZXkiOiIxNzE2MmM5MjFkYzRkMjUxOGY5YTEwMWRiMzM2OTVkZjFhZmI1NmFiODJmNWZmM2U1ZGE2ZWVjM2NhNWNkOTE3IiwiY3JlYXRlZF9hdCI6MTc2NzIyNTYwMCwia2luZCI6MjcyMzUsInRhZ3MiOltbInUiLCJodHRwczovL3JlbGF5LmV4YW1wbGUuY29tL3B1c2giXSxbIm1ldGhvZCIsIkRFTEVURSJdLFsicGF5bG9hZCIsImNmMDJhYzc2MmE0ZmM0ZjZlNzU0MTJmNDdkZGE0ZDFmZDQxZWNlOTQ4Zjk2YmM4NTE1ZmNmYTQxMTNkZWYxZmMiXV0sImNvbnRlbnQiOiIiLCJzaWciOiIyMjNlMjc2MGJmYTFlM2RhNTY3ZDgzMmY4MmY2N2Y5ZWRkY2ZjMDYyOGM1Y2ZhMzc5YTE0OWU4MTNiMTgyYjc4NzgwN2RhYmFhMTMyY2Q0OGI2NjQ2NGNlYzVhMDhiYWQ1NGUwZTFkOGI5MzQ5NDNhYTZhMjQxYWFiOTQwNDA0ZCJ9",
+      "body": "{\"platform\":\"android\",\"token\":\"fixture-fcm-registration-token\"}",
+      "event": {
+        "content": "",
+        "created_at": 1767225600,
+        "id": "05862204b63e84400526b67149b835dac312742a01e79f12213be5e6b5a132cd",
+        "kind": 27235,
+        "pubkey": "17162c921dc4d2518f9a101db33695df1afb56ab82f5ff3e5da6eec3ca5cd917",
+        "sig": "223e2760bfa1e3da567d832f82f67f9eddcfc0628c5cfa379a149e813b182b787807dabaa132cd48b66464cec5a08bad54e0e1d8b934943aa6a241aab940404d",
+        "tags": [
+          [
+            "u",
+            "https://relay.example.com/push"
+          ],
+          [
+            "method",
+            "DELETE"
+          ],
+          [
+            "payload",
+            "cf02ac762a4fc4f6e75412f47dda4d1fd41ece948f96bc8515fcfa4113def1fc"
+          ]
+        ]
+      },
+      "method": "DELETE",
+      "payload": "cf02ac762a4fc4f6e75412f47dda4d1fd41ece948f96bc8515fcfa4113def1fc",
+      "url": "https://relay.example.com/push"
+    }
+  ],
+  "secret_key": "7f7ff03d123792d6ac594bfa67bf6d0c0ab55b6b1fdb6249303fe861f1ccba9a"
+}

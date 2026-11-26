@@ -10,6 +10,7 @@ use tokio::sync::broadcast;
 
 pub mod error;
 pub mod nostr;
+pub mod push;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SortOrder {
