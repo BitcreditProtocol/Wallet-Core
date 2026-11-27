@@ -20,7 +20,7 @@ use bcr_wallet_core::{
     types::{ClowderBeta, MeltEstimation, MeltFeeRateEstimate},
 };
 use bitcoin::secp256k1;
-use std::{future::Future, time::Duration};
+use std::{collections::HashMap, future::Future, sync::Mutex, time::Duration};
 use tracing::debug;
 
 const PROTEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -308,11 +308,35 @@ pub trait ClowderMintConnector: SendSync + std::fmt::Debug {
     ) -> Result<wire_attestation::IssuanceAttestation>;
 }
 
+#[derive(Debug, Default)]
+struct KeysetCache(Mutex<HashMap<ecash::Id, ecash::KeySet>>);
+
+impl KeysetCache {
+    async fn get_or_fetch(
+        &self,
+        id: ecash::Id,
+        fetch: impl Future<Output = MintResult<ecash::KeySet>>,
+    ) -> MintResult<ecash::KeySet> {
+        if let Some(keyset) = self.0.lock().expect("keyset cache").get(&id) {
+            return Ok(keyset.clone());
+        }
+        let keyset = fetch.await?;
+        if keyset.id == id && cashu::KeySet::from(keyset.clone()).verify_id().is_ok() {
+            self.0
+                .lock()
+                .expect("keyset cache")
+                .insert(id, keyset.clone());
+        }
+        Ok(keyset)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HttpClientExt {
     main: MintClient,
     secondary: reqwest::Client,
     request_timeout: Duration,
+    keysets: std::sync::Arc<KeysetCache>,
 }
 
 impl HttpClientExt {
@@ -326,6 +350,7 @@ impl HttpClientExt {
             main: MintClient::new(cdk_url),
             secondary,
             request_timeout: timeouts.request,
+            keysets: Default::default(),
         }
     }
 }
@@ -353,9 +378,13 @@ impl ClowderMintConnector for HttpClientExt {
     }
 
     async fn get_mint_keyset(&self, keyset_id: ecash::Id) -> MintResult<ecash::KeySet> {
-        debug!("HTTP call to get_mint_keyset");
-        #[allow(deprecated)]
-        timed(self.request_timeout, self.main.keys_v1(keyset_id.into())).await
+        self.keysets
+            .get_or_fetch(keyset_id, async {
+                debug!("HTTP call to get_mint_keyset");
+                #[allow(deprecated)]
+                timed(self.request_timeout, self.main.keys_v1(keyset_id.into())).await
+            })
+            .await
     }
 
     async fn get_mint_keysets(&self) -> MintResult<Vec<ecash::KeySetInfo>> {
@@ -710,6 +739,7 @@ pub struct SentinelClient {
     main: MintClient,
     secondary: reqwest::Client,
     request_timeout: Duration,
+    keysets: std::sync::Arc<KeysetCache>,
 }
 
 impl SentinelClient {
@@ -718,11 +748,13 @@ impl SentinelClient {
             main,
             secondary,
             request_timeout,
+            keysets,
         } = client;
         Self {
             main,
             secondary,
             request_timeout,
+            keysets,
         }
     }
 }
@@ -748,9 +780,13 @@ impl ClowderMintConnector for SentinelClient {
         timed(self.request_timeout, self.main.check_state(request.ys)).await
     }
     async fn get_mint_keyset(&self, keyset_id: ecash::Id) -> MintResult<ecash::KeySet> {
-        debug!("HTTP call to get_mint_keyset on sentinel");
-        #[allow(deprecated)]
-        timed(self.request_timeout, self.main.keys_v1(keyset_id.into())).await
+        self.keysets
+            .get_or_fetch(keyset_id, async {
+                debug!("HTTP call to get_mint_keyset on sentinel");
+                #[allow(deprecated)]
+                timed(self.request_timeout, self.main.keys_v1(keyset_id.into())).await
+            })
+            .await
     }
     async fn get_mint_keysets(&self) -> MintResult<Vec<ecash::KeySetInfo>> {
         debug!("HTTP call to get_mint_keysets on sentinel");
@@ -1099,6 +1135,67 @@ mod tests {
     fn protest_timeout_outlasts_gateway_route_timeout() {
         const GATEWAY_PROTEST_ROUTE_TIMEOUT: Duration = Duration::from_secs(45);
         assert!(PROTEST_TIMEOUT > GATEWAY_PROTEST_ROUTE_TIMEOUT);
+    }
+
+    fn random_keyset() -> ecash::KeySet {
+        let (_, keyset) = bcr_common::core_tests::generate_random_ecash_keyset();
+        ecash::KeySet::from(keyset)
+    }
+
+    async fn keyset_server(
+        keysets: Vec<ecash::KeySet>,
+        hits: usize,
+    ) -> (mockito::ServerGuard, mockito::Mock, HttpClientExt) {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |req| {
+                let id = req.path().rsplit('/').next().unwrap().to_owned();
+                let served: Vec<_> = keysets
+                    .iter()
+                    .filter(|k| k.id.to_string() == id)
+                    .cloned()
+                    .map(cashu::KeySet::from)
+                    .collect();
+                serde_json::to_vec(&cashu::KeysResponse { keysets: served }).unwrap()
+            })
+            .expect(hits)
+            .create_async()
+            .await;
+        let client = HttpClientExt::new(
+            url::Url::parse(&server.url()).unwrap(),
+            MintTimeouts::default(),
+        );
+        (server, mock, client)
+    }
+
+    #[tokio::test]
+    async fn keysets_fetched_once_per_id() {
+        let keysets = vec![random_keyset(), random_keyset()];
+        let (_server, mock, client) = keyset_server(keysets.clone(), 2).await;
+        for _ in 0..3 {
+            for keyset in &keysets {
+                assert_eq!(
+                    client.get_mint_keyset(keyset.id).await.unwrap().id,
+                    keyset.id
+                );
+            }
+        }
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn keyset_mismatch_not_cached() {
+        let genuine = random_keyset();
+        let mut forged = genuine.clone();
+        forged.keys = random_keyset().keys;
+        let (_server, mock, client) = keyset_server(vec![forged], 2).await;
+        for _ in 0..2 {
+            let _ = client.get_mint_keyset(genuine.id).await;
+        }
+        mock.assert_async().await;
     }
 
     #[tokio::test]

@@ -329,6 +329,34 @@ fn sort_expected(mut txs: Vec<Transaction>, sort: TransactionSort) -> Vec<Transa
     txs
 }
 
+fn expect_list_txs_by_time(
+    repo: &mut MockTransactionRepository,
+    txs: Vec<Transaction>,
+    times: usize,
+) {
+    repo.expect_list_txs_by_time().times(times).returning(
+        move |descending, after, filters, limit| {
+            let sort = if descending {
+                TransactionSort::TimeDesc
+            } else {
+                TransactionSort::TimeAsc
+            };
+            let matching = txs.iter().filter(|tx| filters.matches_tx(tx)).cloned();
+            let mut res = sort_expected(matching.collect(), sort);
+            if let Some((tstamp, id)) = after {
+                let cursor = if descending {
+                    TransactionCursor::TimeDesc { tstamp, id }
+                } else {
+                    TransactionCursor::TimeAsc { tstamp, id }
+                };
+                res.retain(|tx| cursor.tx_is_after(tx));
+            }
+            res.truncate(limit);
+            Ok(res)
+        },
+    );
+}
+
 fn tx_ids(txs: &[Transaction]) -> Vec<Uuid> {
     txs.iter().map(|tx| tx.id).collect()
 }
@@ -470,9 +498,9 @@ async fn test_check_received_payment_wakes_when_request_is_marked_paid() {
 async fn test_list_txs() {
     let mut ctx = wallet_ctx();
     ctx.tx_repo
-        .expect_list_txs()
+        .expect_list_txs_by_time()
         .times(1)
-        .returning(|| Ok(vec![]));
+        .returning(|_, _, _, _| Ok(vec![]));
     let wlt = wallet(ctx).await;
 
     let res = wlt
@@ -1128,10 +1156,17 @@ async fn test_list_txs_all_sorts() {
         let expected = sort_expected(txs.clone(), sort);
 
         let mut ctx = wallet_ctx();
-        ctx.tx_repo
-            .expect_list_txs()
-            .times(1)
-            .returning(move || Ok(txs.clone()));
+        match sort {
+            TransactionSort::TimeAsc | TransactionSort::TimeDesc => {
+                expect_list_txs_by_time(&mut ctx.tx_repo, txs.clone(), 1);
+            }
+            TransactionSort::AmountAsc | TransactionSort::AmountDesc => {
+                ctx.tx_repo
+                    .expect_list_txs()
+                    .times(1)
+                    .returning(move || Ok(txs.clone()));
+            }
+        }
 
         let wlt = wallet(ctx).await;
         let ListTransactionsResult {
@@ -1154,10 +1189,7 @@ async fn test_list_txs_paginates_without_overlap() {
     let expected = sort_expected(txs.clone(), TransactionSort::TimeDesc);
 
     let mut ctx = wallet_ctx();
-    ctx.tx_repo
-        .expect_list_txs()
-        .times(3)
-        .returning(move || Ok(txs.clone()));
+    expect_list_txs_by_time(&mut ctx.tx_repo, txs.clone(), 3);
 
     let wlt = wallet(ctx).await;
 
@@ -1260,10 +1292,7 @@ async fn test_list_txs_applies_filters_and_inclusive_time_range() {
     expected = sort_expected(expected, TransactionSort::TimeDesc);
 
     let mut ctx = wallet_ctx();
-    ctx.tx_repo
-        .expect_list_txs()
-        .times(1)
-        .returning(move || Ok(txs.clone()));
+    expect_list_txs_by_time(&mut ctx.tx_repo, txs.clone(), 1);
 
     let wlt = wallet(ctx).await;
     let ListTransactionsResult {
@@ -1286,10 +1315,7 @@ async fn test_list_txs_next_cursor_uses_last_returned_tx() {
     let expected = sort_expected(txs.clone(), TransactionSort::TimeDesc);
 
     let mut ctx = wallet_ctx();
-    ctx.tx_repo
-        .expect_list_txs()
-        .times(1)
-        .returning(move || Ok(txs.clone()));
+    expect_list_txs_by_time(&mut ctx.tx_repo, txs.clone(), 1);
 
     let wlt = wallet(ctx).await;
 
@@ -1344,10 +1370,7 @@ async fn test_list_txs_cursor_transaction_does_not_need_to_exist() {
             .collect();
 
     let mut ctx = wallet_ctx();
-    ctx.tx_repo
-        .expect_list_txs()
-        .times(1)
-        .returning(move || Ok(txs_without_cursor.clone()));
+    expect_list_txs_by_time(&mut ctx.tx_repo, txs_without_cursor.clone(), 1);
 
     let wlt = wallet(ctx).await;
     let ListTransactionsResult { txs, .. } = wlt
@@ -6766,4 +6789,91 @@ async fn events_reclaim_of_a_settled_original_still_emits_balance() {
     wlt.read().await.reclaim_tx(tx_id).await.unwrap();
 
     assert!(drain_events(&mut rx).contains(&crate::WalletEventKind::BalanceUpdated));
+}
+
+fn pending_tx(n: u64) -> Transaction {
+    tx_with(
+        n,
+        n,
+        10,
+        TransactionDirection::Outgoing,
+        PaymentType::Token,
+        TransactionStatus::Pending,
+    )
+}
+
+async fn refresh_txs_with(
+    txs: Vec<Transaction>,
+    spent: HashSet<cashu::PublicKey>,
+) -> (usize, Vec<usize>, Vec<Uuid>) {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let settled = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (calls_clone, settled_clone) = (calls.clone(), settled.clone());
+    let mut ctx = wallet_ctx();
+    ctx.journal.expect_load().returning(|| Ok(HashMap::new()));
+    ctx.tx_repo
+        .expect_list_txs()
+        .returning(move || Ok(txs.clone()));
+    ctx.client.expect_post_check_state().returning(move |req| {
+        calls_clone.lock().unwrap().push(req.ys.len());
+        Ok(req
+            .ys
+            .iter()
+            .map(|y| cashu::ProofState {
+                y: *y,
+                state: if spent.contains(y) {
+                    cashu::State::Spent
+                } else {
+                    cashu::State::Unspent
+                },
+                witness: None,
+            })
+            .collect())
+    });
+    ctx.tx_repo
+        .expect_update_status()
+        .returning(move |id, status| {
+            assert_eq!(status, TransactionStatus::Settled);
+            settled_clone.lock().unwrap().push(id);
+            Ok(None)
+        });
+    let mut rx = ctx.events.subscribe();
+    let wlt = wallet(ctx).await;
+    let updated = wlt.read().await.refresh_txs().await.unwrap();
+    assert_eq!(drain_events(&mut rx).len(), 2 * updated);
+    let (calls, mut settled) = (
+        calls.lock().unwrap().clone(),
+        settled.lock().unwrap().clone(),
+    );
+    settled.sort();
+    (updated, calls, settled)
+}
+
+#[tokio::test]
+async fn refresh_txs_settles_spent_in_chunked_check_state() {
+    let txs: Vec<_> = (0..250).map(pending_tx).collect();
+    let spent_txs = [&txs[0], &txs[99], &txs[100], &txs[249]];
+    let spent = spent_txs.iter().map(|tx| tx.ys[0]).collect();
+    let mut expected: Vec<_> = spent_txs.iter().map(|tx| tx.id).collect();
+    expected.sort();
+
+    let (updated, calls, settled) = refresh_txs_with(txs.clone(), spent).await;
+    assert_eq!(updated, 4);
+    assert_eq!(calls, vec![100, 100, 50]);
+    assert_eq!(settled, expected);
+}
+
+#[tokio::test]
+async fn refresh_txs_settles_nothing_when_check_state_fails() {
+    let txs: Vec<_> = (0..3).map(pending_tx).collect();
+    let mut ctx = wallet_ctx();
+    ctx.journal.expect_load().returning(|| Ok(HashMap::new()));
+    ctx.tx_repo
+        .expect_list_txs()
+        .returning(move || Ok(txs.clone()));
+    ctx.client
+        .expect_post_check_state()
+        .returning(|_| Err(bcr_common::client::mint::Error::Internal("down".into())));
+    let wlt = wallet(ctx).await;
+    assert_eq!(wlt.read().await.refresh_txs().await.unwrap(), 0);
 }

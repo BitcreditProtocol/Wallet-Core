@@ -57,13 +57,15 @@ use nostr::{
     types::RelayUrl,
 };
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{Arc, Weak},
     time::Duration,
 };
 use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+const CHECK_STATE_CHUNK: usize = 100;
 
 pub type NostrReceiver = broadcast::Receiver<NostrWalletEvent>;
 
@@ -837,31 +839,38 @@ impl Wallet {
             return Err(Error::SortMismatch);
         }
 
-        let mut res = self.tx_repo.list_txs().await?;
-        // apply filters
-        res.retain(|tx| filters.matches_tx(tx));
-        // apply cursor
-        if let Some(ref cursor) = cursor {
-            res.retain(|tx| cursor.tx_is_after(tx));
-        }
-        // apply sorting
-        match sort {
-            TransactionSort::TimeAsc => {
-                res.sort_by(|a, b| a.tstamp.cmp(&b.tstamp).then_with(|| a.id.cmp(&b.id)));
+        let mut res = match sort {
+            TransactionSort::TimeAsc | TransactionSort::TimeDesc => {
+                let after = match cursor {
+                    Some(
+                        TransactionCursor::TimeAsc { tstamp, id }
+                        | TransactionCursor::TimeDesc { tstamp, id },
+                    ) => Some((tstamp, id)),
+                    _ => None,
+                };
+                self.tx_repo
+                    .list_txs_by_time(
+                        sort == TransactionSort::TimeDesc,
+                        after,
+                        filters,
+                        limit.saturating_add(1),
+                    )
+                    .await?
             }
-
-            TransactionSort::TimeDesc => {
-                res.sort_by(|a, b| b.tstamp.cmp(&a.tstamp).then_with(|| b.id.cmp(&a.id)));
+            TransactionSort::AmountAsc | TransactionSort::AmountDesc => {
+                let mut res = self.tx_repo.list_txs().await?;
+                res.retain(|tx| filters.matches_tx(tx));
+                if let Some(ref cursor) = cursor {
+                    res.retain(|tx| cursor.tx_is_after(tx));
+                }
+                if sort == TransactionSort::AmountAsc {
+                    res.sort_by(|a, b| a.amount.cmp(&b.amount).then_with(|| a.id.cmp(&b.id)));
+                } else {
+                    res.sort_by(|a, b| b.amount.cmp(&a.amount).then_with(|| b.id.cmp(&a.id)));
+                }
+                res
             }
-
-            TransactionSort::AmountAsc => {
-                res.sort_by(|a, b| a.amount.cmp(&b.amount).then_with(|| a.id.cmp(&b.id)));
-            }
-
-            TransactionSort::AmountDesc => {
-                res.sort_by(|a, b| b.amount.cmp(&a.amount).then_with(|| b.id.cmp(&a.id)));
-            }
-        }
+        };
         // apply limit
         let has_more = res.len() > limit;
         res.truncate(limit);
@@ -1063,28 +1072,53 @@ impl Wallet {
     }
 
     pub async fn refresh_txs(&self) -> Result<usize> {
-        let txs = self.tx_repo.list_txs().await?;
-        let mut updated = 0;
-
-        for tx in txs.iter() {
-            if !tx_can_be_refreshed(tx) {
+        let journal = self.journal.load().await?;
+        let mut candidates = Vec::new();
+        for tx in self.tx_repo.list_txs().await? {
+            if !tx_can_be_refreshed(&tx) || tx.ys.is_empty() {
                 continue;
             }
-
-            let tx_id = tx.id;
-
-            match self.refresh_tx(tx.id).await {
-                Ok(tx_updated) => {
-                    if tx_updated {
-                        updated += 1;
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Error refreshing tx {}: {e}", tx_id);
-                }
-            };
+            let journaled = tx.ys.iter().filter(|y| journal.contains_key(y)).count();
+            if journaled == tx.ys.len() {
+                continue;
+            }
+            if journaled > 0 {
+                tracing::error!("Error refreshing tx {}: partly journaled", tx.id);
+                continue;
+            }
+            candidates.push(tx);
         }
 
+        let ys: Vec<cashu::PublicKey> = candidates
+            .iter()
+            .flat_map(|tx| tx.ys.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mut spent = HashSet::new();
+        for chunk in ys.chunks(CHECK_STATE_CHUNK) {
+            let request = cashu::CheckStateRequest { ys: chunk.to_vec() };
+            match self.client.post_check_state(request).await {
+                Ok(states) => spent.extend(
+                    states
+                        .into_iter()
+                        .filter(|s| matches!(s.state, cashu::State::Spent))
+                        .map(|s| s.y),
+                ),
+                Err(e) => tracing::error!("Error checking state of {} proofs: {e}", chunk.len()),
+            }
+        }
+
+        let mut updated = 0;
+        for tx in candidates
+            .iter()
+            .filter(|tx| tx.ys.iter().any(|y| spent.contains(y)))
+        {
+            match self.update_status(tx.id, TransactionStatus::Settled).await {
+                Ok(()) => updated += 1,
+                Err(e) => tracing::error!("Error refreshing tx {}: {e}", tx.id),
+            }
+        }
         Ok(updated)
     }
 

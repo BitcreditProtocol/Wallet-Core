@@ -16,6 +16,7 @@ mod migration_0003;
 mod migration_0004;
 mod migration_0005;
 mod migration_0006;
+mod migration_0007;
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct AppliedMigration {
@@ -125,6 +126,17 @@ fn migrate_wallet_sync(db: Arc<Database>, namespace: WalletStorageNamespace) -> 
         tracing::info!("Applied Migration 0006 for wallet {}", &namespace.wallet_id);
     }
 
+    let migration_0007_id_for_wallet = migration_0007::migration_name_for_wallet(&namespace);
+    if !applied.contains(&migration_0007_id_for_wallet) {
+        tracing::info!(
+            "Applying Migration 0007 for wallet {}",
+            &namespace.wallet_id
+        );
+        migration_0007::migration_0007_indices(&write_txn, &namespace)?;
+        mark_migration_applied(&write_txn, &migration_0007_id_for_wallet)?;
+        tracing::info!("Applied Migration 0007 for wallet {}", &namespace.wallet_id);
+    }
+
     write_txn.commit()?;
     tracing::info!(
         "Finished DB migrations for wallet {}.",
@@ -138,9 +150,11 @@ fn migrate_wallet_sync(db: Arc<Database>, namespace: WalletStorageNamespace) -> 
 pub struct WalletStorageNamespace {
     wallet_id: String,
     proof_table: String,
+    proof_index_table: String,
     counter_table: String,
     commitment_table: String,
     transaction_table: String,
+    transaction_index_table: String,
     offset_entry_table: String,
     queued_message_table: String,
     dead_letter_table: String,
@@ -159,9 +173,11 @@ pub fn collect_wallet_namespace(
     WalletStorageNamespace {
         wallet_id: wallet_id.to_string(),
         proof_table: PocketDB::proof_table_name(&wallet_id, &unit),
+        proof_index_table: PocketDB::proof_index_table_name(&wallet_id, &unit),
         counter_table: PocketDB::counter_table_name(&wallet_id, &unit),
         commitment_table: PocketDB::commitment_table_name(&wallet_id, &unit),
         transaction_table: TransactionDB::transaction_table_name(&wallet_id),
+        transaction_index_table: TransactionDB::transaction_index_table_name(&wallet_id),
         offset_entry_table: NostrDB::offset_entry_table_name(&wallet_id),
         queued_message_table: NostrDB::queued_message_table_name(&wallet_id),
         dead_letter_table: NostrDB::dead_letter_table_name(&wallet_id),

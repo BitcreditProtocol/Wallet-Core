@@ -8,11 +8,11 @@ use bcr_common::wire::borsh::{
     deserialize_cashu_amount, deserialize_from_str, deserialize_vec_of_strs, serialize_as_str,
     serialize_cashu_amount, serialize_vec_of_strs,
 };
-use bcr_wallet_core::types::{PaymentType, Transaction, TransactionStatus};
+use bcr_wallet_core::types::{PaymentType, Transaction, TransactionFilters, TransactionStatus};
 use borsh::{BorshDeserialize, BorshSerialize};
 use nostr::event::EventId;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
-use std::{str::FromStr, sync::Arc};
+use std::{ops::Bound, str::FromStr, sync::Arc};
 use tokio::task::spawn_blocking;
 use uuid::Uuid;
 
@@ -21,6 +21,15 @@ use uuid::Uuid;
 pub(super) enum StoredTransaction {
     V1(StoredTransactionPayloadV1),
     V2(StoredTransactionPayloadV2),
+}
+
+impl StoredTransaction {
+    pub(super) fn tstamp(&self) -> u64 {
+        match self {
+            StoredTransaction::V1(data) => data.tstamp,
+            StoredTransaction::V2(data) => data.tstamp,
+        }
+    }
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
@@ -351,13 +360,26 @@ impl From<TransactionLinkReason> for bcr_wallet_core::types::TransactionLinkReas
 pub struct TransactionDB {
     db: Arc<Database>,
     transaction_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+    transaction_index_table: TableDefinition<'static, &'static [u8], ()>,
 }
 
 impl TransactionDB {
     const TRANSACTION_BASE_DB_NAME: &'static str = "transactions";
+    const TRANSACTION_INDEX_BASE_DB_NAME: &'static str = "transactions_by_time";
 
     pub fn transaction_table_name(wallet_id: &str) -> String {
         format!("{wallet_id}_{}", Self::TRANSACTION_BASE_DB_NAME)
+    }
+
+    pub fn transaction_index_table_name(wallet_id: &str) -> String {
+        format!("{wallet_id}_{}", Self::TRANSACTION_INDEX_BASE_DB_NAME)
+    }
+
+    pub(super) fn transaction_index_key(tstamp: u64, id: &Uuid) -> [u8; 24] {
+        let mut key = [0u8; 24];
+        key[..8].copy_from_slice(&tstamp.to_be_bytes());
+        key[8..].copy_from_slice(id.as_bytes());
+        key
     }
 
     pub fn new(db: Arc<Database>, wallet_id: &str) -> Result<Self> {
@@ -365,27 +387,45 @@ impl TransactionDB {
         let transaction_name: &'static str =
             Box::leak(Self::transaction_table_name(wallet_id).into_boxed_str());
         let transaction_table = TableDefinition::new(transaction_name);
+        let index_name: &'static str =
+            Box::leak(Self::transaction_index_table_name(wallet_id).into_boxed_str());
+        let transaction_index_table = TableDefinition::new(index_name);
         Ok(Self {
             db,
             transaction_table,
+            transaction_index_table,
         })
     }
 
     fn store_tx_sync(
         db: Arc<Database>,
         tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        index_table: TableDefinition<'static, &'static [u8], ()>,
         tx: Transaction,
     ) -> Result<Uuid> {
         let id = tx.id;
+        let tstamp = tx.tstamp;
         let entry = StoredTransaction::V2(tx.into());
         let write_txn = db.begin_write()?;
 
         {
             let mut table = write_txn.open_table(tx_table)?;
+            let mut index = write_txn.open_table(index_table)?;
             let serialized =
                 borsh::to_vec(&entry).map_err(|e| Error::BorshSerialization(e.to_string()))?;
 
-            table.insert(id.as_bytes().as_slice(), serialized)?;
+            let old = table
+                .insert(id.as_bytes().as_slice(), serialized)?
+                .map(|v| v.value());
+            if let Some(old) = old {
+                let old: StoredTransaction = borsh::from_slice(&old)
+                    .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+                let old_tstamp = old.tstamp();
+                if old_tstamp != tstamp {
+                    index.remove(Self::transaction_index_key(old_tstamp, &id).as_slice())?;
+                }
+            }
+            index.insert(Self::transaction_index_key(tstamp, &id).as_slice(), ())?;
         }
 
         write_txn.commit()?;
@@ -462,6 +502,73 @@ impl TransactionDB {
             Err(TableError::TableDoesNotExist(_)) => Ok(vec![]),
             Err(e) => Err(e.into()),
         }
+    }
+
+    fn list_txs_by_time_sync(
+        db: Arc<Database>,
+        tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        index_table: TableDefinition<'static, &'static [u8], ()>,
+        descending: bool,
+        after: Option<(u64, Uuid)>,
+        filters: TransactionFilters,
+        limit: usize,
+    ) -> Result<Vec<Transaction>> {
+        let read_txn = db.begin_read()?;
+        let table = match read_txn.open_table(tx_table) {
+            Ok(table) => table,
+            Err(TableError::TableDoesNotExist(_)) => return Ok(vec![]),
+            Err(e) => return Err(e.into()),
+        };
+        let index = match read_txn.open_table(index_table) {
+            Ok(index) => index,
+            Err(TableError::TableDoesNotExist(_)) => return Ok(vec![]),
+            Err(e) => return Err(e.into()),
+        };
+
+        let mut lower = Bound::Unbounded;
+        let mut upper = Bound::Unbounded;
+        if let Some(range) = filters.time_range {
+            if let Some(from) = range.from {
+                lower = Bound::Included(Self::transaction_index_key(from, &Uuid::nil()));
+            }
+            if let Some(to) = range.to {
+                upper = Bound::Included(Self::transaction_index_key(to, &Uuid::max()));
+            }
+        }
+        if let Some((tstamp, id)) = after {
+            let key = Bound::Excluded(Self::transaction_index_key(tstamp, &id));
+            if descending {
+                upper = key;
+            } else {
+                lower = key;
+            }
+        }
+        let bounds = (
+            lower.as_ref().map(|k| k.as_slice()),
+            upper.as_ref().map(|k| k.as_slice()),
+        );
+
+        let mut res = Vec::new();
+        let mut rows = index.range::<&[u8]>(bounds)?;
+        while res.len() < limit {
+            let row = if descending {
+                rows.next_back()
+            } else {
+                rows.next()
+            };
+            let Some(row) = row else { break };
+            let (key, _) = row?;
+            let Some(entry) = table.get(&key.value()[8..])? else {
+                continue;
+            };
+            let stored: StoredTransaction = borsh::from_slice(entry.value().as_slice())
+                .map_err(|e| Error::BorshSerialization(e.to_string()))?;
+            let tx: Transaction = stored_tx_data(stored)?.try_into()?;
+            if filters.matches_tx(&tx) {
+                res.push(tx);
+            }
+        }
+        Ok(res)
     }
 
     fn update_status_sync(
@@ -584,12 +691,16 @@ impl TransactionDB {
     fn delete_repo(
         db: Arc<Database>,
         tx_table: TableDefinition<'static, &'static [u8], Vec<u8>>,
+        index_table: TableDefinition<'static, &'static [u8], ()>,
     ) -> Result<()> {
         let write_txn = db.begin_write()?;
 
         {
             if write_txn.open_table(tx_table).is_ok() {
                 write_txn.delete_table(tx_table)?;
+            }
+            if write_txn.open_table(index_table).is_ok() {
+                write_txn.delete_table(index_table)?;
             }
         }
 
@@ -603,7 +714,8 @@ impl TransactionRepository for TransactionDB {
     async fn store_tx(&self, tx: Transaction) -> Result<Uuid> {
         let db_clone = self.db.clone();
         let table = self.transaction_table;
-        spawn_blocking(move || Self::store_tx_sync(db_clone, table, tx)).await?
+        let index = self.transaction_index_table;
+        spawn_blocking(move || Self::store_tx_sync(db_clone, table, index, tx)).await?
     }
 
     async fn load_tx(&self, tx_id: Uuid) -> Result<Transaction> {
@@ -625,6 +737,22 @@ impl TransactionRepository for TransactionDB {
         let table = self.transaction_table;
         let res = spawn_blocking(move || Self::list_txs_sync(db_clone, table)).await??;
         Ok(res)
+    }
+
+    async fn list_txs_by_time(
+        &self,
+        descending: bool,
+        after: Option<(u64, Uuid)>,
+        filters: TransactionFilters,
+        limit: usize,
+    ) -> Result<Vec<Transaction>> {
+        let db_clone = self.db.clone();
+        let table = self.transaction_table;
+        let index = self.transaction_index_table;
+        spawn_blocking(move || {
+            Self::list_txs_by_time_sync(db_clone, table, index, descending, after, filters, limit)
+        })
+        .await?
     }
 
     async fn update_status(
@@ -660,7 +788,8 @@ impl TransactionRepository for TransactionDB {
     async fn delete_repo(&self) -> Result<()> {
         let db_clone = self.db.clone();
         let table = self.transaction_table;
-        spawn_blocking(move || Self::delete_repo(db_clone, table)).await?
+        let index = self.transaction_index_table;
+        spawn_blocking(move || Self::delete_repo(db_clone, table, index)).await?
     }
 }
 
@@ -673,7 +802,7 @@ fn stored_tx_data(stored_tx: StoredTransaction) -> Result<StoredTransactionPaylo
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use crate::{
         error::Error,
         test_utils::tests::{test_other_pub_key, test_pub_key, wallet_id},
@@ -694,7 +823,7 @@ mod tests {
         TransactionDB::new(db, wallet_id).expect("can create TransactionDB")
     }
 
-    fn test_tx() -> Transaction {
+    pub(in crate::redb) fn test_tx() -> Transaction {
         let mint_url = MintUrl::from_str("https://example.com").expect("valid mint url");
         Transaction {
             id: Uuid::new_v4(),
@@ -856,5 +985,132 @@ mod tests {
 
         let loaded = repo.load_tx(tx_id).await.unwrap();
         assert_eq!(loaded.status, TransactionStatus::Pending);
+    }
+
+    fn tx_with(id: u128, tstamp: u64) -> Transaction {
+        Transaction {
+            id: Uuid::from_u128(id),
+            tstamp,
+            ..test_tx()
+        }
+    }
+
+    fn ids(txs: &[Transaction]) -> Vec<u128> {
+        txs.iter().map(|tx| tx.id.as_u128()).collect()
+    }
+
+    #[tokio::test]
+    async fn tx_index_listing_matches_scan() {
+        let repo = get_db(&wallet_id());
+        let layout = [
+            (1, 100),
+            (2, 100),
+            (3, 50),
+            (4, 300),
+            (5, 300),
+            (6, 300),
+            (7, 10),
+            (8, 200),
+        ];
+        for (id, tstamp) in layout {
+            let mut tx = tx_with(id, tstamp);
+            if id % 2 == 0 {
+                tx.status = TransactionStatus::Settled;
+            }
+            repo.store_tx(tx).await.unwrap();
+        }
+        repo.store_tx(tx_with(3, 250)).await.unwrap();
+
+        let filter_sets = [
+            TransactionFilters::default(),
+            TransactionFilters {
+                statuses: vec![TransactionStatus::Settled],
+                ..Default::default()
+            },
+            TransactionFilters {
+                time_range: Some(bcr_wallet_core::types::TimeRange {
+                    from: Some(100),
+                    to: Some(300),
+                }),
+                ..Default::default()
+            },
+        ];
+        for filters in filter_sets {
+            let mut all: Vec<Transaction> = repo
+                .list_txs()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|tx| filters.matches_tx(tx))
+                .collect();
+            for descending in [false, true] {
+                all.sort_by(|a, b| a.tstamp.cmp(&b.tstamp).then_with(|| a.id.cmp(&b.id)));
+                if descending {
+                    all.reverse();
+                }
+                let expected = ids(&all);
+
+                let whole = repo
+                    .list_txs_by_time(descending, None, filters.clone(), usize::MAX)
+                    .await
+                    .unwrap();
+                assert_eq!(ids(&whole), expected);
+
+                let mut paged = Vec::new();
+                let mut after = None;
+                loop {
+                    let page = repo
+                        .list_txs_by_time(descending, after, filters.clone(), 2)
+                        .await
+                        .unwrap();
+                    let Some(last) = page.last() else { break };
+                    after = Some((last.tstamp, last.id));
+                    paged.extend(ids(&page));
+                }
+                assert_eq!(paged, expected);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tx_index_early_stop() {
+        let repo = get_db(&wallet_id());
+        for id in 1..=6u128 {
+            repo.store_tx(tx_with(id, id as u64 * 10)).await.unwrap();
+        }
+        {
+            let write_txn = repo.db.begin_write().unwrap();
+            {
+                let mut table = write_txn.open_table(repo.transaction_table).unwrap();
+                for id in [1u128, 2, 3] {
+                    table
+                        .insert(Uuid::from_u128(id).as_bytes().as_slice(), vec![255u8])
+                        .unwrap();
+                }
+            }
+            write_txn.commit().unwrap();
+        }
+
+        let desc = repo
+            .list_txs_by_time(true, None, TransactionFilters::default(), 3)
+            .await
+            .unwrap();
+        assert_eq!(ids(&desc), vec![6, 5, 4]);
+
+        let after_cursor = repo
+            .list_txs_by_time(
+                true,
+                Some((50, Uuid::from_u128(5))),
+                TransactionFilters::default(),
+                1,
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids(&after_cursor), vec![4]);
+        assert!(
+            repo.list_txs_by_time(false, None, TransactionFilters::default(), 1)
+                .await
+                .is_err()
+        );
     }
 }
