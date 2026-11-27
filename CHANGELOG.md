@@ -2,6 +2,19 @@
 
 * Nostr offsets and queued messages, payment requests and mint, melt and melt commitment records are stored as versioned borsh, encrypted where they hold secrets or message content (breaking DB change: migration 0006; a legacy row that cannot be converted moves, encrypted, to a `<table>_quarantine` table)
 * Add `wallet_subscribe_to_events`, which calls back with a `WalletEventResponse` (`wallet_id`, `WalletEventKind`, optional `id`) after a change to a wallet's balance, transactions, payment requests or the wallet list; `Resync` means events were dropped, so re-fetch everything
+* **Breaking (build):** `wallet_ffi` is built by a Dart build hook (`hook/build.dart`, native assets) instead of cargokit, CocoaPods and the plugin's platform folders, so it supports Swift Package Manager by no longer being an iOS/macOS plugin (#389). No Dart or Rust API changes. Consuming apps must:
+    * use Flutter 3.50.0 or newer and have rustup installed for local builds; the hook installs the Rust version and targets pinned in `crates/bcr-wallet-ffi/rust-toolchain.toml` (Android builds also need NDK r27+)
+    * drop `wallet_ffi` from CocoaPods: `pod install` no longer finds a `wallet_ffi` pod, and an app with no other CocoaPods plugin can delete its `Podfile`, `Podfile.lock` and CocoaPods CI setup
+    * opt into precompiled binaries with `hooks: user_defines: wallet_ffi: use_precompiled_binaries: true` in the app `pubspec.yaml`; `cargokit_options.yaml` and `CARGOKIT_USE_PRECOMPILED_BINARIES` are ignored
+    * declare at least iOS 15 and macOS 13 as deployment targets: Flutter builds the library for those versions whatever the app declares
+    * call `RustLib.init()` without `externalLibrary`: on iOS and macOS the library is now an embedded `wallet_ffi.framework` that Flutter does not link into the app, so `ExternalLibrary.process(...)` finds no symbols
+    * if your git config rewrites GitHub HTTPS URLs to SSH, run `cargo fetch` once from a normal shell before a local build: the hook gets no `SSH_AUTH_SOCK`, so cargo cannot fetch git dependencies over SSH inside it
+    * expect `dart run <script>` in the app to run the hook for the host and, on Linux or Windows (no binaries published), to need rustup and compile the Rust library for minutes; `dart run <package>:<executable>` such as `build_runner` runs no hook
+* The release profile strips only debug info (`strip = "debuginfo"`, was `"symbols"`), so the library keeps function names for crash symbolication: the dSYM Flutter writes for an iOS archive resolves wallet functions again. App size is unchanged on iOS and Android, because Flutter and the Android Gradle plugin strip the copy they package; precompiled downloads are larger (about 3.4 MB more per Apple dylib); a Linux desktop bundle ships the library unstripped, about 4.5 MB larger and with symbol names
+* Precompiled binaries (`cd_precompiled.yml`, built by `tool/precompile_binaries.dart`) are dynamic libraries for iOS 15+, macOS 13+ (new) and Android API 24+ (was 27; `i686-linux-android` dropped, Flutter no longer builds it), still Ed25519-signed under the same key in `precompiled_binaries.yaml`; binaries published for earlier versions are not reused
+    * the crate hash now covers every file in each workspace crate's directory (not only `src/`, `Cargo.toml` and `build.rs`) plus `.cargo/config.toml`, so a change such as a new migration file can no longer reuse a binary built without it
+    * Android binaries are linked with NDK 28.2.13676358 (Flutter 3.50's default), pinned in `cd_precompiled.yml` instead of the runner's latest NDK
+    * a stalled or failing download (timeout, HTTP 429 or 5xx) is retried, then the hook builds with cargo instead of hanging the app build
 
 # 0.9.17
 
