@@ -12,7 +12,8 @@ use bcr_common::ecash;
 use bcr_wallet_core::contact::Contact;
 use bcr_wallet_core::types::{
     ForeignMintProof, PaymentRequestDirection, PaymentRequestState, PaymentRequestTransition,
-    PaymentRequestTransitionOutcome, Transaction, TransactionLinkReason, TransactionStatus,
+    PaymentRequestTransitionOutcome, Transaction, TransactionFilters, TransactionLinkReason,
+    TransactionStatus,
 };
 use bcr_wallet_core::{
     SendSync,
@@ -185,6 +186,13 @@ pub trait TransactionRepository: SendSync {
     async fn load_tx(&self, tx_id: Uuid) -> Result<Transaction>;
     async fn list_tx_ids(&self) -> Result<Vec<Uuid>>;
     async fn list_txs(&self) -> Result<Vec<Transaction>>;
+    async fn list_txs_by_time(
+        &self,
+        descending: bool,
+        after: Option<(u64, Uuid)>,
+        filters: TransactionFilters,
+        limit: usize,
+    ) -> Result<Vec<Transaction>>;
     async fn update_status(
         &self,
         tx_id: Uuid,
